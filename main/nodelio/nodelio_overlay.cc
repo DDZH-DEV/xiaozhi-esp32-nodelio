@@ -32,6 +32,7 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/queue.h>
 #include <lvgl.h>
 #include <time.h>
 
@@ -1098,6 +1099,110 @@ static void on_brand_click(lv_event_t *e)
     last_click_ms = now;
 }
 
+struct async_cmd_item_t {
+    char widget_id[NL_LAYOUT_STR];
+    nl_bind_t bind;
+    char value[16];
+    bool rollback_on_fail;
+};
+
+static QueueHandle_t s_cmd_queue = nullptr;
+static TaskHandle_t s_cmd_task = nullptr;
+
+static void async_cmd_worker(void *arg)
+{
+    (void)arg;
+    async_cmd_item_t item;
+    for (;;) {
+        if (xQueueReceive(s_cmd_queue, &item, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        int http = 0;
+        esp_err_t err = nodelio_panel_command(&s_cfg, item.widget_id, "set", &item.bind, item.value, &http);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "async cmd %s http=%d err=%s", item.widget_id, http, esp_err_to_name(err));
+            DisplayLockGuard lock(disp());
+            if (lock) {
+                toast(http == 503 ? "设备未在线" : "操作未响应");
+                if (item.rollback_on_fail) {
+                    const nodelio_panel_layout_t *layout = nodelio_panel_ui_get_layout();
+                    if (layout) {
+                        for (int pi = 0; pi < layout->page_count; pi++) {
+                            const nl_page_t *pg = &layout->pages[pi];
+                            for (int si = 0; si < pg->section_count; si++) {
+                                const nl_section_t *sec = &pg->sections[si];
+                                for (int wi = 0; wi < sec->widget_count; wi++) {
+                                    if (strcmp(sec->widgets[wi].id, item.widget_id) == 0) {
+                                        flip_widget_cache(&sec->widgets[wi]);
+                                        refresh_home_tiles();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            s_cloud_ok = true;
+            DisplayLockGuard lock(disp());
+            if (lock && s_cloud_lbl) {
+                refresh_status_icons(s_wifi_ok, true, nullptr);
+            }
+        }
+    }
+}
+
+#define ASYNC_CMD_STACK_BYTES 10240
+
+static StackType_t *s_async_cmd_stack = nullptr;
+static StaticTask_t s_async_cmd_tcb;
+
+static void ensure_cmd_worker(void)
+{
+    if (s_cmd_queue) {
+        return;
+    }
+    s_cmd_queue = xQueueCreate(8, sizeof(async_cmd_item_t));
+    if (!s_cmd_queue) {
+        ESP_LOGE(TAG, "Fail to create async cmd queue");
+        return;
+    }
+    if (!s_async_cmd_stack) {
+        s_async_cmd_stack = (StackType_t *)heap_caps_malloc(ASYNC_CMD_STACK_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_async_cmd_stack) {
+            s_async_cmd_stack = (StackType_t *)malloc(ASYNC_CMD_STACK_BYTES);
+        }
+    }
+    if (s_async_cmd_stack) {
+        s_cmd_task = xTaskCreateStatic(async_cmd_worker, "nl_cmd_async",
+                                       ASYNC_CMD_STACK_BYTES / sizeof(StackType_t), nullptr, 3,
+                                       s_async_cmd_stack, &s_async_cmd_tcb);
+    } else {
+        xTaskCreate(async_cmd_worker, "nl_cmd_async", ASYNC_CMD_STACK_BYTES, nullptr, 3, &s_cmd_task);
+    }
+}
+
+static void dispatch_async_cmd(const nl_widget_t *w, const char *value, bool rollback_on_fail)
+{
+    ensure_cmd_worker();
+    if (!s_cmd_queue || !w) {
+        return;
+    }
+    async_cmd_item_t item;
+    std::memset(&item, 0, sizeof(item));
+    std::snprintf(item.widget_id, sizeof(item.widget_id), "%s", w->id);
+    item.bind = w->bind;
+    std::snprintf(item.value, sizeof(item.value), "%s", value ? value : "TOGGLE");
+    item.rollback_on_fail = rollback_on_fail;
+    if (xQueueSend(s_cmd_queue, &item, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "cmd queue full, discard oldest");
+        async_cmd_item_t dummy;
+        xQueueReceive(s_cmd_queue, &dummy, 0);
+        xQueueSend(s_cmd_queue, &item, 0);
+    }
+}
+
 static void widget_cmd(const nl_widget_t *w, const char *value)
 {
     if (!w) {
@@ -1108,17 +1213,7 @@ static void widget_cmd(const nl_widget_t *w, const char *value)
         toast("设备未在线");
         return;
     }
-    int http = 0;
-    esp_err_t err = nodelio_panel_command(&s_cfg, w->id, "set", &w->bind, value, &http);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "cmd %s http=%d err=%s", w->id, http, esp_err_to_name(err));
-        toast(http == 503 ? "设备未在线" : "操作失败");
-    } else {
-        s_cloud_ok = true;
-        if (s_cloud_lbl) {
-            refresh_status_icons(s_wifi_ok, true, nullptr);
-        }
-    }
+    dispatch_async_cmd(w, value, false);
 }
 
 static void on_btn(lv_event_t *e)
@@ -1152,20 +1247,10 @@ static void on_btn(lv_event_t *e)
             lv_obj_set_style_border_width(tgt, 2, 0);
             lv_obj_set_style_border_color(tgt, UI_ACCENT_SOFT, 0);
         }
-        int http = 0;
-        esp_err_t err = nodelio_panel_command(&s_cfg, w->id, "set", &w->bind, "TOGGLE", &http);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "cmd %s http=%d err=%s", w->id, http, esp_err_to_name(err));
-            toast(http == 503 ? "设备未在线" : "操作失败");
-        } else {
-            s_cloud_ok = true;
-            if (s_cloud_lbl) {
-                refresh_status_icons(s_wifi_ok, true, nullptr);
-            }
-        }
+        dispatch_async_cmd(w, "TOGGLE", false);
         return;
     }
-    /* 先翻本地态，再下发绝对 ON/OFF；联动同引脚所有卡片瞬间同步响应（0ms 响应） */
+    /* 先翻本地态，再异步下发绝对 ON/OFF；联动同引脚所有卡片瞬间同步响应（0ms 响应，完全不卡死 UI） */
     flip_widget_cache(w);
     refresh_home_tiles();
     if (w->bind.kind != NL_BIND_HOME_SCENARIO && w->bind.device_id[0] &&
@@ -1177,21 +1262,7 @@ static void on_btn(lv_event_t *e)
     }
     tile_kind_t kind = tile_kind_of(w);
     const char *want = widget_is_on(w, kind) ? "ON" : "OFF";
-    int http = 0;
-    esp_err_t err = nodelio_panel_command(&s_cfg, w->id, "set", &w->bind, want, &http);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "cmd %s http=%d err=%s", w->id, http, esp_err_to_name(err));
-        toast(http == 503 ? "设备未在线" : "操作失败");
-        flip_widget_cache(w);
-        refresh_home_tiles();
-    } else {
-        set_widget_cache_state(w, want);
-        refresh_home_tiles();
-        s_cloud_ok = true;
-        if (s_cloud_lbl) {
-            refresh_status_icons(s_wifi_ok, true, nullptr);
-        }
-    }
+    dispatch_async_cmd(w, want, true);
 }
 
 static void on_slider(lv_event_t *e)
