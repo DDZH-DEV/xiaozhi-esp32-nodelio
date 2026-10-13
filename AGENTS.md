@@ -125,3 +125,18 @@ SILA-86 背光以板级 `config` 为准；勿盲目照抄旧叉 invert。
 - 第三方接口进面板：**走云技能清单**（`docs/panel-skills.md` / PLAN 阶段 L），**默认不发固件**。
 - 固件只保留通用 invoke + 通用列表 UI；**勿为每个 API fork 页面**。
 - 控家仍用 layout + `panel/command`；技能为平行通道。
+
+### UI 视觉规范（曜夜微晶体系）
+
+- 画布底色 `0x0c0f14`；关态卡片统一深石板 `0x161b24`，禁止各自着色；开态采用深环境微光底 + 高饱和 Icon Pod 胶囊底座 + 右上角药丸微标。
+- 控件代码只读 `ui_theme.h`，严禁散落裸 hex；APP `wall-panel-layout.uvue` 须 1:1 骨架同构（Icon Pod + 右上微标 + 双行标题）。
+
+### 触摸并发与命令队列（严禁阻塞 UI）
+
+- **禁止在 LVGL 回调内同步阻塞调用 HTTP/MQTT**；必须先翻本地缓存 `refresh_home_tiles()` 乐观响应（0ms），再将命令投入后台 FreeRTOS 异步队列 `nl_cmd_async`；失败时回滚并 toast。
+- 异步队列任务栈必须放在 PSRAM 且大小 >= 10KB（10240 bytes），严禁 4KB 局部栈引发 `stack overflow` 崩溃。
+
+### 离线语音动态词表注入
+
+- 引脚/设备重命名时，服务端下发拼音（`pinyinOn`/`pinyinOff`），`offline_cmd.c` 启动时动态注册 MultiNet 词表，严禁写死静态口令。
+
