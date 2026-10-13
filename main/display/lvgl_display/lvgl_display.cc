@@ -362,13 +362,6 @@ bool LvglDisplay::SnapshotToJpeg(std::string& jpeg_data, int quality, void* targ
         return false;
     }
 
-    // swap bytes
-    uint16_t* data = (uint16_t*)draw_buffer->data;
-    size_t pixel_count = draw_buffer->data_size / 2;
-    for (size_t i = 0; i < pixel_count; i++) {
-        data[i] = __builtin_bswap16(data[i]);
-    }
-
     // Clear output string and use callback version to avoid pre-allocating large memory blocks
     jpeg_data.clear();
 
