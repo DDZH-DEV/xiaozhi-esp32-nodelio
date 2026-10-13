@@ -110,6 +110,18 @@ esp_err_t nodelio_nvs_clear(void)
     return err;
 }
 
+void nodelio_nvs_clear_mqtt(nodelio_nvs_config_t *cfg)
+{
+    if (!cfg) {
+        return;
+    }
+    cfg->mqtt_server[0] = '\0';
+    cfg->mqtt_port[0] = '\0';
+    cfg->mqtt_user[0] = '\0';
+    cfg->mqtt_pass[0] = '\0';
+    cfg->topic_prefix[0] = '\0';
+}
+
 bool nodelio_nvs_has_wifi(const nodelio_nvs_config_t *cfg)
 {
     return cfg && cfg->wifi_ssid[0] != '\0';

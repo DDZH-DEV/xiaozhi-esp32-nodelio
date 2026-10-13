@@ -71,6 +71,10 @@ bool WebsocketProtocol::IsAudioChannelOpened() const {
     return websocket_ != nullptr && websocket_->IsConnected() && !error_occurred_ && !IsTimeout();
 }
 
+void WebsocketProtocol::MarkTransportSuspended(bool suspended) {
+    (void)suspended;
+}
+
 void WebsocketProtocol::SuspendTransport() {
     CloseAudioChannel(false);
 }

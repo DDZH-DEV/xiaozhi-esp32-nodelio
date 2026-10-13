@@ -64,6 +64,8 @@ public:
     /** 息屏断网前挂起传输（停重连）；亮屏后 Resume。默认空操作. */
     virtual void SuspendTransport() {}
     virtual void ResumeTransport() {}
+    /** 任意任务可先置位，阻止重连/Start；完整 Suspend 仍须主任务. */
+    virtual void MarkTransportSuspended(bool suspended) { (void)suspended; }
     virtual void SendWakeWordDetected(const std::string& wake_word);
     virtual void SendStartListening(ListeningMode mode);
     virtual void SendStopListening();

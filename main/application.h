@@ -115,6 +115,8 @@ public:
     /** 须在主任务调用：息屏断网前挂起协议；亮屏后恢复. */
     void SuspendTransport();
     void ResumeTransport();
+    /** 任意任务：先挡重连，再 Schedule SuspendTransport. */
+    void MarkTransportSuspended(bool suspended);
     void SendMcpMessage(const std::string& payload);
     void RegisterMcpBroadcastCallback(std::function<void(const std::string&)> callback);
     void SetAecMode(AecMode mode);

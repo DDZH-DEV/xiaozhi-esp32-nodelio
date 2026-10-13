@@ -77,8 +77,16 @@ const nodelio_panel_layout_t *nodelio_panel_ui_get_layout(void);
 /**
  * 按 snapshot 刷新控件可达性：offline 的 deviceId 灰显；
  * device_ids[i] 对应 online[i]；情景按钮不受影响.
+ * @deprecated 优先用 snapshot_begin/add/end（含开/关态）
  */
 void nodelio_panel_ui_apply_reachability(const char *const *device_ids, const bool *online, int n);
+
+/** snapshot 增量写入（解析完后 end 刷新磁贴开/关色）。 */
+void nodelio_panel_ui_snapshot_begin(void);
+void nodelio_panel_ui_snapshot_add(const char *device_id, bool online, const char *power_state);
+void nodelio_panel_ui_snapshot_add_channel(const char *device_id, int channel_index,
+                                           const char *state);
+void nodelio_panel_ui_snapshot_end(void);
 
 /** snapshot 缓存的在线态；未知设备视为在线（与灰显逻辑一致）。 */
 bool nodelio_panel_ui_device_online(const char *device_id);

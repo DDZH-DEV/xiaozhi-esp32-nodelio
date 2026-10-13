@@ -16,7 +16,9 @@ extern "C" {
  */
 esp_err_t nodelio_wifi_start(nodelio_nvs_config_t *cfg);
 
+/** STA 已关联（L2），不保证已有 IP. */
 bool nodelio_wifi_is_connected(void);
+bool nodelio_wifi_has_ip(void);
 
 /** 息屏超省电：停重连、disconnect + wifi_stop（AFE 本地唤醒仍可用）. */
 void nodelio_wifi_sleep(void);
@@ -26,8 +28,10 @@ void nodelio_wifi_wake(void);
 
 bool nodelio_wifi_is_asleep(void);
 
-/** 等待拿到 IP；timeout_ms=0 立即返回当前态. */
+/** 等待 L2 关联；timeout_ms=0 立即返回当前态. */
 bool nodelio_wifi_wait_connected(uint32_t timeout_ms);
+/** 等待 DHCP；HTTP 前用. */
+bool nodelio_wifi_wait_ip(uint32_t timeout_ms);
 
 #define NL_WIFI_SCAN_MAX 20
 

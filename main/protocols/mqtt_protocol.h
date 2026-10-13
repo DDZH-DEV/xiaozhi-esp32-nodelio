@@ -35,6 +35,7 @@ public:
     bool IsAudioChannelOpened() const override;
     void SuspendTransport() override;
     void ResumeTransport() override;
+    void MarkTransportSuspended(bool suspended) override;
 
 private:
     // Alive flag for safe scheduled callbacks - set to false in destructor

@@ -2,12 +2,12 @@
 
 #include "board_info.h"
 #include "layout_cache.h"
+#include "nodelio_http.h"
 #include "panel_ui.h"
 #include "wifi_provision.h"
 
 #include <cJSON.h>
 #include <esp_heap_caps.h>
-#include <esp_http_client.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -22,6 +22,7 @@ static nodelio_nvs_config_t s_cfg;
 static int s_applied_version = -1;
 static volatile bool s_sync_kick;
 static volatile bool s_snapshot_kick;
+static bool s_layout_task_started;
 
 /** cJSON 节点默认吃内部 DRAM；与 WS/MQTT 并行时易 tlsf assert → 改走 PSRAM. */
 static void *cjson_malloc_psram(size_t sz)
@@ -321,6 +322,12 @@ static void parse_layout_object(const cJSON *root, int outer_version, nodelio_pa
                 copy_str(wid->id, sizeof(wid->id), w, "id");
                 copy_str(wid->title, sizeof(wid->title), w, "title");
                 copy_str(wid->bg_color, sizeof(wid->bg_color), w, "bgColor");
+                copy_str(wid->skin, sizeof(wid->skin), w, "skin");
+                const cJSON *lbls = cJSON_GetObjectItemCaseSensitive(w, "labels");
+                if (cJSON_IsObject(lbls)) {
+                    copy_str(wid->labels_on, sizeof(wid->labels_on), lbls, "on");
+                    copy_str(wid->labels_off, sizeof(wid->labels_off), lbls, "off");
+                }
                 char tbuf[32];
                 copy_str(tbuf, sizeof(tbuf), w, "type");
                 wid->type = parse_widget_type(tbuf);
@@ -389,27 +396,6 @@ static void strip_base(const char *base, char *out, size_t out_len)
     snprintf(out, out_len, "%.*s", (int)n, base);
 }
 
-typedef struct {
-    char *buf;
-    int len;
-    int cap;
-} http_buf_t;
-
-static esp_err_t http_event(esp_http_client_event_t *evt)
-{
-    http_buf_t *hb = (http_buf_t *)evt->user_data;
-    if (evt->event_id != HTTP_EVENT_ON_DATA || !hb || !evt->data || evt->data_len <= 0) {
-        return ESP_OK;
-    }
-    if (hb->len + evt->data_len + 1 > hb->cap) {
-        return ESP_OK; /* truncate */
-    }
-    memcpy(hb->buf + hb->len, evt->data, evt->data_len);
-    hb->len += evt->data_len;
-    hb->buf[hb->len] = '\0';
-    return ESP_OK;
-}
-
 esp_err_t nodelio_layout_fetch(const nodelio_nvs_config_t *cfg, int known_version, nodelio_panel_layout_t *out)
 {
     if (!cfg || !out || cfg->server_url[0] == '\0' || cfg->device_id[0] == '\0' || cfg->device_key[0] == '\0') {
@@ -429,39 +415,20 @@ esp_err_t nodelio_layout_fetch(const nodelio_nvs_config_t *cfg, int known_versio
     if (!body) {
         return ESP_ERR_NO_MEM;
     }
-    http_buf_t hb = {.buf = body, .len = 0, .cap = cap};
     body[0] = '\0';
 
-    esp_http_client_config_t hcfg = {
-        .url = url,
-        .method = HTTP_METHOD_GET,
-        .timeout_ms = 15000,
-        .event_handler = http_event,
-        .user_data = &hb,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&hcfg);
-    if (!client) {
-        free(body);
-        return ESP_ERR_NO_MEM;
-    }
-    esp_http_client_set_header(client, "X-Device-Key", cfg->device_key);
+    char etag[32] = {0};
     if (known_version > 0) {
-        char etag[32];
         snprintf(etag, sizeof(etag), "\"v%d\"", known_version);
-        esp_http_client_set_header(client, "If-None-Match", etag);
     }
-
-    esp_err_t err = esp_http_client_perform(client);
     int status = 0;
-    if (err == ESP_OK) {
-        status = esp_http_client_get_status_code(client);
-    }
-    esp_http_client_cleanup(client);
+    esp_err_t err =
+        nodelio_http_get(url, cfg->device_key, etag[0] ? etag : NULL, &status, body, cap);
 
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "GET layout failed: %s", esp_err_to_name(err));
+    if (err != ESP_OK && status != 304) {
+        ESP_LOGW(TAG, "GET layout failed: %s http=%d", esp_err_to_name(err), status);
         free(body);
-        return err;
+        return err == ESP_OK ? ESP_FAIL : err;
     }
     if (status == 304) {
         free(body);
@@ -549,30 +516,13 @@ esp_err_t nodelio_panel_command(const nodelio_nvs_config_t *cfg, const char *wid
         return ESP_ERR_INVALID_ARG;
     }
 
-    esp_http_client_config_t hcfg = {
-        .url = url,
-        .method = HTTP_METHOD_POST,
-        .timeout_ms = 15000,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&hcfg);
-    if (!client) {
-        return ESP_ERR_NO_MEM;
-    }
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_header(client, "X-Device-Key", cfg->device_key);
-    esp_http_client_set_post_field(client, body, strlen(body));
-
-    esp_err_t err = esp_http_client_perform(client);
     int status = 0;
-    if (err == ESP_OK) {
-        status = esp_http_client_get_status_code(client);
-    }
-    esp_http_client_cleanup(client);
+    esp_err_t err = nodelio_http_post_json(url, cfg->device_key, body, &status, NULL, 0);
     if (http_status) {
         *http_status = status;
     }
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "POST command failed: %s", esp_err_to_name(err));
+    if (err != ESP_OK && status != 503) {
+        ESP_LOGW(TAG, "POST command failed: %s http=%d", esp_err_to_name(err), status);
         return err;
     }
     ESP_LOGI(TAG, "command widget=%s → HTTP %d", widget_id, status);
@@ -604,25 +554,9 @@ esp_err_t nodelio_snapshot_fetch(const nodelio_nvs_config_t *cfg)
     if (!body) {
         return ESP_ERR_NO_MEM;
     }
-    http_buf_t hb = {.buf = body, .len = 0, .cap = cap};
     body[0] = '\0';
-
-    esp_http_client_config_t hcfg = {
-        .url = url,
-        .method = HTTP_METHOD_GET,
-        .timeout_ms = 15000,
-        .event_handler = http_event,
-        .user_data = &hb,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&hcfg);
-    if (!client) {
-        free(body);
-        return ESP_ERR_NO_MEM;
-    }
-    esp_http_client_set_header(client, "X-Device-Key", cfg->device_key);
-    esp_err_t err = esp_http_client_perform(client);
-    int status = err == ESP_OK ? esp_http_client_get_status_code(client) : 0;
-    esp_http_client_cleanup(client);
+    int status = 0;
+    esp_err_t err = nodelio_http_get(url, cfg->device_key, NULL, &status, body, cap);
 
     if (err != ESP_OK || status != 200) {
         ESP_LOGW(TAG, "GET snapshot fail err=%s http=%d", esp_err_to_name(err), status);
@@ -633,45 +567,53 @@ esp_err_t nodelio_snapshot_fetch(const nodelio_nvs_config_t *cfg)
     /* cJSON 已钩 PSRAM；AFE 后内部常 <4KB，勿用 12KB 门槛直接放弃 */
     ensure_cjson_psram_hooks();
     cJSON *root = cJSON_Parse(body);
-    free(body);
     if (!root) {
+        char snip[96];
+        size_t n = strlen(body);
+        if (n >= sizeof(snip)) {
+            n = sizeof(snip) - 1;
+        }
+        memcpy(snip, body, n);
+        snip[n] = '\0';
+        ESP_LOGW(TAG, "snapshot JSON parse fail len=%u snip=%s", (unsigned)strlen(body), snip);
+        free(body);
         return ESP_FAIL;
     }
+    free(body);
     const cJSON *devices = cJSON_GetObjectItemCaseSensitive(root, "devices");
     int n = cJSON_IsArray(devices) ? cJSON_GetArraySize(devices) : 0;
     int online_n = 0;
+    nodelio_panel_ui_snapshot_begin();
     if (cJSON_IsArray(devices) && n > 0) {
-        const char **ids =
-            heap_caps_calloc((size_t)n, sizeof(char *), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        bool *ons = heap_caps_calloc((size_t)n, sizeof(bool), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!ids) {
-            ids = calloc((size_t)n, sizeof(char *));
-        }
-        if (!ons) {
-            ons = calloc((size_t)n, sizeof(bool));
-        }
-        if (ids && ons) {
-            int i = 0;
-            const cJSON *d;
-            cJSON_ArrayForEach(d, devices)
-            {
-                if (i >= n) {
-                    break;
-                }
-                const cJSON *id = cJSON_GetObjectItemCaseSensitive(d, "deviceId");
-                const cJSON *on = cJSON_GetObjectItemCaseSensitive(d, "online");
-                ids[i] = cJSON_IsString(id) ? id->valuestring : "";
-                ons[i] = cJSON_IsTrue(on);
-                if (ons[i]) {
-                    online_n++;
-                }
-                i++;
+        const cJSON *d;
+        cJSON_ArrayForEach(d, devices)
+        {
+            const cJSON *id = cJSON_GetObjectItemCaseSensitive(d, "deviceId");
+            const cJSON *on = cJSON_GetObjectItemCaseSensitive(d, "online");
+            const cJSON *pw = cJSON_GetObjectItemCaseSensitive(d, "powerState");
+            const char *id_s = cJSON_IsString(id) ? id->valuestring : "";
+            bool online = cJSON_IsTrue(on);
+            const char *power = cJSON_IsString(pw) ? pw->valuestring : "";
+            if (online) {
+                online_n++;
             }
-            nodelio_panel_ui_apply_reachability(ids, ons, i);
+            nodelio_panel_ui_snapshot_add(id_s, online, power);
+            const cJSON *chs = cJSON_GetObjectItemCaseSensitive(d, "channels");
+            if (cJSON_IsArray(chs)) {
+                const cJSON *ch;
+                cJSON_ArrayForEach(ch, chs)
+                {
+                    const cJSON *ix = cJSON_GetObjectItemCaseSensitive(ch, "index");
+                    const cJSON *st = cJSON_GetObjectItemCaseSensitive(ch, "state");
+                    if (!cJSON_IsNumber(ix) || !cJSON_IsString(st)) {
+                        continue;
+                    }
+                    nodelio_panel_ui_snapshot_add_channel(id_s, (int)ix->valuedouble, st->valuestring);
+                }
+            }
         }
-        free(ids);
-        free(ons);
     }
+    nodelio_panel_ui_snapshot_end();
     ESP_LOGI(TAG, "snapshot devices=%d online=%d", n, online_n);
     cJSON_Delete(root);
     return ESP_OK;
@@ -789,9 +731,14 @@ esp_err_t nodelio_layout_start_poll(const nodelio_nvs_config_t *cfg)
         return ESP_ERR_INVALID_ARG;
     }
     s_cfg = *cfg;
-    s_applied_version = -1;
     ensure_cjson_psram_hooks();
 
+    if (s_layout_task_started) {
+        s_sync_kick = true;
+        return ESP_OK;
+    }
+
+    s_applied_version = -1;
     /* 先挂缓存：云未通时也能出上一版布局 */
     (void)nodelio_layout_cache_mount();
     char *cached = NULL;
@@ -812,5 +759,9 @@ esp_err_t nodelio_layout_start_poll(const nodelio_nvs_config_t *cfg)
     }
 
     BaseType_t ok = xTaskCreate(layout_sync_task, "nl_layout", 6144, NULL, 3, NULL);
-    return ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+    if (ok == pdPASS) {
+        s_layout_task_started = true;
+        return ESP_OK;
+    }
+    return ESP_ERR_NO_MEM;
 }

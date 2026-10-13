@@ -32,6 +32,8 @@ esp_err_t nodelio_nvs_init(void);
 esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out);
 esp_err_t nodelio_nvs_save(const nodelio_nvs_config_t *in);
 esp_err_t nodelio_nvs_clear(void);
+/** Drop broker credentials (keep device_id/key); call when server_url changes. */
+void nodelio_nvs_clear_mqtt(nodelio_nvs_config_t *cfg);
 bool nodelio_nvs_has_wifi(const nodelio_nvs_config_t *cfg);
 
 #ifdef __cplusplus

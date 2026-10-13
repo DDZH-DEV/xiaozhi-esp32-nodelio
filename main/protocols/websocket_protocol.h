@@ -22,6 +22,7 @@ public:
     bool IsAudioChannelOpened() const override;
     void SuspendTransport() override;
     void ResumeTransport() override;
+    void MarkTransportSuspended(bool suspended) override;
 
 private:
     EventGroupHandle_t event_group_handle_;

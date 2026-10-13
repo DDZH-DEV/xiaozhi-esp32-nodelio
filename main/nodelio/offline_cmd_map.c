@@ -42,6 +42,9 @@ static bool looks_like_light(const nl_widget_t *w)
     if (!w) {
         return false;
     }
+    if (strcmp(w->skin, "dimmer") == 0) {
+        return true;
+    }
     if (title_has(w->title, "灯") || title_has(w->title, "光") || title_has(w->title, "照明") ||
         title_has(w->title, "继电器") || title_has(w->title, "开关") || title_has(w->title, "插座")) {
         return true;

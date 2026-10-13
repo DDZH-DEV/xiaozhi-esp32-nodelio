@@ -74,6 +74,13 @@ MqttProtocol::~MqttProtocol() {
 
 bool MqttProtocol::Start() { return StartMqttClient(false); }
 
+void MqttProtocol::MarkTransportSuspended(bool suspended) {
+    transport_suspended_ = suspended;
+    if (suspended && reconnect_timer_ != nullptr) {
+        esp_timer_stop(reconnect_timer_);
+    }
+}
+
 void MqttProtocol::SuspendTransport() {
     transport_suspended_ = true;
     if (reconnect_timer_ != nullptr) {

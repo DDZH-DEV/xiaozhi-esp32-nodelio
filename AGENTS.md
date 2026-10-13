@@ -91,3 +91,37 @@ The build script changes local `sdkconfig` and build state. Do not assume the bu
 - CI matrix: `.github/workflows/build.yml`
 
 Keep detailed or fast-changing information in those files, not here. Add a nested `AGENTS.md` only when a subsystem needs specialized instructions.
+
+## NodeLio Panel（SILA-86 叠层）
+
+> 本仓库（`D:\xz25`）同时承载 NodeLio 墙板固件（`main/nodelio/`、`main/boards/sila/sila-86/`）。
+
+- **固件根**：本仓库（`main/nodelio/`、`main/boards/sila/sila-86/`）
+- **计划/协议**：`D:\SITES\NodeLio\ESP32-IDF\PLAN.md`、`D:\SITES\NodeLio\ESP32-IDF\docs\hw-constraints.md`
+- **动态技能规划**：`D:\SITES\NodeLio\ESP32-IDF\docs\panel-skills.md`（PLAN 阶段 L）
+- UI 令牌：`main/nodelio/ui_theme.h`；控件：`ui_widgets.*`；壳：`nodelio_overlay.cc`；**禁止**散落裸 hex
+- **禁止** `idf.py flash`（代烧录）；本机 OOM 时用 `idf.py build -- -j2`
+- **禁止**擅自恢复定时拉布局；勿把 `ESP32-IDF/base-design.jpg` 当唯一真理
+
+### 省电优先（每次改固件默认按「省电优先」评审）
+
+| 优先级 | 耗电大户 | 要求 |
+|--------|----------|------|
+| P0 | RGB 屏 + 背光 | 超时息屏关背光；触摸唤醒；禁止常亮调试背光留生产路径 |
+| P1 | WiFi / HTTP / TLS | layout/snapshot **开机一次 + 手动刷新 + MQTT 推送**；未联网跳过 HTTP |
+| P2 | LVGL / 轮询 | 息屏降刷新；忌短周期空转 |
+| P3 | 音频 / AFE | 唤醒与 TLS/OTA **互斥**；会话结束释放 |
+
+- **禁止**用 `deep sleep` 冒充本板「关机」。
+- 新常驻任务须在 `hw-constraints.md` 写清亮屏/息屏电流影响（可定性）。
+
+### 双电源方案区分
+
+同批手板方案 A（TP4057）与 B（IP5306）勿混结论；CHRG 灯非 MCU GPIO。  
+SILA-86 背光以板级 `config` 为准；勿盲目照抄旧叉 invert。
+
+### 动态技能约束
+
+- 第三方接口进面板：**走云技能清单**（`docs/panel-skills.md` / PLAN 阶段 L），**默认不发固件**。
+- 固件只保留通用 invoke + 通用列表 UI；**勿为每个 API fork 页面**。
+- 控家仍用 layout + `panel/command`；技能为平行通道。

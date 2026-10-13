@@ -77,6 +77,19 @@ bool nodelio_wifi_is_connected(void)
     return esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
 }
 
+bool nodelio_wifi_has_ip(void)
+{
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!netif) {
+        return false;
+    }
+    esp_netif_ip_info_t ip;
+    if (esp_netif_get_ip_info(netif, &ip) != ESP_OK) {
+        return false;
+    }
+    return ip.ip.addr != 0;
+}
+
 /* sleep/wake/is_asleep → wifi_power.cc（WifiManager） */
 
 bool nodelio_wifi_wait_connected(uint32_t timeout_ms)
@@ -94,6 +107,28 @@ bool nodelio_wifi_wait_connected(uint32_t timeout_ms)
         waited += step;
     }
     return nodelio_wifi_is_connected();
+}
+
+bool nodelio_wifi_wait_ip(uint32_t timeout_ms)
+{
+    if (timeout_ms == 0) {
+        return nodelio_wifi_has_ip();
+    }
+    const uint32_t step = 100;
+    uint32_t waited = 0;
+    while (waited < timeout_ms) {
+        if (nodelio_wifi_has_ip()) {
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(step));
+        waited += step;
+    }
+    bool ok = nodelio_wifi_has_ip();
+    if (!ok) {
+        ESP_LOGW(TAG, "wait IP timeout %ums (assoc=%d)", (unsigned)timeout_ms,
+                 (int)nodelio_wifi_is_connected());
+    }
+    return ok;
 }
 
 esp_err_t nodelio_wifi_scan(nodelio_wifi_ap_t *out, int max_n, int *out_n)

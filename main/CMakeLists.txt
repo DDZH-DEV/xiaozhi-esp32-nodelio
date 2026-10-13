@@ -953,6 +953,7 @@ if(CONFIG_BOARD_TYPE_SILA_86 AND CONFIG_NODELIO_PANEL)
         "nodelio/offline_cmd_map.c"
         "nodelio/nvs_config.c"
         "nodelio/register.c"
+        "nodelio/nodelio_http.cc"
         "nodelio/mqtt_panel.c"
         "nodelio/layout_cache.c"
         "nodelio/panel_layout.c"

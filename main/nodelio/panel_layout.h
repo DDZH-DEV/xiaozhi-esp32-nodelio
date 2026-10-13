@@ -50,6 +50,9 @@ typedef struct {
     char id[NL_LAYOUT_STR];
     char title[NL_LAYOUT_STR];
     nl_widget_type_t type;
+    char skin[16];       /* dual_line / momentary / latching / dimmer / fan / heater / gauge / tank / generic */
+    char labels_on[16];  /* DualLine 开态标签（如 NC） */
+    char labels_off[16]; /* DualLine 关态标签（如 NO） */
     nl_bind_t bind;
     /* 网格占位：col/row 从 0；gw/gh 占格数。col/row=-1 表示由固件自动装箱 */
     int8_t col;

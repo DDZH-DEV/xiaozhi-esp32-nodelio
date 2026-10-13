@@ -217,12 +217,40 @@ esp_err_t nodelio_offline_cmd_begin_listen(void)
     if (s_session) {
         return ESP_ERR_INVALID_STATE;
     }
+
+    /* 未注册/未初始化：明确提示，勿进入空口令窗 */
+    nodelio_nvs_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    (void)nodelio_nvs_load(&cfg);
+    if (cfg.server_url[0] == '\0' || cfg.owner[0] == '\0') {
+        nodelio_panel_ui_set_voice_hint("未绑定");
+        nodelio_panel_ui_toast("未绑定：设置里填服务器与绑定码");
+        ESP_LOGW(TAG, "begin_listen blocked: not provisioned");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (cfg.device_id[0] == '\0' || cfg.device_key[0] == '\0') {
+        nodelio_panel_ui_set_voice_hint("未注册");
+        nodelio_panel_ui_toast("尚未注册成功，请联网后重试");
+        ESP_LOGW(TAG, "begin_listen blocked: not registered");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (nodelio_panel_ui_get_layout() == NULL) {
+        nodelio_panel_ui_set_voice_hint("无布局");
+        nodelio_panel_ui_toast("尚未拉取布局，请先联网完成初始化");
+        ESP_LOGW(TAG, "begin_listen blocked: no layout");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     esp_err_t err = ensure_multinet();
     if (err != ESP_OK) {
+        nodelio_panel_ui_set_voice_hint("口令未就绪");
+        nodelio_panel_ui_toast("本地口令模型未就绪（需 MN6 assets）");
+        ESP_LOGW(TAG, "begin_listen blocked: multinet err=%s", esp_err_to_name(err));
         return err;
     }
     err = ensure_cmd_worker();
     if (err != ESP_OK) {
+        nodelio_panel_ui_toast("本地口令启动失败");
         return err;
     }
     if (s_mn && s_mn_data) {

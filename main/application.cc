@@ -1383,6 +1383,12 @@ void Application::ResumeTransport() {
     }
 }
 
+void Application::MarkTransportSuspended(bool suspended) {
+    if (protocol_) {
+        protocol_->MarkTransportSuspended(suspended);
+    }
+}
+
 void Application::RegisterMcpBroadcastCallback(std::function<void(const std::string&)> callback) {
     mcp_broadcast_callback_ = std::move(callback);
 }
