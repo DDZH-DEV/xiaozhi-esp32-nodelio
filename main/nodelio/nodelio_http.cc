@@ -18,10 +18,10 @@
 #define TAG "nl_http"
 
 #ifndef NOD_HTTP_CONNECT_MS
-#define NOD_HTTP_CONNECT_MS 3000
+#define NOD_HTTP_CONNECT_MS 2000
 #endif
 #ifndef NOD_HTTP_IO_MS
-#define NOD_HTTP_IO_MS 5000
+#define NOD_HTTP_IO_MS 2500
 #endif
 
 static void force_wifi_perf(void)
@@ -300,7 +300,7 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
     const char *raw = buf.data();
     int status = 0;
     if (sscanf(raw, "HTTP/%*s %d", &status) != 1) {
-        ESP_LOGW(TAG, "bad status line");
+        ESP_LOGW(TAG, "bad status line (recv bytes=%u)", (unsigned)raw_len);
         return ESP_FAIL;
     }
     if (out_status) {
@@ -354,6 +354,63 @@ esp_err_t nodelio_http_post_json(const char *url, const char *device_key, const 
                                  char *resp, int resp_cap)
 {
     return http_exchange("POST", url, device_key, body ? body : "{}", nullptr, out_status, resp, resp_cap);
+}
+
+esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const void *data, size_t len,
+                                  int *out_status)
+{
+    if (!url || !url[0] || !data || len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    force_wifi_perf();
+
+    std::string host;
+    std::string path;
+    int port = 0;
+    bool https = false;
+    if (!parse_host_port(url, &host, &port, &path, &https)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    int fd = tcp_connect_ms(host.c_str(), port, NOD_HTTP_CONNECT_MS);
+    if (fd < 0) {
+        return ESP_FAIL;
+    }
+
+    char hdr[512];
+    int hdr_len = snprintf(hdr, sizeof(hdr),
+                           "POST %s HTTP/1.1\r\n"
+                           "Host: %s:%d\r\n"
+                           "Connection: close\r\n"
+                           "Content-Type: image/jpeg\r\n"
+                           "Content-Length: %u\r\n",
+                           path.c_str(), host.c_str(), port, (unsigned)len);
+    std::string req(hdr, (size_t)hdr_len);
+    if (device_key && device_key[0]) {
+        req += "X-Device-Key: ";
+        req += device_key;
+        req += "\r\n";
+    }
+    req += "\r\n";
+
+    if (!send_all(fd, req.data(), req.size()) || !send_all(fd, (const char *)data, len)) {
+        close(fd);
+        return ESP_FAIL;
+    }
+
+    char tmp[512];
+    int n = recv(fd, tmp, sizeof(tmp) - 1, 0);
+    close(fd);
+    int status = 0;
+    if (n > 0) {
+        tmp[n] = '\0';
+        sscanf(tmp, "HTTP/%*s %d", &status);
+    }
+    if (out_status) {
+        *out_status = status;
+    }
+    ESP_LOGI(TAG, "POST image %s (len=%u) → HTTP %d", url, (unsigned)len, status);
+    return (status >= 200 && status < 300) ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t nodelio_http_get(const char *url, const char *device_key, const char *if_none_match, int *out_status,

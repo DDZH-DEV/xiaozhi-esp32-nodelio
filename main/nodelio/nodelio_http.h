@@ -14,6 +14,9 @@ extern "C" {
 esp_err_t nodelio_http_post_json(const char *url, const char *device_key, const char *body, int *out_status,
                                  char *resp, int resp_cap);
 
+esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const void *data, size_t len,
+                                  int *out_status);
+
 esp_err_t nodelio_http_get(const char *url, const char *device_key, const char *if_none_match, int *out_status,
                            char *resp, int resp_cap);
 

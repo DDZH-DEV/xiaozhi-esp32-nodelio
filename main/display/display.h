@@ -79,9 +79,10 @@ public:
         (void)text_font;
         return false;
     }
-    virtual bool SnapshotToJpeg(std::string& jpeg_data, int quality = 80) {
+    virtual bool SnapshotToJpeg(std::string& jpeg_data, int quality = 80, void* target_obj = nullptr) {
         (void)jpeg_data;
         (void)quality;
+        (void)target_obj;
         return false;
     }
 

@@ -326,12 +326,37 @@ void LvglDisplay::SetPowerSaveMode(bool on) {
     }
 }
 
-bool LvglDisplay::SnapshotToJpeg(std::string& jpeg_data, int quality) {
+bool LvglDisplay::SnapshotToJpeg(std::string& jpeg_data, int quality, void* target_obj) {
 #if CONFIG_LV_USE_SNAPSHOT
     DisplayLockGuard lock(this);
 
-    lv_obj_t* screen = lv_screen_active();
-    lv_draw_buf_t* draw_buffer = lv_snapshot_take(screen, LV_COLOR_FORMAT_RGB565);
+    lv_obj_t* target = static_cast<lv_obj_t*>(target_obj);
+    if (target == nullptr) {
+        target = lv_screen_active();
+        lv_obj_t* top = lv_layer_top();
+        if (top != nullptr) {
+            int32_t cnt = lv_obj_get_child_count(top);
+            for (int32_t i = cnt - 1; i >= 0; i--) {
+                lv_obj_t* child = lv_obj_get_child(top, i);
+                if (child != nullptr && !lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN)) {
+                    int32_t child_w = lv_obj_get_width(child);
+                    int32_t child_h = lv_obj_get_height(child);
+                    int32_t top_w = lv_obj_get_width(top);
+                    int32_t top_h = lv_obj_get_height(top);
+                    if (top_w > 0 && top_h > 0 && child_w >= top_w / 2 && child_h >= top_h / 2) {
+                        target = child;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (target != nullptr) {
+        lv_obj_update_layout(target);
+    }
+
+    lv_draw_buf_t* draw_buffer = lv_snapshot_take(target, LV_COLOR_FORMAT_RGB565);
     if (draw_buffer == nullptr) {
         ESP_LOGE(TAG, "Failed to take snapshot, draw_buffer is nullptr");
         return false;

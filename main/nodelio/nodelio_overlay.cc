@@ -4,6 +4,7 @@
 #include "fonts/font_puhui_14_1.h"
 #include "layout_cache.h"
 #include "mqtt_panel.h"
+#include "nodelio_http.h"
 #include "nvs_config.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
@@ -654,6 +655,17 @@ static uint32_t color_pressed(uint32_t c)
     return (r << 16) | (g << 8) | b;
 }
 
+static uint32_t color_brighten(uint32_t c, uint32_t add)
+{
+    uint32_t r = ((c >> 16) & 0xff);
+    uint32_t g = ((c >> 8) & 0xff);
+    uint32_t b = (c & 0xff);
+    r = (r + add > 255) ? 255 : (r + add);
+    g = (g + add > 255) ? 255 : (g + add);
+    b = (b + add > 255) ? 255 : (b + add);
+    return (r << 16) | (g << 8) | b;
+}
+
 static nl_dev_cache_t *find_dev(const char *device_id)
 {
     if (!device_id || !device_id[0]) {
@@ -853,6 +865,7 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
     lv_obj_set_style_bg_color(tile, lv_color_hex(fill), 0);
     lv_obj_set_style_bg_color(tile, lv_color_hex(color_pressed(fill)), LV_STATE_PRESSED);
     if (online && on && kind != TILE_SCENE) {
+        /* 开态：极简微弱融合边界，无生硬高亮框 */
         lv_obj_set_style_border_width(tile, 1, 0);
         lv_color_t bc = UI_TILE_ON_BORDER;
         if (kind == TILE_PWM) {
@@ -861,12 +874,12 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
             bc = UI_TILE_GPIO_BORDER;
         }
         lv_obj_set_style_border_color(tile, bc, 0);
-        lv_obj_set_style_border_opa(tile, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_opa(tile, 60, 0);
     } else if (online && !on && kind != TILE_SCENE) {
-        /* 关态细边：暗调精致分界，1px */
+        /* 关态细边：暗调精致分界，半透明极细边 */
         lv_obj_set_style_border_width(tile, 1, 0);
         lv_obj_set_style_border_color(tile, UI_TILE_OFF_BORDER, 0);
-        lv_obj_set_style_border_opa(tile, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_opa(tile, 60, 0);
     } else {
         lv_obj_set_style_border_width(tile, 0, 0);
     }
@@ -887,7 +900,11 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
         if (role == TILE_CHILD_CAPSULE) {
             lv_color_t cap_bg = UI_CAPSULE_OFF;
             if (on && online) {
-                if (kind == TILE_PWM) {
+                uint32_t custom_bg = 0;
+                if (w && parse_bg_hex(w->bg_color, &custom_bg)) {
+                    /* 自定义底色：同色系提亮微光，避免红底绿胶囊等恶性撞色 */
+                    cap_bg = lv_color_hex(color_brighten(custom_bg, 40));
+                } else if (kind == TILE_PWM) {
                     cap_bg = UI_CAPSULE_PWM;
                 } else if (kind == TILE_GPIO) {
                     cap_bg = UI_CAPSULE_GPIO;
@@ -1014,6 +1031,67 @@ static void place_grid_obj(lv_obj_t *obj, const nl_widget_t *w, int cell_w, int 
     lv_obj_set_size(obj, tw, th);
 }
 
+static void strip_server_base(const char *base, char *out, size_t out_len)
+{
+    size_t n = strlen(base);
+    while (n > 0 && base[n - 1] == '/') {
+        n--;
+    }
+    if (n >= 22 && strncmp(base + n - 22, "/api/devices/register", 22) == 0) {
+        n -= 22;
+    }
+    std::snprintf(out, out_len, "%.*s", (int)n, base);
+}
+
+static void capture_and_upload_screenshot(void)
+{
+    Display *disp = Board::GetInstance().GetDisplay();
+    if (!disp) {
+        toast("未检测到显示屏");
+        return;
+    }
+    toast("截屏中…");
+    std::string jpeg;
+    if (!disp->SnapshotToJpeg(jpeg, 80, s_root) || jpeg.empty()) {
+        ESP_LOGW(TAG, "SnapshotToJpeg failed");
+        toast("截屏生成失败");
+        return;
+    }
+
+    if (s_cfg.server_url[0] == '\0' || s_cfg.device_id[0] == '\0') {
+        toast("未配置服务器");
+        return;
+    }
+
+    char base[160];
+    strip_server_base(s_cfg.server_url, base, sizeof(base));
+    char url[256];
+    std::snprintf(url, sizeof(url), "%s/api/devices/%s/panel/screenshot", base, s_cfg.device_id);
+
+    int http_status = 0;
+    esp_err_t err = nodelio_http_post_image(url, s_cfg.device_key, jpeg.data(), jpeg.size(), &http_status);
+    if (err == ESP_OK && http_status >= 200 && http_status < 300) {
+        ESP_LOGI(TAG, "Screenshot uploaded successfully: %u bytes", (unsigned)jpeg.size());
+        toast("已上传实机截图");
+    } else {
+        ESP_LOGW(TAG, "Screenshot upload failed err=%s http=%d", esp_err_to_name(err), http_status);
+        toast("截图上传失败");
+    }
+}
+
+static void on_brand_click(lv_event_t *e)
+{
+    (void)e;
+    static uint32_t last_click_ms = 0;
+    uint32_t now = esp_timer_get_time() / 1000;
+    if (now - last_click_ms < 600) {
+        last_click_ms = 0;
+        capture_and_upload_screenshot();
+        return;
+    }
+    last_click_ms = now;
+}
+
 static void widget_cmd(const nl_widget_t *w, const char *value)
 {
     if (!w) {
@@ -1137,6 +1215,7 @@ static lv_obj_t *make_tile_shell(const nl_widget_t *w, tile_kind_t kind, int cel
     lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(tile, 1, 0);
     lv_obj_set_style_border_color(tile, UI_TILE_OFF_BORDER, 0);
+    lv_obj_set_style_border_opa(tile, 60, 0);
     lv_obj_set_style_radius(tile, UI_RADIUS_MD, 0);
     lv_obj_set_style_pad_all(tile, UI_PAD_SM, 0);
     lv_obj_set_style_shadow_width(tile, 0, 0);
@@ -1572,7 +1651,7 @@ static void build_connect(void)
     lv_obj_clear_flag(s_connect, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_connect, LV_OBJ_FLAG_HIDDEN);
 
-    (void)ui_make_nav_bar(s_connect, NL_UI_STATUS_H, "连接",
+    (void)ui_make_nav_bar(s_connect, UI_NAV_H, "连接",
                           [](lv_event_t *) { close_connect(); });
 
     s_connect_scroll = lv_obj_create(s_connect);
@@ -1965,17 +2044,16 @@ static lv_obj_t *audio_ctrl_band(lv_obj_t *parent, const char *title, const char
     lv_obj_t *band = lv_obj_create(parent);
     lv_obj_remove_style_all(band);
     lv_obj_set_width(band, lv_pct(100));
-    lv_obj_set_flex_grow(band, 1);
     lv_obj_set_style_bg_color(band, UI_PANEL, 0);
     lv_obj_set_style_bg_opa(band, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(band, UI_RADIUS, 0);
     lv_obj_set_style_pad_left(band, 16, 0);
     lv_obj_set_style_pad_right(band, 16, 0);
-    lv_obj_set_style_pad_top(band, 18, 0);
-    lv_obj_set_style_pad_bottom(band, 18, 0);
-    lv_obj_set_style_pad_row(band, UI_GAP_LG, 0);
+    lv_obj_set_style_pad_top(band, 12, 0);
+    lv_obj_set_style_pad_bottom(band, 14, 0);
+    lv_obj_set_style_pad_row(band, 8, 0);
     lv_obj_set_flex_flow(band, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(band, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_flex_align(band, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_clear_flag(band, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *head = lv_obj_create(band);
@@ -2185,7 +2263,7 @@ static void open_settings_detail(set_page_id_t page)
     } else if (page == SET_PAGE_RESET) {
         title = "重置";
     }
-    (void)ui_make_nav_bar(s_settings_detail, NL_UI_STATUS_H, title,
+    (void)ui_make_nav_bar(s_settings_detail, UI_NAV_H, title,
                           [](lv_event_t *) { close_settings_detail(); });
 
     lv_obj_t *body = lv_obj_create(s_settings_detail);
@@ -2206,7 +2284,7 @@ static void open_settings_detail(set_page_id_t page)
 
     if (page == SET_PAGE_DISP) {
         lv_obj_clear_flag(body, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_pad_row(body, 16, 0);
+        lv_obj_set_style_pad_row(body, 12, 0);
 
         char pct[12];
         std::snprintf(pct, sizeof(pct), "%d%%", s_brightness);
@@ -2695,6 +2773,9 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_label_set_text(s_brand_lbl, "NodeLio");
     set_font(s_brand_lbl);
     lv_obj_set_style_text_color(s_brand_lbl, UI_ACCENT, 0);
+    lv_obj_add_flag(s_brand_lbl, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(s_brand_lbl, 16);
+    lv_obj_add_event_cb(s_brand_lbl, on_brand_click, LV_EVENT_CLICKED, nullptr);
 
     s_clock_lbl = lv_label_create(bar);
     lv_label_set_text(s_clock_lbl, "--:--");

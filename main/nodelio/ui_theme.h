@@ -39,28 +39,28 @@
 #define UI_C_DISABLED_FG     0x8a9490
 #define UI_C_CHAT_BAND       0x24332c
 #define UI_C_SLIDER_TRACK    0x24332c
-/* 开态：暗调微光表面（Dark Frosted Surface with Subtle Luminescence），沉稳高级不刺眼 */
-#define UI_C_TILE_SWITCH     0x1d4a34
-#define UI_C_TILE_SCENE      0x1d4a34
-#define UI_C_TILE_GPIO       0x3c2c19
-#define UI_C_TILE_PWM        0x19374a
-/* 关态：深色磨砂微质感 */
-#define UI_C_TILE_OFF        0x233129
+/* 开态：暗调微光表面（Dark Frosted Surface），沉稳高级不刺眼 */
+#define UI_C_TILE_SWITCH     0x1a3d2c
+#define UI_C_TILE_SCENE      0x1a3d2c
+#define UI_C_TILE_GPIO       0x362816
+#define UI_C_TILE_PWM        0x163142
+/* 关态：极简石板黑微质感 */
+#define UI_C_TILE_OFF        0x1c2420
 #define UI_C_TILE_SWITCH_OFF UI_C_TILE_OFF
 #define UI_C_TILE_SCENE_OFF  UI_C_TILE_OFF
 #define UI_C_TILE_GPIO_OFF   UI_C_TILE_OFF
 #define UI_C_TILE_PWM_OFF    UI_C_TILE_OFF
-#define UI_C_TILE_ON_BORDER  0x52e080
-#define UI_C_TILE_OFF_BORDER 0x33443a
-#define UI_C_TILE_PWM_BORDER 0x38bdf8
-#define UI_C_TILE_GPIO_BORDER 0xf59e0b
-#define UI_C_CAPSULE_OFF     0x2c3b33
-#define UI_C_CAPSULE_ON      0x286341
-#define UI_C_CAPSULE_PWM     0x205570
-#define UI_C_CAPSULE_GPIO    0x543f21
-#define UI_C_TILE_BADGE_ON   0x255b3c
-#define UI_C_TILE_BADGE_OFF  0x2a3630
-#define UI_C_TILE_BADGE_OFFLINE 0x2d3230
+#define UI_C_TILE_ON_BORDER  0x2b543b
+#define UI_C_TILE_OFF_BORDER 0x25312a
+#define UI_C_TILE_PWM_BORDER 0x234f68
+#define UI_C_TILE_GPIO_BORDER 0x5a4220
+#define UI_C_CAPSULE_OFF     0x253029
+#define UI_C_CAPSULE_ON      0x34c759
+#define UI_C_CAPSULE_PWM     0x38bdf8
+#define UI_C_CAPSULE_GPIO    0xf59e0b
+#define UI_C_TILE_BADGE_ON   0x224f35
+#define UI_C_TILE_BADGE_OFF  0x242e28
+#define UI_C_TILE_BADGE_OFFLINE 0x282c2a
 #define UI_C_TAB_GLOW        0xffffff
 
 /* ---- lv_color ----------------------------------------------------------- */
@@ -124,6 +124,7 @@
 #define UI_GAP_LG           14
 #define UI_EXT_CLICK        20
 #define UI_SETTINGS_TILE_H  112
+#define UI_NAV_H            40
 #define UI_NAV_BACK_W       64
 #define UI_BTN_H            48
 #define UI_BTN_H_SM         44
