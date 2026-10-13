@@ -2,6 +2,7 @@
 
 #include "offline_cmd_map.h"
 #include "nvs_config.h"
+#include "panel_layout.h"
 #include "panel_ui.h"
 #include "sdkconfig.h"
 
@@ -39,6 +40,10 @@ void nodelio_offline_cmd_feed(const int16_t *data, int samples)
     (void)samples;
 }
 void nodelio_offline_cmd_stop(void) {}
+void nodelio_offline_cmd_reset_dynamic(void) {}
+bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel, const char *action,
+                                    const char *name, const char *pinyin) { (void)device_id; (void)channel; (void)action; (void)name; (void)pinyin; return false; }
+void nodelio_offline_cmd_commit_dynamic(void) {}
 
 #else
 
@@ -61,6 +66,64 @@ static int s_mn_div;
 #define CMD_STACK_WORDS 6144
 #define LISTEN_MS       5000
 
+#define NL_DYN_CMD_MAX 32
+
+typedef struct {
+    int cmd_id;
+    char device_id[32];
+    int channel;
+    char action[8]; // "ON" / "OFF"
+    char name[32];
+    char pinyin[48];
+} nl_dyn_cmd_t;
+
+static nl_dyn_cmd_t s_dyn_cmds[NL_DYN_CMD_MAX];
+static int s_dyn_cmd_count = 0;
+
+static const nl_dyn_cmd_t *find_dynamic_cmd(int cid)
+{
+    for (int i = 0; i < s_dyn_cmd_count; i++) {
+        if (s_dyn_cmds[i].cmd_id == cid) {
+            return &s_dyn_cmds[i];
+        }
+    }
+    return NULL;
+}
+
+void nodelio_offline_cmd_reset_dynamic(void)
+{
+    s_dyn_cmd_count = 0;
+}
+
+bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel, const char *action,
+                                    const char *name, const char *pinyin)
+{
+    if (!device_id || !device_id[0] || !action || !action[0] || !pinyin || !pinyin[0]) {
+        return false;
+    }
+    if (s_dyn_cmd_count >= NL_DYN_CMD_MAX) {
+        return false;
+    }
+    nl_dyn_cmd_t *cmd = &s_dyn_cmds[s_dyn_cmd_count];
+    cmd->cmd_id = NL_DYN_CMD_BASE + s_dyn_cmd_count;
+    snprintf(cmd->device_id, sizeof(cmd->device_id), "%s", device_id);
+    cmd->channel = channel;
+    snprintf(cmd->action, sizeof(cmd->action), "%s", action);
+    snprintf(cmd->name, sizeof(cmd->name), "%s", name ? name : device_id);
+    snprintf(cmd->pinyin, sizeof(cmd->pinyin), "%s", pinyin);
+    s_dyn_cmd_count++;
+    return true;
+}
+
+static void install_commands(void);
+
+void nodelio_offline_cmd_commit_dynamic(void)
+{
+    if (s_mn && s_mn_data) {
+        install_commands();
+    }
+}
+
 void nodelio_offline_cmd_set_done_cb(nodelio_offline_cmd_done_cb_t cb)
 {
     s_done_cb = cb;
@@ -69,6 +132,7 @@ void nodelio_offline_cmd_set_done_cb(nodelio_offline_cmd_done_cb_t cb)
 static void install_commands(void)
 {
     esp_mn_commands_clear();
+    // 基础固定兜底口令
     (void)esp_mn_commands_add(NL_OC_LIGHT_ON, "da kai deng");
     (void)esp_mn_commands_add(NL_OC_LIGHT_ON, "kai deng");
     (void)esp_mn_commands_add(NL_OC_LIGHT_OFF, "guan bi deng");
@@ -79,11 +143,24 @@ static void install_commands(void)
     (void)esp_mn_commands_add(NL_OC_CURTAIN_OPEN, "kai chuang lian");
     (void)esp_mn_commands_add(NL_OC_CURTAIN_CLOSE, "guan bi chuang lian");
     (void)esp_mn_commands_add(NL_OC_CURTAIN_CLOSE, "guan chuang lian");
-    /* 继电器 / 开关（与开灯同 ID，映射层优选通断控件） */
+    /* 继电器 / 开关 */
     (void)esp_mn_commands_add(NL_OC_LIGHT_ON, "da kai ji dian qi");
     (void)esp_mn_commands_add(NL_OC_LIGHT_ON, "kai ji dian qi");
     (void)esp_mn_commands_add(NL_OC_LIGHT_OFF, "guan bi ji dian qi");
     (void)esp_mn_commands_add(NL_OC_LIGHT_OFF, "guan ji dian qi");
+
+    // 动态注册服务端下发的具名引脚与通道口令（精确命中，零盲猜）
+    for (int i = 0; i < s_dyn_cmd_count; i++) {
+        esp_err_t ret = esp_mn_commands_add(s_dyn_cmds[i].cmd_id, s_dyn_cmds[i].pinyin);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Dynamic voice cmd registered: id=%d pinyin='%s' -> dev=%s ch=%d act=%s",
+                     s_dyn_cmds[i].cmd_id, s_dyn_cmds[i].pinyin, s_dyn_cmds[i].device_id,
+                     s_dyn_cmds[i].channel, s_dyn_cmds[i].action);
+        } else {
+            ESP_LOGW(TAG, "Fail to add dynamic voice cmd: '%s'", s_dyn_cmds[i].pinyin);
+        }
+    }
+
     esp_mn_error_t *err = esp_mn_commands_update();
     if (err) {
         ESP_LOGW(TAG, "mn commands update has %d error phrases", err->num);
@@ -168,6 +245,29 @@ static void cmd_worker(void *arg)
             nodelio_panel_ui_set_voice_hint("未绑定服务器");
             finish_listen(NULL);
             continue;
+        }
+        if (cid >= NL_DYN_CMD_BASE) {
+            const nl_dyn_cmd_t *dyn = find_dynamic_cmd(cid);
+            if (dyn) {
+                nl_bind_t bind;
+                memset(&bind, 0, sizeof(bind));
+                bind.kind = NL_BIND_DEVICE_CHANNEL;
+                snprintf(bind.device_id, sizeof(bind.device_id), "%s", dyn->device_id);
+                bind.channel = dyn->channel;
+                int http = 0;
+                esp_err_t err = nodelio_panel_command(&cfg, "dyn_voice", "set", &bind, dyn->action, &http);
+                if (err == ESP_OK) {
+                    char t[64];
+                    snprintf(t, sizeof(t), "已%s：%s", strcmp(dyn->action, "ON") == 0 ? "开启" : "关闭", dyn->name);
+                    nodelio_panel_ui_toast(t);
+                    finish_listen(t);
+                } else if (err == ESP_ERR_INVALID_STATE || http == 503) {
+                    finish_listen("设备离线");
+                } else {
+                    finish_listen("执行失败");
+                }
+                continue;
+            }
         }
         const nodelio_panel_layout_t *layout = nodelio_panel_ui_get_layout();
         esp_err_t err = nodelio_offline_cmd_dispatch(&cfg, cid, layout);

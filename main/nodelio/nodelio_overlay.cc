@@ -129,18 +129,19 @@ static char s_phase_text[32];
 #define NL_CHAT_CAP 3072
 static char s_chat_text[NL_CHAT_CAP];
 
-#define NL_DEV_CACHE_MAX 32
-#define NL_CH_PER_DEV 16
-typedef struct {
-    char id[NL_LAYOUT_STR];
-    bool online;
-    char power[12];
-    uint8_t ch_n;
-    int16_t ch_idx[NL_CH_PER_DEV];
-    char ch_st[NL_CH_PER_DEV][12];
-} nl_dev_cache_t;
-static nl_dev_cache_t s_devs[NL_DEV_CACHE_MAX];
-static int s_dev_n;
+static nl_dev_cache_t *s_devs = nullptr;
+static int s_dev_n = 0;
+
+static void ensure_devs_cache()
+{
+    if (!s_devs) {
+        s_devs = (nl_dev_cache_t *)heap_caps_calloc(NL_DEV_CACHE_MAX, sizeof(nl_dev_cache_t),
+                                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_devs) {
+            s_devs = (nl_dev_cache_t *)calloc(NL_DEV_CACHE_MAX, sizeof(nl_dev_cache_t));
+        }
+    }
+}
 static lv_style_transition_dsc_t s_tile_trans;
 static bool s_tile_trans_inited;
 
@@ -668,7 +669,8 @@ static uint32_t color_brighten(uint32_t c, uint32_t add)
 
 static nl_dev_cache_t *find_dev(const char *device_id)
 {
-    if (!device_id || !device_id[0]) {
+    ensure_devs_cache();
+    if (!s_devs || !device_id || !device_id[0]) {
         return nullptr;
     }
     for (int i = 0; i < s_dev_n; i++) {
@@ -681,6 +683,10 @@ static nl_dev_cache_t *find_dev(const char *device_id)
 
 static nl_dev_cache_t *ensure_dev(const char *device_id)
 {
+    ensure_devs_cache();
+    if (!s_devs) {
+        return nullptr;
+    }
     nl_dev_cache_t *d = find_dev(device_id);
     if (d) {
         return d;
@@ -3217,15 +3223,19 @@ extern "C" void nodelio_panel_ui_snapshot_begin(void)
     s_dev_n = 0;
 }
 
-extern "C" void nodelio_panel_ui_snapshot_add(const char *device_id, bool online,
+extern "C" void nodelio_panel_ui_snapshot_add(const char *device_id, const char *name, bool online,
                                               const char *power_state)
 {
-    if (!device_id || !device_id[0] || s_dev_n >= NL_DEV_CACHE_MAX) {
+    ensure_devs_cache();
+    if (!s_devs || !device_id || !device_id[0] || s_dev_n >= NL_DEV_CACHE_MAX) {
         return;
     }
     nl_dev_cache_t *d = &s_devs[s_dev_n++];
     std::memset(d, 0, sizeof(*d));
     std::snprintf(d->id, sizeof(d->id), "%s", device_id);
+    if (name && name[0]) {
+        std::snprintf(d->name, sizeof(d->name), "%s", name);
+    }
     d->online = online;
     if (power_state && power_state[0]) {
         std::snprintf(d->power, sizeof(d->power), "%s", power_state);
@@ -3233,13 +3243,16 @@ extern "C" void nodelio_panel_ui_snapshot_add(const char *device_id, bool online
 }
 
 extern "C" void nodelio_panel_ui_snapshot_add_channel(const char *device_id, int channel_index,
-                                                      const char *state)
+                                                      const char *ch_name, const char *state)
 {
     nl_dev_cache_t *d = find_dev(device_id);
     if (!d || !state || channel_index < 0 || d->ch_n >= NL_CH_PER_DEV) {
         return;
     }
     d->ch_idx[d->ch_n] = (int16_t)channel_index;
+    if (ch_name && ch_name[0]) {
+        std::snprintf(d->ch_name[d->ch_n], sizeof(d->ch_name[0]), "%s", ch_name);
+    }
     std::snprintf(d->ch_st[d->ch_n], sizeof(d->ch_st[0]), "%s", state);
     d->ch_n++;
 }
@@ -3262,8 +3275,22 @@ extern "C" void nodelio_panel_ui_apply_reachability(const char *const *device_id
     nodelio_panel_ui_snapshot_begin();
     if (device_ids && online && n > 0) {
         for (int i = 0; i < n; i++) {
-            nodelio_panel_ui_snapshot_add(device_ids[i], online[i], "");
+            nodelio_panel_ui_snapshot_add(device_ids[i], "", online[i], "");
         }
     }
     nodelio_panel_ui_snapshot_end();
+}
+
+extern "C" int nodelio_panel_ui_get_dev_count(void)
+{
+    return s_dev_n;
+}
+
+extern "C" const nl_dev_cache_t *nodelio_panel_ui_get_dev(int index)
+{
+    ensure_devs_cache();
+    if (!s_devs || index < 0 || index >= s_dev_n) {
+        return nullptr;
+    }
+    return &s_devs[index];
 }

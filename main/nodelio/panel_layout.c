@@ -3,6 +3,7 @@
 #include "board_info.h"
 #include "layout_cache.h"
 #include "nodelio_http.h"
+#include "offline_cmd.h"
 #include "panel_ui.h"
 #include "wifi_provision.h"
 
@@ -584,36 +585,59 @@ esp_err_t nodelio_snapshot_fetch(const nodelio_nvs_config_t *cfg)
     int n = cJSON_IsArray(devices) ? cJSON_GetArraySize(devices) : 0;
     int online_n = 0;
     nodelio_panel_ui_snapshot_begin();
+    nodelio_offline_cmd_reset_dynamic();
     if (cJSON_IsArray(devices) && n > 0) {
         const cJSON *d;
         cJSON_ArrayForEach(d, devices)
         {
             const cJSON *id = cJSON_GetObjectItemCaseSensitive(d, "deviceId");
+            const cJSON *nm = cJSON_GetObjectItemCaseSensitive(d, "name");
             const cJSON *on = cJSON_GetObjectItemCaseSensitive(d, "online");
             const cJSON *pw = cJSON_GetObjectItemCaseSensitive(d, "powerState");
+            const cJSON *pon = cJSON_GetObjectItemCaseSensitive(d, "pinyinOn");
+            const cJSON *poff = cJSON_GetObjectItemCaseSensitive(d, "pinyinOff");
             const char *id_s = cJSON_IsString(id) ? id->valuestring : "";
+            const char *name_s = cJSON_IsString(nm) ? nm->valuestring : "";
             bool online = cJSON_IsTrue(on);
             const char *power = cJSON_IsString(pw) ? pw->valuestring : "";
             if (online) {
                 online_n++;
             }
-            nodelio_panel_ui_snapshot_add(id_s, online, power);
+            nodelio_panel_ui_snapshot_add(id_s, name_s, online, power);
+            if (cJSON_IsString(pon) && pon->valuestring[0]) {
+                nodelio_offline_cmd_add_dynamic(id_s, 0, "ON", name_s, pon->valuestring);
+            }
+            if (cJSON_IsString(poff) && poff->valuestring[0]) {
+                nodelio_offline_cmd_add_dynamic(id_s, 0, "OFF", name_s, poff->valuestring);
+            }
             const cJSON *chs = cJSON_GetObjectItemCaseSensitive(d, "channels");
             if (cJSON_IsArray(chs)) {
                 const cJSON *ch;
                 cJSON_ArrayForEach(ch, chs)
                 {
                     const cJSON *ix = cJSON_GetObjectItemCaseSensitive(ch, "index");
+                    const cJSON *cn = cJSON_GetObjectItemCaseSensitive(ch, "name");
                     const cJSON *st = cJSON_GetObjectItemCaseSensitive(ch, "state");
+                    const cJSON *cpon = cJSON_GetObjectItemCaseSensitive(ch, "pinyinOn");
+                    const cJSON *cpoff = cJSON_GetObjectItemCaseSensitive(ch, "pinyinOff");
                     if (!cJSON_IsNumber(ix) || !cJSON_IsString(st)) {
                         continue;
                     }
-                    nodelio_panel_ui_snapshot_add_channel(id_s, (int)ix->valuedouble, st->valuestring);
+                    int ch_idx = (int)ix->valuedouble;
+                    const char *ch_name_s = cJSON_IsString(cn) ? cn->valuestring : "";
+                    nodelio_panel_ui_snapshot_add_channel(id_s, ch_idx, ch_name_s, st->valuestring);
+                    if (cJSON_IsString(cpon) && cpon->valuestring[0]) {
+                        nodelio_offline_cmd_add_dynamic(id_s, ch_idx, "ON", ch_name_s, cpon->valuestring);
+                    }
+                    if (cJSON_IsString(cpoff) && cpoff->valuestring[0]) {
+                        nodelio_offline_cmd_add_dynamic(id_s, ch_idx, "OFF", ch_name_s, cpoff->valuestring);
+                    }
                 }
             }
         }
     }
     nodelio_panel_ui_snapshot_end();
+    nodelio_offline_cmd_commit_dynamic();
     ESP_LOGI(TAG, "snapshot devices=%d online=%d", n, online_n);
     cJSON_Delete(root);
     return ESP_OK;

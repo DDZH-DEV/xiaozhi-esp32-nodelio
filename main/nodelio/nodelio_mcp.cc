@@ -1,5 +1,6 @@
 #include "nodelio_mcp.h"
 
+#include "nodelio_http.h"
 #include "nvs_config.h"
 #include "offline_cmd_map.h"
 #include "panel_layout.h"
@@ -12,8 +13,24 @@
 
 #include <cstring>
 #include <string>
+#include <unordered_set>
 
 #define TAG "nl_mcp"
+
+static void strip_base(const char *base, char *out, size_t out_len)
+{
+    if (!base || !out || out_len == 0) {
+        return;
+    }
+    size_t n = strlen(base);
+    while (n > 0 && base[n - 1] == '/') {
+        n--;
+    }
+    if (n >= 22 && strncmp(base + n - 22, "/api/devices/register", 22) == 0) {
+        n -= 22;
+    }
+    snprintf(out, out_len, "%.*s", (int)n, base);
+}
 
 static bool load_cfg(nodelio_nvs_config_t *cfg)
 {
@@ -32,25 +49,101 @@ static const nl_widget_t *find_widget_by_title(const nodelio_panel_layout_t *lay
     if (!layout || !title || !title[0]) {
         return nullptr;
     }
+    // 1. 优先完全一致匹配
     for (int pi = 0; pi < layout->page_count; pi++) {
         const nl_page_t *pg = &layout->pages[pi];
         for (int si = 0; si < pg->section_count; si++) {
             const nl_section_t *sec = &pg->sections[si];
             for (int wi = 0; wi < sec->widget_count; wi++) {
                 const nl_widget_t *w = &sec->widgets[wi];
-                if (w->title[0] && strstr(w->title, title)) {
+                if ((w->title[0] && strcmp(w->title, title) == 0) ||
+                    (w->bind.name[0] && strcmp(w->bind.name, title) == 0) ||
+                    (w->id[0] && strcmp(w->id, title) == 0)) {
                     return w;
                 }
-                if (w->bind.name[0] && strstr(w->bind.name, title)) {
+            }
+        }
+    }
+    // 2. 双向子串模糊匹配（如“主卧”匹配“主卧筒灯”或“主卧灯”匹配“主卧”）
+    for (int pi = 0; pi < layout->page_count; pi++) {
+        const nl_page_t *pg = &layout->pages[pi];
+        for (int si = 0; si < pg->section_count; si++) {
+            const nl_section_t *sec = &pg->sections[si];
+            for (int wi = 0; wi < sec->widget_count; wi++) {
+                const nl_widget_t *w = &sec->widgets[wi];
+                if (w->title[0] && (strstr(w->title, title) || strstr(title, w->title))) {
                     return w;
                 }
-                if (w->id[0] && strcmp(w->id, title) == 0) {
+                if (w->bind.name[0] && (strstr(w->bind.name, title) || strstr(title, w->bind.name))) {
                     return w;
                 }
             }
         }
     }
     return nullptr;
+}
+
+struct UnassignedTarget {
+    std::string device_id;
+    int channel = -1;
+    std::string title;
+};
+
+static bool find_unassigned_target(const char *title, UnassignedTarget &out)
+{
+    if (!title || !title[0]) {
+        return false;
+    }
+    int dev_cnt = nodelio_panel_ui_get_dev_count();
+    // 1. 完全匹配
+    for (int i = 0; i < dev_cnt; i++) {
+        const nl_dev_cache_t *d = nodelio_panel_ui_get_dev(i);
+        if (!d || !d->id[0]) {
+            continue;
+        }
+        if (d->ch_n > 0) {
+            for (int ci = 0; ci < d->ch_n; ci++) {
+                if (d->ch_name[ci][0] && strcmp(d->ch_name[ci], title) == 0) {
+                    out.device_id = d->id;
+                    out.channel = d->ch_idx[ci];
+                    out.title = d->ch_name[ci];
+                    return true;
+                }
+            }
+        } else {
+            if ((d->name[0] && strcmp(d->name, title) == 0) || strcmp(d->id, title) == 0) {
+                out.device_id = d->id;
+                out.channel = 0;
+                out.title = d->name[0] ? d->name : d->id;
+                return true;
+            }
+        }
+    }
+    // 2. 双向模糊包含匹配
+    for (int i = 0; i < dev_cnt; i++) {
+        const nl_dev_cache_t *d = nodelio_panel_ui_get_dev(i);
+        if (!d || !d->id[0]) {
+            continue;
+        }
+        if (d->ch_n > 0) {
+            for (int ci = 0; ci < d->ch_n; ci++) {
+                if (d->ch_name[ci][0] && (strstr(d->ch_name[ci], title) || strstr(title, d->ch_name[ci]))) {
+                    out.device_id = d->id;
+                    out.channel = d->ch_idx[ci];
+                    out.title = d->ch_name[ci];
+                    return true;
+                }
+            }
+        } else {
+            if (d->name[0] && (strstr(d->name, title) || strstr(title, d->name))) {
+                out.device_id = d->id;
+                out.channel = 0;
+                out.title = d->name;
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 /** 从「打开继电器」「把客厅灯关掉」里抽出标题关键字 */
@@ -159,6 +252,29 @@ static ToolResult run_widget_set(const nodelio_nvs_config_t *cfg, const nl_widge
     return ok;
 }
 
+static ToolResult run_unassigned_set(const nodelio_nvs_config_t *cfg, const UnassignedTarget &t, const char *val)
+{
+    nl_bind_t bind{};
+    bind.kind = NL_BIND_DEVICE_CHANNEL;
+    std::strncpy(bind.device_id, t.device_id.c_str(), sizeof(bind.device_id) - 1);
+    bind.channel = t.channel >= 0 ? t.channel : 0;
+    if (!val || !val[0]) {
+        val = "TOGGLE";
+    }
+    int http = 0;
+    esp_err_t err = nodelio_panel_command(cfg, "unassigned", "set", &bind, val, &http);
+    if (err != ESP_OK) {
+        if (http == 503) {
+            return std::unexpected(std::string("设备离线（请确认被控设备已联网上线）"));
+        }
+        return std::unexpected(std::string("执行失败"));
+    }
+    std::string ok = std::string("已控制：") + t.title;
+    nodelio_panel_ui_toast(ok.c_str());
+    nodelio_panel_ui_set_voice_hint(ok.c_str());
+    return ok;
+}
+
 static std::string list_controls_json()
 {
     const nodelio_panel_layout_t *layout = nodelio_panel_ui_get_layout();
@@ -166,6 +282,10 @@ static std::string list_controls_json()
     if (!arr) {
         return "[]";
     }
+
+    std::unordered_set<std::string> bound_keys;
+
+    // 1. 遍历当前布局排布的 widgets
     if (layout) {
         for (int pi = 0; pi < layout->page_count; pi++) {
             const nl_page_t *pg = &layout->pages[pi];
@@ -177,38 +297,154 @@ static std::string list_controls_json()
                         w->bind.kind == NL_BIND_NONE) {
                         continue;
                     }
+
+                    if (w->bind.device_id[0]) {
+                        if (w->bind.channel >= 0) {
+                            bound_keys.insert(std::string(w->bind.device_id) + ":" + std::to_string(w->bind.channel));
+                        } else if (w->bind.pin >= 0) {
+                            bound_keys.insert(std::string(w->bind.device_id) + ":pin" + std::to_string(w->bind.pin));
+                        } else {
+                            bound_keys.insert(std::string(w->bind.device_id));
+                        }
+                    }
+
                     cJSON *o = cJSON_CreateObject();
                     if (!o) {
                         continue;
                     }
                     cJSON_AddStringToObject(o, "id", w->id);
                     cJSON_AddStringToObject(o, "title", w->title[0] ? w->title : w->bind.name);
+                    cJSON_AddStringToObject(o, "room_section", sec->title[0] ? sec->title : pg->title);
+                    if (w->bind.device_id[0]) {
+                        cJSON_AddStringToObject(o, "device_id", w->bind.device_id);
+                    }
+                    if (w->bind.channel >= 0) {
+                        cJSON_AddNumberToObject(o, "channel", w->bind.channel);
+                    } else if (w->bind.pin >= 0) {
+                        cJSON_AddNumberToObject(o, "pin", w->bind.pin);
+                    }
+
                     const char *kind = "switch";
-                    const char *use_for = "开灯/关灯/打开/关闭";
+                    const char *supported_actions = "ON, OFF, TOGGLE";
                     if (w->bind.kind == NL_BIND_HOME_SCENARIO) {
                         kind = "scene";
-                        use_for = "回家/出门/情景";
+                        supported_actions = "apply";
                     } else if (w->type == NL_WIDGET_SLIDER_TILE ||
                                strcmp(w->bind.capability, "pwm") == 0) {
-                        kind = "slider";
-                        use_for = "调节亮度/开合";
+                        kind = "slider_pwm";
+                        supported_actions = "ON, OFF, SET_PWM (value 0-100)";
                     } else if (w->bind.kind == NL_BIND_DEVICE_PIN) {
                         kind = "gpio";
-                        use_for = "开灯/关灯/打开/关闭";
+                        supported_actions = "ON, OFF, TOGGLE";
                     }
                     cJSON_AddStringToObject(o, "kind", kind);
-                    cJSON_AddStringToObject(o, "use_for", use_for);
+                    cJSON_AddStringToObject(o, "actions", supported_actions);
                     cJSON_AddItemToArray(arr, o);
                 }
             }
         }
     }
+
+    // 2. 遍历快照缓存中未排布在画板上的设备与通道
+    int dev_cnt = nodelio_panel_ui_get_dev_count();
+    for (int i = 0; i < dev_cnt; i++) {
+        const nl_dev_cache_t *d = nodelio_panel_ui_get_dev(i);
+        if (!d || !d->id[0]) {
+            continue;
+        }
+        if (d->ch_n > 0) {
+            for (int ci = 0; ci < d->ch_n; ci++) {
+                int ch_idx = d->ch_idx[ci];
+                std::string key = std::string(d->id) + ":" + std::to_string(ch_idx);
+                if (bound_keys.count(key)) {
+                    continue;
+                }
+                cJSON *o = cJSON_CreateObject();
+                if (!o) {
+                    continue;
+                }
+                std::string cid = std::string(d->id) + "_ch" + std::to_string(ch_idx);
+                cJSON_AddStringToObject(o, "id", cid.c_str());
+                std::string title = d->ch_name[ci][0]
+                                        ? d->ch_name[ci]
+                                        : (std::string(d->name[0] ? d->name : d->id) + " 通道" + std::to_string(ch_idx + 1));
+                cJSON_AddStringToObject(o, "title", title.c_str());
+                cJSON_AddStringToObject(o, "room_section", "全屋设备(未排布)");
+                cJSON_AddStringToObject(o, "device_id", d->id);
+                cJSON_AddNumberToObject(o, "channel", ch_idx);
+                cJSON_AddStringToObject(o, "kind", "switch");
+                cJSON_AddStringToObject(o, "actions", "ON, OFF, TOGGLE");
+                cJSON_AddItemToArray(arr, o);
+            }
+        } else {
+            std::string key = std::string(d->id);
+            if (bound_keys.count(key)) {
+                continue;
+            }
+            cJSON *o = cJSON_CreateObject();
+            if (!o) {
+                continue;
+            }
+            cJSON_AddStringToObject(o, "id", d->id);
+            cJSON_AddStringToObject(o, "title", d->name[0] ? d->name : d->id);
+            cJSON_AddStringToObject(o, "room_section", "全屋设备(未排布)");
+            cJSON_AddStringToObject(o, "device_id", d->id);
+            cJSON_AddStringToObject(o, "kind", "switch");
+            cJSON_AddStringToObject(o, "actions", "ON, OFF, TOGGLE");
+            cJSON_AddItemToArray(arr, o);
+        }
+    }
+
     char *printed = cJSON_PrintUnformatted(arr);
     cJSON_Delete(arr);
     std::string out = printed ? printed : "[]";
     free(printed);
-    ESP_LOGI(TAG, "list_controls %s", out.c_str());
+    ESP_LOGI(TAG, "list_controls count=%s", out.c_str());
     return out;
+}
+
+static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::string &skill_id,
+                               const std::string &params)
+{
+    if (skill_id.empty()) {
+        return std::unexpected(std::string("skill_id 不能为空"));
+    }
+    char base[160];
+    strip_base(cfg->server_url, base, sizeof(base));
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/%s/invoke", base, cfg->device_id,
+             skill_id.c_str());
+
+    std::string body = params.empty() ? "{}" : params;
+    if (body.front() != '{') {
+        body = "{\"query\":\"" + body + "\"}";
+    }
+
+    char resp[2048] = {0};
+    int status = 0;
+    esp_err_t err = nodelio_http_post_json(url, cfg->device_key, body.c_str(), &status, resp, sizeof(resp) - 1);
+    if (err != ESP_OK || (status != 200 && status != 201)) {
+        ESP_LOGW(TAG, "invoke skill '%s' fail: status=%d err=%d", skill_id.c_str(), status, err);
+        return std::unexpected(std::string("调用技能失败：HTTP ") + std::to_string(status));
+    }
+    return std::string(resp);
+}
+
+static std::string list_skills_json(const nodelio_nvs_config_t *cfg)
+{
+    char base[160];
+    strip_base(cfg->server_url, base, sizeof(base));
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills", base, cfg->device_id);
+
+    char resp[4096] = {0};
+    int status = 0;
+    esp_err_t err = nodelio_http_get(url, cfg->device_key, NULL, &status, resp, sizeof(resp) - 1);
+    if (err != ESP_OK || status != 200) {
+        ESP_LOGW(TAG, "list skills fail: status=%d err=%d", status, err);
+        return "[]";
+    }
+    return std::string(resp);
 }
 
 void nodelio_mcp_register_tools(void)
@@ -217,82 +453,131 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.nodelio.list_controls",
-        "List NodeLio wall-panel controls (JSON: id, title, kind, use_for). "
-        "switch/gpio titles like 继电器开关 can be used when user says 开灯/关灯/打开继电器. "
-        "After listing, you MUST call self.nodelio.control — do not only apologize.",
+        "Get all available smart-home devices/channels/scenes in NodeLio. "
+        "Returns JSON array: [{id, title, room_section, kind, actions}]. "
+        "Call this to inspect device names (e.g. 厨房灯, 卧室灯, 客厅主灯) and supported actions before controlling. "
+        "If user says 开灯/关灯 without room and multiple lights exist, you can ask which room/device to control.",
         PropertyList(), [](const PropertyList &) -> ReturnValue { return list_controls_json(); });
 
     mcp.AddTool(
         "self.nodelio.control",
-        "Control smart-home via NodeLio panel/command. "
-        "When user says 开灯/关灯/打开继电器/关闭开关/回家/出门: ALWAYS call this tool. "
-        "Prefer phrase=user text (开灯 works for any switch including 继电器). "
-        "Or widget_title=exact/partial title from list_controls + value=ON/OFF/TOGGLE.",
+        "Control a device, channel or scene via NodeLio wall-panel. "
+        "Parameters: "
+        "- target_title: device/channel title or id (e.g. '客厅主灯', '厨房灯', '回家') "
+        "- action: 'ON', 'OFF', 'TOGGLE', 'SET_PWM', or 'apply' "
+        "- value: optional string parameter, e.g. '75' for 75% PWM brightness or speed, 'ON'/'OFF' "
+        "- phrase: fallback user voice text if target_title cannot be determined.",
         PropertyList({
-            Property("phrase", kPropertyTypeString, ""),
-            Property("widget_title", kPropertyTypeString, ""),
+            Property("target_title", kPropertyTypeString, ""),
+            Property("action", kPropertyTypeString, ""),
             Property("value", kPropertyTypeString, ""),
+            Property("phrase", kPropertyTypeString, ""),
         }),
         [](const PropertyList &properties) -> ToolResult {
             nodelio_nvs_config_t cfg{};
             if (!load_cfg(&cfg)) {
                 return std::unexpected(
-                    std::string("未绑定 NodeLio：请点右下角「家」→ 设置填服务器与绑定码"));
+                    std::string("未绑定 NodeLio：请在屏幕右下角「家」→ 设置填服务器与绑定码"));
             }
             const nodelio_panel_layout_t *layout = nodelio_panel_ui_get_layout();
-            if (!layout) {
-                return std::unexpected(std::string("暂无布局：请先联网并在设置里「刷新布局」"));
-            }
 
-            std::string phrase = properties["phrase"].value<std::string>();
-            std::string title = properties["widget_title"].value<std::string>();
+            std::string title = properties["target_title"].value<std::string>();
+            std::string action = properties["action"].value<std::string>();
             std::string value = properties["value"].value<std::string>();
+            std::string phrase = properties["phrase"].value<std::string>();
 
-            ESP_LOGI(TAG, "control phrase='%s' title='%s' value='%s'", phrase.c_str(), title.c_str(),
-                     value.c_str());
+            ESP_LOGI(TAG, "control target_title='%s' action='%s' value='%s' phrase='%s'",
+                     title.c_str(), action.c_str(), value.c_str(), phrase.c_str());
 
-            if (!phrase.empty()) {
-                esp_err_t err = nodelio_offline_try_phrase(&cfg, phrase.c_str(), layout);
-                if (err == ESP_OK) {
-                    std::string ok = std::string("已执行：") + phrase;
-                    nodelio_panel_ui_toast(ok.c_str());
-                    return ok;
-                }
-                if (err == ESP_ERR_INVALID_STATE) {
-                    return std::unexpected(std::string("设备离线（请确认被控设备已联网上线）"));
-                }
-                if (err == ESP_ERR_NOT_FOUND) {
-                    return std::unexpected(std::string(
-                        "布局中没有可控制的开关。请用 APP 添加 switch_tile，或用 widget_title"));
-                }
-                /* INVALID_ARG：口令未收录 → 按标题关键字回退 */
-                char hint[48];
-                extract_title_hint(phrase.c_str(), hint, sizeof(hint));
-                if (hint[0]) {
-                    const nl_widget_t *w = find_widget_by_title(layout, hint);
+            const char *val = value.empty() ? (action.empty() ? "TOGGLE" : action.c_str()) : value.c_str();
+
+            // 1. 优先根据大模型指定的具名设备/通道精确控制（优先排布控件，其次全屋未排布设备）
+            if (!title.empty()) {
+                if (layout) {
+                    const nl_widget_t *w = find_widget_by_title(layout, title.c_str());
                     if (w) {
-                        const char *val = value.empty()
-                                              ? (phrase_implies_on(phrase.c_str()) ? "ON" : "OFF")
-                                              : value.c_str();
-                        ESP_LOGI(TAG, "phrase fallback title_hint='%s' → %s", hint, w->id);
                         return run_widget_set(&cfg, w, val);
                     }
                 }
-                return std::unexpected(std::string(
-                    "无法理解口令。可说：开灯/关灯/打开继电器/关闭开关/回家/出门；或先 "
-                    "list_controls 再用 widget_title"));
+                UnassignedTarget unassigned;
+                if (find_unassigned_target(title.c_str(), unassigned)) {
+                    return run_unassigned_set(&cfg, unassigned, val);
+                }
             }
 
-            if (title.empty()) {
-                return std::unexpected(std::string("请提供 phrase 或 widget_title"));
+            // 2. 若大模型未指定或未命中 title，尝试从 phrase 抽取名称查找
+            if (!phrase.empty()) {
+                char hint[48];
+                extract_title_hint(phrase.c_str(), hint, sizeof(hint));
+                if (hint[0]) {
+                    if (layout) {
+                        const nl_widget_t *w = find_widget_by_title(layout, hint);
+                        if (w) {
+                            const char *fallback_val = value.empty()
+                                                          ? (phrase_implies_on(phrase.c_str()) ? "ON" : "OFF")
+                                                          : value.c_str();
+                            ESP_LOGI(TAG, "fallback by title_hint='%s' → %s", hint, w->id);
+                            return run_widget_set(&cfg, w, fallback_val);
+                        }
+                    }
+                    UnassignedTarget unassigned;
+                    if (find_unassigned_target(hint, unassigned)) {
+                        const char *fallback_val = value.empty()
+                                                      ? (phrase_implies_on(phrase.c_str()) ? "ON" : "OFF")
+                                                      : value.c_str();
+                        ESP_LOGI(TAG, "fallback unassigned by title_hint='%s' → %s", hint, unassigned.title.c_str());
+                        return run_unassigned_set(&cfg, unassigned, fallback_val);
+                    }
+                }
+
+                // 3. 仅作为离线短语最后的兜底尝试（若全无指定目标）
+                if (layout) {
+                    esp_err_t err = nodelio_offline_try_phrase(&cfg, phrase.c_str(), layout);
+                    if (err == ESP_OK) {
+                        std::string ok = std::string("已执行：") + phrase;
+                        nodelio_panel_ui_toast(ok.c_str());
+                        return ok;
+                    }
+                    if (err == ESP_ERR_INVALID_STATE) {
+                        return std::unexpected(std::string("设备离线（请确认被控设备已联网上线）"));
+                    }
+                }
             }
-            const nl_widget_t *w = find_widget_by_title(layout, title.c_str());
-            if (!w) {
-                return std::unexpected(std::string("布局中未找到：") + title);
-            }
-            const char *val = value.empty() ? nullptr : value.c_str();
-            return run_widget_set(&cfg, w, val);
+
+            return std::unexpected(std::string(
+                "未找到对应设备。请先调用 list_controls 获取设备列表，确认名称（如厨房灯、卧室灯）。"));
         });
 
-    ESP_LOGI(TAG, "MCP tools registered: self.nodelio.list_controls / control");
+    mcp.AddTool(
+        "self.skill.invoke",
+        "Invoke an external dynamic skill registered in NodeLio (e.g. online music search, weather, etc.). "
+        "Parameters: "
+        "- skill_id: unique skill identifier (e.g. 'music_search') "
+        "- params: JSON object string of input parameters, e.g. '{\"keyword\":\"周杰伦\"}'",
+        PropertyList({
+            Property("skill_id", kPropertyTypeString, ""),
+            Property("params", kPropertyTypeString, ""),
+        }),
+        [](const PropertyList &properties) -> ToolResult {
+            nodelio_nvs_config_t cfg{};
+            if (!load_cfg(&cfg)) {
+                return std::unexpected(std::string("未绑定 NodeLio 服务"));
+            }
+            std::string skill_id = properties["skill_id"].value<std::string>();
+            std::string params = properties["params"].value<std::string>();
+            return invoke_skill(&cfg, skill_id, params);
+        });
+
+    mcp.AddTool(
+        "self.skill.list",
+        "List all available dynamic skills enabled for this panel. Returns JSON list of skills and descriptions.",
+        PropertyList(), [](const PropertyList &) -> ReturnValue {
+            nodelio_nvs_config_t cfg{};
+            if (!load_cfg(&cfg)) {
+                return "[]";
+            }
+            return list_skills_json(&cfg);
+        });
+
+    ESP_LOGI(TAG, "MCP tools registered: nodelio controls & dynamic skills");
 }

@@ -81,12 +81,30 @@ const nodelio_panel_layout_t *nodelio_panel_ui_get_layout(void);
  */
 void nodelio_panel_ui_apply_reachability(const char *const *device_ids, const bool *online, int n);
 
+#define NL_DEV_CACHE_MAX 32
+#define NL_CH_PER_DEV 16
+
+typedef struct {
+    char id[NL_LAYOUT_STR];
+    char name[NL_LAYOUT_STR];
+    bool online;
+    char power[12];
+    uint8_t ch_n;
+    int16_t ch_idx[NL_CH_PER_DEV];
+    char ch_name[NL_CH_PER_DEV][NL_LAYOUT_STR];
+    char ch_st[NL_CH_PER_DEV][12];
+} nl_dev_cache_t;
+
 /** snapshot 增量写入（解析完后 end 刷新磁贴开/关色）。 */
 void nodelio_panel_ui_snapshot_begin(void);
-void nodelio_panel_ui_snapshot_add(const char *device_id, bool online, const char *power_state);
-void nodelio_panel_ui_snapshot_add_channel(const char *device_id, int channel_index,
+void nodelio_panel_ui_snapshot_add(const char *device_id, const char *name, bool online, const char *power_state);
+void nodelio_panel_ui_snapshot_add_channel(const char *device_id, int channel_index, const char *ch_name,
                                            const char *state);
 void nodelio_panel_ui_snapshot_end(void);
+
+/** 获取当前缓存的设备总数与单个设备快照（供 MCP 等模块枚举未排布设备） */
+int nodelio_panel_ui_get_dev_count(void);
+const nl_dev_cache_t *nodelio_panel_ui_get_dev(int index);
 
 /** snapshot 缓存的在线态；未知设备视为在线（与灰显逻辑一致）。 */
 bool nodelio_panel_ui_device_online(const char *device_id);
