@@ -34,6 +34,10 @@ protected:
     bool hide_subtitle_ = false;  // Control whether to hide chat messages/subtitles
 
     void InitializeLcdThemes();
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /** 藏死小智白页；通知条挪到 layer_top，低电弹窗保留 */
+    void HideXiaozhiChromeForNodeLio();
+#endif
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
 

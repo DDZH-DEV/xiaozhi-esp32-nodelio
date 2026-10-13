@@ -82,6 +82,7 @@ void Backlight::OnTransitionTimer() {
 }
 
 PwmBacklight::PwmBacklight(gpio_num_t pin, bool output_invert, uint32_t freq_hz) : Backlight() {
+    output_invert_ = output_invert;
     const ledc_timer_config_t backlight_timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_10_BIT,
@@ -109,10 +110,17 @@ PwmBacklight::PwmBacklight(gpio_num_t pin, bool output_invert, uint32_t freq_hz)
 }
 
 PwmBacklight::~PwmBacklight() {
-    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+    /* 与亮灭极性一致：高亮板 idle=0；invert 板灭时脚为高 */
+    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, output_invert_ ? 1 : 0);
 }
 
 void PwmBacklight::SetBrightnessImpl(uint8_t brightness) {
+    /* duty0 仍跑 PWM 时，部分升压背光（SY7200）会微亮/啸叫。
+     * 对齐 NodeLio sila_86：亮度为 0 时 ledc_stop 把 CTRL 钉在灭电平。 */
+    if (brightness == 0) {
+        ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, output_invert_ ? 1 : 0);
+        return;
+    }
     // LEDC resolution set to 10bits, thus: 100% = 1023
     uint32_t duty_cycle = (1023 * brightness) / 100;
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty_cycle);

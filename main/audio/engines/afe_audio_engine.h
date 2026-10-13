@@ -31,6 +31,7 @@ public:
     void EnableWakeWordDetection(bool enable) override;
     void EnableVoiceProcessing(bool enable) override;
     void EnableDeviceAec(bool enable) override;
+    void EnableLocalCommandMode(bool enable) override;
 
     bool HasWakeWord() const override;
     bool IsWakeWordDetectionEnabled() const override;
@@ -56,6 +57,7 @@ private:
     static constexpr EventBits_t kWakeWordEnabled = 1 << 0;
     static constexpr EventBits_t kVoiceProcessingEnabled = 1 << 1;
     static constexpr EventBits_t kAfeActive = 1 << 2;
+    static constexpr EventBits_t kLocalCommandEnabled = 1 << 3;
     static constexpr size_t kProcessingTaskStackSize = 4096;
 
     AudioCodec* codec_ = nullptr;

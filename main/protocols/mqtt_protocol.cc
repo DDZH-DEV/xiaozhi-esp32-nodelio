@@ -21,12 +21,15 @@ MqttProtocol::MqttProtocol() {
         .callback =
             [](void* arg) {
                 MqttProtocol* protocol = (MqttProtocol*)arg;
+                if (protocol->transport_suspended_) {
+                    return;
+                }
                 auto& app = Application::GetInstance();
                 if (app.GetDeviceState() == kDeviceStateIdle) {
                     ESP_LOGI(TAG, "Reconnecting to MQTT server");
                     auto alive = protocol->alive_;  // Capture alive flag
                     app.Schedule([protocol, alive]() {
-                        if (*alive) {
+                        if (*alive && !protocol->transport_suspended_) {
                             protocol->StartMqttClient(false);
                         }
                     });
@@ -71,7 +74,30 @@ MqttProtocol::~MqttProtocol() {
 
 bool MqttProtocol::Start() { return StartMqttClient(false); }
 
+void MqttProtocol::SuspendTransport() {
+    transport_suspended_ = true;
+    if (reconnect_timer_ != nullptr) {
+        esp_timer_stop(reconnect_timer_);
+    }
+    CloseAudioChannel(false);
+    mqtt_.reset();
+    ESP_LOGI(TAG, "transport suspended");
+}
+
+void MqttProtocol::ResumeTransport() {
+    if (!transport_suspended_) {
+        return;
+    }
+    transport_suspended_ = false;
+    ESP_LOGI(TAG, "transport resume");
+    StartMqttClient(false);
+}
+
 bool MqttProtocol::StartMqttClient(bool report_error) {
+    if (transport_suspended_) {
+        ESP_LOGW(TAG, "StartMqttClient skipped (suspended)");
+        return false;
+    }
     if (mqtt_ != nullptr) {
         ESP_LOGW(TAG, "Mqtt client already started");
         mqtt_.reset();
@@ -100,6 +126,10 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     mqtt_->OnDisconnected([this]() {
         if (on_disconnected_ != nullptr) {
             on_disconnected_();
+        }
+        if (transport_suspended_) {
+            ESP_LOGI(TAG, "MQTT disconnected (suspended, no reconnect)");
+            return;
         }
         ESP_LOGI(TAG, "MQTT disconnected, schedule reconnect in %d seconds",
                  MQTT_RECONNECT_INTERVAL_MS / 1000);

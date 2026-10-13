@@ -118,6 +118,7 @@ void AudioService::Start() {
     service_stopped_.store(false);
     xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING |
                                            AS_EVENT_AUDIO_PROCESSOR_RUNNING |
+                                           AS_EVENT_LOCAL_COMMAND_RUNNING |
                                            AS_EVENT_AUDIO_INPUT_STOP_REQUEST);
 
     esp_timer_start_periodic(audio_power_timer_, 1000000);
@@ -240,9 +241,9 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
 }
 
 void AudioService::AudioInputTask() {
-    constexpr EventBits_t kAudioInputActiveBits = AS_EVENT_AUDIO_TESTING_RUNNING |
-                                                  AS_EVENT_WAKE_WORD_RUNNING |
-                                                  AS_EVENT_AUDIO_PROCESSOR_RUNNING;
+    constexpr EventBits_t kAudioInputActiveBits =
+        AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING |
+        AS_EVENT_AUDIO_PROCESSOR_RUNNING | AS_EVENT_LOCAL_COMMAND_RUNNING;
 
     while (true) {
         EventBits_t bits = xEventGroupWaitBits(
@@ -306,8 +307,9 @@ void AudioService::AudioInputTask() {
             }
         }
 
-        /* Feed the selected audio engine */
-        if (bits & (AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING)) {
+        /* Feed the selected audio engine (含 K4 本地口令窗) */
+        if (bits & (AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING |
+                    AS_EVENT_LOCAL_COMMAND_RUNNING)) {
             int samples = 160;  // 10ms
             std::vector<int16_t> data;
             if (ReadAudioData(data, 16000, samples)) {
@@ -728,6 +730,32 @@ void AudioService::EnableVoiceProcessing(bool enable) {
             audio_engine_->EnableVoiceProcessing(false);
         }
         xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+    }
+}
+
+void AudioService::EnableLocalCommandMode(bool enable) {
+    ESP_LOGI(TAG, "%s local command mode", enable ? "Enabling" : "Disabling");
+    if (!audio_engine_initialized_ && enable) {
+        if (!InitializeAudioEngine()) {
+            return;
+        }
+    }
+    if (audio_engine_) {
+        if (enable) {
+            audio_engine_->EnableWakeWordDetection(false);
+            xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+            {
+                std::lock_guard<std::mutex> lock(input_resampler_mutex_);
+                if (input_resampler_ != nullptr) {
+                    esp_ae_rate_cvt_reset(input_resampler_);
+                }
+            }
+            audio_engine_->EnableLocalCommandMode(true);
+            xEventGroupSetBits(event_group_, AS_EVENT_LOCAL_COMMAND_RUNNING);
+        } else {
+            audio_engine_->EnableLocalCommandMode(false);
+            xEventGroupClearBits(event_group_, AS_EVENT_LOCAL_COMMAND_RUNNING);
+        }
     }
 }
 

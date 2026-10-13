@@ -13,6 +13,10 @@
 #include "audio_service.h"
 #include "wake_words/custom_wake_word.h"
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#include "offline_cmd.h"
+#endif
+
 #define TAG "AfeAudioEngine"
 
 #if CONFIG_USE_AUDIO_PROCESSOR
@@ -80,7 +84,14 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
         }
     }
 
-    if (multinet_model_name != nullptr) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 墙板：有 WakeNet 时优先用之；MultiNet 留给 K4 本地口令，勿抢占唤醒 */
+    const bool use_multinet_wake =
+        (wakenet_model_name == nullptr) && (multinet_model_name != nullptr);
+#else
+    const bool use_multinet_wake = (multinet_model_name != nullptr);
+#endif
+    if (use_multinet_wake) {
         wake_detector_ = WakeDetector::kMultiNet;
         custom_wake_word_ = std::make_unique<CustomWakeWord>();
         custom_wake_word_->OnWakeWordDetected([this](const std::string& wake_word) {
@@ -309,6 +320,19 @@ void AfeAudioEngine::EnableDeviceAec(bool enable) {
     UpdateAecState();
 }
 
+void AfeAudioEngine::EnableLocalCommandMode(bool enable) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    if (enable) {
+        xEventGroupSetBits(event_group_, kLocalCommandEnabled);
+    } else {
+        xEventGroupClearBits(event_group_, kLocalCommandEnabled);
+    }
+    UpdateActiveState();
+#else
+    (void)enable;
+#endif
+}
+
 bool AfeAudioEngine::HasWakeWord() const { return wake_detector_ != WakeDetector::kNone; }
 
 bool AfeAudioEngine::IsWakeWordDetectionEnabled() const {
@@ -340,8 +364,9 @@ void AfeAudioEngine::OnVadStateChange(std::function<void(bool speaking)> callbac
 void AfeAudioEngine::UpdateActiveState() {
     EventBits_t bits = xEventGroupGetBits(event_group_);
     const bool afe_active =
-        afe_data_ != nullptr && ((bits & kWakeWordEnabled) ||
-                                 (kUseAfeForVoiceProcessing && (bits & kVoiceProcessingEnabled)));
+        afe_data_ != nullptr &&
+        ((bits & kWakeWordEnabled) || (bits & kLocalCommandEnabled) ||
+         (kUseAfeForVoiceProcessing && (bits & kVoiceProcessingEnabled)));
     if (afe_active) {
         xEventGroupSetBits(event_group_, kAfeActive);
     } else {
@@ -432,6 +457,15 @@ void AfeAudioEngine::ProcessingTask() {
         }
 
         EventBits_t bits = xEventGroupGetBits(event_group_);
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        if (bits & kLocalCommandEnabled) {
+            int samples = (int)(result->data_size / sizeof(int16_t));
+            if (result->data && samples > 0) {
+                nodelio_offline_cmd_feed(result->data, samples);
+            }
+            continue;
+        }
+#endif
         if (bits & kWakeWordEnabled) {
             HandleWakeWordResult(result);
         }

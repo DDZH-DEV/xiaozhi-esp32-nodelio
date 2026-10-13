@@ -71,6 +71,14 @@ bool WebsocketProtocol::IsAudioChannelOpened() const {
     return websocket_ != nullptr && websocket_->IsConnected() && !error_occurred_ && !IsTimeout();
 }
 
+void WebsocketProtocol::SuspendTransport() {
+    CloseAudioChannel(false);
+}
+
+void WebsocketProtocol::ResumeTransport() {
+    /* WebSocket 按需 OpenAudioChannel，息屏后无需常连 */
+}
+
 void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
     (void)send_goodbye;  // Websocket doesn't need to send goodbye message
     websocket_.reset();

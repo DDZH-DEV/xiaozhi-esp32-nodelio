@@ -21,6 +21,8 @@ public:
     virtual void EnableWakeWordDetection(bool enable) = 0;
     virtual void EnableVoiceProcessing(bool enable) = 0;
     virtual void EnableDeviceAec(bool enable) = 0;
+    /** NodeLio K4：小智建链失败后本地口令窗，复用 AFE fetch（默认空操作）。 */
+    virtual void EnableLocalCommandMode(bool enable) { (void)enable; }
 
     virtual bool HasWakeWord() const = 0;
     virtual bool IsWakeWordDetectionEnabled() const = 0;

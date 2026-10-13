@@ -12,6 +12,13 @@
 #include "text_glyph_payload.h"
 #include "websocket_protocol.h"
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#include "nodelio_bridge.h"
+#include "nodelio_mcp.h"
+#include "nodelio_overlay.h"
+#include "offline_cmd.h"
+#endif
+
 #include <driver/gpio.h>
 #include <esp_log.h>
 #include <arpa/inet.h>
@@ -67,6 +74,13 @@ void Application::Initialize() {
     display->SetupUI();
     // Print board name/version info
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 延后建壳并直接进对话页，盖住小智白底 UI */
+    Schedule([]() {
+        (void)nodelio_overlay_init();
+        nodelio_overlay_show_chat();
+    });
+#endif
 
     // Setup the audio service
     auto codec = board.GetAudioCodec();
@@ -103,6 +117,20 @@ void Application::Initialize() {
 
     // Add MCP common tools (only once during initialization)
     auto& mcp_server = McpServer::GetInstance();
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 先注册再 AddCommonTools：common 置顶（prompt cache），NodeLio 紧随其后，
+     * 避免排在 UserOnly 后面被 tools/list 8KB 截断漏掉控家工具。 */
+    nodelio_mcp_register_tools();
+    nodelio_offline_cmd_set_done_cb([]() {
+        Application::GetInstance().Schedule([]() {
+            auto& app = Application::GetInstance();
+            app.GetAudioService().EnableLocalCommandMode(false);
+            if (app.GetDeviceState() == kDeviceStateConnecting) {
+                app.SetDeviceState(kDeviceStateIdle);
+            }
+        });
+    });
+#endif
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
 
@@ -276,9 +304,12 @@ void Application::Run() {
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
 
-            // Print debug info every 10 seconds
+            // Print debug info every 10 seconds（息屏跳过，少打 UART）
             if (clock_ticks_ % 10 == 0) {
-                SystemInfo::PrintHeapStats();
+                auto* bl = Board::GetInstance().GetBacklight();
+                if (!bl || bl->brightness() > 0) {
+                    SystemInfo::PrintHeapStats();
+                }
                 // SystemInfo::PrintTaskList();
                 // SystemInfo::PrintTaskCpuUsage(pdMS_TO_TICKS(1000));
             }
@@ -360,6 +391,11 @@ void Application::HandleActivationDoneEvent() {
             audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
         });
     }
+
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* After OTA/TLS: start NodeLio register + layout (DRAM-friendly). */
+    Schedule([]() { (void)nodelio_bridge_start(); });
+#endif
 }
 
 void Application::ActivationTask() {
@@ -568,11 +604,13 @@ void Application::InitializeProtocol() {
     });
 
     protocol_->OnAudioChannelClosed([this, &board]() {
+        /* WiFi 先降功耗；idle 后再 SetPowerSaveLevel，板级可立刻息屏 */
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
-        Schedule([this]() {
+        Schedule([this, &board]() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
+            board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         });
     });
 
@@ -967,6 +1005,17 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 
     if (!protocol_->IsAudioChannelOpened()) {
         if (!protocol_->OpenAudioChannel()) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            /* K4：小智不可达 → 本地 MultiNet 口令窗（复用 AFE，不另起一套） */
+            if (nodelio_offline_cmd_begin_listen() == ESP_OK) {
+                audio_service_.EnableLocalCommandMode(true);
+                auto display = Board::GetInstance().GetDisplay();
+                if (display) {
+                    display->SetStatus("本地控家");
+                }
+                return; /* 保持 Connecting，结束回调回 Idle */
+            }
+#endif
             // Return to idle so the device is not stuck in the connecting
             // state (not every failure path reports a network error), and
             // wake word detection is re-enabled by the idle state handler.
@@ -1023,10 +1072,15 @@ void Application::HandleStateChangedEvent() {
             display->SetStatus(Lang::Strings::CONNECTING);
             display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
+            /* 唤醒建链即亮屏（sila PowerSaveTimer WakeUp） */
+            board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            nodelio_overlay_show_chat();
+#endif
 
             // Make sure the audio processor is running
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
@@ -1045,6 +1099,9 @@ void Application::HandleStateChangedEvent() {
             break;
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            nodelio_overlay_show_chat();
+#endif
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
@@ -1312,6 +1369,18 @@ bool Application::CanEnterSleepMode() {
 
     // Now it is safe to enter sleep mode
     return true;
+}
+
+void Application::SuspendTransport() {
+    if (protocol_) {
+        protocol_->SuspendTransport();
+    }
+}
+
+void Application::ResumeTransport() {
+    if (protocol_) {
+        protocol_->ResumeTransport();
+    }
 }
 
 void Application::RegisterMcpBroadcastCallback(std::function<void(const std::string&)> callback) {

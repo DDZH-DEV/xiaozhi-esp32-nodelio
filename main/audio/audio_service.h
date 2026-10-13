@@ -51,6 +51,7 @@
 #define AS_EVENT_AUDIO_TESTING_RUNNING (1 << 0)
 #define AS_EVENT_WAKE_WORD_RUNNING (1 << 1)
 #define AS_EVENT_AUDIO_PROCESSOR_RUNNING (1 << 2)
+#define AS_EVENT_LOCAL_COMMAND_RUNNING (1 << 3)
 #define AS_EVENT_AUDIO_INPUT_STOP_REQUEST (1 << 4)
 
 #define AS_OPUS_GET_FRAME_DRU_ENUM(duration_ms)                  \
@@ -136,6 +137,7 @@ public:
     void EnableWakeWordDetection(bool enable);
     void ReleaseWakeWordResources();
     void EnableVoiceProcessing(bool enable);
+    void EnableLocalCommandMode(bool enable);
     void EnableAudioTesting(bool enable);
     void EnableDeviceAec(bool enable);
 

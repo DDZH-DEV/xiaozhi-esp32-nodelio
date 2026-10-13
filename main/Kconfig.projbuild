@@ -437,6 +437,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_SEEED_STUDIO_SENSECAP_WATCHER
         bool "Seeed Studio SenseCAP Watcher"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_SILA_86
+        bool "SILA-86 (NodeLio wall panel)"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_SPOTPEAR_ESP32_S3_1_28_BOX
         bool "Spotpear ESP32-S3 1.28 Box"
         depends on IDF_TARGET_ESP32S3
@@ -1170,6 +1173,32 @@ menu "TAIJIPAI_S3_CONFIG"
     default y
     help
         启动双声道
+endmenu
+
+menu "NodeLio Panel (SILA-86)"
+    depends on BOARD_TYPE_SILA_86
+
+    config NODELIO_PANEL
+        bool "Enable NodeLio register / layout / panel/command"
+        default y
+        help
+            Overlay NodeLio home-control on Xiaozhi. Bind server_url/owner in LVGL
+            settings (FAB 家). WiFi SoftAP stays with Xiaozhi.
+
+    config NODELIO_TYPE_CODE
+        string "type_code at register"
+        depends on NODELIO_PANEL
+        default "WALL_PANEL"
+
+    config NODELIO_SERVER_URL
+        string "Optional factory seed server_url (prefer LVGL settings)"
+        depends on NODELIO_PANEL
+        default ""
+
+    config NODELIO_OWNER
+        string "Optional factory seed owner (prefer LVGL settings)"
+        depends on NODELIO_PANEL
+        default ""
 endmenu
 
 endmenu

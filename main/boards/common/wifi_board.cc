@@ -9,8 +9,10 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_network.h>
+#include <esp_netif.h>
 #include <esp_log.h>
 #include <esp_mac.h>
+#include <esp_wifi.h>
 #include <utility>
 
 #include <material_symbols.h>
@@ -20,11 +22,18 @@
 #ifdef CONFIG_USE_ESP_BLUFI_WIFI_PROVISIONING
 #include "blufi.h"
 #endif
+#if defined(CONFIG_NODELIO_PANEL)
+#include "nodelio_overlay.h"
+#include "wifi_provision.h"
+#endif
 
 static const char *TAG = "WifiBoard";
 
 // Connection timeout in seconds
 static constexpr int CONNECT_TIMEOUT_SEC = 60;
+#if defined(CONFIG_NODELIO_PANEL)
+static int s_dhcp_retry = 0;
+#endif
 
 WifiBoard::WifiBoard() {
     // Create connection timeout timer
@@ -102,15 +111,26 @@ void WifiBoard::TryWifiConnect() {
     bool have_ssid = !ssid_manager.GetSsidList().empty();
 
     if (have_ssid) {
-        // Start connection attempt with timeout
+        // Start connection attempt with timeout — same Xiaozhi station path
         ESP_LOGI(TAG, "Starting WiFi connection attempt");
         esp_timer_start_once(connect_timer_, CONNECT_TIMEOUT_SEC * 1000000ULL);
         WifiManager::GetInstance().StartStation();
+#if defined(CONFIG_NODELIO_PANEL)
+        /* 关联后默认 MIN_MODEM + listen_interval 会拖死 DHCP（曾见 L2 1s、IP 56s）。
+         * 拿 IP 前强制 PERFORMANCE；激活完成后再由 Application 切回 LOW_POWER。 */
+        WifiManager::GetInstance().SetPowerSaveLevel(WifiPowerSaveLevel::PERFORMANCE);
+#endif
     } else {
-        // No SSID configured, enter config mode
-        // Wait for the board version to be shown
+#if defined(CONFIG_NODELIO_PANEL)
+        /* 无凭证：屏上配网（不写 SoftAP）；保存后进 SsidManager，下次仍走上面 StartStation */
+        ESP_LOGI(TAG, "No SSID — NodeLio screen provision");
+        vTaskDelay(pdMS_TO_TICKS(800));
+        StartWifiConfigMode();
+#else
+        // No SSID configured, enter SoftAP / BluFi config mode
         vTaskDelay(pdMS_TO_TICKS(1500));
         StartWifiConfigMode();
+#endif
     }
 }
 
@@ -124,6 +144,9 @@ void WifiBoard::OnNetworkEvent(NetworkEvent event, const std::string& data) {
             Blufi::GetInstance().deinit();
 #endif
             in_config_mode_ = false;
+#if defined(CONFIG_NODELIO_PANEL)
+            s_dhcp_retry = 0;
+#endif
             ESP_LOGI(TAG, "Connected to WiFi: %s", data.c_str());
             break;
         case NetworkEvent::Scanning:
@@ -131,6 +154,9 @@ void WifiBoard::OnNetworkEvent(NetworkEvent event, const std::string& data) {
             break;
         case NetworkEvent::Connecting:
             ESP_LOGI(TAG, "WiFi connecting to %s", data.c_str());
+#if defined(CONFIG_NODELIO_PANEL)
+            WifiManager::GetInstance().SetPowerSaveLevel(WifiPowerSaveLevel::PERFORMANCE);
+#endif
             break;
         case NetworkEvent::Disconnected:
             ESP_LOGW(TAG, "WiFi disconnected");
@@ -161,6 +187,35 @@ void WifiBoard::SetNetworkEventCallback(NetworkEventCallback callback) {
 
 void WifiBoard::OnWifiConnectTimeout(void* arg) {
     auto* board = static_cast<WifiBoard*>(arg);
+
+#if defined(CONFIG_NODELIO_PANEL)
+    /*
+     * 常见：L2 已关联但 DHCP 慢/丢包。日志会有 "connected with …" 却无 Got IP，
+     * 60s 超时若直接 StopStation，永远不会 NetworkConnected → 不会 nodelio_bridge_start。
+     * 已关联则重启 DHCP 并再等一轮；仍无 IP 再进屏上配网。
+     */
+    wifi_ap_record_t ap{};
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        if (s_dhcp_retry < 2) {
+            s_dhcp_retry++;
+            ESP_LOGW(TAG, "L2 up (ssid=%s) but no IP — DHCP retry %d/2",
+                     (const char *)ap.ssid, s_dhcp_retry);
+            esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+            if (netif) {
+                (void)esp_netif_dhcpc_stop(netif);
+                (void)esp_netif_dhcpc_start(netif);
+            }
+            esp_timer_start_once(board->connect_timer_, CONNECT_TIMEOUT_SEC * 1000000ULL);
+            auto *d = Board::GetInstance().GetDisplay();
+            if (d) {
+                d->ShowNotification("已连上路由，等待分配 IP…", 3500);
+            }
+            return;
+        }
+    }
+    s_dhcp_retry = 0;
+#endif
+
     ESP_LOGW(TAG, "WiFi connection timeout, entering config mode");
 
     WifiManager::GetInstance().StopStation();
@@ -168,6 +223,25 @@ void WifiBoard::OnWifiConnectTimeout(void* arg) {
 }
 
 void WifiBoard::StartWifiConfigMode() {
+#if defined(CONFIG_NODELIO_PANEL)
+    /* 面板产品：关掉小智 SoftAP/BluFi 门户，改开屏上「连接」；凭证仍写入 SsidManager */
+    nodelio_wifi_set_suppress_softap(true);
+    in_config_mode_ = false;
+    if (WifiManager::GetInstance().IsConfigMode()) {
+        WifiManager::GetInstance().StopConfigAp();
+    }
+    Application::GetInstance().SetDeviceState(kDeviceStateWifiConfiguring);
+    Application::GetInstance().Schedule([]() {
+        nodelio_overlay_show(true);
+        auto* d = Board::GetInstance().GetDisplay();
+        if (d) {
+            d->ShowNotification("请在设置里扫描并连接 WiFi", 4000);
+        }
+    });
+    ESP_LOGI(TAG, "NodeLio screen WiFi provision (SoftAP skipped)");
+    return;
+#endif
+
     in_config_mode_ = true;
     // Transition to wifi configuring state
     Application::GetInstance().SetDeviceState(kDeviceStateWifiConfiguring);

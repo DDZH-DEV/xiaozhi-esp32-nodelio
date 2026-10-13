@@ -18,6 +18,10 @@
 
 #include "board.h"
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#include "nodelio_overlay.h"
+#endif
+
 #define TAG "LcdDisplay"
 
 LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
@@ -384,6 +388,46 @@ bool LcdDisplay::Lock(int timeout_ms) { return lvgl_port_lock(timeout_ms); }
 
 void LcdDisplay::Unlock() { lvgl_port_unlock(); }
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+void LcdDisplay::HideXiaozhiChromeForNodeLio()
+{
+    auto screen = lv_screen_active();
+    if (screen) {
+        lv_obj_set_style_bg_color(screen, lv_color_hex(0x1e2622), 0);
+    }
+    if (container_) {
+        lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (emoji_label_) {
+        lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (emoji_image_) {
+        lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (emoji_box_) {
+        lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (preview_image_) {
+        lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (bottom_bar_) {
+        lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+    }
+    /* 通知仍走 ShowNotification：标签提到顶层，否则父级隐藏后看不到 */
+    if (notification_label_) {
+        lv_obj_set_parent(notification_label_, lv_layer_top());
+        lv_obj_set_width(notification_label_, LV_HOR_RES * 0.9);
+        lv_obj_align(notification_label_, LV_ALIGN_TOP_MID, 0, 10);
+        lv_obj_set_style_bg_color(notification_label_, lv_color_hex(0x252d28), 0);
+        lv_obj_set_style_bg_opa(notification_label_, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_all(notification_label_, 8, 0);
+        lv_obj_set_style_text_color(notification_label_, lv_color_hex(0xe8f0ea), 0);
+        lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
+    }
+    ESP_LOGI(TAG, "Xiaozhi chrome hidden (NodeLio panel)");
+}
+#endif
+
 #if CONFIG_USE_WECHAT_MESSAGE_STYLE
 void LcdDisplay::SetupUI() {
     // Prevent duplicate calls - if already called, return early
@@ -533,6 +577,9 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_font(emoji_label_, large_icon_font, 0);
     lv_obj_set_style_text_color(emoji_label_, lvgl_theme->text_color(), 0);
     lv_label_set_text(emoji_label_, MATERIAL_SYMBOLS_ROBOT_2);
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    HideXiaozhiChromeForNodeLio();
+#endif
 }
 #if CONFIG_IDF_TARGET_ESP32P4
 #define MAX_MESSAGES 40
@@ -545,6 +592,11 @@ void LcdDisplay::SetChatMessage(const char* role, const char* content) {
                  role, content);
     }
     DisplayLockGuard lock(this);
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* NodeLio 面板：对话只走深绿 overlay，永不画白底气泡 */
+    nodelio_overlay_on_chat_locked(role, content);
+    return;
+#endif
     if (content_ == nullptr) {
         if (setup_ui_called_) {
             ESP_LOGW(TAG,
@@ -843,10 +895,12 @@ void LcdDisplay::ClearChatMessages() {
     // Reset chat_message_label_ as it has been deleted
     chat_message_label_ = nullptr;
 
+#if !(CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL)
     // Show the centered AI logo (emoji_label_) again
     if (emoji_label_ != nullptr) {
         lv_obj_remove_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
     }
+#endif
 
     ESP_LOGI(TAG, "Chat messages cleared");
 }
@@ -1045,10 +1099,17 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_color(low_battery_label_, lv_color_white(), 0);
     lv_obj_center(low_battery_label_);
     lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    HideXiaozhiChromeForNodeLio();
+#endif
 }
 
 void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
     DisplayLockGuard lock(this);
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    (void)image;
+    return;
+#endif
     if (preview_image_ == nullptr) {
         ESP_LOGE(TAG, "Preview image is not initialized");
         return;
@@ -1089,6 +1150,10 @@ void LcdDisplay::SetChatMessage(const char* role, const char* content) {
                  role, content);
     }
     DisplayLockGuard lock(this);
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    nodelio_overlay_on_chat_locked(role, content);
+    return;
+#endif
     if (chat_message_label_ == nullptr) {
         if (setup_ui_called_) {
             ESP_LOGW(TAG,
@@ -1130,6 +1195,10 @@ void LcdDisplay::ClearChatMessages() {
 #endif
 
 void LcdDisplay::SetEmotion(const char* emotion) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    (void)emotion;
+    return;
+#endif
     if (!setup_ui_called_) {
         ESP_LOGW(TAG, "SetEmotion('%s') called before SetupUI() - emotion will not be displayed!",
                  emotion);

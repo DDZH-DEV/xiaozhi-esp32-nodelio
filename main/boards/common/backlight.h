@@ -33,4 +33,7 @@ public:
     ~PwmBacklight();
 
     void SetBrightnessImpl(uint8_t brightness) override;
+
+private:
+    bool output_invert_ = false;
 };

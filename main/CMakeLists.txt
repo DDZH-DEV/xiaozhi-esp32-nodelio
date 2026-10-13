@@ -733,6 +733,11 @@ elseif(CONFIG_BOARD_TYPE_XINGZHI_ABS_2_0)
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
     set(BUILTIN_ICON_FONT font_material_symbols_20_4)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_128)
+elseif(CONFIG_BOARD_TYPE_SILA_86)
+    set(BOARD_DIR "sila/sila-86")
+    set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
+    set(BUILTIN_ICON_FONT font_material_symbols_20_4)
+    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
 elseif(CONFIG_BOARD_TYPE_SEEED_STUDIO_SENSECAP_WATCHER)
     set(BOARD_DIR "sensecap-watcher")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_30_4)
@@ -935,6 +940,28 @@ file(GLOB BOARD_SOURCES
 )
 list(APPEND SOURCES ${BOARD_SOURCES})
 
+# NodeLio panel overlay (SILA-86 / stage K): register + layout/command client
+if(CONFIG_BOARD_TYPE_SILA_86 AND CONFIG_NODELIO_PANEL)
+    list(APPEND SOURCES
+        "nodelio/board_info.c"
+        "nodelio/wifi_shim.c"
+        "nodelio/wifi_power.cc"
+        "nodelio/ui_widgets.cc"
+        "nodelio/nodelio_overlay.cc"
+        "nodelio/nodelio_mcp.cc"
+        "nodelio/offline_cmd.c"
+        "nodelio/offline_cmd_map.c"
+        "nodelio/nvs_config.c"
+        "nodelio/register.c"
+        "nodelio/mqtt_panel.c"
+        "nodelio/layout_cache.c"
+        "nodelio/panel_layout.c"
+        "nodelio/nodelio_bridge.cc"
+        "nodelio/fonts/font_puhui_14_1.c"
+    )
+    list(APPEND INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/nodelio)
+endif()
+
 # Select one audio engine for each chip family
 if(CONFIG_IDF_TARGET_ESP32S3 OR CONFIG_IDF_TARGET_ESP32P4 OR CONFIG_IDF_TARGET_ESP32S31)
     list(APPEND SOURCES "audio/engines/afe_audio_engine.cc")
@@ -1094,6 +1121,15 @@ if(CONFIG_IDF_TARGET_ESP32S3)
 endif()
 
 set(MAIN_PRIV_REQUIRES_EXTRA "")
+# NodeLio panel HTTP/MQTT (must be unconditional: early expansion may miss CONFIG_NODELIO_*)
+list(APPEND MAIN_PRIV_REQUIRES_EXTRA
+    mqtt
+    esp_http_client
+    espressif__cjson
+    spiffs
+    esp_wifi
+    nvs_flash
+)
 if(CONFIG_XIAOZHI_NETWORK_ETHERNET AND CONFIG_XIAOZHI_ETH_PHY_IP101)
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA espressif__ip101)
 endif()

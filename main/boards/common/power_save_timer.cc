@@ -59,6 +59,67 @@ void PowerSaveTimer::OnShutdownRequest(std::function<void()> callback) {
     on_shutdown_request_ = callback;
 }
 
+void PowerSaveTimer::TryEnterSleepMode() {
+    if (!enabled_ || in_sleep_mode_) {
+        return;
+    }
+    auto& app = Application::GetInstance();
+    if (!app.CanEnterSleepMode()) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Enabling power save mode");
+    in_sleep_mode_ = true;
+    sleep_asap_ = false;
+    ticks_ = 0;
+    if (on_enter_sleep_mode_) {
+        on_enter_sleep_mode_();
+    }
+
+    if (cpu_max_freq_ != -1) {
+        auto& audio_service = app.GetAudioService();
+        is_wake_word_running_ = audio_service.IsWakeWordRunning();
+        if (is_wake_word_running_) {
+            audio_service.EnableWakeWordDetection(false);
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        auto codec = Board::GetInstance().GetAudioCodec();
+        if (codec) {
+            codec->EnableInput(false);
+        }
+
+        esp_pm_config_t pm_config = {
+            .max_freq_mhz = cpu_max_freq_,
+            .min_freq_mhz = 40,
+            .light_sleep_enable = true,
+        };
+        esp_pm_configure(&pm_config);
+    }
+}
+
+void PowerSaveTimer::EnterSleepMode() {
+    if (!enabled_) {
+        return;
+    }
+    seconds_to_sleep_override_ = -1;
+    sleep_asap_ = true;
+    TryEnterSleepMode();
+}
+
+void PowerSaveTimer::RequestSleepIn(int seconds) {
+    if (!enabled_) {
+        return;
+    }
+    if (seconds <= 0) {
+        EnterSleepMode();
+        return;
+    }
+    sleep_asap_ = false;
+    ticks_ = 0;
+    seconds_to_sleep_override_ = seconds;
+    ESP_LOGI(TAG, "Sleep requested in %d s", seconds);
+}
+
 void PowerSaveTimer::PowerSaveCheck() {
     auto& app = Application::GetInstance();
     if (!in_sleep_mode_ && !app.CanEnterSleepMode()) {
@@ -66,45 +127,35 @@ void PowerSaveTimer::PowerSaveCheck() {
         return;
     }
 
+    if (sleep_asap_) {
+        TryEnterSleepMode();
+        return;
+    }
+
     ticks_++;
-    if (seconds_to_sleep_ != -1 && ticks_ >= seconds_to_sleep_) {
-        if (!in_sleep_mode_) {
-            ESP_LOGI(TAG, "Enabling power save mode");
-            in_sleep_mode_ = true;
-            if (on_enter_sleep_mode_) {
-                on_enter_sleep_mode_();
-            }
-
-            if (cpu_max_freq_ != -1) {
-                // Disable wake word detection
-                auto& audio_service = app.GetAudioService();
-                is_wake_word_running_ = audio_service.IsWakeWordRunning();
-                if (is_wake_word_running_) {
-                    audio_service.EnableWakeWordDetection(false);
-                    vTaskDelay(pdMS_TO_TICKS(100));
-                }
-                // Disable audio input
-                auto codec = Board::GetInstance().GetAudioCodec();
-                if (codec) {
-                    codec->EnableInput(false);
-                }
-
-                esp_pm_config_t pm_config = {
-                    .max_freq_mhz = cpu_max_freq_,
-                    .min_freq_mhz = 40,
-                    .light_sleep_enable = true,
-                };
-                esp_pm_configure(&pm_config);
-            }
-        }
+    const int sleep_after =
+        (seconds_to_sleep_override_ > 0) ? seconds_to_sleep_override_ : seconds_to_sleep_;
+    if (sleep_after != -1 && ticks_ >= sleep_after) {
+        seconds_to_sleep_override_ = -1;
+        TryEnterSleepMode();
     }
     if (seconds_to_shutdown_ != -1 && ticks_ >= seconds_to_shutdown_ && on_shutdown_request_) {
         on_shutdown_request_();
     }
 }
 
+void PowerSaveTimer::NoteActivity() {
+    ticks_ = 0;
+    sleep_asap_ = false;
+    if (in_sleep_mode_) {
+        WakeUp();
+    }
+}
+
 void PowerSaveTimer::WakeUp() {
     ticks_ = 0;
+    sleep_asap_ = false;
+    seconds_to_sleep_override_ = -1;
     if (in_sleep_mode_) {
         ESP_LOGI(TAG, "Exiting power save mode");
         in_sleep_mode_ = false;
