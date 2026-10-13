@@ -41,27 +41,28 @@
 #define UI_C_CHAT_BAND       0x141822
 #define UI_C_SLIDER_TRACK    0x1c2330
 /* 开态：大厂经典环境微发光表面（Luminous Glass），清澈通透，质感高级 */
-#define UI_C_TILE_SWITCH     0x143e2a
-#define UI_C_TILE_SCENE      0x271942
-#define UI_C_TILE_GPIO       0x3a2813
-#define UI_C_TILE_PWM        0x14354f
+#define UI_C_TILE_SWITCH     0x0d3822
+#define UI_C_TILE_SCENE      0x2a1447
+#define UI_C_TILE_GPIO       0x3a250c
+#define UI_C_TILE_PWM        0x0c3452
 /* 关态：高级微晶深石板灰（Elevated Slate），极简纯粹，不再发绿 */
 #define UI_C_TILE_OFF        0x161b24
 #define UI_C_TILE_SWITCH_OFF UI_C_TILE_OFF
 #define UI_C_TILE_SCENE_OFF  UI_C_TILE_OFF
 #define UI_C_TILE_GPIO_OFF   UI_C_TILE_OFF
 #define UI_C_TILE_PWM_OFF    UI_C_TILE_OFF
-#define UI_C_TILE_ON_BORDER  0x34c759
-#define UI_C_TILE_OFF_BORDER 0x262f3d
-#define UI_C_TILE_PWM_BORDER 0x38bdf8
+#define UI_C_TILE_ON_BORDER  0x10b981
+#define UI_C_TILE_OFF_BORDER 0x232c3b
+#define UI_C_TILE_PWM_BORDER 0x0ea5e9
 #define UI_C_TILE_GPIO_BORDER 0xf59e0b
-#define UI_C_CAPSULE_OFF     0x212834
-#define UI_C_CAPSULE_ON      0x22c55e
+#define UI_C_CAPSULE_OFF     0x222a38
+#define UI_C_CAPSULE_ON      0x10b981
 #define UI_C_CAPSULE_PWM     0x0ea5e9
 #define UI_C_CAPSULE_GPIO    0xf59e0b
-#define UI_C_TILE_BADGE_ON   0x15803d
-#define UI_C_TILE_BADGE_OFF  0x212834
-#define UI_C_TILE_BADGE_OFFLINE 0x242830
+#define UI_C_CAPSULE_SCENE   0x8b5cf6
+#define UI_C_TILE_BADGE_ON   0x10b981
+#define UI_C_TILE_BADGE_OFF  0x202733
+#define UI_C_TILE_BADGE_OFFLINE 0x22262e
 #define UI_C_TAB_GLOW        0xffffff
 
 /* ---- lv_color ----------------------------------------------------------- */
@@ -109,6 +110,7 @@
 #define UI_CAPSULE_ON       lv_color_hex(UI_C_CAPSULE_ON)
 #define UI_CAPSULE_PWM      lv_color_hex(UI_C_CAPSULE_PWM)
 #define UI_CAPSULE_GPIO     lv_color_hex(UI_C_CAPSULE_GPIO)
+#define UI_CAPSULE_SCENE    lv_color_hex(UI_C_CAPSULE_SCENE)
 #define UI_TILE_BADGE_ON    lv_color_hex(UI_C_TILE_BADGE_ON)
 #define UI_TILE_BADGE_OFF   lv_color_hex(UI_C_TILE_BADGE_OFF)
 #define UI_TILE_BADGE_OFFLINE lv_color_hex(UI_C_TILE_BADGE_OFFLINE)

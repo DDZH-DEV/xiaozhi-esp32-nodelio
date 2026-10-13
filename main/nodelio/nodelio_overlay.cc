@@ -657,17 +657,6 @@ static uint32_t color_pressed(uint32_t c)
     return (r << 16) | (g << 8) | b;
 }
 
-static uint32_t color_brighten(uint32_t c, uint32_t add)
-{
-    uint32_t r = ((c >> 16) & 0xff);
-    uint32_t g = ((c >> 8) & 0xff);
-    uint32_t b = (c & 0xff);
-    r = (r + add > 255) ? 255 : (r + add);
-    g = (g + add > 255) ? 255 : (g + add);
-    b = (b + add > 255) ? 255 : (b + add);
-    return (r << 16) | (g << 8) | b;
-}
-
 static nl_dev_cache_t *find_dev(const char *device_id)
 {
     ensure_devs_cache();
@@ -839,6 +828,17 @@ static void ensure_tile_trans(void)
     lv_style_transition_dsc_init(&s_tile_trans, props, lv_anim_path_ease_out, 140, 0, nullptr);
 }
 
+static uint32_t color_ambient_bg(uint32_t c)
+{
+    uint32_t r = ((c >> 16) & 0xff) * 26 / 100;
+    uint32_t g = ((c >> 8) & 0xff) * 26 / 100;
+    uint32_t b = (c & 0xff) * 26 / 100;
+    r = r < 12 ? 12 : r;
+    g = g < 15 ? 15 : g;
+    b = b < 20 ? 20 : b;
+    return (r << 16) | (g << 8) | b;
+}
+
 static uint32_t widget_fill_for_state(const nl_widget_t *w, tile_kind_t kind, bool online, bool on)
 {
     if (!online) {
@@ -847,10 +847,10 @@ static uint32_t widget_fill_for_state(const nl_widget_t *w, tile_kind_t kind, bo
     if (!on) {
         return kind_fill_off(kind);
     }
-    /* 开态：优先 layout 自定义底色，否则语义亮色 */
+    /* 开态：优先 layout 自定义底色（环境微光深色），否则语义亮色微光 */
     uint32_t custom = 0;
     if (w && parse_bg_hex(w->bg_color, &custom)) {
-        return custom;
+        return color_ambient_bg(custom);
     }
     return kind_fill_on(kind);
 }
@@ -872,16 +872,19 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
     lv_obj_set_style_bg_color(tile, lv_color_hex(fill), 0);
     lv_obj_set_style_bg_color(tile, lv_color_hex(color_pressed(fill)), LV_STATE_PRESSED);
     if (online && on && kind != TILE_SCENE) {
-        /* 开态：极简微弱融合边界，无生硬高亮框 */
+        /* 开态：极简微弱融合边界，与主题微光相呼应 */
         lv_obj_set_style_border_width(tile, 1, 0);
         lv_color_t bc = UI_TILE_ON_BORDER;
-        if (kind == TILE_PWM) {
+        uint32_t custom_bg = 0;
+        if (w && parse_bg_hex(w->bg_color, &custom_bg)) {
+            bc = lv_color_hex(custom_bg);
+        } else if (kind == TILE_PWM) {
             bc = UI_TILE_PWM_BORDER;
         } else if (kind == TILE_GPIO) {
             bc = UI_TILE_GPIO_BORDER;
         }
         lv_obj_set_style_border_color(tile, bc, 0);
-        lv_obj_set_style_border_opa(tile, 60, 0);
+        lv_obj_set_style_border_opa(tile, 70, 0);
     } else if (online && !on && kind != TILE_SCENE) {
         /* 关态细边：暗调精致分界，半透明极细边 */
         lv_obj_set_style_border_width(tile, 1, 0);
@@ -897,6 +900,18 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
     lv_color_t hint_c = (!online) ? UI_DISABLED_FG : (on ? UI_ON_TILE : UI_TEXT_MUTED);
     lv_color_t badge_bg =
         (!online) ? UI_TILE_BADGE_OFFLINE : (on ? UI_TILE_BADGE_ON : UI_TILE_BADGE_OFF);
+    if (online && on) {
+        uint32_t custom_bg = 0;
+        if (w && parse_bg_hex(w->bg_color, &custom_bg)) {
+            badge_bg = lv_color_hex(custom_bg);
+        } else if (kind == TILE_PWM) {
+            badge_bg = UI_TILE_PWM_BORDER;
+        } else if (kind == TILE_GPIO) {
+            badge_bg = UI_TILE_GPIO_BORDER;
+        } else if (kind == TILE_SCENE) {
+            badge_bg = UI_CAPSULE_SCENE;
+        }
+    }
 
     bool is_large = (w && (w->gw >= 2 && w->gh >= 2));
     bool is_row = (w && w->gh <= 1);
@@ -909,12 +924,14 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
             if (on && online) {
                 uint32_t custom_bg = 0;
                 if (w && parse_bg_hex(w->bg_color, &custom_bg)) {
-                    /* 自定义底色：同色系提亮微光，避免红底绿胶囊等恶性撞色 */
-                    cap_bg = lv_color_hex(color_brighten(custom_bg, 40));
+                    /* 自定义底色：Icon Pod 采用高饱和亮色点亮 */
+                    cap_bg = lv_color_hex(custom_bg);
                 } else if (kind == TILE_PWM) {
                     cap_bg = UI_CAPSULE_PWM;
                 } else if (kind == TILE_GPIO) {
                     cap_bg = UI_CAPSULE_GPIO;
+                } else if (kind == TILE_SCENE) {
+                    cap_bg = UI_CAPSULE_SCENE;
                 } else {
                     cap_bg = UI_CAPSULE_ON;
                 }
