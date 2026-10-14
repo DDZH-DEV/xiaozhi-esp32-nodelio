@@ -2517,6 +2517,7 @@ static void open_settings_detail(set_page_id_t page)
         sys_kv_row(dev, "布局", line, nullptr);
         std::snprintf(line, sizeof(line), "%d%% / %d%%", s_brightness, s_volume);
         sys_kv_row(dev, "亮/音", line, nullptr);
+        sys_kv_row(dev, "唤醒词", "你好小智", nullptr);
 
         lv_obj_t *run = settings_card(body, "运行状态");
         lv_obj_set_style_pad_row(run, 4, 0);
@@ -2723,7 +2724,7 @@ static void ai_hide_timer_cb(lv_timer_t *tmr)
     }
 }
 
-static void reset_ai_hide_timer(uint32_t delay_ms = 4000)
+static void reset_ai_hide_timer(uint32_t delay_ms = 1200)
 {
     if (s_ai_hide_timer) {
         lv_timer_reset(s_ai_hide_timer);
@@ -2778,7 +2779,7 @@ static void create_ai_drawer(lv_obj_t *parent)
     /* 1. 顶部 Header 行：左侧声波律动条，中间状态文字，右侧收起按钮 */
     lv_obj_t *hdr = lv_obj_create(s_ai_drawer);
     lv_obj_remove_style_all(hdr);
-    lv_obj_set_size(hdr, lv_pct(100), 28);
+    lv_obj_set_size(hdr, lv_pct(100), 30);
     lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
@@ -2807,36 +2808,52 @@ static void create_ai_drawer(lv_obj_t *parent)
     lv_obj_set_style_text_color(s_ai_drawer_status, lv_color_hex(0x38bdf8), 0);
     s_phase_lbl = s_ai_drawer_status;
 
-    /* 右侧收起按钮 */
+    /* 右侧收起按钮（超大易点热区 48x28 + ext 20px，支持 CLICKED/SHORT_CLICKED，100% 极速命中） */
     lv_obj_t *close_btn = lv_obj_create(hdr);
     lv_obj_remove_style_all(close_btn);
-    lv_obj_set_size(close_btn, 36, 22);
-    lv_obj_set_style_radius(close_btn, 11, 0);
+    lv_obj_set_size(close_btn, 48, 28);
+    lv_obj_set_style_radius(close_btn, 14, 0);
     lv_obj_set_style_bg_color(close_btn, lv_color_hex(0x222a38), 0);
     lv_obj_set_style_bg_opa(close_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(close_btn, lv_color_hex(0x334155), LV_STATE_PRESSED);
+    lv_obj_set_style_translate_y(close_btn, 1, LV_STATE_PRESSED);
     lv_obj_add_flag(close_btn, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(close_btn, 10);
+    lv_obj_set_ext_click_area(close_btn, 20);
+
     lv_obj_t *close_ic = lv_label_create(close_btn);
     lv_label_set_text(close_ic, LV_SYMBOL_DOWN);
-    lv_obj_set_style_text_color(close_ic, lv_color_hex(UI_C_TEXT_DIM), 0);
+    lv_obj_set_style_text_color(close_ic, lv_color_hex(UI_C_TEXT_SUB), 0);
+    lv_obj_set_style_text_color(close_ic, lv_color_hex(UI_C_ON_TILE), LV_STATE_PRESSED);
     lv_obj_center(close_ic);
-    lv_obj_add_event_cb(close_btn, [](lv_event_t *) { hide_ai_drawer(); }, LV_EVENT_CLICKED, nullptr);
+    lv_obj_clear_flag(close_ic, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(close_ic, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-    /* 2. 主体区：精炼 1~2 行对话文字 */
+    lv_obj_add_event_cb(
+        close_btn,
+        [](lv_event_t *e) {
+            lv_event_code_t code = lv_event_get_code(e);
+            if (code == LV_EVENT_CLICKED || code == LV_EVENT_SHORT_CLICKED) {
+                hide_ai_drawer();
+            }
+        },
+        LV_EVENT_ALL, nullptr);
+
+    /* 2. 主体区：支持 2 行完整文字呈现，空间充裕舒适 */
     lv_obj_t *body_band = lv_obj_create(s_ai_drawer);
     lv_obj_remove_style_all(body_band);
     lv_obj_set_width(body_band, lv_pct(100));
     lv_obj_set_flex_grow(body_band, 1);
-    lv_obj_set_style_pad_all(body_band, 4, 0);
+    lv_obj_set_style_pad_hor(body_band, 4, 0);
+    lv_obj_set_style_pad_ver(body_band, 2, 0);
     lv_obj_clear_flag(body_band, LV_OBJ_FLAG_SCROLLABLE);
 
     s_ai_drawer_text = lv_label_create(body_band);
-    lv_label_set_text(s_ai_drawer_text, "说唤醒词「小智小智」或吩咐指令…");
+    lv_label_set_text(s_ai_drawer_text, "说唤醒词「你好小智」或吩咐指令…");
     lv_obj_set_width(s_ai_drawer_text, lv_pct(100));
-    lv_label_set_long_mode(s_ai_drawer_text, LV_LABEL_LONG_DOT);
+    lv_label_set_long_mode(s_ai_drawer_text, LV_LABEL_LONG_WRAP); /* 自动换行显示 2 行 */
     set_font(s_ai_drawer_text);
     lv_obj_set_style_text_color(s_ai_drawer_text, lv_color_hex(UI_C_TEXT), 0);
-    lv_obj_set_style_text_line_space(s_ai_drawer_text, 4, 0);
+    lv_obj_set_style_text_line_space(s_ai_drawer_text, 5, 0);
     s_chat_lbl = s_ai_drawer_text;
 }
 
@@ -2879,9 +2896,9 @@ static void show_ai_drawer_locked(chat_phase_t phase, const char *status_text, c
 
     start_eq_anims(phase);
 
-    /* 待命态 4 秒后自动收起浮层，恢复全屏干净视野 */
+    /* 退出与待命态：1.2 秒内迅速动态隐藏收起浮层，恢复全屏视野 */
     if (phase == CHAT_IDLE) {
-        reset_ai_hide_timer(4000);
+        reset_ai_hide_timer(1200);
     } else {
         if (s_ai_hide_timer) {
             lv_timer_del(s_ai_hide_timer);
@@ -2902,7 +2919,7 @@ static void show_page(int tab)
 {
     if (tab == 1) {
         /* 点击“对话”Tab：在当前页面底部浮现 AI 抽屉！绝不切走原页面！ */
-        show_ai_drawer_locked(CHAT_LISTEN, "小智在听…", "说唤醒词「小智小智」或吩咐指令…");
+        show_ai_drawer_locked(CHAT_LISTEN, "小智在听…", "说唤醒词「你好小智」或吩咐指令…");
         return;
     }
     hide_ai_drawer();
@@ -3261,12 +3278,18 @@ void nodelio_overlay_on_chat_locked(const char *role, const char *text)
     }
     append_chat_line(role, text);
 
-    /* 提取当前最新的 1~2 行对话，直接呈现于全局底部抽屉 */
+    /* 提取当前最新的对话呈现于全局底部抽屉（支持 2 行自动折行） */
     chat_phase_t ph = (strcmp(role, "assistant") == 0) ? CHAT_SPEAK : CHAT_LISTEN;
     const char *status_str = (strcmp(role, "assistant") == 0) ? "小智回复" : "我说：";
     utf8_copy(s_ai_latest_text, sizeof(s_ai_latest_text), text);
 
     show_ai_drawer_locked(ph, status_str, s_ai_latest_text);
+
+    /* 检测用户或助手的告别/退出语义，1 秒内迅速收起浮层 */
+    if (strstr(text, "再见") || strstr(text, "退下") || strstr(text, "拜拜") ||
+        strstr(text, "退出") || strstr(text, "我先休息了") || strstr(text, "随时叫我")) {
+        reset_ai_hide_timer(1000);
+    }
 }
 
 void nodelio_overlay_on_status_locked(const char *status)
