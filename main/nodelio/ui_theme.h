@@ -131,3 +131,8 @@
 #define UI_NAV_BACK_W       64
 #define UI_BTN_H            48
 #define UI_BTN_H_SM         44
+/* 小智对话悬浮胶囊：收窄居中，正文固定两行 */
+#define UI_AI_DRAWER_W      348
+#define UI_AI_DRAWER_H      118
+#define UI_AI_DRAWER_TEXT_H 46
+#define UI_AI_DRAWER_BOTTOM 52
