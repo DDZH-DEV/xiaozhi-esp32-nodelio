@@ -2572,9 +2572,9 @@ static void open_settings_detail(set_page_id_t page)
 }
 
 static void settings_tile(lv_obj_t *parent, const char *glyph, const char *title, const char *sub,
-                          uint32_t accent, lv_event_cb_t cb)
+                          uint32_t accent, const char *right_icon, lv_event_cb_t cb)
 {
-    (void)ui_make_settings_tile(parent, glyph, title, sub, accent, cb);
+    (void)ui_make_settings_tile(parent, glyph, title, sub, accent, right_icon, cb);
 }
 
 static void fill_settings(void)
@@ -2584,13 +2584,12 @@ static void fill_settings(void)
     }
     close_settings_detail();
     lv_obj_clean(s_settings);
-    lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(s_settings, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_row(s_settings, UI_GAP_LG, 0);
-    lv_obj_set_style_pad_column(s_settings, UI_GAP_LG, 0);
-    lv_obj_set_style_pad_left(s_settings, NL_UI_SETTINGS_PAD_H, 0);
-    lv_obj_set_style_pad_right(s_settings, NL_UI_SETTINGS_PAD_H, 0);
-    lv_obj_set_style_pad_top(s_settings, 20, 0);
+    lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_settings, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(s_settings, 10, 0);
+    lv_obj_set_style_pad_left(s_settings, 16, 0);
+    lv_obj_set_style_pad_right(s_settings, 16, 0);
+    lv_obj_set_style_pad_top(s_settings, 16, 0);
     lv_obj_set_style_pad_bottom(s_settings, 20, 0);
     lv_obj_set_style_bg_color(s_settings, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_settings, LV_OPA_COVER, 0);
@@ -2601,17 +2600,17 @@ static void fill_settings(void)
     char bri_sub[32];
     std::snprintf(bri_sub, sizeof(bri_sub), "亮度 %d%% · 音量 %d%%", s_brightness, s_volume);
 
-    settings_tile(s_settings, "显", "显示与声音", bri_sub, UI_C_ACCENT,
+    settings_tile(s_settings, "显", "显示与声音", bri_sub, UI_C_ACCENT, LV_SYMBOL_VOLUME_MAX,
                   [](lv_event_t *) { open_settings_detail(SET_PAGE_DISP); });
-    settings_tile(s_settings, "连", "连接", "扫描 WiFi / 服务器 / 绑定", UI_C_WARN,
+    settings_tile(s_settings, "连", "网络与连接", "扫描 WiFi / 服务器 / 绑定", UI_C_WARN, LV_SYMBOL_WIFI,
                   [](lv_event_t *) { open_connect(); });
-    settings_tile(s_settings, "刷", "刷新布局", "重新拉取首页控件", UI_C_INFO, [](lv_event_t *) {
+    settings_tile(s_settings, "刷", "刷新布局", "重新拉取首页控件", UI_C_INFO, LV_SYMBOL_REFRESH, [](lv_event_t *) {
         toast("正在刷新…");
         nodelio_layout_request_sync();
     });
-    settings_tile(s_settings, "机", "设备信息", "唤醒词「你好小智」· 状态", UI_C_PURPLE,
+    settings_tile(s_settings, "机", "设备信息", "唤醒词「你好小智」· 状态", UI_C_PURPLE, LV_SYMBOL_LIST,
                   [](lv_event_t *) { open_settings_detail(SET_PAGE_SYS); });
-    settings_tile(s_settings, "复", "重置", "清空凭证并重启", UI_C_DANGER,
+    settings_tile(s_settings, "复", "恢复出厂", "清空凭证并重启", UI_C_DANGER, LV_SYMBOL_WARNING,
                   [](lv_event_t *) { open_settings_detail(SET_PAGE_RESET); });
 }
 
@@ -2822,8 +2821,8 @@ static void create_ai_drawer(lv_obj_t *parent)
     lv_obj_set_ext_click_area(close_btn, 20);
 
     lv_obj_t *close_ic = lv_label_create(close_btn);
-    lv_obj_set_style_text_font(close_ic, &font_material_symbols_20_4, 0);
-    lv_label_set_text(close_ic, MATERIAL_SYMBOLS_CLOSE);
+    set_icon_font(close_ic);
+    lv_label_set_text(close_ic, LV_SYMBOL_CLOSE);
     lv_obj_set_style_text_color(close_ic, lv_color_hex(UI_C_TEXT_SUB), 0);
     lv_obj_set_style_text_color(close_ic, lv_color_hex(UI_C_ON_TILE), LV_STATE_PRESSED);
     lv_obj_center(close_ic);
@@ -2836,6 +2835,10 @@ static void create_ai_drawer(lv_obj_t *parent)
             lv_event_code_t code = lv_event_get_code(e);
             if (code == LV_EVENT_CLICKED || code == LV_EVENT_SHORT_CLICKED) {
                 hide_ai_drawer();
+                auto state = Application::GetInstance().GetDeviceState();
+                if (state == kDeviceStateListening || state == kDeviceStateSpeaking) {
+                    Application::GetInstance().ToggleChatState();
+                }
             }
         },
         LV_EVENT_ALL, nullptr);
@@ -2864,9 +2867,11 @@ static void show_ai_drawer_locked(chat_phase_t phase, const char *status_text, c
     if (!s_ai_drawer) {
         return;
     }
-    /* 开机/静默防误弹：若当前抽屉处于隐藏状态且是待命态，严禁主动弹出 */
-    if (phase == CHAT_IDLE && lv_obj_has_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN)) {
-        return;
+    /* 开机/静默防误弹：若当前抽屉处于隐藏状态，仅允许由倾听(CHAT_LISTEN)或说话(CHAT_SPEAK)触发唤醒弹出；禁止在待命或后台连接时弹出抽屉 */
+    if (lv_obj_has_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN)) {
+        if (phase != CHAT_LISTEN && phase != CHAT_SPEAK) {
+            return;
+        }
     }
     /* 保持当前页面，直接置顶浮出抽屉 */
     lv_obj_clear_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
@@ -3205,7 +3210,8 @@ void nodelio_overlay_show_chat(void)
     if (s_visible && s_ready) {
         DisplayLockGuard lock(disp());
         if (lock) {
-            show_ai_drawer_locked(CHAT_LISTEN, "小智在听…", nullptr);
+            show_ai_drawer_locked(CHAT_LISTEN, "小智在听…", "说唤醒词「你好小智」或吩咐指令…");
+            Application::GetInstance().ToggleChatState();
         }
         return;
     }
@@ -3284,6 +3290,11 @@ void nodelio_overlay_on_chat_locked(const char *role, const char *text)
         return;
     }
     append_chat_line(role, text);
+
+    /* 系统通知/版本输出仅记入记录，绝不弹出抽屉 */
+    if (!role || (strcmp(role, "user") != 0 && strcmp(role, "assistant") != 0)) {
+        return;
+    }
 
     /* 提取当前最新的对话呈现于全局底部抽屉（支持 2 行自动折行） */
     chat_phase_t ph = (strcmp(role, "assistant") == 0) ? CHAT_SPEAK : CHAT_LISTEN;

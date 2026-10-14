@@ -75,10 +75,10 @@ void Application::Initialize() {
     // Print board name/version info
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-    /* 延后建壳并直接进对话页，盖住小智白底 UI */
+    /* 延后建壳并进入 NodeLio 首页，遮盖小智原生白底 UI */
     Schedule([]() {
         (void)nodelio_overlay_init();
-        nodelio_overlay_show_chat();
+        nodelio_overlay_show(false);
     });
 #endif
 
@@ -319,6 +319,10 @@ void Application::Run() {
 
 void Application::HandleNetworkConnectedEvent() {
     ESP_LOGI(TAG, "Network connected");
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 局域网离线优先：WiFi 连通后第一时间启动内网服务（注册、拉取大屏布局、连接本地 MQTT），不依赖小智外网激活 */
+    Schedule([]() { (void)nodelio_bridge_start(); });
+#endif
     auto state = GetDeviceState();
 
     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {

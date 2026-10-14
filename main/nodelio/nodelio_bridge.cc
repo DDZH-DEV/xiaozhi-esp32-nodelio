@@ -277,8 +277,8 @@ static esp_err_t start_client(void)
 static void start_task(void *arg)
 {
     (void)arg;
-    /* 让小智 ActivationDone（提示音/协议）先跑完，再占局域网 HTTP */
-    vTaskDelay(pdMS_TO_TICKS(800));
+    /* 局域网离线优先：WiFi 连通后无需等待小智激活，立即发起内网 HTTP 注册与 MQTT 启动 */
+    vTaskDelay(pdMS_TO_TICKS(50));
     esp_err_t err = start_client();
     if (err != ESP_OK) {
         s_starting = false;

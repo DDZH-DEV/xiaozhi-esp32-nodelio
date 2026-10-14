@@ -11,9 +11,10 @@ extern "C" {
 
 void ui_styles_init(void);
 
-/** 设置页入口磁贴：accent 色条 + 字标 + 标题 + 副文. */
+/** 设置页入口列表卡片：左侧微晶 Pod + 标题/副文 + 右侧专属图标与导航箭头 >. */
 lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char *title,
-                                const char *sub, uint32_t accent_c, lv_event_cb_t cb);
+                                const char *sub, uint32_t accent_c, const char *right_icon,
+                                lv_event_cb_t cb);
 
 /** 底栏 Tab；checked 用 LV_STATE_CHECKED. */
 lv_obj_t *ui_make_tab(lv_obj_t *parent, const char *txt);

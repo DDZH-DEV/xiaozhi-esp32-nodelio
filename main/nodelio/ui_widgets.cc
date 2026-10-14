@@ -22,6 +22,13 @@ static void apply_font(lv_obj_t *obj)
     }
 }
 
+static void apply_icon_font(lv_obj_t *obj)
+{
+    if (obj) {
+        lv_obj_set_style_text_font(obj, &lv_font_montserrat_14, 0);
+    }
+}
+
 void ui_styles_init(void)
 {
     if (s_inited) {
@@ -65,45 +72,122 @@ void ui_styles_init(void)
 }
 
 lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char *title,
-                                const char *sub, uint32_t accent_c, lv_event_cb_t cb)
+                                const char *sub, uint32_t accent_c, const char *right_icon,
+                                lv_event_cb_t cb)
 {
     ui_styles_init();
     lv_obj_t *btn = lv_button_create(parent);
-    lv_obj_set_size(btn, lv_pct(48), UI_SETTINGS_TILE_H);
+    lv_obj_remove_style_all(btn);
+    lv_obj_set_size(btn, lv_pct(100), 66);
     lv_obj_set_ext_click_area(btn, UI_EXT_CLICK);
-    lv_obj_add_style(btn, &st_btn_base, 0);
-    lv_obj_add_style(btn, &st_btn_pressed, LV_STATE_PRESSED);
-    lv_obj_add_style(btn, &st_btn_off, LV_STATE_DISABLED);
-    lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* 曜夜微晶列表卡片外观 */
+    lv_obj_set_style_bg_color(btn, UI_TILE_OFF, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(btn, UI_RADIUS_SM, 0);
+    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_style_border_color(btn, UI_TILE_OFF_BORDER, 0);
+    lv_obj_set_style_pad_left(btn, 12, 0);
+    lv_obj_set_style_pad_right(btn, 14, 0);
+    lv_obj_set_style_pad_top(btn, 8, 0);
+    lv_obj_set_style_pad_bottom(btn, 8, 0);
+
+    /* 按压反馈 */
+    lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(btn, lv_color_hex(accent_c), LV_STATE_PRESSED);
+    lv_obj_set_style_translate_y(btn, 1, LV_STATE_PRESSED);
+
+    lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     if (cb) {
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
     }
 
-    lv_obj_t *bar = lv_obj_create(btn);
-    lv_obj_remove_style_all(bar);
-    lv_obj_set_size(bar, 28, 4);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(accent_c), 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(bar, 2, 0);
-    lv_obj_clear_flag(bar, LV_OBJ_FLAG_CLICKABLE);
+    /* 左区：微晶 Icon Pod + 中间双行标题 */
+    lv_obj_t *left_box = lv_obj_create(btn);
+    lv_obj_remove_style_all(left_box);
+    lv_obj_set_size(left_box, LV_SIZE_CONTENT, lv_pct(100));
+    lv_obj_set_flex_grow(left_box, 1);
+    lv_obj_set_flex_flow(left_box, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(left_box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(left_box, 12, 0);
+    lv_obj_clear_flag(left_box, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(left_box, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *g = lv_label_create(btn);
+    /* 1. 微光 Icon Pod 胶囊底座 */
+    lv_obj_t *pod = lv_obj_create(left_box);
+    lv_obj_remove_style_all(pod);
+    lv_obj_set_size(pod, 40, 40);
+    lv_obj_set_style_radius(pod, 10, 0);
+    lv_obj_set_style_bg_color(pod, lv_color_hex(accent_c), 0);
+    lv_obj_set_style_bg_opa(pod, LV_OPA_20, 0);
+    lv_obj_set_style_border_width(pod, 1, 0);
+    lv_obj_set_style_border_color(pod, lv_color_hex(accent_c), 0);
+    lv_obj_set_style_border_opa(pod, 90, 0);
+    lv_obj_clear_flag(pod, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(pod, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *g = lv_label_create(pod);
     lv_label_set_text(g, glyph ? glyph : "");
-    apply_font(g);
+    if (glyph && (uint8_t)glyph[0] >= 0xef) {
+        apply_icon_font(g);
+    } else {
+        apply_font(g);
+    }
     lv_obj_set_style_text_color(g, lv_color_hex(accent_c), 0);
+    lv_obj_center(g);
+    lv_obj_clear_flag(g, LV_OBJ_FLAG_CLICKABLE);
 
-    lv_obj_t *t = lv_label_create(btn);
+    /* 2. 双行文字区域 */
+    lv_obj_t *tbox = lv_obj_create(left_box);
+    lv_obj_remove_style_all(tbox);
+    lv_obj_set_size(tbox, LV_SIZE_CONTENT, lv_pct(100));
+    lv_obj_set_flex_grow(tbox, 1);
+    lv_obj_set_flex_flow(tbox, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(tbox, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(tbox, 3, 0);
+    lv_obj_clear_flag(tbox, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(tbox, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *t = lv_label_create(tbox);
     lv_label_set_text(t, title ? title : "");
     apply_font(t);
     lv_obj_set_style_text_color(t, UI_TEXT, 0);
+    lv_obj_clear_flag(t, LV_OBJ_FLAG_CLICKABLE);
 
-    lv_obj_t *s = lv_label_create(btn);
+    lv_obj_t *s = lv_label_create(tbox);
     lv_label_set_text(s, sub ? sub : "");
-    lv_label_set_long_mode(s, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(s, lv_pct(100));
+    lv_label_set_long_mode(s, LV_LABEL_LONG_CLIP);
     apply_font(s);
     lv_obj_set_style_text_color(s, UI_TEXT_MUTED, 0);
+    lv_obj_clear_flag(s, LV_OBJ_FLAG_CLICKABLE);
+
+    /* 右侧：专属功能图标 + 导航微晶指示箭头 > */
+    lv_obj_t *right_box = lv_obj_create(btn);
+    lv_obj_remove_style_all(right_box);
+    lv_obj_set_size(right_box, LV_SIZE_CONTENT, lv_pct(100));
+    lv_obj_set_flex_flow(right_box, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(right_box, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(right_box, 8, 0);
+    lv_obj_clear_flag(right_box, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(right_box, LV_OBJ_FLAG_SCROLLABLE);
+
+    if (right_icon && right_icon[0]) {
+        lv_obj_t *ric = lv_label_create(right_box);
+        apply_icon_font(ric);
+        lv_label_set_text(ric, right_icon);
+        lv_obj_set_style_text_color(ric, lv_color_hex(accent_c), 0);
+        lv_obj_clear_flag(ric, LV_OBJ_FLAG_CLICKABLE);
+    }
+
+    lv_obj_t *arr = lv_label_create(right_box);
+    apply_icon_font(arr);
+    lv_label_set_text(arr, LV_SYMBOL_RIGHT);
+    lv_obj_set_style_text_color(arr, UI_TEXT_MUTED, 0);
+    lv_obj_clear_flag(arr, LV_OBJ_FLAG_CLICKABLE);
+
     return btn;
 }
 
