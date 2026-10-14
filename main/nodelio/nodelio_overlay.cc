@@ -73,7 +73,6 @@ static lv_obj_t *s_home;
 static lv_obj_t *s_chat;
 static lv_obj_t *s_phase_lbl; /* 兼容原逻辑 */
 static lv_obj_t *s_eq_bars[3];
-static lv_obj_t *s_chat_band;   /* 下区可滚容器 */
 static lv_obj_t *s_chat_lbl;
 static lv_obj_t *s_ai_drawer;           /* 全局底部 AI 抽屉组件（高度约 140px，占屏幕 1/3） */
 static lv_obj_t *s_ai_drawer_status;    /* 状态小标题（如 "小智在听…" / "小智回答"） */
@@ -130,7 +129,6 @@ static int s_active_tab; /* 0 home 1 chat 2 settings */
 
 enum chat_phase_t : uint8_t { CHAT_IDLE = 0, CHAT_LISTEN, CHAT_SPEAK, CHAT_CONNECT };
 static chat_phase_t s_chat_phase = CHAT_IDLE;
-static char s_phase_text[32];
 /* 对话历史：约 1.5～3KB 中文（原 640 太短，上下复读更糟） */
 #define NL_CHAT_CAP 3072
 static char s_chat_text[NL_CHAT_CAP];
@@ -918,8 +916,9 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
         }
     }
 
+    bool is_1x1 = (w && w->gw <= 1 && w->gh <= 1);
+    bool is_row = (w && w->gw >= 2 && w->gh <= 1);
     bool is_large = (w && (w->gw >= 2 && w->gh >= 2));
-    bool is_row = (w && w->gh <= 1);
     uint32_t sub = lv_obj_get_child_count(tile);
     for (uint32_t j = 0; j < sub; j++) {
         lv_obj_t *ch = lv_obj_get_child(tile, j);
@@ -956,6 +955,22 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                 lv_obj_set_style_text_font(ch, tile_icon_font(is_large), 0);
                 lv_obj_set_style_text_color(ch, icon_c, 0);
             } else if (role == TILE_CHILD_HINT) {
+                if (is_1x1) {
+                    /* 1x1 规格：在线正常时隐藏文字药丸，仅离线时在右上角微型提示「离」 */
+                    if (!online) {
+                        lv_obj_clear_flag(ch, LV_OBJ_FLAG_HIDDEN);
+                        lv_label_set_text(ch, "离");
+                        set_font(ch);
+                        lv_obj_set_style_text_color(ch, hint_c, 0);
+                        lv_obj_set_style_bg_color(ch, badge_bg, 0);
+                        lv_obj_set_style_bg_opa(ch, LV_OPA_60, 0);
+                        lv_obj_align(ch, LV_ALIGN_TOP_RIGHT, 0, 0);
+                    } else {
+                        lv_obj_add_flag(ch, LV_OBJ_FLAG_HIDDEN);
+                    }
+                    continue;
+                }
+                lv_obj_clear_flag(ch, LV_OBJ_FLAG_HIDDEN);
                 if (kind == TILE_PWM) {
                     char hb[20];
                     const char *prefix = "";
@@ -1011,8 +1026,13 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                     lv_obj_align(ch, is_row ? LV_ALIGN_RIGHT_MID : LV_ALIGN_TOP_RIGHT, 0, 0);
                 }
             } else if (role == TILE_CHILD_TITLE) {
-                set_font(ch);
-                lv_obj_set_style_text_color(ch, title_c, 0);
+                if (is_1x1) {
+                    lv_obj_add_flag(ch, LV_OBJ_FLAG_HIDDEN);
+                } else {
+                    lv_obj_clear_flag(ch, LV_OBJ_FLAG_HIDDEN);
+                    set_font(ch);
+                    lv_obj_set_style_text_color(ch, title_c, 0);
+                }
             }
         } else if (lv_obj_check_type(ch, &lv_slider_class)) {
             ui_set_enabled(ch, online);
@@ -1334,29 +1354,41 @@ static void add_tile_labels(lv_obj_t *tile, const nl_widget_t *w, tile_kind_t ki
     char short_t[24];
     short_label(title, short_t, sizeof(short_t));
 
-    bool is_row = (w && w->gh <= 1);
+    bool is_1x1 = (w && w->gw <= 1 && w->gh <= 1);
+    bool is_row = (w && w->gw >= 2 && w->gh <= 1);
     bool is_large = (w && (w->gw >= 2 && w->gh >= 2));
+    bool is_col_slim = (w && w->gw <= 1 && w->gh >= 2);
 
-    if (is_row) {
-        /* 行高为 1：左右结构（左图标胶囊、中标题、右角标） */
+    if (is_1x1) {
+        /* 1x1 极小单格：单图标居中（Center Hero），文字完全隐藏，杜绝重叠 */
+        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_all(tile, 4, 0);
+    } else if (is_row) {
+        /* 行高为 1 且宽 >= 2：左右结构（左图标胶囊、中标题、右角标真正靠右） */
         lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(tile, 8, 0);
-        lv_obj_set_style_pad_left(tile, 8, 0);
-        lv_obj_set_style_pad_right(tile, 36, 0); /* 预留右侧浮动药丸角标宽度，防文字重叠 */
+        lv_obj_set_style_pad_left(tile, 10, 0);
+        lv_obj_set_style_pad_right(tile, 8, 0); /* 贴近右边界，右侧状态微标真正靠右 */
         lv_obj_set_style_pad_top(tile, 4, 0);
         lv_obj_set_style_pad_bottom(tile, 4, 0);
-    } else {
-        /* 行高 >= 2：上下结构（上图标底座、下标题），文字与图标物理隔开 */
+    } else if (is_col_slim) {
+        /* 瘦高卡片（1x2 / 1x3）：上下结构，图标居中，标题居中 */
         lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_all(tile, 6, 0);
+        lv_obj_set_style_pad_row(tile, 8, 0);
+    } else {
+        /* 大方块（>=2x2）：宽松上下结构，大图标底座与大文字 */
+        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_all(tile, 8, 0);
         lv_obj_set_style_pad_row(tile, is_large ? 12 : 8, 0);
-        lv_obj_set_style_pad_top(tile, is_large ? 8 : 4, 0);
-        lv_obj_set_style_pad_bottom(tile, is_large ? 8 : 4, 0);
     }
 
     /* 1. 图标胶囊底座容器（固定尺寸正圆，绝对居中） */
-    lv_coord_t cap_size = is_large ? 46 : (is_row ? 28 : 36);
+    lv_coord_t cap_size = is_large ? 46 : (is_row ? 28 : (is_1x1 ? 34 : 36));
     lv_obj_t *capsule = lv_obj_create(tile);
     lv_obj_remove_style_all(capsule);
     lv_obj_set_user_data(capsule, (void *)(intptr_t)TILE_CHILD_CAPSULE);
@@ -1373,22 +1405,27 @@ static void add_tile_labels(lv_obj_t *tile, const nl_widget_t *w, tile_kind_t ki
     lv_obj_set_style_text_color(icon_lbl, UI_TEXT_DIM, 0);
     lv_obj_center(icon_lbl);
 
-    /* 2. 标题文字 */
+    /* 2. 标题文字（1x1 隐藏） */
     lv_obj_t *lb = lv_label_create(tile);
     lv_obj_set_user_data(lb, (void *)(intptr_t)TILE_CHILD_TITLE);
     lv_label_set_text(lb, short_t[0] ? short_t : title);
     set_font(lb);
     lv_obj_set_style_text_color(lb, UI_TEXT, 0);
-    if (is_row) {
+    if (is_1x1) {
+        lv_obj_add_flag(lb, LV_OBJ_FLAG_HIDDEN);
+    } else if (is_row) {
+        lv_obj_clear_flag(lb, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_LEFT, 0);
         lv_obj_set_flex_grow(lb, 1);
+        lv_obj_set_style_pad_right(lb, 26, 0); /* 预留右侧浮动药丸空隙，长文字自动打点截断 */
     } else {
+        lv_obj_clear_flag(lb, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_width(lb, lv_pct(94));
     }
     lv_label_set_long_mode(lb, LV_LABEL_LONG_DOT);
 
-    /* 药丸浮动角标：左右结构靠中右，上下结构靠右上 */
+    /* 3. 药丸浮动角标：左右结构靠中右，上下结构靠右上 */
     lv_obj_t *hint = lv_label_create(tile);
     lv_obj_set_user_data(hint, (void *)(intptr_t)TILE_CHILD_HINT);
     lv_obj_add_flag(hint, (lv_obj_flag_t)(LV_OBJ_FLAG_IGNORE_LAYOUT | LV_OBJ_FLAG_FLOATING));
@@ -1401,6 +1438,12 @@ static void add_tile_labels(lv_obj_t *tile, const nl_widget_t *w, tile_kind_t ki
     lv_obj_set_style_bg_color(hint, UI_TILE_BADGE_OFF, 0);
     lv_obj_set_style_bg_opa(hint, LV_OPA_70, 0);
     lv_obj_align(hint, is_row ? LV_ALIGN_RIGHT_MID : LV_ALIGN_TOP_RIGHT, 0, 0);
+
+    if (is_1x1) {
+        /* 1x1 正常在线隐藏微标，只在离线时展示 */
+        lv_obj_add_flag(hint, LV_OBJ_FLAG_HIDDEN);
+    }
+
     if (kind == TILE_SCENE) {
         lv_label_set_text(hint, "情景");
         set_font(hint);
@@ -1510,19 +1553,34 @@ static void fill_home(void)
                 continue;
             }
             if (kind == TILE_PWM) {
+                bool is_1x1 = (w && w->gw <= 1 && w->gh <= 1);
+                bool is_row = (w && w->gw >= 2 && w->gh <= 1);
                 bool is_large = (w && (w->gw >= 2 && w->gh >= 2));
-                bool is_row = (w && w->gh <= 1);
                 lv_obj_t *row = make_tile_shell(w, kind, cell_w, cell_h);
-                lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
-                lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
-                                     LV_FLEX_ALIGN_CENTER);
-                lv_obj_set_style_pad_row(row, is_large ? 8 : 4, 0);
-                lv_obj_set_style_pad_top(row, is_large ? 8 : 6, 0);
-                lv_obj_set_style_pad_bottom(row, is_large ? 8 : 6, 0);
+                if (is_1x1) {
+                    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+                    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+                    lv_obj_set_style_pad_all(row, 4, 0);
+                } else if (is_row) {
+                    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+                    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+                    lv_obj_set_style_pad_column(row, 8, 0);
+                    lv_obj_set_style_pad_left(row, 10, 0);
+                    lv_obj_set_style_pad_right(row, 8, 0);
+                    lv_obj_set_style_pad_top(row, 4, 0);
+                    lv_obj_set_style_pad_bottom(row, 4, 0);
+                } else {
+                    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+                    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                                         LV_FLEX_ALIGN_CENTER);
+                    lv_obj_set_style_pad_row(row, is_large ? 8 : 4, 0);
+                    lv_obj_set_style_pad_top(row, is_large ? 8 : 6, 0);
+                    lv_obj_set_style_pad_bottom(row, is_large ? 8 : 6, 0);
+                }
 
                 char short_t[24];
                 short_label(title, short_t, sizeof(short_t));
-                lv_coord_t cap_size = is_large ? 46 : (is_row ? 28 : 36);
+                lv_coord_t cap_size = is_large ? 46 : (is_row ? 28 : (is_1x1 ? 34 : 36));
                 lv_obj_t *capsule = lv_obj_create(row);
                 lv_obj_remove_style_all(capsule);
                 lv_obj_set_user_data(capsule, (void *)(intptr_t)TILE_CHILD_CAPSULE);
@@ -1543,9 +1601,17 @@ static void fill_home(void)
                 lv_label_set_text(lb, short_t[0] ? short_t : title);
                 set_font(lb);
                 lv_obj_set_style_text_color(lb, UI_TEXT, 0);
-                lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_CENTER, 0);
+                if (is_1x1) {
+                    lv_obj_add_flag(lb, LV_OBJ_FLAG_HIDDEN);
+                } else if (is_row) {
+                    lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_LEFT, 0);
+                    lv_obj_set_flex_grow(lb, 1);
+                    lv_obj_set_style_pad_right(lb, 26, 0);
+                } else {
+                    lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_CENTER, 0);
+                    lv_obj_set_width(lb, lv_pct(94));
+                }
                 lv_label_set_long_mode(lb, LV_LABEL_LONG_DOT);
-                lv_obj_set_width(lb, lv_pct(94));
 
                 lv_obj_t *hint = lv_label_create(row);
                 lv_obj_set_user_data(hint, (void *)(intptr_t)TILE_CHILD_HINT);
@@ -1562,7 +1628,14 @@ static void fill_home(void)
                 lv_obj_set_style_bg_opa(hint, LV_OPA_70, 0);
                 lv_obj_align(hint, is_row ? LV_ALIGN_RIGHT_MID : LV_ALIGN_TOP_RIGHT, 0, 0);
 
+                if (is_1x1) {
+                    lv_obj_add_flag(hint, LV_OBJ_FLAG_HIDDEN);
+                }
+
                 lv_obj_t *sl = lv_slider_create(row);
+                if (is_1x1) {
+                    lv_obj_add_flag(sl, LV_OBJ_FLAG_HIDDEN);
+                }
                 lv_obj_set_width(sl, lv_pct(88));
                 lv_obj_set_height(sl, 8);
                 lv_obj_set_style_radius(sl, UI_RADIUS_XS, LV_PART_MAIN);
