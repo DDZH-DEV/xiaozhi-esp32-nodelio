@@ -1,5 +1,6 @@
 #include "nodelio_overlay.h"
 
+#include "application.h"
 #include "board_info.h"
 #include "fonts/font_puhui_14_1.h"
 #include "layout_cache.h"
@@ -2498,6 +2499,7 @@ static void open_settings_detail(set_page_id_t page)
             std::string ua = SystemInfo::GetUserAgent();
             sys_kv_row(dev, "固件", ua.c_str(), nullptr);
         }
+        sys_kv_row(dev, "唤醒词", "你好小智", nullptr);
         {
             std::string mac = SystemInfo::GetMacAddress();
             sys_kv_row(dev, "MAC", mac.c_str(), nullptr);
@@ -2517,7 +2519,6 @@ static void open_settings_detail(set_page_id_t page)
         sys_kv_row(dev, "布局", line, nullptr);
         std::snprintf(line, sizeof(line), "%d%% / %d%%", s_brightness, s_volume);
         sys_kv_row(dev, "亮/音", line, nullptr);
-        sys_kv_row(dev, "唤醒词", "你好小智", nullptr);
 
         lv_obj_t *run = settings_card(body, "运行状态");
         lv_obj_set_style_pad_row(run, 4, 0);
@@ -2608,7 +2609,7 @@ static void fill_settings(void)
         toast("正在刷新…");
         nodelio_layout_request_sync();
     });
-    settings_tile(s_settings, "机", "设备信息", "内存 · 运行时间", UI_C_PURPLE,
+    settings_tile(s_settings, "机", "设备信息", "唤醒词「你好小智」· 状态", UI_C_PURPLE,
                   [](lv_event_t *) { open_settings_detail(SET_PAGE_SYS); });
     settings_tile(s_settings, "复", "重置", "清空凭证并重启", UI_C_DANGER,
                   [](lv_event_t *) { open_settings_detail(SET_PAGE_RESET); });
@@ -2821,7 +2822,8 @@ static void create_ai_drawer(lv_obj_t *parent)
     lv_obj_set_ext_click_area(close_btn, 20);
 
     lv_obj_t *close_ic = lv_label_create(close_btn);
-    lv_label_set_text(close_ic, LV_SYMBOL_DOWN);
+    lv_obj_set_style_text_font(close_ic, &font_material_symbols_20_4, 0);
+    lv_label_set_text(close_ic, MATERIAL_SYMBOLS_CLOSE);
     lv_obj_set_style_text_color(close_ic, lv_color_hex(UI_C_TEXT_SUB), 0);
     lv_obj_set_style_text_color(close_ic, lv_color_hex(UI_C_ON_TILE), LV_STATE_PRESSED);
     lv_obj_center(close_ic);
@@ -2860,6 +2862,10 @@ static void create_ai_drawer(lv_obj_t *parent)
 static void show_ai_drawer_locked(chat_phase_t phase, const char *status_text, const char *msg_text)
 {
     if (!s_ai_drawer) {
+        return;
+    }
+    /* 开机/静默防误弹：若当前抽屉处于隐藏状态且是待命态，严禁主动弹出 */
+    if (phase == CHAT_IDLE && lv_obj_has_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN)) {
         return;
     }
     /* 保持当前页面，直接置顶浮出抽屉 */
@@ -2918,8 +2924,9 @@ static void fill_chat(void)
 static void show_page(int tab)
 {
     if (tab == 1) {
-        /* 点击“对话”Tab：在当前页面底部浮现 AI 抽屉！绝不切走原页面！ */
+        /* 点击“对话”Tab：在当前页面底部浮现 AI 抽屉并直接物理唤醒小智开始倾听！ */
         show_ai_drawer_locked(CHAT_LISTEN, "小智在听…", "说唤醒词「你好小智」或吩咐指令…");
+        Application::GetInstance().ToggleChatState();
         return;
     }
     hide_ai_drawer();
@@ -3300,6 +3307,9 @@ void nodelio_overlay_on_status_locked(const char *status)
     /* 只跟会话相位；检查更新/登录等杂讯不进对话 */
     if (status_is_phase(status)) {
         chat_phase_t ph = phase_from_status(status);
+        if (ph == CHAT_IDLE && s_ai_drawer && lv_obj_has_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN)) {
+            return;
+        }
         show_ai_drawer_locked(ph, status, nullptr);
     }
 }
