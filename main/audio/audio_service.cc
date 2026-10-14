@@ -314,6 +314,8 @@ void AudioService::AudioInputTask() {
             std::vector<int16_t> data;
             if (ReadAudioData(data, 16000, samples)) {
                 audio_engine_->Feed(std::move(data));
+                /* 连续可读时勿空转占满 CPU0，否则 IDLE0 触发 TWDT、屏会闪 */
+                taskYIELD();
                 continue;
             }
         }

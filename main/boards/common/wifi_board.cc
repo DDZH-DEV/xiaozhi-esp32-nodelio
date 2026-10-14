@@ -102,6 +102,23 @@ void WifiBoard::StartNetwork() {
         }
     });
 
+#if defined(CONFIG_NODELIO_PANEL)
+    /* 监听底层 WIFI_EVENT_STA_CONNECTED：在 L2 关联成功的瞬间重置 listen_interval 为 0 并保持高性能，杜绝 DHCP 广播包丢弃 */
+    esp_event_handler_instance_register(
+        WIFI_EVENT, WIFI_EVENT_STA_CONNECTED,
+        [](void *, esp_event_base_t, int32_t, void *) {
+            (void)esp_wifi_set_ps(WIFI_PS_NONE);
+            wifi_config_t cfg;
+            if (esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK) {
+                if (cfg.sta.listen_interval != 0) {
+                    cfg.sta.listen_interval = 0;
+                    (void)esp_wifi_set_config(WIFI_IF_STA, &cfg);
+                }
+            }
+        },
+        nullptr, nullptr);
+#endif
+
     // Try to connect or enter config mode
     TryWifiConnect();
 }

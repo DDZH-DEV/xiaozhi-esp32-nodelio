@@ -160,7 +160,12 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
 
     afe_config->aec_init = codec_->input_reference();
     afe_config->aec_mode = AEC_MODE_FD_LOW_COST;
-    afe_config->aec_nlp_level = AEC_NLP_LEVEL_VERYAGGR;
+    /* VERYAGGR 的 NLP 易把 audio_input 钉死在 CPU0 → IDLE0 TWDT，RGB 屏跟着闪一下 */
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    afe_config->aec_nlp_level = AEC_NLP_LEVEL_NORMAL;
+#else
+    afe_config->aec_nlp_level = AEC_NLP_LEVEL_AGGR;
+#endif
     afe_config->ns_init = false;
     afe_config->vad_init = kUseAfeForVoiceProcessing;
     afe_config->vad_mode = VAD_MODE_0;
@@ -278,6 +283,8 @@ void AfeAudioEngine::Feed(std::vector<int16_t>&& data) {
     while (input_buffer_.size() >= chunk_size) {
         afe_iface_->feed(afe_data_, input_buffer_.data());
         input_buffer_.erase(input_buffer_.begin(), input_buffer_.begin() + chunk_size);
+        /* AEC feed 可能数十 ms；让 IDLE/LVGL 有机会跑，避免 TWDT */
+        taskYIELD();
     }
 }
 
@@ -407,8 +414,10 @@ void AfeAudioEngine::ApplyAfeControls() {
         }
     }
     if (codec_->input_reference()) {
-        const bool enable_aec = (bits & kWakeWordEnabled) ||
-                                (device_aec_enabled_.load() && (bits & kVoiceProcessingEnabled));
+        /* 通话全双工要 AEC；唤醒态仅在扬声器开着时开，避免空闲 NLP 占满 CPU0 */
+        const bool enable_aec =
+            (device_aec_enabled_.load() && (bits & kVoiceProcessingEnabled)) ||
+            ((bits & kWakeWordEnabled) && codec_->output_enabled());
         if (enable_aec) {
             afe_iface_->enable_aec(afe_data_);
         } else {
@@ -429,11 +438,20 @@ void AfeAudioEngine::ApplyPendingReset() {
 }
 
 void AfeAudioEngine::ProcessingTask() {
+    bool last_output_enabled = false;
     while (true) {
         xEventGroupWaitBits(event_group_, kAfeActive, pdFALSE, pdTRUE, portMAX_DELAY);
         ApplyPendingReset();
         if ((xEventGroupGetBits(event_group_) & kAfeActive) == 0) {
             continue;
+        }
+        /* 播报开/关不会自动 dirty；跟一下 output，才开得起「有声时唤醒 AEC」 */
+        if (codec_ != nullptr) {
+            const bool out = codec_->output_enabled();
+            if (out != last_output_enabled) {
+                last_output_enabled = out;
+                afe_control_dirty_ = true;
+            }
         }
         if (afe_control_dirty_.exchange(false)) {
             // WakeNet/AEC toggles are not safe against a concurrent fetch,

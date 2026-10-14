@@ -109,7 +109,10 @@ esp_err_t nodelio_snapshot_fetch(const nodelio_nvs_config_t *cfg);
 esp_err_t nodelio_panel_command(const nodelio_nvs_config_t *cfg, const char *widget_id, const char *action,
                                 const nl_bind_t *bind, const char *value_str, int *http_status);
 
-/** 后台：开机拉一次 layout/snapshot；之后仅 request_sync. */
+/**
+ * 后台：开机 layout+snapshot 一次；之后 MQTT notify / 手动刷新 /
+ * 无推送时半小时兜底 snapshot。禁止定时闪频轮询。
+ */
 esp_err_t nodelio_layout_start_poll(const nodelio_nvs_config_t *cfg);
 
 /**

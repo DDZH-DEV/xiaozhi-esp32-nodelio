@@ -319,10 +319,6 @@ void Application::Run() {
 
 void Application::HandleNetworkConnectedEvent() {
     ESP_LOGI(TAG, "Network connected");
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-    /* 局域网离线优先：WiFi 连通后第一时间启动内网服务（注册、拉取大屏布局、连接本地 MQTT），不依赖小智外网激活 */
-    Schedule([]() { (void)nodelio_bridge_start(); });
-#endif
     auto state = GetDeviceState();
 
     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {

@@ -22,13 +22,6 @@ static void apply_font(lv_obj_t *obj)
     }
 }
 
-static void apply_icon_font(lv_obj_t *obj)
-{
-    if (obj) {
-        lv_obj_set_style_text_font(obj, &lv_font_montserrat_14, 0);
-    }
-}
-
 void ui_styles_init(void)
 {
     if (s_inited) {
@@ -89,10 +82,11 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_set_style_radius(btn, UI_RADIUS_SM, 0);
     lv_obj_set_style_border_width(btn, 1, 0);
     lv_obj_set_style_border_color(btn, UI_TILE_OFF_BORDER, 0);
-    lv_obj_set_style_pad_left(btn, 12, 0);
-    lv_obj_set_style_pad_right(btn, 14, 0);
+    lv_obj_set_style_pad_left(btn, 14, 0);
+    lv_obj_set_style_pad_right(btn, 16, 0);
     lv_obj_set_style_pad_top(btn, 8, 0);
     lv_obj_set_style_pad_bottom(btn, 8, 0);
+    lv_obj_set_style_pad_column(btn, 12, 0);
 
     /* 按压反馈 */
     lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
@@ -100,24 +94,13 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_set_style_translate_y(btn, 1, LV_STATE_PRESSED);
 
     lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     if (cb) {
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
     }
 
-    /* 左区：微晶 Icon Pod + 中间双行标题 */
-    lv_obj_t *left_box = lv_obj_create(btn);
-    lv_obj_remove_style_all(left_box);
-    lv_obj_set_size(left_box, LV_SIZE_CONTENT, lv_pct(100));
-    lv_obj_set_flex_grow(left_box, 1);
-    lv_obj_set_flex_flow(left_box, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(left_box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(left_box, 12, 0);
-    lv_obj_clear_flag(left_box, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(left_box, LV_OBJ_FLAG_SCROLLABLE);
-
     /* 1. 微光 Icon Pod 胶囊底座 */
-    lv_obj_t *pod = lv_obj_create(left_box);
+    lv_obj_t *pod = lv_obj_create(btn);
     lv_obj_remove_style_all(pod);
     lv_obj_set_size(pod, 40, 40);
     lv_obj_set_style_radius(pod, 10, 0);
@@ -131,20 +114,16 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
 
     lv_obj_t *g = lv_label_create(pod);
     lv_label_set_text(g, glyph ? glyph : "");
-    if (glyph && (uint8_t)glyph[0] >= 0xef) {
-        apply_icon_font(g);
-    } else {
-        apply_font(g);
-    }
+    apply_font(g);
     lv_obj_set_style_text_color(g, lv_color_hex(accent_c), 0);
     lv_obj_center(g);
     lv_obj_clear_flag(g, LV_OBJ_FLAG_CLICKABLE);
 
-    /* 2. 双行文字区域 */
-    lv_obj_t *tbox = lv_obj_create(left_box);
+    /* 2. 双行文字区域（flex_grow 占据剩余宽度，扁平无深层嵌套） */
+    lv_obj_t *tbox = lv_obj_create(btn);
     lv_obj_remove_style_all(tbox);
-    lv_obj_set_size(tbox, LV_SIZE_CONTENT, lv_pct(100));
     lv_obj_set_flex_grow(tbox, 1);
+    lv_obj_set_height(tbox, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(tbox, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(tbox, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(tbox, 3, 0);
@@ -164,27 +143,27 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_set_style_text_color(s, UI_TEXT_MUTED, 0);
     lv_obj_clear_flag(s, LV_OBJ_FLAG_CLICKABLE);
 
-    /* 右侧：专属功能图标 + 导航微晶指示箭头 > */
+    /* 3. 右侧状态提示与微晶导航指示 > */
     lv_obj_t *right_box = lv_obj_create(btn);
     lv_obj_remove_style_all(right_box);
-    lv_obj_set_size(right_box, LV_SIZE_CONTENT, lv_pct(100));
+    lv_obj_set_size(right_box, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(right_box, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(right_box, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(right_box, 8, 0);
+    lv_obj_set_style_pad_column(right_box, 6, 0);
     lv_obj_clear_flag(right_box, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(right_box, LV_OBJ_FLAG_SCROLLABLE);
 
-    if (right_icon && right_icon[0]) {
+    if (right_icon && right_icon[0] && (uint8_t)right_icon[0] < 0x80) {
         lv_obj_t *ric = lv_label_create(right_box);
-        apply_icon_font(ric);
+        apply_font(ric);
         lv_label_set_text(ric, right_icon);
-        lv_obj_set_style_text_color(ric, lv_color_hex(accent_c), 0);
+        lv_obj_set_style_text_color(ric, UI_TEXT_MUTED, 0);
         lv_obj_clear_flag(ric, LV_OBJ_FLAG_CLICKABLE);
     }
 
     lv_obj_t *arr = lv_label_create(right_box);
-    apply_icon_font(arr);
-    lv_label_set_text(arr, LV_SYMBOL_RIGHT);
+    apply_font(arr);
+    lv_label_set_text(arr, ">");
     lv_obj_set_style_text_color(arr, UI_TEXT_MUTED, 0);
     lv_obj_clear_flag(arr, LV_OBJ_FLAG_CLICKABLE);
 
@@ -330,14 +309,18 @@ void ui_style_slider(lv_obj_t *sl)
         return;
     }
     lv_obj_set_width(sl, lv_pct(100));
-    lv_obj_set_height(sl, 36);
-    lv_obj_set_style_pad_hor(sl, 14, LV_PART_MAIN);
-    lv_obj_set_style_pad_ver(sl, 12, LV_PART_MAIN);
+    lv_obj_set_height(sl, 28);
+    lv_obj_set_style_pad_hor(sl, 10, LV_PART_MAIN);
+    lv_obj_set_style_pad_ver(sl, 10, LV_PART_MAIN);
     lv_obj_set_style_bg_color(sl, UI_SLIDER_TRACK, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(sl, UI_RADIUS_XS, LV_PART_MAIN);
+    lv_obj_set_style_radius(sl, UI_RADIUS_XS, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(sl, UI_ACCENT, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(sl, UI_TEXT, LV_PART_KNOB);
-    lv_obj_set_style_pad_all(sl, 8, LV_PART_KNOB);
+    lv_obj_set_style_radius(sl, LV_RADIUS_CIRCLE, LV_PART_KNOB);
+    /* pad 控制旋钮直径；8 过大，4 ≈ 轨道高度的精致圆点 */
+    lv_obj_set_style_pad_all(sl, 4, LV_PART_KNOB);
 }
 
 void ui_set_enabled(lv_obj_t *obj, bool enabled)

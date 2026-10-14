@@ -13,15 +13,12 @@
 
 #include <esp_wifi.h>
 
-#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
-#include <freertos/semphr.h>
 #include <freertos/task.h>
-#include <functional>
 
 #define TAG "nl_bridge"
 
@@ -31,46 +28,6 @@ static nodelio_nvs_config_t s_cfg;
 static QueueHandle_t s_pwr_q;
 
 enum { PWR_SLEEP = 0, PWR_WAKE = 1 };
-
-struct MainSyncGate {
-    SemaphoreHandle_t sem = nullptr;
-    std::atomic<bool> done{false};
-};
-
-/**
- * 在主任务执行并等待完成（息屏挂起小智 MQTT 须先于断网）。
- * 禁止超时后删 semaphore：主线程若卡在 HTTP，迟到 Give 会 UAF → InstructionFetchError。
- */
-static void run_on_main_sync(std::function<void()> fn)
-{
-    auto *gate = new MainSyncGate();
-    gate->sem = xSemaphoreCreateBinary();
-    if (!gate->sem) {
-        delete gate;
-        fn();
-        return;
-    }
-    Application::GetInstance().Schedule([fn = std::move(fn), gate]() {
-        fn();
-        gate->done.store(true, std::memory_order_release);
-        xSemaphoreGive(gate->sem);
-    });
-
-    TickType_t last_warn = xTaskGetTickCount();
-    while (!gate->done.load(std::memory_order_acquire)) {
-        if (xSemaphoreTake(gate->sem, pdMS_TO_TICKS(1000)) == pdTRUE) {
-            break;
-        }
-        TickType_t now = xTaskGetTickCount();
-        if ((now - last_warn) >= pdMS_TO_TICKS(5000)) {
-            ESP_LOGW(TAG, "main sync still waiting — Application main may be blocked");
-            last_warn = now;
-        }
-    }
-    (void)xSemaphoreTake(gate->sem, 0);
-    vSemaphoreDelete(gate->sem);
-    delete gate;
-}
 
 static void seed_from_kconfig(nodelio_nvs_config_t *cfg)
 {

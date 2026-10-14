@@ -2,7 +2,6 @@
 
 #include "nodelio_http.h"
 #include "nvs_config.h"
-#include "offline_cmd_map.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
 
@@ -530,18 +529,6 @@ void nodelio_mcp_register_tools(void)
                     }
                 }
 
-                // 3. 仅作为离线短语最后的兜底尝试（若全无指定目标）
-                if (layout) {
-                    esp_err_t err = nodelio_offline_try_phrase(&cfg, phrase.c_str(), layout);
-                    if (err == ESP_OK) {
-                        std::string ok = std::string("已执行：") + phrase;
-                        nodelio_panel_ui_toast(ok.c_str());
-                        return ok;
-                    }
-                    if (err == ESP_ERR_INVALID_STATE) {
-                        return std::unexpected(std::string("设备离线（请确认被控设备已联网上线）"));
-                    }
-                }
             }
 
             return std::unexpected(std::string(

@@ -74,9 +74,12 @@ static lv_obj_t *s_home;
 static lv_obj_t *s_eq_bars[3];
 static lv_obj_t *s_ai_drawer;           /* 底部居中 AI 悬浮胶囊 */
 static lv_obj_t *s_ai_drawer_status;    /* 状态小标题（如 "小智在听…" / "小智回答"） */
-static lv_obj_t *s_ai_drawer_text;      /* 对话正文：固定两行折行 */
+static lv_obj_t *s_ai_drawer_body;      /* 正文滚动容器 */
+static lv_obj_t *s_ai_drawer_text;      /* 对话正文：最近 5 句 */
 static lv_timer_t *s_ai_hide_timer;     /* 会话闲置自动收起定时器 */
-static char s_ai_latest_text[160];      /* 当前最新 1~2 行文字 */
+#define NL_CHAT_SHOW_LINES 5
+#define NL_CHAT_SHOW_CAP   1024
+static char s_ai_show_text[NL_CHAT_SHOW_CAP]; /* 抽屉展示缓冲 */
 static lv_obj_t *s_settings;
 static lv_obj_t *s_tabbar;
 static lv_obj_t *s_tab_btns[2]; /* 0=首页 1=设置，已去除对话 Tab */
@@ -903,7 +906,6 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
 
     bool is_1x1 = (w && w->gw <= 1 && w->gh <= 1);
     bool is_row = (w && w->gw >= 2 && w->gh <= 1);
-    bool is_large = (w && (w->gw >= 2 && w->gh >= 2));
     uint32_t sub = lv_obj_get_child_count(tile);
     for (uint32_t j = 0; j < sub; j++) {
         lv_obj_t *ch = lv_obj_get_child(tile, j);
@@ -1569,7 +1571,6 @@ static void fill_home(void)
             if (kind == TILE_PWM) {
                 bool is_1x1 = (w && w->gw <= 1 && w->gh <= 1);
                 bool is_row = (w && w->gw >= 2 && w->gh <= 1);
-                bool is_large = (w && (w->gw >= 2 && w->gh >= 2));
                 lv_obj_t *row = make_tile_shell(w, kind, cell_w, cell_h);
                 if (is_1x1) {
                     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
@@ -1674,10 +1675,30 @@ static void fill_home(void)
 static void close_settings_detail(void);
 static void hide_ai_drawer(void);
 
+static bool ai_session_active(void)
+{
+    auto state = Application::GetInstance().GetDeviceState();
+    return state == kDeviceStateListening || state == kDeviceStateSpeaking;
+}
+
+/** 会话进行中：抽屉保持可见并置顶（切 Tab / 关表单后仍找得到小智） */
+static void restore_ai_drawer_if_session(void)
+{
+    if (!s_ai_drawer || !ai_session_active()) {
+        return;
+    }
+    lv_obj_clear_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_ai_drawer);
+    if (s_ai_hide_timer) {
+        lv_timer_del(s_ai_hide_timer);
+        s_ai_hide_timer = nullptr;
+    }
+}
+
 static void close_forms(void)
 {
     kb_set_visible(false);
-    hide_ai_drawer();
+    /* 勿在此藏 AI 抽屉：切首页/设置会走 close_forms，会话中应继续露着 */
     close_settings_detail();
     if (s_connect) {
         lv_obj_add_flag(s_connect, LV_OBJ_FLAG_HIDDEN);
@@ -1685,6 +1706,7 @@ static void close_forms(void)
     if (s_tabbar && s_visible) {
         lv_obj_clear_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
     }
+    restore_ai_drawer_if_session();
 }
 
 static void close_connect(void)
@@ -2401,6 +2423,7 @@ static void close_settings_detail(void)
     if (s_tabbar && s_visible) {
         lv_obj_clear_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
     }
+    restore_ai_drawer_if_session();
 }
 
 static lv_obj_t *settings_card(lv_obj_t *parent, const char *title)
@@ -2854,16 +2877,18 @@ static void create_ai_drawer(lv_obj_t *parent)
         },
         LV_EVENT_ALL, nullptr);
 
-    /* 正文区固定高度 → WRAP 稳定出两行（此前仅 width+flex，常被裁成一行） */
-    lv_obj_t *body_band = lv_obj_create(s_ai_drawer);
-    lv_obj_remove_style_all(body_band);
-    lv_obj_set_size(body_band, lv_pct(100), UI_AI_DRAWER_TEXT_H);
-    lv_obj_set_style_pad_hor(body_band, 2, 0);
-    lv_obj_clear_flag(body_band, LV_OBJ_FLAG_SCROLLABLE);
+    /* 正文区固定高度，可滚；标签按内容增高，展示最近 5 句 */
+    s_ai_drawer_body = lv_obj_create(s_ai_drawer);
+    lv_obj_remove_style_all(s_ai_drawer_body);
+    lv_obj_set_size(s_ai_drawer_body, lv_pct(100), UI_AI_DRAWER_TEXT_H);
+    lv_obj_set_style_pad_hor(s_ai_drawer_body, 2, 0);
+    lv_obj_add_flag(s_ai_drawer_body, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(s_ai_drawer_body, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scroll_dir(s_ai_drawer_body, LV_DIR_VER);
 
-    s_ai_drawer_text = lv_label_create(body_band);
+    s_ai_drawer_text = lv_label_create(s_ai_drawer_body);
     lv_label_set_text(s_ai_drawer_text, "说唤醒词「你好小智」或吩咐指令…");
-    lv_obj_set_size(s_ai_drawer_text, lv_pct(100), UI_AI_DRAWER_TEXT_H);
+    lv_obj_set_width(s_ai_drawer_text, lv_pct(100));
     lv_label_set_long_mode(s_ai_drawer_text, LV_LABEL_LONG_WRAP);
     set_font(s_ai_drawer_text);
     lv_obj_set_style_text_color(s_ai_drawer_text, UI_TEXT, 0);
@@ -2912,9 +2937,11 @@ static void show_ai_drawer_locked(chat_phase_t phase, const char *status_text, c
 
     if (msg_text && msg_text[0] && s_ai_drawer_text) {
         lv_label_set_text(s_ai_drawer_text, msg_text);
-        /* 每次刷新保持两行盒尺寸，避免 WRAP 退回单行内容高度 */
-        lv_obj_set_size(s_ai_drawer_text, lv_pct(100), UI_AI_DRAWER_TEXT_H);
+        lv_obj_set_width(s_ai_drawer_text, lv_pct(100));
         lv_label_set_long_mode(s_ai_drawer_text, LV_LABEL_LONG_WRAP);
+        if (s_ai_drawer_body) {
+            lv_obj_scroll_to_y(s_ai_drawer_body, LV_COORD_MAX, LV_ANIM_OFF);
+        }
     }
 
     start_eq_anims(phase);
@@ -2940,7 +2967,6 @@ static void fill_chat(void)
 
 static void show_page(int tab)
 {
-    hide_ai_drawer();
     s_active_tab = tab;
     s_want_chat = false;
     if (tab != 1) {
@@ -2966,6 +2992,8 @@ static void show_page(int tab)
             ui_tab_set_checked(s_tab_btns[i], i == tab);
         }
     }
+    /* 切 Tab 不再藏小智；听/说中保持底部胶囊 */
+    restore_ai_drawer_if_session();
 }
 
 static void apply_visible_locked(void)
@@ -3233,6 +3261,26 @@ static void utf8_copy(char *dst, size_t dst_len, const char *src)
     dst[n] = '\0';
 }
 
+/** 取 src 末尾最多 n 行（按 \\n），供抽屉展示 */
+static const char *chat_tail_lines(const char *src, int n)
+{
+    if (!src || !src[0] || n <= 0) {
+        return "";
+    }
+    const char *p = src + strlen(src);
+    int newlines = 0;
+    while (p > src && newlines < n) {
+        --p;
+        if (*p == '\n') {
+            ++newlines;
+        }
+    }
+    if (newlines == n) {
+        return p + 1; /* 落在从尾数第 n 个换行上，从其后开始 */
+    }
+    return src;
+}
+
 static void append_chat_line(const char *role, const char *text)
 {
     if (!text || !text[0]) {
@@ -3294,12 +3342,13 @@ void nodelio_overlay_on_chat_locked(const char *role, const char *text)
         return;
     }
 
-    /* 提取当前最新的对话呈现于全局底部抽屉（支持 2 行自动折行） */
+    /* 抽屉展示最近 NL_CHAT_SHOW_LINES 句（含角色前缀），不再只刷最新一句 */
     chat_phase_t ph = (strcmp(role, "assistant") == 0) ? CHAT_SPEAK : CHAT_LISTEN;
     const char *status_str = (strcmp(role, "assistant") == 0) ? "小智回复" : "我说：";
-    utf8_copy(s_ai_latest_text, sizeof(s_ai_latest_text), text);
+    utf8_copy(s_ai_show_text, sizeof(s_ai_show_text),
+              chat_tail_lines(s_chat_text, NL_CHAT_SHOW_LINES));
 
-    show_ai_drawer_locked(ph, status_str, s_ai_latest_text);
+    show_ai_drawer_locked(ph, status_str, s_ai_show_text);
 
     /* 检测用户或助手的告别/退出语义，1 秒内迅速收起浮层 */
     if (strstr(text, "再见") || strstr(text, "退下") || strstr(text, "拜拜") ||
