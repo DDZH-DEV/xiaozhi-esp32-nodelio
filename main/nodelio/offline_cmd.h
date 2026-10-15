@@ -1,5 +1,7 @@
 #pragma once
 
+#include "panel_layout.h"
+
 #include <esp_err.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -36,12 +38,15 @@ void nodelio_offline_cmd_stop(void);
 /** 重置动态离线口令缓冲区 */
 void nodelio_offline_cmd_reset_dynamic(void);
 
-/** 动态添加一条离线口令（如 "da kai wo shi deng" -> 设备+通道+动作） */
-bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel, const char *action,
-                                    const char *name, const char *pinyin);
+/** 动态添加一条离线口令（如 "da kai wo shi deng" -> 设备+通道/引脚+动作） */
+bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel_or_pin, bool is_pin,
+                                    const char *action, const char *name, const char *pinyin);
 
 /** 提交并激活所有动态口令到 MultiNet 引擎 */
 void nodelio_offline_cmd_commit_dynamic(void);
+
+/** 按布局磁贴 title 的 pinyinOn/Off 重建词表（屏上名） */
+void nodelio_offline_cmd_rebuild_from_layout(const nodelio_panel_layout_t *layout);
 
 #ifdef __cplusplus
 }

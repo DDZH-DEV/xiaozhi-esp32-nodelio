@@ -34,6 +34,8 @@ typedef enum {
     SET_PAGE_DISP = 1,
     SET_PAGE_SYS = 2,
     SET_PAGE_RESET = 3,
+    SET_PAGE_VOICE = 4,
+    SET_PAGE_POWER = 5,
 } set_page_id_t;
 
 #define NL_CHAT_SHOW_LINES 5
@@ -79,6 +81,7 @@ extern lv_timer_t *s_activity_tmr;
 extern char s_clock_last[8];
 extern bool s_screen_on;
 extern nodelio_panel_ui_screen_cb_t s_screen_cb;
+extern nodelio_panel_ui_net_cb_t s_net_cb;
 
 extern lv_obj_t *s_settings_detail;
 extern lv_obj_t *s_bri_val_lbl;

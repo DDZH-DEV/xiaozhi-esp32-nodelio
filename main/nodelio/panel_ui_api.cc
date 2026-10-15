@@ -1,6 +1,7 @@
 #include "overlay_priv.h"
 
 #include "application.h"
+#include "assets/lang_config.h"
 #include "board.h"
 #include "board_info.h"
 #include "display.h"
@@ -10,6 +11,7 @@
 #include "nl_url_util.h"
 #include "nodelio_http.h"
 #include "nvs_config.h"
+#include "offline_cmd.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
 #include "ssid_manager.h"
@@ -72,6 +74,7 @@ extern "C" esp_err_t nodelio_panel_ui_apply_layout(const nodelio_panel_layout_t 
     *s_layout = *layout;
     s_have_layout = true;
     s_cloud_ok = true; /* 拉到 layout 说明 NodeLio 服务可达 */
+    nodelio_offline_cmd_rebuild_from_layout(s_layout);
     if (s_ready && s_home) {
         DisplayLockGuard lock(nl_ov_disp());
         if (lock) {
@@ -114,6 +117,11 @@ extern "C" void nodelio_panel_ui_set_screen_cb(nodelio_panel_ui_screen_cb_t cb)
     s_screen_cb = cb;
 }
 
+extern "C" void nodelio_panel_ui_set_net_cb(nodelio_panel_ui_net_cb_t cb)
+{
+    s_net_cb = cb;
+}
+
 extern "C" void nodelio_panel_ui_notify_screen(bool on)
 {
     if (on == s_screen_on) {
@@ -133,8 +141,33 @@ extern "C" void nodelio_panel_ui_notify_screen(bool on)
     }
 }
 
+extern "C" void nodelio_panel_ui_notify_net(bool on)
+{
+    if (s_net_cb) {
+        s_net_cb(on);
+    }
+}
+
 extern "C" void nodelio_panel_ui_toast(const char *text) { nl_ov_toast(text); }
 extern "C" void nodelio_panel_ui_toast_defer(const char *text) { nl_ov_toast(text); }
+
+extern "C" void nodelio_panel_ui_play_cue(int cue)
+{
+    Application::GetInstance().Schedule([cue]() {
+        auto& app = Application::GetInstance();
+        switch (cue) {
+        case 0:
+            app.PlaySound(Lang::Sounds::OGG_POPUP);
+            break;
+        case 1:
+            app.PlaySound(Lang::Sounds::OGG_SUCCESS);
+            break;
+        default:
+            app.PlaySound(Lang::Sounds::OGG_EXCLAMATION);
+            break;
+        }
+    });
+}
 extern "C" void nodelio_panel_ui_set_voice_hint(const char *hint)
 {
     DisplayLockGuard lock(nl_ov_disp());

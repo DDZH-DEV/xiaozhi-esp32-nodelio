@@ -124,7 +124,7 @@
 #define UI_GAP              8
 #define UI_GAP_LG           14
 #define UI_EXT_CLICK        20
-#define UI_SETTINGS_TILE_H  112
+#define UI_SETTINGS_TILE_H  64
 #define UI_NAV_H            40
 #define UI_NAV_BACK_W       64
 #define UI_BTN_H            48

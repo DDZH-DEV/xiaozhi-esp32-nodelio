@@ -6,12 +6,16 @@
 #include "settings.h"
 #include "assets/lang_config.h"
 
+#include "board.h"
+
+#include <cstdio>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_network.h>
 #include <esp_netif.h>
 #include <esp_log.h>
 #include <esp_mac.h>
+#include <esp_timer.h>
 #include <esp_wifi.h>
 #include <utility>
 
@@ -33,6 +37,88 @@ static const char *TAG = "WifiBoard";
 static constexpr int CONNECT_TIMEOUT_SEC = 60;
 #if defined(CONFIG_NODELIO_PANEL)
 static int s_dhcp_retry = 0;
+/* L2 已关联却无 IP：先给原生 DHCP 8s，再 kick；避免 5s 狂踢打断即将完成的握手 */
+static constexpr int DHCP_ASSIST_FIRST_US = 8 * 1000000;
+static constexpr int DHCP_ASSIST_RETRY_US = 12 * 1000000;
+static constexpr int DHCP_ASSIST_MAX = 3;
+static esp_timer_handle_t s_dhcp_assist_timer = nullptr;
+static int s_dhcp_assist_n = 0;
+
+static bool nl_sta_has_ip(void)
+{
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!netif) {
+        return false;
+    }
+    esp_netif_ip_info_t ip{};
+    return esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0;
+}
+
+static void nl_dhcp_kick(const char *why)
+{
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!netif) {
+        return;
+    }
+    ESP_LOGW(TAG, "DHCP kick (%s)", why);
+    (void)esp_netif_dhcpc_stop(netif);
+    (void)esp_netif_dhcpc_start(netif);
+}
+
+static void nl_dhcp_assist_cb(void * /*arg*/)
+{
+    if (nl_sta_has_ip()) {
+        s_dhcp_assist_n = 0;
+        return;
+    }
+    wifi_ap_record_t ap{};
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) {
+        s_dhcp_assist_n = 0;
+        return;
+    }
+    if (s_dhcp_assist_n >= DHCP_ASSIST_MAX) {
+        ESP_LOGW(TAG, "DHCP assist exhausted (ssid=%s)", (const char *)ap.ssid);
+        return;
+    }
+    s_dhcp_assist_n++;
+    char why[48];
+    snprintf(why, sizeof(why), "assist %d/%d", s_dhcp_assist_n, DHCP_ASSIST_MAX);
+    nl_dhcp_kick(why);
+    auto *d = Board::GetInstance().GetDisplay();
+    if (d) {
+        d->ShowNotification("已连路由，等待分配 IP…", 3000);
+    }
+    if (s_dhcp_assist_timer && s_dhcp_assist_n < DHCP_ASSIST_MAX) {
+        esp_timer_start_once(s_dhcp_assist_timer, DHCP_ASSIST_RETRY_US);
+    }
+}
+
+static void nl_dhcp_assist_arm(void)
+{
+    if (!s_dhcp_assist_timer) {
+        esp_timer_create_args_t args = {
+            .callback = nl_dhcp_assist_cb,
+            .arg = nullptr,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "nl_dhcp_assist",
+            .skip_unhandled_events = true,
+        };
+        if (esp_timer_create(&args, &s_dhcp_assist_timer) != ESP_OK) {
+            return;
+        }
+    }
+    s_dhcp_assist_n = 0;
+    esp_timer_stop(s_dhcp_assist_timer);
+    esp_timer_start_once(s_dhcp_assist_timer, DHCP_ASSIST_FIRST_US);
+}
+
+static void nl_dhcp_assist_stop(void)
+{
+    if (s_dhcp_assist_timer) {
+        esp_timer_stop(s_dhcp_assist_timer);
+    }
+    s_dhcp_assist_n = 0;
+}
 #endif
 
 WifiBoard::WifiBoard() {
@@ -103,11 +189,17 @@ void WifiBoard::StartNetwork() {
     });
 
 #if defined(CONFIG_NODELIO_PANEL)
-    /* L2 关联瞬间：保持 PS_NONE 全速收发广播，绝不中途修改 config 或重启 DHCP 打断系统原生握手 */
+    /* L2：PS_NONE + 武装 DHCP 早踢（首包给系统 5s 原生握手，再 kick） */
     esp_event_handler_instance_register(
         WIFI_EVENT, WIFI_EVENT_STA_CONNECTED,
         [](void *, esp_event_base_t, int32_t, void *) {
             (void)esp_wifi_set_ps(WIFI_PS_NONE);
+            ESP_LOGI(TAG, "STA associated — wait DHCP (assist in 8s)");
+            auto *d = Board::GetInstance().GetDisplay();
+            if (d) {
+                d->ShowNotification("已连路由，等待分配 IP…", 8000);
+            }
+            nl_dhcp_assist_arm();
         },
         nullptr, nullptr);
 #endif
@@ -155,6 +247,7 @@ void WifiBoard::OnNetworkEvent(NetworkEvent event, const std::string& data) {
             in_config_mode_ = false;
 #if defined(CONFIG_NODELIO_PANEL)
             s_dhcp_retry = 0;
+            nl_dhcp_assist_stop();
 #endif
             ESP_LOGI(TAG, "Connected to WiFi: %s", data.c_str());
             break;
@@ -209,11 +302,7 @@ void WifiBoard::OnWifiConnectTimeout(void* arg) {
             s_dhcp_retry++;
             ESP_LOGW(TAG, "L2 up (ssid=%s) but no IP — DHCP retry %d/2",
                      (const char *)ap.ssid, s_dhcp_retry);
-            esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-            if (netif) {
-                (void)esp_netif_dhcpc_stop(netif);
-                (void)esp_netif_dhcpc_start(netif);
-            }
+            nl_dhcp_kick("connect-timeout");
             esp_timer_start_once(board->connect_timer_, CONNECT_TIMEOUT_SEC * 1000000ULL);
             auto *d = Board::GetInstance().GetDisplay();
             if (d) {

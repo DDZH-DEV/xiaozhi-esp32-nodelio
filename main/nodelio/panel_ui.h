@@ -25,15 +25,25 @@ void nodelio_panel_ui_note_activity(void);
 /** 背光是否点亮（息屏时轮询可降频）. */
 bool nodelio_panel_ui_screen_on(void);
 
-/** 亮/息屏回调（息=断网省电；亮=先点背光再由产品壳拉网）. 勿在回调里长时间阻塞. */
+/** 亮/息屏回调（仅显示态；断网见 net_cb）. 勿在回调里长时间阻塞. */
 typedef void (*nodelio_panel_ui_screen_cb_t)(bool screen_on);
 void nodelio_panel_ui_set_screen_cb(nodelio_panel_ui_screen_cb_t cb);
 
-/** 板级息屏/亮屏时调用：降频轮询并触发 screen_cb（勿在回调里阻塞）. */
+/** 联网/断网省电回调（可与息屏时刻不同）. 勿在回调里长时间阻塞. */
+typedef void (*nodelio_panel_ui_net_cb_t)(bool net_on);
+void nodelio_panel_ui_set_net_cb(nodelio_panel_ui_net_cb_t cb);
+
+/** 板级息屏/亮屏时调用：降频轮询；不再隐含断网. */
 void nodelio_panel_ui_notify_screen(bool on);
+
+/** 板级断网/拉网时调用：触发 net_cb（勿在回调里阻塞）. */
+void nodelio_panel_ui_notify_net(bool on);
 
 /** 顶层短提示（任意任务可调；内部切 LVGL 锁）. */
 void nodelio_panel_ui_toast(const char *text);
+
+/** 本地口令提示音（主任务播 OGG）；0=听令 1=成功 2=失败 */
+void nodelio_panel_ui_play_cue(int cue);
 
 /** 异步 toast：不等 LVGL 锁；供 AFE/MultiNet 任务，避免 FEED 环满. */
 void nodelio_panel_ui_toast_defer(const char *text);

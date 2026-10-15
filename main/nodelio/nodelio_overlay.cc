@@ -85,6 +85,7 @@ lv_timer_t *s_activity_tmr;
 char s_clock_last[8];
 bool s_screen_on = true;
 nodelio_panel_ui_screen_cb_t s_screen_cb;
+nodelio_panel_ui_net_cb_t s_net_cb;
 
 lv_obj_t *s_settings_detail;
 lv_obj_t *s_bri_val_lbl;
@@ -579,6 +580,9 @@ esp_err_t nodelio_overlay_init(void)
     }
     (void)nodelio_nvs_init();
     (void)nodelio_nvs_load(&s_cfg);
+    Board::GetInstance().SetIdleSleepSeconds((int)nodelio_idle_sleep_seconds());
+    Board::GetInstance().SetIdleWifiSeconds((int)nodelio_idle_wifi_seconds());
+    Board::GetInstance().SetPowerSaveEnabled(nodelio_power_save_enabled());
     DisplayLockGuard lock(nl_ov_disp());
     if (!lock) {
         return ESP_FAIL;

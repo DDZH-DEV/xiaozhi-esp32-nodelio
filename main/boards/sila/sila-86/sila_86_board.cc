@@ -7,6 +7,7 @@
 #include "config.h"
 
 #if CONFIG_NODELIO_PANEL
+#include "nvs_config.h"
 #include "panel_ui.h"
 #endif
 
@@ -73,8 +74,15 @@ private:
     esp_timer_handle_t touch_wake_timer_ = nullptr;
 
     void InitializePowerSaveTimer() {
-        /* 空闲 60s 息屏（背光灭）；无关机（无 PMIC） */
-        power_save_timer_ = new PowerSaveTimer(-1, 60, -1);
+        /* 空闲息屏（背光灭）与空闲断网时刻独立；秒数来自 NVS */
+#if CONFIG_NODELIO_PANEL
+        int idle_s = (int)nodelio_idle_sleep_seconds();
+        int wifi_s = (int)nodelio_idle_wifi_seconds();
+#else
+        int idle_s = 60;
+        int wifi_s = -1;
+#endif
+        power_save_timer_ = new PowerSaveTimer(-1, idle_s, -1);
         power_save_timer_->OnEnterSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(true);
             GetBacklight()->SetBrightness(0);
@@ -87,7 +95,7 @@ private:
             }
             (void)lvgl_port_stop();
 #if CONFIG_NODELIO_PANEL
-            nodelio_panel_ui_notify_screen(false); /* 异步停 MQTT/WiFi */
+            nodelio_panel_ui_notify_screen(false); /* 仅息屏；断网见 OnEnterNetSleep */
 #endif
             StartTouchWakePoll(); /* 息屏后 LVGL 不读触摸，单独轮询唤醒 */
         });
@@ -100,11 +108,19 @@ private:
             GetDisplay()->SetPowerSaveMode(false);
             GetBacklight()->RestoreBrightness();
 #if CONFIG_NODELIO_PANEL
-            nodelio_panel_ui_notify_screen(true); /* 先亮屏再异步拉网 */
+            nodelio_panel_ui_notify_screen(true);
 #endif
             /* 播报时 AudioService 会再 EnableOutput(true)；此处不强制开 */
         });
+#if CONFIG_NODELIO_PANEL
+        power_save_timer_->SetSecondsToNetSleep(wifi_s);
+        power_save_timer_->OnEnterNetSleep([]() { nodelio_panel_ui_notify_net(false); });
+        power_save_timer_->OnExitNetSleep([]() { nodelio_panel_ui_notify_net(true); });
+        /* NVS 可能尚未 load：缺省开；load 后 overlay/bridge 再 SetPowerSaveEnabled */
+        power_save_timer_->SetEnabled(nodelio_power_save_enabled());
+#else
         power_save_timer_->SetEnabled(true);
+#endif
     }
 
     void StartTouchWakePoll() {
@@ -342,16 +358,57 @@ public:
             power_save_timer_->WakeUp();
         }
         WifiBoard::SetPowerSaveLevel(level);
-        /* goodbye → 延迟息屏，便于看完最后一句/点屏；唤醒会取消 */
+#if !CONFIG_NODELIO_PANEL
+        /* 非面板：LOW_POWER 带短延迟息屏。墙板短延迟只走 RequestGoodbyeSleep，
+         * 切勿在此 WakeUp——息屏关 MQTT 会触发 LOW_POWER，会把刚灭的屏立刻点亮。 */
         if (level == PowerSaveLevel::LOW_POWER && power_save_timer_) {
             power_save_timer_->RequestSleepIn(15);
         }
+#endif
     }
 
     virtual void NoteUserActivity() override {
         if (power_save_timer_) {
             power_save_timer_->NoteActivity();
         }
+    }
+
+    virtual void SetIdleSleepSeconds(int seconds) override {
+        if (power_save_timer_) {
+            power_save_timer_->SetSecondsToSleep(seconds);
+        }
+    }
+
+    virtual void SetIdleWifiSeconds(int seconds) override {
+        if (power_save_timer_) {
+            power_save_timer_->SetSecondsToNetSleep(seconds);
+        }
+    }
+
+    virtual void SetPowerSaveEnabled(bool enabled) override {
+        if (power_save_timer_) {
+            power_save_timer_->SetEnabled(enabled);
+        }
+    }
+
+    virtual void RequestGoodbyeSleep() override {
+        if (!power_save_timer_) {
+            return;
+        }
+#if CONFIG_NODELIO_PANEL
+        if (!nodelio_power_save_enabled()) {
+            return;
+        }
+#endif
+        /* 已息屏（关网关通道）不算「退下」，勿再排 15s 唤醒竞态 */
+        if (power_save_timer_->IsInSleepMode()) {
+            return;
+        }
+#if CONFIG_NODELIO_PANEL
+        power_save_timer_->RequestSleepIn((int)nodelio_goodbye_sleep_seconds());
+#else
+        power_save_timer_->RequestSleepIn(15);
+#endif
     }
 };
 

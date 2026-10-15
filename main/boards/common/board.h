@@ -82,6 +82,14 @@ public:
     virtual void SetPowerSaveLevel(PowerSaveLevel level) = 0;
     /** 触控/按键交互时重置息屏计时（默认空操作）。 */
     virtual void NoteUserActivity() {}
+    /** 运行时更新空闲息屏秒数（墙板省电设置）；默认空操作。 */
+    virtual void SetIdleSleepSeconds(int seconds) { (void)seconds; }
+    /** 运行时更新空闲断网秒数（墙板，与息屏独立）；默认空操作。 */
+    virtual void SetIdleWifiSeconds(int seconds) { (void)seconds; }
+    /** 运行时开关息屏/断网省电（墙板）；关闭会唤醒并停计时。默认空操作。 */
+    virtual void SetPowerSaveEnabled(bool enabled) { (void)enabled; }
+    /** 对话通道关闭后的短延迟息屏（墙板）；默认空。勿在开机激活路径调用。 */
+    virtual void RequestGoodbyeSleep() {}
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
 };

@@ -941,11 +941,14 @@ def main():
         print("Please select appropriate CONFIG_SR_MN_* options in menuconfig, or disable USE_CUSTOM_WAKE_WORD")
         sys.exit(1)
     
-    # 3. Only package multinet models if USE_CUSTOM_WAKE_WORD=y
-    if wake_word_config['use_custom_wake_word']:
+    # 3. Package multinet when selected in sdkconfig.
+    # Stock xiaozhi only needed MN for USE_CUSTOM_WAKE_WORD; NodeLio K4 also needs MN
+    # for offline local commands while wake stays on AFE/WakeNet.
+    if multinet_model_names:
         multinet_model_paths = get_multinet_model_paths(multinet_model_names, args.esp_sr_model_path)
-    elif multinet_model_names:
-        print(f"  Note: Found multinet models {multinet_model_names} but USE_CUSTOM_WAKE_WORD is disabled, skipping")
+        if not wake_word_config['use_custom_wake_word']:
+            print(f"  Note: Packaging multinet {multinet_model_names} (command recognition; "
+                  f"USE_CUSTOM_WAKE_WORD off)")
     
     # Print model information (only for models that will actually be packaged)
     if wakenet_model_paths:

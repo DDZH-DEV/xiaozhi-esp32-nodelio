@@ -69,26 +69,26 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
                                 lv_event_cb_t cb)
 {
     ui_styles_init();
+
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, lv_pct(100), 66);
-    lv_obj_set_ext_click_area(btn, UI_EXT_CLICK);
+    lv_obj_set_width(btn, lv_pct(100));
+    lv_obj_set_height(btn, UI_SETTINGS_TILE_H);
+    lv_obj_set_ext_click_area(btn, 8);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* 曜夜微晶列表卡片外观 */
     lv_obj_set_style_bg_color(btn, UI_TILE_OFF, 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, UI_RADIUS_SM, 0);
     lv_obj_set_style_border_width(btn, 1, 0);
     lv_obj_set_style_border_color(btn, UI_TILE_OFF_BORDER, 0);
-    lv_obj_set_style_pad_left(btn, 14, 0);
-    lv_obj_set_style_pad_right(btn, 16, 0);
-    lv_obj_set_style_pad_top(btn, 8, 0);
-    lv_obj_set_style_pad_bottom(btn, 8, 0);
+    lv_obj_set_style_pad_left(btn, 12, 0);
+    lv_obj_set_style_pad_right(btn, 12, 0);
+    lv_obj_set_style_pad_top(btn, 0, 0);
+    lv_obj_set_style_pad_bottom(btn, 0, 0);
     lv_obj_set_style_pad_column(btn, 12, 0);
 
-    /* 按压反馈 */
     lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
     lv_obj_set_style_border_color(btn, lv_color_hex(accent_c), LV_STATE_PRESSED);
     lv_obj_set_style_translate_y(btn, 1, LV_STATE_PRESSED);
@@ -99,10 +99,9 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
     }
 
-    /* 1. 微光 Icon Pod 胶囊底座 */
     lv_obj_t *pod = lv_obj_create(btn);
     lv_obj_remove_style_all(pod);
-    lv_obj_set_size(pod, 40, 40);
+    lv_obj_set_size(pod, 36, 36);
     lv_obj_set_style_radius(pod, 10, 0);
     lv_obj_set_style_bg_color(pod, lv_color_hex(accent_c), 0);
     lv_obj_set_style_bg_opa(pod, LV_OPA_20, 0);
@@ -119,53 +118,38 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_center(g);
     lv_obj_clear_flag(g, LV_OBJ_FLAG_CLICKABLE);
 
-    /* 2. 双行文字区域（flex_grow 占据剩余宽度，扁平无深层嵌套） */
-    lv_obj_t *tbox = lv_obj_create(btn);
-    lv_obj_remove_style_all(tbox);
-    lv_obj_set_flex_grow(tbox, 1);
-    lv_obj_set_height(tbox, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(tbox, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(tbox, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_row(tbox, 3, 0);
-    lv_obj_clear_flag(tbox, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(tbox, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *text = lv_obj_create(btn);
+    lv_obj_remove_style_all(text);
+    lv_obj_set_height(text, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(text, 1);
+    lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(text, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(text, 2, 0);
+    lv_obj_clear_flag(text, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(text, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *t = lv_label_create(tbox);
+    lv_obj_t *t = lv_label_create(text);
     lv_label_set_text(t, title ? title : "");
+    lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(t, lv_pct(100));
     apply_font(t);
+    lv_obj_set_style_text_align(t, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_color(t, UI_TEXT, 0);
     lv_obj_clear_flag(t, LV_OBJ_FLAG_CLICKABLE);
 
-    lv_obj_t *s = lv_label_create(tbox);
+    lv_obj_t *s = lv_label_create(text);
     lv_label_set_text(s, sub ? sub : "");
-    lv_label_set_long_mode(s, LV_LABEL_LONG_CLIP);
+    lv_label_set_long_mode(s, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(s, lv_pct(100));
     apply_font(s);
+    lv_obj_set_style_text_align(s, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_color(s, UI_TEXT_MUTED, 0);
     lv_obj_clear_flag(s, LV_OBJ_FLAG_CLICKABLE);
 
-    /* 3. 右侧状态提示与微晶导航指示 > */
-    lv_obj_t *right_box = lv_obj_create(btn);
-    lv_obj_remove_style_all(right_box);
-    lv_obj_set_size(right_box, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(right_box, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(right_box, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(right_box, 6, 0);
-    lv_obj_clear_flag(right_box, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(right_box, LV_OBJ_FLAG_SCROLLABLE);
-
-    if (right_icon && right_icon[0] && (uint8_t)right_icon[0] < 0x80) {
-        lv_obj_t *ric = lv_label_create(right_box);
-        apply_font(ric);
-        lv_label_set_text(ric, right_icon);
-        lv_obj_set_style_text_color(ric, UI_TEXT_MUTED, 0);
-        lv_obj_clear_flag(ric, LV_OBJ_FLAG_CLICKABLE);
-    }
-
-    lv_obj_t *arr = lv_label_create(right_box);
-    apply_font(arr);
-    lv_label_set_text(arr, ">");
-    lv_obj_set_style_text_color(arr, UI_TEXT_MUTED, 0);
-    lv_obj_clear_flag(arr, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *chev = lv_label_create(btn);
+    lv_label_set_text(chev, right_icon && right_icon[0] ? right_icon : LV_SYMBOL_RIGHT);
+    lv_obj_set_style_text_color(chev, UI_TEXT_MUTED, 0);
+    lv_obj_clear_flag(chev, LV_OBJ_FLAG_CLICKABLE);
 
     return btn;
 }

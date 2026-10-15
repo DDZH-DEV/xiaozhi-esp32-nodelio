@@ -41,9 +41,19 @@ void nodelio_offline_cmd_feed(const int16_t *data, int samples)
 }
 void nodelio_offline_cmd_stop(void) {}
 void nodelio_offline_cmd_reset_dynamic(void) {}
-bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel, const char *action,
-                                    const char *name, const char *pinyin) { (void)device_id; (void)channel; (void)action; (void)name; (void)pinyin; return false; }
+bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel_or_pin, bool is_pin,
+                                    const char *action, const char *name, const char *pinyin)
+{
+    (void)device_id;
+    (void)channel_or_pin;
+    (void)is_pin;
+    (void)action;
+    (void)name;
+    (void)pinyin;
+    return false;
+}
 void nodelio_offline_cmd_commit_dynamic(void) {}
+void nodelio_offline_cmd_rebuild_from_layout(const nodelio_panel_layout_t *layout) { (void)layout; }
 
 #else
 
@@ -71,7 +81,8 @@ static int s_mn_div;
 typedef struct {
     int cmd_id;
     char device_id[32];
-    int channel;
+    int channel_or_pin;
+    bool is_pin;
     char action[8]; // "ON" / "OFF"
     char name[32];
     char pinyin[48];
@@ -95,11 +106,20 @@ void nodelio_offline_cmd_reset_dynamic(void)
     s_dyn_cmd_count = 0;
 }
 
-bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel, const char *action,
-                                    const char *name, const char *pinyin)
+bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel_or_pin, bool is_pin,
+                                    const char *action, const char *name, const char *pinyin)
 {
     if (!device_id || !device_id[0] || !action || !action[0] || !pinyin || !pinyin[0]) {
         return false;
+    }
+    /* 裸「打开/关闭」无辨识度，且会撞车 */
+    if (strcmp(pinyin, "da kai") == 0 || strcmp(pinyin, "guan bi") == 0) {
+        return false;
+    }
+    for (int i = 0; i < s_dyn_cmd_count; i++) {
+        if (strcmp(s_dyn_cmds[i].pinyin, pinyin) == 0) {
+            return false; /* 同音保留先注册的磁贴 */
+        }
     }
     if (s_dyn_cmd_count >= NL_DYN_CMD_MAX) {
         return false;
@@ -107,12 +127,54 @@ bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel, const c
     nl_dyn_cmd_t *cmd = &s_dyn_cmds[s_dyn_cmd_count];
     cmd->cmd_id = NL_DYN_CMD_BASE + s_dyn_cmd_count;
     snprintf(cmd->device_id, sizeof(cmd->device_id), "%s", device_id);
-    cmd->channel = channel;
+    cmd->channel_or_pin = channel_or_pin;
+    cmd->is_pin = is_pin;
     snprintf(cmd->action, sizeof(cmd->action), "%s", action);
     snprintf(cmd->name, sizeof(cmd->name), "%s", name ? name : device_id);
     snprintf(cmd->pinyin, sizeof(cmd->pinyin), "%s", pinyin);
     s_dyn_cmd_count++;
     return true;
+}
+
+void nodelio_offline_cmd_rebuild_from_layout(const nodelio_panel_layout_t *layout)
+{
+    nodelio_offline_cmd_reset_dynamic();
+    if (!layout) {
+        nodelio_offline_cmd_commit_dynamic();
+        return;
+    }
+    for (int pi = 0; pi < layout->page_count; pi++) {
+        const nl_page_t *page = &layout->pages[pi];
+        for (int si = 0; si < page->section_count; si++) {
+            const nl_section_t *sec = &page->sections[si];
+            for (int wi = 0; wi < sec->widget_count; wi++) {
+                const nl_widget_t *w = &sec->widgets[wi];
+                if (w->type != NL_WIDGET_SWITCH_TILE && w->type != NL_WIDGET_PIN_TOGGLE) {
+                    continue;
+                }
+                if (w->bind.kind != NL_BIND_DEVICE_CHANNEL && w->bind.kind != NL_BIND_DEVICE_PIN) {
+                    continue;
+                }
+                if (w->bind.device_id[0] == '\0') {
+                    continue;
+                }
+                bool is_pin = (w->bind.kind == NL_BIND_DEVICE_PIN);
+                int idx = is_pin ? w->bind.pin : w->bind.channel;
+                if (idx < 0) {
+                    idx = 0;
+                }
+                const char *name = w->title[0] ? w->title : w->bind.device_id;
+                if (w->pinyin_on[0]) {
+                    nodelio_offline_cmd_add_dynamic(w->bind.device_id, idx, is_pin, "ON", name, w->pinyin_on);
+                }
+                if (w->pinyin_off[0]) {
+                    nodelio_offline_cmd_add_dynamic(w->bind.device_id, idx, is_pin, "OFF", name, w->pinyin_off);
+                }
+            }
+        }
+    }
+    nodelio_offline_cmd_commit_dynamic();
+    ESP_LOGI(TAG, "voice cmds from layout: %d", s_dyn_cmd_count);
 }
 
 static void install_commands(void);
@@ -132,30 +194,13 @@ void nodelio_offline_cmd_set_done_cb(nodelio_offline_cmd_done_cb_t cb)
 static void install_commands(void)
 {
     esp_mn_commands_clear();
-    // 基础固定兜底口令
-    (void)esp_mn_commands_add(NL_OC_LIGHT_ON, "da kai deng");
-    (void)esp_mn_commands_add(NL_OC_LIGHT_ON, "kai deng");
-    (void)esp_mn_commands_add(NL_OC_LIGHT_OFF, "guan bi deng");
-    (void)esp_mn_commands_add(NL_OC_LIGHT_OFF, "guan deng");
-    (void)esp_mn_commands_add(NL_OC_SCENE_HOME, "hui jia");
-    (void)esp_mn_commands_add(NL_OC_SCENE_AWAY, "chu men");
-    (void)esp_mn_commands_add(NL_OC_CURTAIN_OPEN, "da kai chuang lian");
-    (void)esp_mn_commands_add(NL_OC_CURTAIN_OPEN, "kai chuang lian");
-    (void)esp_mn_commands_add(NL_OC_CURTAIN_CLOSE, "guan bi chuang lian");
-    (void)esp_mn_commands_add(NL_OC_CURTAIN_CLOSE, "guan chuang lian");
-    /* 继电器 / 开关 */
-    (void)esp_mn_commands_add(NL_OC_LIGHT_ON, "da kai ji dian qi");
-    (void)esp_mn_commands_add(NL_OC_LIGHT_ON, "kai ji dian qi");
-    (void)esp_mn_commands_add(NL_OC_LIGHT_OFF, "guan bi ji dian qi");
-    (void)esp_mn_commands_add(NL_OC_LIGHT_OFF, "guan ji dian qi");
-
-    // 动态注册服务端下发的具名引脚与通道口令（精确命中，零盲猜）
+    /* 仅布局下发的动态拼音；不再注册开灯/回家等固件兜底词 */
     for (int i = 0; i < s_dyn_cmd_count; i++) {
         esp_err_t ret = esp_mn_commands_add(s_dyn_cmds[i].cmd_id, s_dyn_cmds[i].pinyin);
         if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "Dynamic voice cmd registered: id=%d pinyin='%s' -> dev=%s ch=%d act=%s",
+            ESP_LOGI(TAG, "Dynamic voice cmd registered: id=%d pinyin='%s' -> dev=%s idx=%d pin=%d act=%s",
                      s_dyn_cmds[i].cmd_id, s_dyn_cmds[i].pinyin, s_dyn_cmds[i].device_id,
-                     s_dyn_cmds[i].channel, s_dyn_cmds[i].action);
+                     s_dyn_cmds[i].channel_or_pin, s_dyn_cmds[i].is_pin ? 1 : 0, s_dyn_cmds[i].action);
         } else {
             ESP_LOGW(TAG, "Fail to add dynamic voice cmd: '%s'", s_dyn_cmds[i].pinyin);
         }
@@ -170,16 +215,24 @@ static void install_commands(void)
     }
 }
 
+/* 由 application.cc 提供：复用 assets 已 load 的 srmodels，勿再找已删除的 model 分区 */
+extern srmodel_list_t *nodelio_get_srmodels(void);
+
 static esp_err_t ensure_multinet(void)
 {
     if (s_mn && s_mn_data) {
         return ESP_OK;
     }
     if (!s_models) {
-        s_models = esp_srmodel_init("model");
-        s_owns_models = s_models != NULL;
+        s_models = nodelio_get_srmodels();
+        s_owns_models = false;
         if (!s_models) {
-            ESP_LOGE(TAG, "esp_srmodel_init(model) failed — assets/model 无 SR？");
+            /* 兼容旧分区表：仅当 assets 未注入时再试 partition "model" */
+            s_models = esp_srmodel_init("model");
+            s_owns_models = s_models != NULL;
+        }
+        if (!s_models) {
+            ESP_LOGE(TAG, "no srmodels (assets 未加载 / 无 model 分区)");
             return ESP_ERR_NOT_FOUND;
         }
     }
@@ -188,7 +241,7 @@ static esp_err_t ensure_multinet(void)
         mn_name = esp_srmodel_filter(s_models, ESP_MN_PREFIX, NULL);
     }
     if (!mn_name) {
-        ESP_LOGW(TAG, "no MultiNet in model list — K4 需 assets 含中文 MN");
+        ESP_LOGW(TAG, "no MultiNet in srmodels — 需 CONFIG_SR_MN_CN_MULTINET6_QUANT 并重烧 assets");
         return ESP_ERR_NOT_FOUND;
     }
     s_mn = esp_mn_handle_from_name(mn_name);
@@ -213,7 +266,7 @@ static esp_err_t ensure_multinet(void)
     return ESP_OK;
 }
 
-static void finish_listen(const char *hint)
+static void finish_listen(const char *hint, bool ok)
 {
     if (!s_session) {
         return;
@@ -223,6 +276,7 @@ static void finish_listen(const char *hint)
     if (hint && hint[0]) {
         nodelio_panel_ui_set_voice_hint(hint);
     }
+    nodelio_panel_ui_play_cue(ok ? 1 : 2);
     if (s_done_cb) {
         s_done_cb();
     }
@@ -239,11 +293,12 @@ static void cmd_worker(void *arg)
         if (cid <= 0) {
             continue;
         }
+        /* PSRAM 栈任务禁止 nvs_load（flash 关 cache 会 assert）；用 RAM 镜像 */
         nodelio_nvs_config_t cfg;
-        memset(&cfg, 0, sizeof(cfg));
-        if (nodelio_nvs_load(&cfg) != ESP_OK || cfg.server_url[0] == '\0') {
+        nodelio_nvs_cache_get(&cfg);
+        if (cfg.server_url[0] == '\0') {
             nodelio_panel_ui_set_voice_hint("未绑定服务器");
-            finish_listen(NULL);
+            finish_listen(NULL, false);
             continue;
         }
         if (cid >= NL_DYN_CMD_BASE) {
@@ -251,20 +306,26 @@ static void cmd_worker(void *arg)
             if (dyn) {
                 nl_bind_t bind;
                 memset(&bind, 0, sizeof(bind));
-                bind.kind = NL_BIND_DEVICE_CHANNEL;
+                bind.kind = dyn->is_pin ? NL_BIND_DEVICE_PIN : NL_BIND_DEVICE_CHANNEL;
                 snprintf(bind.device_id, sizeof(bind.device_id), "%s", dyn->device_id);
-                bind.channel = dyn->channel;
+                if (dyn->is_pin) {
+                    bind.pin = dyn->channel_or_pin;
+                    bind.channel = -1;
+                } else {
+                    bind.channel = dyn->channel_or_pin;
+                    bind.pin = -1;
+                }
                 int http = 0;
                 esp_err_t err = nodelio_panel_command(&cfg, "dyn_voice", "set", &bind, dyn->action, &http);
                 if (err == ESP_OK) {
                     char t[64];
                     snprintf(t, sizeof(t), "已%s：%s", strcmp(dyn->action, "ON") == 0 ? "开启" : "关闭", dyn->name);
                     nodelio_panel_ui_toast(t);
-                    finish_listen(t);
+                    finish_listen(t, true);
                 } else if (err == ESP_ERR_INVALID_STATE || http == 503) {
-                    finish_listen("设备离线");
+                    finish_listen("设备离线", false);
                 } else {
-                    finish_listen("执行失败");
+                    finish_listen("执行失败", false);
                 }
                 continue;
             }
@@ -276,11 +337,11 @@ static void cmd_worker(void *arg)
             char t[48];
             snprintf(t, sizeof(t), "已%s", zh ? zh : "执行");
             nodelio_panel_ui_toast(t);
-            finish_listen(t);
+            finish_listen(t, true);
         } else if (err == ESP_ERR_INVALID_STATE) {
-            finish_listen("设备离线");
+            finish_listen("设备离线", false);
         } else {
-            finish_listen("执行失败");
+            finish_listen("执行失败", false);
         }
     }
 }
@@ -318,10 +379,9 @@ esp_err_t nodelio_offline_cmd_begin_listen(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* 未注册/未初始化：明确提示，勿进入空口令窗 */
+    /* 未注册/未初始化：明确提示，勿进入空口令窗（读 RAM 镜像，避免误在非内部栈调 flash） */
     nodelio_nvs_config_t cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    (void)nodelio_nvs_load(&cfg);
+    nodelio_nvs_cache_get(&cfg);
     if (cfg.server_url[0] == '\0' || cfg.owner[0] == '\0') {
         nodelio_panel_ui_set_voice_hint("未绑定");
         nodelio_panel_ui_toast("未绑定：设置里填服务器与绑定码");
@@ -361,15 +421,16 @@ esp_err_t nodelio_offline_cmd_begin_listen(void)
     s_session = true;
     s_listening = true;
     nodelio_panel_ui_note_activity();
-    nodelio_panel_ui_set_voice_hint("小智不可达，请说开灯/回家");
-    nodelio_panel_ui_toast("本地口令");
+    nodelio_panel_ui_set_voice_hint(s_dyn_cmd_count > 0 ? "请说设备名称" : "无可用口令");
+    nodelio_panel_ui_toast(s_dyn_cmd_count > 0 ? "本地口令" : "布局无语音口令");
+    nodelio_panel_ui_play_cue(0); /* 与小智进听同款 POPUP */
     ESP_LOGI(TAG, "local command window %dms", LISTEN_MS);
     return ESP_OK;
 }
 
 void nodelio_offline_cmd_end_listen(void)
 {
-    finish_listen(NULL);
+    finish_listen(NULL, false);
 }
 
 bool nodelio_offline_cmd_listening(void)
@@ -384,7 +445,7 @@ void nodelio_offline_cmd_feed(const int16_t *data, int samples)
     }
     if (esp_timer_get_time() > s_deadline_us) {
         ESP_LOGI(TAG, "mn timeout");
-        finish_listen("没听清，再说唤醒词");
+        finish_listen("没听清，再说唤醒词", false);
         return;
     }
     /* 隔帧跑 MultiNet，减轻 FEED/CPU 压力 */
@@ -403,7 +464,7 @@ void nodelio_offline_cmd_feed(const int16_t *data, int samples)
     }
     if (st == ESP_MN_STATE_TIMEOUT) {
         ESP_LOGI(TAG, "mn state timeout");
-        finish_listen("没听清，再说唤醒词");
+        finish_listen("没听清，再说唤醒词", false);
         return;
     }
     if (st != ESP_MN_STATE_DETECTED) {
@@ -412,7 +473,7 @@ void nodelio_offline_cmd_feed(const int16_t *data, int samples)
     esp_mn_results_t *r = s_mn->get_results(s_mn_data);
     s_listening = false; /* 先停 feed，避免重入 */
     if (!r || r->num <= 0) {
-        finish_listen("没听清");
+        finish_listen("没听清", false);
         return;
     }
     int cid = r->command_id[0];
@@ -424,7 +485,7 @@ void nodelio_offline_cmd_feed(const int16_t *data, int samples)
         nodelio_panel_ui_set_voice_hint(t);
         /* finish_listen 在 cmd_worker 完成后调用 */
     } else {
-        finish_listen("忙，请重试");
+        finish_listen("忙，请重试", false);
     }
 }
 

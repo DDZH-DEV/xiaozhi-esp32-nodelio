@@ -245,6 +245,11 @@ RgbLcdDisplay::RgbLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     port_cfg.task_priority = 1;
     port_cfg.timer_period_ms = 50;
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 默认 7KB 不够面板壳+MCP 并发；栈放 PSRAM */
+    port_cfg.task_stack = 12288;
+    port_cfg.task_stack_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#endif
     lvgl_port_init(&port_cfg);
 
     ESP_LOGI(TAG, "Adding LCD display");

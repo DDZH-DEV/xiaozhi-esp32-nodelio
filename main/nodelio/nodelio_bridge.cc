@@ -1,6 +1,7 @@
 #include "nodelio_bridge.h"
 
 #include "application.h"
+#include "board.h"
 #include "device_state.h"
 #include "mqtt_panel.h"
 #include "nodelio_overlay.h"
@@ -86,7 +87,7 @@ static void pwr_task(void *arg)
 {
     (void)arg;
     int cmd = PWR_WAKE;
-    ESP_LOGI(TAG, "pwr task up (screen-off → WiFi/MQTT off)");
+    ESP_LOGI(TAG, "pwr task up (net sleep → WiFi/MQTT off)");
     while (true) {
         if (xQueueReceive(s_pwr_q, &cmd, portMAX_DELAY) != pdTRUE) {
             continue;
@@ -141,7 +142,7 @@ static void pwr_task(void *arg)
     }
 }
 
-static void on_screen(bool on)
+static void on_net(bool on)
 {
     if (!s_pwr_q) {
         return;
@@ -161,7 +162,8 @@ static void ensure_pwr_task(void)
     if (!s_pwr_q) {
         return;
     }
-    nodelio_panel_ui_set_screen_cb(on_screen);
+    /* 断网与息屏时刻可不同；仅挂 net_cb */
+    nodelio_panel_ui_set_net_cb(on_net);
     /* register/HTTP + mqtt 同任务：须 ≥ nl_start；4K 会 stack overflow 重启 */
     if (xTaskCreate(pwr_task, "nl_pwr", 12288, nullptr, 5, nullptr) != pdPASS) {
         ESP_LOGW(TAG, "pwr task create fail");
@@ -211,6 +213,9 @@ static esp_err_t start_client(void)
     }
 
     s_cfg = cfg;
+    Board::GetInstance().SetIdleSleepSeconds((int)nodelio_idle_sleep_seconds());
+    Board::GetInstance().SetIdleWifiSeconds((int)nodelio_idle_wifi_seconds());
+    Board::GetInstance().SetPowerSaveEnabled(nodelio_power_save_enabled());
     (void)nodelio_panel_ui_start(&cfg); /* overlay 已可出缓存布局 */
     ensure_pwr_task();
 

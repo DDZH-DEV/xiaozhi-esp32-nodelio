@@ -111,6 +111,10 @@ public:
     void Reboot();
     void WakeWordInvoke(const std::string& wake_word);
     bool UpgradeFirmware(const std::string& url, const std::string& version = "");
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /** 设置页手工触发：查小智云固件版本，有新版则升级；后台任务，可重入挡. */
+    void RequestManualFirmwareCheck();
+#endif
     bool CanEnterSleepMode();
     /** 须在主任务调用：息屏断网前挂起协议；亮屏后恢复. */
     void SuspendTransport();

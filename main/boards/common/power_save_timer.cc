@@ -1,8 +1,11 @@
 #include "power_save_timer.h"
 #include "application.h"
+#include "board.h"
 #include "settings.h"
 
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #define TAG "PowerSaveTimer"
 
@@ -36,6 +39,7 @@ void PowerSaveTimer::SetEnabled(bool enabled) {
         }
 
         ticks_ = 0;
+        activity_ticks_ = 0;
         enabled_ = enabled;
         ESP_ERROR_CHECK(esp_timer_start_periodic(power_save_timer_, 1000000));
         ESP_LOGI(TAG, "Power save timer enabled");
@@ -57,6 +61,38 @@ void PowerSaveTimer::OnExitSleepMode(std::function<void()> callback) {
 
 void PowerSaveTimer::OnShutdownRequest(std::function<void()> callback) {
     on_shutdown_request_ = callback;
+}
+
+void PowerSaveTimer::OnEnterNetSleep(std::function<void()> callback) {
+    on_enter_net_sleep_ = callback;
+}
+
+void PowerSaveTimer::OnExitNetSleep(std::function<void()> callback) {
+    on_exit_net_sleep_ = callback;
+}
+
+void PowerSaveTimer::TryEnterNetSleep() {
+    if (!enabled_ || in_net_sleep_ || !on_enter_net_sleep_) {
+        return;
+    }
+    auto& app = Application::GetInstance();
+    if (!app.CanEnterSleepMode()) {
+        return;
+    }
+    ESP_LOGI(TAG, "Enabling net sleep");
+    in_net_sleep_ = true;
+    on_enter_net_sleep_();
+}
+
+void PowerSaveTimer::ExitNetSleep() {
+    if (!in_net_sleep_) {
+        return;
+    }
+    ESP_LOGI(TAG, "Exiting net sleep");
+    in_net_sleep_ = false;
+    if (on_exit_net_sleep_) {
+        on_exit_net_sleep_();
+    }
 }
 
 void PowerSaveTimer::TryEnterSleepMode() {
@@ -102,6 +138,7 @@ void PowerSaveTimer::EnterSleepMode() {
         return;
     }
     seconds_to_sleep_override_ = -1;
+    seconds_to_net_override_ = -1;
     sleep_asap_ = true;
     TryEnterSleepMode();
 }
@@ -112,18 +149,36 @@ void PowerSaveTimer::RequestSleepIn(int seconds) {
     }
     if (seconds <= 0) {
         EnterSleepMode();
+        TryEnterNetSleep();
         return;
     }
     sleep_asap_ = false;
     ticks_ = 0;
+    /* 息屏从现在起算；断网继续从 activity_ticks_ 走 idle_wifi，不强制同秒 */
+    activity_ticks_ = 0;
     seconds_to_sleep_override_ = seconds;
-    ESP_LOGI(TAG, "Sleep requested in %d s", seconds);
+    seconds_to_net_override_ = -1;
+    ESP_LOGI(TAG, "Sleep requested in %d s (net still idle %d s)", seconds, seconds_to_net_sleep_);
+}
+
+void PowerSaveTimer::SetSecondsToSleep(int seconds) {
+    if (seconds < 1) {
+        seconds = 1;
+    }
+    seconds_to_sleep_ = seconds;
+    ESP_LOGI(TAG, "Idle sleep set to %d s", seconds);
+}
+
+void PowerSaveTimer::SetSecondsToNetSleep(int seconds) {
+    seconds_to_net_sleep_ = seconds;
+    ESP_LOGI(TAG, "Idle net sleep set to %d s", seconds);
 }
 
 void PowerSaveTimer::PowerSaveCheck() {
     auto& app = Application::GetInstance();
     if (!in_sleep_mode_ && !app.CanEnterSleepMode()) {
         ticks_ = 0;
+        activity_ticks_ = 0;
         return;
     }
 
@@ -133,6 +188,15 @@ void PowerSaveTimer::PowerSaveCheck() {
     }
 
     ticks_++;
+    activity_ticks_++;
+
+    const int net_after =
+        (seconds_to_net_override_ > 0) ? seconds_to_net_override_ : seconds_to_net_sleep_;
+    if (net_after > 0 && activity_ticks_ >= net_after) {
+        seconds_to_net_override_ = -1;
+        TryEnterNetSleep();
+    }
+
     const int sleep_after =
         (seconds_to_sleep_override_ > 0) ? seconds_to_sleep_override_ : seconds_to_sleep_;
     if (sleep_after != -1 && ticks_ >= sleep_after) {
@@ -146,16 +210,20 @@ void PowerSaveTimer::PowerSaveCheck() {
 
 void PowerSaveTimer::NoteActivity() {
     ticks_ = 0;
+    activity_ticks_ = 0;
     sleep_asap_ = false;
-    if (in_sleep_mode_) {
+    if (in_sleep_mode_ || in_net_sleep_) {
         WakeUp();
     }
 }
 
 void PowerSaveTimer::WakeUp() {
     ticks_ = 0;
+    activity_ticks_ = 0;
     sleep_asap_ = false;
     seconds_to_sleep_override_ = -1;
+    seconds_to_net_override_ = -1;
+    /* 先亮屏，再拉网（与墙板「先背光后 WiFi」一致） */
     if (in_sleep_mode_) {
         ESP_LOGI(TAG, "Exiting power save mode");
         in_sleep_mode_ = false;
@@ -180,4 +248,5 @@ void PowerSaveTimer::WakeUp() {
             on_exit_sleep_mode_();
         }
     }
+    ExitNetSleep();
 }

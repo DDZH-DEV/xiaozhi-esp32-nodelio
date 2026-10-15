@@ -17,6 +17,19 @@ if errorlevel 1 (
   echo [nodelio] CONFIG_BOARD_TYPE_SILA_86 not set
   exit /b 1
 )
+REM idf.py build 不会吃 config.json 的 sdkconfig_append；补上 WiFi RX + 本地口令 MN6
+findstr /b /c:"CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16" sdkconfig >nul
+if errorlevel 1 (
+  echo [nodelio] applying sila WiFi RX buffers to sdkconfig
+  powershell -NoProfile -Command ^
+    "(Get-Content sdkconfig) -replace 'CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=\d+','CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6' -replace 'CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=\d+','CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16' -replace 'CONFIG_ESP_WIFI_RX_BA_WIN=\d+','CONFIG_ESP_WIFI_RX_BA_WIN=6' | Set-Content sdkconfig -Encoding ascii"
+)
+findstr /b /c:"CONFIG_SR_MN_CN_MULTINET6_QUANT=y" sdkconfig >nul
+if errorlevel 1 (
+  echo [nodelio] enabling MultiNet6 CN for offline local cmd
+  powershell -NoProfile -Command ^
+    "$c=Get-Content sdkconfig -Raw; $c=$c -replace 'CONFIG_SR_MN_CN_NONE=y','# CONFIG_SR_MN_CN_NONE is not set'; $c=$c -replace '# CONFIG_SR_MN_CN_MULTINET6_QUANT is not set','CONFIG_SR_MN_CN_MULTINET6_QUANT=y'; if ($c -notmatch 'CONFIG_SR_MN_CN_MULTINET6_QUANT=y') { $c=$c + \"`nCONFIG_SR_MN_CN_MULTINET6_QUANT=y`n\" }; Set-Content sdkconfig -Value $c -Encoding ascii -NoNewline"
+)
 echo [nodelio] building SILA-86 ...
 idf.py build
 exit /b %ERRORLEVEL%

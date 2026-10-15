@@ -16,10 +16,13 @@
 #include "nodelio_bridge.h"
 #include "nodelio_mcp.h"
 #include "nodelio_overlay.h"
+#include "nvs_config.h"
 #include "offline_cmd.h"
+#include "panel_ui.h"
 #include "wifi_provision.h"
 #endif
 
+#include <atomic>
 #include <driver/gpio.h>
 #include <esp_log.h>
 #include <arpa/inet.h>
@@ -28,6 +31,12 @@
 #include <limits>
 
 #define TAG "Application"
+
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+extern "C" srmodel_list_t* nodelio_get_srmodels(void) {
+    return Application::GetInstance().GetAudioService().GetModelsList();
+}
+#endif
 
 Application::Application() : notify_player_(audio_service_) {
     event_group_ = xEventGroupCreate();
@@ -327,6 +336,11 @@ void Application::HandleNetworkConnectedEvent() {
     ESP_LOGI(TAG, "Network connected");
     auto state = GetDeviceState();
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 有 IP 立刻起局域网 bridge，勿等小智 OTA/MQTT（否则首页再卡数秒） */
+    Schedule([]() { (void)nodelio_bridge_start(); });
+#endif
+
     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {
         // Network is ready, start activation
         SetDeviceState(kDeviceStateActivating);
@@ -408,7 +422,7 @@ void Application::HandleActivationDoneEvent() {
     }
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-    /* After OTA/TLS: start NodeLio register + layout (DRAM-friendly). */
+    /* bridge 已在 NetworkConnected 启动；此处幂等补一次（防漏） */
     Schedule([]() { (void)nodelio_bridge_start(); });
 #endif
 }
@@ -542,10 +556,16 @@ void Application::CheckNewVersion() {
         retry_delay = 10;  // Reset retry delay
 
         if (ota_->HasNewVersion()) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            /* 墙板：开机不自动刷固件，改由设置页手工检查 */
+            ESP_LOGI(TAG, "New firmware %s available — skip auto OTA (use settings)",
+                     ota_->GetFirmwareVersion().c_str());
+#else
             if (UpgradeFirmware(ota_->GetFirmwareUrl(), ota_->GetFirmwareVersion())) {
                 return;  // This line will never be reached after reboot
             }
             // If upgrade failed, continue to normal operation
+#endif
         }
 
         // No new version, mark the current version as valid
@@ -625,6 +645,9 @@ void Application::InitializeProtocol() {
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
             board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            board.RequestGoodbyeSleep();
+#endif
         });
     });
 
@@ -774,7 +797,16 @@ void Application::InitializeProtocol() {
         }
     });
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    if (!nodelio_xiaozhi_enabled()) {
+        ESP_LOGI(TAG, "Xiaozhi disabled — skip cloud MQTT start (local cmd only)");
+        protocol_->MarkTransportSuspended(true);
+    } else {
+        protocol_->Start();
+    }
+#else
     protocol_->Start();
+#endif
 }
 
 void Application::ShowActivationCode(const std::string& code, const std::string& message) {
@@ -919,7 +951,9 @@ static void EnsureNetReadyAfterScreenSleep()
     if (display) {
         display->SetStatus("接通语音…");
     }
-    Application::GetInstance().ResumeTransport();
+    if (nodelio_xiaozhi_enabled()) {
+        Application::GetInstance().ResumeTransport();
+    }
 }
 #endif
 
@@ -934,6 +968,22 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    if (!nodelio_xiaozhi_enabled()) {
+        ESP_LOGI(TAG, "Xiaozhi disabled — StartListening → local cmd");
+        if (nodelio_wifi_is_asleep()) {
+            nodelio_wifi_wake();
+        }
+        if (nodelio_offline_cmd_begin_listen() == ESP_OK) {
+            audio_service_.EnableLocalCommandMode(true);
+            auto display = board.GetDisplay();
+            if (display) {
+                display->SetStatus("本地控家");
+            }
+            return;
+        }
+        SetDeviceState(kDeviceStateIdle);
+        return;
+    }
     EnsureNetReadyAfterScreenSleep();
 #endif
 
@@ -1074,6 +1124,23 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 关闭小智：不抢公网 MQTT，直接本地口令（NodeLio WiFi/面板 MQTT 仍可由 bridge 唤醒） */
+    if (!nodelio_xiaozhi_enabled()) {
+        ESP_LOGI(TAG, "Xiaozhi disabled — wake → local cmd");
+        if (nodelio_wifi_is_asleep()) {
+            nodelio_wifi_wake();
+        }
+        if (nodelio_offline_cmd_begin_listen() == ESP_OK) {
+            audio_service_.EnableLocalCommandMode(true);
+            auto display = board.GetDisplay();
+            if (display) {
+                display->SetStatus("本地控家");
+            }
+            return;
+        }
+        SetDeviceState(kDeviceStateIdle);
+        return;
+    }
     /* 否则息屏断网后首唤：StartMqttClient skipped (suspended) → 必败，要喊第二次 */
     EnsureNetReadyAfterScreenSleep();
 #endif
@@ -1150,7 +1217,7 @@ void Application::HandleStateChangedEvent() {
             /* 唤醒建链即亮屏（sila PowerSaveTimer WakeUp） */
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-            /* 先弹窗，连接/登录进度用抽屉文字体现（旧小智体验） */
+            /* CONNECT 紧凑「唤醒中」晚 1s 再弹（overlay 内） */
             nodelio_overlay_show_connecting();
 #endif
             break;
@@ -1341,6 +1408,57 @@ void Application::Reboot() {
     esp_restart();
 }
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+void Application::RequestManualFirmwareCheck() {
+    static std::atomic<bool> busy{false};
+    if (busy.exchange(true)) {
+        nodelio_panel_ui_toast_defer("正在检查…");
+        return;
+    }
+    if (GetDeviceState() != kDeviceStateIdle) {
+        busy = false;
+        nodelio_panel_ui_toast_defer("请先结束对话再检查");
+        return;
+    }
+    nodelio_panel_ui_toast_defer("正在检查固件…");
+    BaseType_t ok = xTaskCreate(
+        [](void* /*arg*/) {
+            Ota ota;
+            auto check = ota.CheckVersion();
+            if (!check) {
+                ESP_LOGW(TAG, "manual firmware check failed: %s", check.error().ToString().c_str());
+                nodelio_panel_ui_toast_defer("检查失败，请稍后重试");
+                busy = false;
+                vTaskDelete(nullptr);
+                return;
+            }
+            if (!ota.HasNewVersion()) {
+                ESP_LOGI(TAG, "manual check: current is latest (%s)", ota.GetCurrentVersion().c_str());
+                nodelio_panel_ui_toast_defer("已是最新版本");
+                busy = false;
+                vTaskDelete(nullptr);
+                return;
+            }
+            std::string url = ota.GetFirmwareUrl();
+            std::string ver = ota.GetFirmwareVersion();
+            ESP_LOGI(TAG, "manual check: new firmware %s", ver.c_str());
+            Application::GetInstance().Schedule([url = std::move(url), ver = std::move(ver)]() {
+                bool ok = Application::GetInstance().UpgradeFirmware(url, ver);
+                busy = false; /* 成功会 reboot；失败回 idle */
+                if (!ok) {
+                    nodelio_panel_ui_toast_defer("升级失败");
+                }
+            });
+            vTaskDelete(nullptr);
+        },
+        "fw_chk", 4096 * 2, nullptr, 2, nullptr);
+    if (ok != pdPASS) {
+        busy = false;
+        nodelio_panel_ui_toast_defer("检查任务启动失败");
+    }
+}
+#endif
+
 bool Application::UpgradeFirmware(const std::string& url, const std::string& version) {
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
@@ -1457,6 +1575,12 @@ void Application::SuspendTransport() {
 }
 
 void Application::ResumeTransport() {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    if (!nodelio_xiaozhi_enabled()) {
+        ESP_LOGI(TAG, "ResumeTransport skipped (Xiaozhi disabled)");
+        return;
+    }
+#endif
     if (protocol_) {
         protocol_->ResumeTransport();
     }

@@ -107,9 +107,79 @@ static void apply_volume(uint8_t pct)
 
 static void persist_ui_prefs(void)
 {
+    /* s_cfg 为权威镜像；LVGL 禁止 flash，主任务落盘 */
     s_cfg.brightness = s_brightness;
     s_cfg.volume = s_volume;
-    (void)nodelio_nvs_save(&s_cfg);
+    nodelio_nvs_cache_put(&s_cfg);
+    nodelio_nvs_config_t snap = s_cfg;
+    Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
+}
+
+static lv_obj_t *s_idle_slp_lbl;
+static lv_obj_t *s_wifi_slp_lbl;
+static lv_obj_t *s_bye_slp_lbl;
+
+static void on_idle_sleep_changed(lv_event_t *e)
+{
+    lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
+    int v = (int)lv_slider_get_value(sl);
+    if (s_idle_slp_lbl) {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%ds", v);
+        lv_label_set_text(s_idle_slp_lbl, buf);
+    }
+}
+
+static void on_wifi_sleep_changed(lv_event_t *e)
+{
+    lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
+    int v = (int)lv_slider_get_value(sl);
+    if (s_wifi_slp_lbl) {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%ds", v);
+        lv_label_set_text(s_wifi_slp_lbl, buf);
+    }
+}
+
+static void on_bye_sleep_changed(lv_event_t *e)
+{
+    lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
+    int v = (int)lv_slider_get_value(sl);
+    if (s_bye_slp_lbl) {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%ds", v);
+        lv_label_set_text(s_bye_slp_lbl, buf);
+    }
+}
+
+static void on_sleep_release(lv_event_t *e)
+{
+    lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
+    int idle = s_cfg.idle_sleep_s ? (int)s_cfg.idle_sleep_s : NODELIO_IDLE_SLEEP_DEFAULT;
+    int wifi = s_cfg.idle_wifi_s ? (int)s_cfg.idle_wifi_s : NODELIO_IDLE_WIFI_DEFAULT;
+    int bye = s_cfg.goodbye_sleep_s ? (int)s_cfg.goodbye_sleep_s : NODELIO_BYE_SLEEP_DEFAULT;
+    /* user_data：1=idle 屏 2=bye 3=idle 断网 */
+    intptr_t which = (intptr_t)lv_event_get_user_data(e);
+    int v = (int)lv_slider_get_value(sl);
+    if (which == 1) {
+        idle = v;
+    } else if (which == 3) {
+        wifi = v;
+    } else {
+        bye = v;
+    }
+    s_cfg.idle_sleep_s = (uint16_t)idle;
+    s_cfg.idle_wifi_s = (uint16_t)wifi;
+    s_cfg.goodbye_sleep_s = (uint16_t)bye;
+    nodelio_nvs_cache_put(&s_cfg);
+    Board::GetInstance().SetIdleSleepSeconds(idle);
+    Board::GetInstance().SetIdleWifiSeconds(wifi);
+    Board::GetInstance().NoteUserActivity();
+    nodelio_nvs_config_t snap = s_cfg;
+    Application::GetInstance().Schedule([snap]() {
+        (void)nodelio_nvs_save(&snap);
+    });
+    nl_ov_toast(which == 3 ? "断网时间已保存" : "息屏时间已保存");
 }
 
 static lv_obj_t *audio_ctrl_band(lv_obj_t *parent, const char *title, const char *val, lv_obj_t **out_val)
@@ -283,6 +353,8 @@ void nl_ov_close_settings_detail(void)
     s_settings_detail = nullptr;
     s_bri_val_lbl = nullptr;
     s_vol_val_lbl = nullptr;
+    s_idle_slp_lbl = nullptr;
+    s_bye_slp_lbl = nullptr;
     if (s_tabbar && s_visible) {
         lv_obj_clear_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
     }
@@ -336,6 +408,10 @@ static void open_settings_detail(set_page_id_t page)
         title = "设备信息";
     } else if (page == SET_PAGE_RESET) {
         title = "重置";
+    } else if (page == SET_PAGE_VOICE) {
+        title = "语音助手";
+    } else if (page == SET_PAGE_POWER) {
+        title = "省电";
     }
     (void)ui_make_nav_bar(s_settings_detail, UI_NAV_H, title,
                           [](lv_event_t *) { nl_ov_close_settings_detail(); });
@@ -383,7 +459,6 @@ static void open_settings_detail(set_page_id_t page)
         nl_ov_set_font(hint);
         lv_obj_set_style_text_color(hint, UI_TEXT_TIP, 0);
     } else if (page == SET_PAGE_SYS) {
-        (void)nodelio_nvs_load(&s_cfg);
         load_audio_prefs();
         const nodelio_board_t *b = nodelio_board_get();
         esp_chip_info_t chip {};
@@ -399,6 +474,14 @@ static void open_settings_detail(set_page_id_t page)
             sys_kv_row(dev, "固件", ua.c_str(), nullptr);
         }
         sys_kv_row(dev, "唤醒词", "你好小智", nullptr);
+        sys_kv_row(dev, "小智云", s_cfg.xiaozhi_en ? "已启用" : "已关闭", nullptr);
+        if (s_cfg.power_save_en) {
+            std::snprintf(line, sizeof(line), "屏%ds · 网%ds · 退%d", (int)s_cfg.idle_sleep_s,
+                          (int)s_cfg.idle_wifi_s, (int)s_cfg.goodbye_sleep_s);
+        } else {
+            std::snprintf(line, sizeof(line), "已关闭");
+        }
+        sys_kv_row(dev, "省电", line, nullptr);
         {
             std::string mac = SystemInfo::GetMacAddress();
             sys_kv_row(dev, "MAC", mac.c_str(), nullptr);
@@ -437,6 +520,170 @@ static void open_settings_detail(set_page_id_t page)
         if (s_sys_timer) {
             lv_timer_set_repeat_count(s_sys_timer, -1);
         }
+    } else if (page == SET_PAGE_POWER) {
+        lv_obj_set_style_pad_row(body, 12, 0);
+
+        lv_obj_t *ps_card = settings_card(body, "息屏断网");
+        lv_obj_set_style_pad_all(ps_card, 16, 0);
+        lv_obj_set_style_pad_row(ps_card, 12, 0);
+
+        lv_obj_t *ps_row = lv_obj_create(ps_card);
+        lv_obj_remove_style_all(ps_row);
+        lv_obj_set_width(ps_row, lv_pct(100));
+        lv_obj_set_height(ps_row, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(ps_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(ps_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(ps_row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *ps_lab = lv_label_create(ps_row);
+        lv_label_set_text(ps_lab, "允许省电");
+        nl_ov_set_font(ps_lab);
+        lv_obj_set_style_text_color(ps_lab, UI_TEXT, 0);
+
+        lv_obj_t *ps_sw = lv_switch_create(ps_row);
+        lv_obj_set_size(ps_sw, 52, 30);
+        lv_obj_set_style_bg_color(ps_sw, lv_color_hex(UI_C_SLIDER_TRACK), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(ps_sw, UI_ACCENT,
+                                  (lv_style_selector_t)((uint32_t)LV_PART_INDICATOR |
+                                                       (uint32_t)LV_STATE_CHECKED));
+        if (s_cfg.power_save_en) {
+            lv_obj_add_state(ps_sw, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(ps_sw, LV_STATE_CHECKED);
+        }
+        lv_obj_add_event_cb(
+            ps_sw,
+            [](lv_event_t *e) {
+                lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
+                bool on = lv_obj_has_state(obj, LV_STATE_CHECKED);
+                s_cfg.power_save_en = on ? 1 : 0;
+                nodelio_nvs_cache_put(&s_cfg);
+                Board::GetInstance().SetPowerSaveEnabled(on);
+                if (on) {
+                    Board::GetInstance().NoteUserActivity();
+                }
+                nodelio_nvs_config_t snap = s_cfg;
+                Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
+                nl_ov_toast(on ? "已开启：按下方时间息屏/断网" : "已关闭：保持亮屏与 WiFi");
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_t *ps_hint = lv_label_create(ps_card);
+        lv_label_set_text(ps_hint, "关闭后永不息屏、不断网（更耗电，适合调试）");
+        nl_ov_set_font(ps_hint);
+        lv_obj_set_style_text_color(ps_hint, UI_TEXT_TIP, 0);
+        lv_label_set_long_mode(ps_hint, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(ps_hint, lv_pct(100));
+
+        char sec[16];
+        std::snprintf(sec, sizeof(sec), "%ds", (int)s_cfg.idle_sleep_s);
+        lv_obj_t *idle_band = audio_ctrl_band(body, "空闲息屏", sec, &s_idle_slp_lbl);
+        lv_obj_t *idle_sl = lv_slider_create(idle_band);
+        ui_style_slider(idle_sl);
+        lv_slider_set_range(idle_sl, NODELIO_IDLE_SLEEP_MIN, NODELIO_IDLE_SLEEP_MAX);
+        lv_slider_set_value(idle_sl, s_cfg.idle_sleep_s, LV_ANIM_OFF);
+        lv_obj_add_event_cb(idle_sl, on_idle_sleep_changed, LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_add_event_cb(idle_sl, on_sleep_release, LV_EVENT_RELEASED, (void *)(intptr_t)1);
+        lv_obj_t *idle_hint = lv_label_create(idle_band);
+        lv_label_set_text(idle_hint, "无操作多久后关背光（与断网时刻独立）");
+        nl_ov_set_font(idle_hint);
+        lv_obj_set_style_text_color(idle_hint, UI_TEXT_TIP, 0);
+
+        std::snprintf(sec, sizeof(sec), "%ds", (int)s_cfg.idle_wifi_s);
+        lv_obj_t *wifi_band = audio_ctrl_band(body, "空闲断网", sec, &s_wifi_slp_lbl);
+        lv_obj_t *wifi_sl = lv_slider_create(wifi_band);
+        ui_style_slider(wifi_sl);
+        lv_slider_set_range(wifi_sl, NODELIO_IDLE_WIFI_MIN, NODELIO_IDLE_WIFI_MAX);
+        lv_slider_set_value(wifi_sl, s_cfg.idle_wifi_s, LV_ANIM_OFF);
+        lv_obj_add_event_cb(wifi_sl, on_wifi_sleep_changed, LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_add_event_cb(wifi_sl, on_sleep_release, LV_EVENT_RELEASED, (void *)(intptr_t)3);
+        lv_obj_t *wifi_hint = lv_label_create(wifi_band);
+        lv_label_set_text(wifi_hint, "无操作多久后停 WiFi/MQTT（可晚于息屏，触摸更快唤醒）");
+        nl_ov_set_font(wifi_hint);
+        lv_obj_set_style_text_color(wifi_hint, UI_TEXT_TIP, 0);
+        lv_label_set_long_mode(wifi_hint, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(wifi_hint, lv_pct(100));
+
+        std::snprintf(sec, sizeof(sec), "%ds", (int)s_cfg.goodbye_sleep_s);
+        lv_obj_t *bye_band = audio_ctrl_band(body, "退下后延迟息屏", sec, &s_bye_slp_lbl);
+        lv_obj_t *bye_sl = lv_slider_create(bye_band);
+        ui_style_slider(bye_sl);
+        lv_slider_set_range(bye_sl, NODELIO_BYE_SLEEP_MIN, NODELIO_BYE_SLEEP_MAX);
+        lv_slider_set_value(bye_sl, s_cfg.goodbye_sleep_s, LV_ANIM_OFF);
+        lv_obj_add_event_cb(bye_sl, on_bye_sleep_changed, LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_add_event_cb(bye_sl, on_sleep_release, LV_EVENT_RELEASED, (void *)(intptr_t)2);
+        lv_obj_t *bye_hint = lv_label_create(bye_band);
+        lv_label_set_text(bye_hint, "小智说完再见后，多久关屏（触摸会再延一段）");
+        nl_ov_set_font(bye_hint);
+        lv_obj_set_style_text_color(bye_hint, UI_TEXT_TIP, 0);
+    } else if (page == SET_PAGE_VOICE) {
+        lv_obj_t *card = settings_card(body, "小智云对话");
+        lv_obj_set_style_pad_all(card, 16, 0);
+        lv_obj_set_style_pad_row(card, 12, 0);
+
+        lv_obj_t *row = lv_obj_create(card);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_width(row, lv_pct(100));
+        lv_obj_set_height(row, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *lab = lv_label_create(row);
+        lv_label_set_text(lab, "启用小智");
+        nl_ov_set_font(lab);
+        lv_obj_set_style_text_color(lab, UI_TEXT, 0);
+
+        lv_obj_t *sw = lv_switch_create(row);
+        lv_obj_set_size(sw, 52, 30);
+        lv_obj_set_style_bg_color(sw, lv_color_hex(UI_C_SLIDER_TRACK), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(sw, UI_ACCENT,
+                                  (lv_style_selector_t)((uint32_t)LV_PART_INDICATOR |
+                                                       (uint32_t)LV_STATE_CHECKED));
+        if (s_cfg.xiaozhi_en) {
+            lv_obj_add_state(sw, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(sw, LV_STATE_CHECKED);
+        }
+        lv_obj_add_event_cb(
+            sw,
+            [](lv_event_t *e) {
+                lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
+                bool on = lv_obj_has_state(obj, LV_STATE_CHECKED);
+                s_cfg.xiaozhi_en = on ? 1 : 0;
+                nodelio_nvs_cache_put(&s_cfg);
+                nodelio_nvs_config_t snap = s_cfg;
+                auto &app = Application::GetInstance();
+                app.Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
+                if (on) {
+                    app.MarkTransportSuspended(false);
+                    app.ResumeTransport();
+                    nl_ov_toast("已启用小智云");
+                } else {
+                    app.Schedule([]() {
+                        auto &a = Application::GetInstance();
+                        if (a.GetDeviceState() == kDeviceStateListening ||
+                            a.GetDeviceState() == kDeviceStateSpeaking ||
+                            a.GetDeviceState() == kDeviceStateConnecting) {
+                            a.SetDeviceState(kDeviceStateIdle);
+                        }
+                        a.SuspendTransport();
+                        a.MarkTransportSuspended(true);
+                    });
+                    nl_ov_toast("已关闭：唤醒走本地口令");
+                }
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+
+        lv_obj_t *hint = lv_label_create(card);
+        lv_label_set_text(hint,
+                          "关闭后不再连接 api.tenclass.net，唤醒不等公网 MQTT；"
+                          "NodeLio 控家与本地口令仍可用。云端不可用时建议关闭。");
+        lv_obj_set_width(hint, lv_pct(100));
+        lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+        nl_ov_set_font(hint);
+        lv_obj_set_style_text_color(hint, UI_TEXT_TIP, 0);
     } else if (page == SET_PAGE_RESET) {
         lv_obj_t *card = settings_card(body, "恢复出厂");
         lv_obj_set_style_pad_all(card, 16, 0);
@@ -483,9 +730,11 @@ void nl_ov_fill_settings(void)
     }
     nl_ov_close_settings_detail();
     lv_obj_clean(s_settings);
+    /* 全宽左右行列表 */
     lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(s_settings, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(s_settings, 10, 0);
+    lv_obj_set_flex_align(s_settings, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(s_settings, UI_GAP, 0);
+    lv_obj_set_style_pad_column(s_settings, 0, 0);
     lv_obj_set_style_pad_left(s_settings, 16, 0);
     lv_obj_set_style_pad_right(s_settings, 16, 0);
     lv_obj_set_style_pad_top(s_settings, 16, 0);
@@ -501,12 +750,32 @@ void nl_ov_fill_settings(void)
 
     settings_tile(s_settings, "显", "显示与声音", bri_sub, UI_C_ACCENT, nullptr,
                   [](lv_event_t *) { open_settings_detail(SET_PAGE_DISP); });
+    {
+        char pwr_sub[48];
+        if (nodelio_power_save_enabled()) {
+            std::snprintf(pwr_sub, sizeof(pwr_sub), "屏 %ds · 网 %ds",
+                          (int)nodelio_idle_sleep_seconds(), (int)nodelio_idle_wifi_seconds());
+        } else {
+            std::snprintf(pwr_sub, sizeof(pwr_sub), "已关闭 · 常亮联网");
+        }
+        settings_tile(s_settings, "电", "省电", pwr_sub, UI_C_WARN, nullptr,
+                      [](lv_event_t *) { open_settings_detail(SET_PAGE_POWER); });
+    }
     settings_tile(s_settings, "连", "网络与连接", "扫描 WiFi / 服务器 / 绑定", UI_C_WARN, nullptr,
                   [](lv_event_t *) { nl_ov_open_connect(); });
     settings_tile(s_settings, "刷", "刷新布局", "重新拉取首页控件", UI_C_INFO, nullptr, [](lv_event_t *) {
         nl_ov_toast("正在刷新…");
         nodelio_layout_request_sync();
     });
+    {
+        char voice_sub[48];
+        std::snprintf(voice_sub, sizeof(voice_sub), "%s · 唤醒词「你好小智」",
+                      nodelio_xiaozhi_enabled() ? "小智云已开" : "仅本地口令");
+        settings_tile(s_settings, "智", "语音助手", voice_sub, UI_C_ACCENT, nullptr,
+                      [](lv_event_t *) { open_settings_detail(SET_PAGE_VOICE); });
+    }
+    settings_tile(s_settings, "更", "检查固件更新", "手工查小智云版本，有新版再升级", UI_C_INFO, nullptr,
+                  [](lv_event_t *) { Application::GetInstance().RequestManualFirmwareCheck(); });
     settings_tile(s_settings, "机", "设备信息", "唤醒词「你好小智」· 状态", UI_C_PURPLE, nullptr,
                   [](lv_event_t *) { open_settings_detail(SET_PAGE_SYS); });
     settings_tile(s_settings, "复", "恢复出厂", "清空凭证并重启", UI_C_DANGER, nullptr,

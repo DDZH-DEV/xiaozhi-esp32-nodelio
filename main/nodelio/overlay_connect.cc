@@ -42,6 +42,7 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <strings.h>
 
 #define TAG "nl_conn"
@@ -284,26 +285,39 @@ static void on_save(lv_event_t *e)
         port = "8899";
     }
 
-    nodelio_nvs_config_t cfg{};
-    nodelio_nvs_load(&cfg);
+    /* LVGL 栈在 PSRAM，禁止此处 flash / WiFi NVS；拷贝表单后主任务落盘重启 */
+    std::string ssid_s = ssid ? ssid : "";
+    std::string pass_s = pass ? pass : "";
+    std::string host_s = host ? host : "";
+    std::string port_s = port ? port : "8899";
+    std::string owner_s = owner ? owner : "";
+    const bool https = s_https;
+    nodelio_nvs_config_t cfg = s_cfg;
     char new_url[sizeof(cfg.server_url)];
-    std::snprintf(new_url, sizeof(new_url), "%s://%s:%s", s_https ? "https" : "http", host, port);
+    std::snprintf(new_url, sizeof(new_url), "%s://%s:%s", https ? "https" : "http", host_s.c_str(),
+                  port_s.c_str());
     bool server_changed = std::strcmp(cfg.server_url, new_url) != 0;
-    apply_wifi_creds(ssid, pass, &cfg);
     std::snprintf(cfg.server_url, sizeof(cfg.server_url), "%s", new_url);
-    std::snprintf(cfg.owner, sizeof(cfg.owner), "%s", owner);
-    /* MQTT 由当前 server 注册响应下发；换地址后旧 broker 必须作废，开机重新 register */
+    std::snprintf(cfg.owner, sizeof(cfg.owner), "%s", owner_s.c_str());
+    if (ssid_s[0]) {
+        std::snprintf(cfg.wifi_ssid, sizeof(cfg.wifi_ssid), "%s", ssid_s.c_str());
+        if (pass_s[0]) {
+            std::snprintf(cfg.wifi_pass, sizeof(cfg.wifi_pass), "%s", pass_s.c_str());
+        }
+    }
     if (server_changed) {
         nodelio_nvs_clear_mqtt(&cfg);
     }
-    if (nodelio_nvs_save(&cfg) != ESP_OK) {
-        nl_ov_toast("保存失败");
-        return;
-    }
     s_cfg = cfg;
+    nodelio_nvs_cache_put(&cfg);
     nl_ov_toast(server_changed ? "已保存，将重新注册…" : "已保存，重启…");
-    vTaskDelay(pdMS_TO_TICKS(300));
-    esp_restart();
+    Application::GetInstance().Schedule([cfg, ssid_s, pass_s]() mutable {
+        nodelio_nvs_config_t out = cfg;
+        apply_wifi_creds(ssid_s.c_str(), pass_s.c_str(), &out);
+        (void)nodelio_nvs_save(&out);
+        vTaskDelay(pdMS_TO_TICKS(300));
+        esp_restart();
+    });
 }
 
 void nl_ov_open_connect(void)
@@ -312,7 +326,7 @@ void nl_ov_open_connect(void)
         return;
     }
     nl_ov_close_settings_detail();
-    (void)nodelio_nvs_load(&s_cfg);
+    /* s_cfg 开机已加载；禁止在 LVGL 任务 nvs_load */
     char host[96] = {0};
     char port[8] = {0};
     nl_url_parse_server(s_cfg.server_url, host, sizeof(host), port, sizeof(port), &s_https);
@@ -674,12 +688,15 @@ static void on_wifi_scan_btn(lv_event_t *e)
 void nl_ov_do_factory_reset(void)
 {
     nodelio_nvs_config_t cfg{};
-    (void)nodelio_nvs_save(&cfg);
     s_cfg = cfg;
+    nodelio_nvs_cache_put(&cfg);
     (void)nodelio_layout_cache_clear();
-    SsidManager::GetInstance().Clear(); /* 清小智 WiFi，重启后进 SoftAP */
     ESP_LOGW(TAG, "factory reset — reboot");
     nl_ov_toast("已清空，重启…");
-    vTaskDelay(pdMS_TO_TICKS(400));
-    esp_restart();
+    Application::GetInstance().Schedule([cfg]() {
+        (void)nodelio_nvs_save(&cfg);
+        SsidManager::GetInstance().Clear(); /* 清小智 WiFi，重启后进 SoftAP */
+        vTaskDelay(pdMS_TO_TICKS(400));
+        esp_restart();
+    });
 }

@@ -26,15 +26,46 @@ typedef struct {
     char topic_prefix[40];
     uint8_t brightness; /* 1–100；0=未设置用板级默认 */
     uint8_t volume;     /* 0–100；助手音频启用后生效 */
+    uint8_t xiaozhi_en; /* 1=启用小智云对话（默认）；0=关闭，唤醒仅本地口令 */
+    uint8_t power_save_en; /* 1=允许息屏/断网省电（默认）；0=永不息屏/不断 WiFi */
+    uint16_t idle_sleep_s;    /* 空闲息屏秒数，默认 60，范围 15–180 */
+    uint16_t idle_wifi_s;     /* 空闲断网秒数，默认同息屏，范围 15–300；与息屏独立 */
+    uint16_t goodbye_sleep_s; /* 退下后延迟息屏秒数，默认 15，范围 5–60 */
 } nodelio_nvs_config_t;
 
+#define NODELIO_IDLE_SLEEP_DEFAULT 60
+#define NODELIO_IDLE_WIFI_DEFAULT 60
+#define NODELIO_BYE_SLEEP_DEFAULT 15
+#define NODELIO_IDLE_SLEEP_MIN 15
+#define NODELIO_IDLE_SLEEP_MAX 180
+#define NODELIO_IDLE_WIFI_MIN 15
+#define NODELIO_IDLE_WIFI_MAX 300
+#define NODELIO_BYE_SLEEP_MIN 5
+#define NODELIO_BYE_SLEEP_MAX 60
+
 esp_err_t nodelio_nvs_init(void);
+/** Flash 读写：禁止在 LVGL 任务（PSRAM 栈）中调用。 */
 esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out);
 esp_err_t nodelio_nvs_save(const nodelio_nvs_config_t *in);
 esp_err_t nodelio_nvs_clear(void);
+/** 仅更新 RAM 镜像（LVGL 安全）；随后应由主任务 nodelio_nvs_save。 */
+void nodelio_nvs_cache_put(const nodelio_nvs_config_t *in);
+void nodelio_nvs_cache_get(nodelio_nvs_config_t *out);
 /** Drop broker credentials (keep device_id/key); call when server_url changes. */
 void nodelio_nvs_clear_mqtt(nodelio_nvs_config_t *cfg);
 bool nodelio_nvs_has_wifi(const nodelio_nvs_config_t *cfg);
+/** 小智云对话开关；读 RAM 镜像，缺省开启。 */
+bool nodelio_xiaozhi_enabled(void);
+esp_err_t nodelio_xiaozhi_set_enabled(bool on);
+/** 省电息屏断网开关；读 RAM 镜像，缺省开启。 */
+bool nodelio_power_save_enabled(void);
+esp_err_t nodelio_power_save_set_enabled(bool on);
+uint16_t nodelio_idle_sleep_seconds(void);
+uint16_t nodelio_idle_wifi_seconds(void);
+uint16_t nodelio_goodbye_sleep_seconds(void);
+/** 写入并钳位；某项为 0 则保持原值。含 flash，勿在 LVGL 任务调用。 */
+esp_err_t nodelio_set_sleep_seconds(uint16_t idle_s, uint16_t goodbye_s);
+esp_err_t nodelio_set_idle_wifi_seconds(uint16_t wifi_s);
 
 #ifdef __cplusplus
 }
