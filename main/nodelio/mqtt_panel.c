@@ -1,6 +1,7 @@
 #include "mqtt_panel.h"
 
 #include "panel_layout.h"
+#include "panel_ui.h"
 
 #include <cJSON.h>
 #include <esp_log.h>
@@ -55,7 +56,7 @@ static void handle_notify_payload(const char *data, int len)
         schedule_kick(false);
         return;
     }
-    char tmp[128];
+    char tmp[192];
     int n = len < (int)sizeof(tmp) - 1 ? len : (int)sizeof(tmp) - 1;
     memcpy(tmp, data, (size_t)n);
     tmp[n] = '\0';
@@ -67,6 +68,20 @@ static void handle_notify_payload(const char *data, int len)
     const cJSON *kind = cJSON_GetObjectItemCaseSensitive(root, "kind");
     if (cJSON_IsString(kind) && kind->valuestring && strcmp(kind->valuestring, "layout") == 0) {
         schedule_kick(true);
+    } else if (cJSON_IsString(kind) && kind->valuestring &&
+               strcmp(kind->valuestring, "countdown") == 0) {
+        /* 轻量推送：不拉 HTTP，直接改本地剩余秒 */
+        const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "deviceId");
+        const cJSON *ch = cJSON_GetObjectItemCaseSensitive(root, "channel");
+        const cJSON *rem = cJSON_GetObjectItemCaseSensitive(root, "remainingSeconds");
+        if (cJSON_IsString(id) && id->valuestring && id->valuestring[0] && cJSON_IsNumber(rem)) {
+            int ch_idx = cJSON_IsNumber(ch) ? (int)ch->valuedouble : -1;
+            int sec = (int)rem->valuedouble;
+            if (sec < 0) {
+                sec = 0;
+            }
+            nodelio_panel_ui_set_countdown(id->valuestring, ch_idx, sec);
+        }
     } else {
         schedule_kick(false);
     }

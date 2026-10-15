@@ -46,6 +46,81 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 
 #define TAG "nl_home"
 
+static lv_timer_t *s_cd_timer;
+
+static void format_countdown(int sec, char *buf, size_t buflen)
+{
+    if (!buf || buflen < 4) {
+        return;
+    }
+    if (sec < 0) {
+        sec = 0;
+    }
+    if (sec >= 3600) {
+        std::snprintf(buf, buflen, "%dh%02d", sec / 3600, (sec % 3600) / 60);
+    } else if (sec >= 60) {
+        std::snprintf(buf, buflen, "%d:%02d", sec / 60, sec % 60);
+    } else {
+        std::snprintf(buf, buflen, "%ds", sec);
+    }
+}
+
+static bool any_countdown_active(void)
+{
+    if (!s_devs) {
+        return false;
+    }
+    for (int i = 0; i < s_dev_n; i++) {
+        if (s_devs[i].countdown > 0) {
+            return true;
+        }
+        for (uint8_t c = 0; c < s_devs[i].ch_n; c++) {
+            if (s_devs[i].ch_cd[c] > 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static void cd_timer_ensure(bool want)
+{
+    if (want) {
+        if (!s_cd_timer) {
+            s_cd_timer = lv_timer_create(
+                [](lv_timer_t *) {
+                    if (!s_screen_on || !s_devs) {
+                        return;
+                    }
+                    bool changed = false;
+                    for (int i = 0; i < s_dev_n; i++) {
+                        if (s_devs[i].countdown > 0) {
+                            s_devs[i].countdown--;
+                            changed = true;
+                        }
+                        for (uint8_t c = 0; c < s_devs[i].ch_n; c++) {
+                            if (s_devs[i].ch_cd[c] > 0) {
+                                s_devs[i].ch_cd[c]--;
+                                changed = true;
+                            }
+                        }
+                    }
+                    if (changed && s_home) {
+                        nl_ov_refresh_home_tiles();
+                    }
+                    if (!any_countdown_active() && s_cd_timer) {
+                        lv_timer_pause(s_cd_timer);
+                    }
+                },
+                1000, nullptr);
+        } else {
+            lv_timer_resume(s_cd_timer);
+        }
+    } else if (s_cd_timer) {
+        lv_timer_pause(s_cd_timer);
+    }
+}
+
 static void short_label(const char *in, char *out, size_t out_len, size_t max_runes = 3)
 {
     if (!in || !out || out_len < 4) {
@@ -389,6 +464,63 @@ static bool bind_matches_momentary(const nl_bind_t *bind)
     return false;
 }
 
+void nl_ov_set_countdown(const char *device_id, int channel_index, int seconds)
+{
+    if (!device_id || !device_id[0]) {
+        return;
+    }
+    nl_dev_cache_t *d = ensure_dev(device_id);
+    if (!d) {
+        return;
+    }
+    if (seconds < 0) {
+        seconds = 0;
+    }
+    if (seconds > 32767) {
+        seconds = 32767;
+    }
+    if (channel_index < 0) {
+        d->countdown = (int16_t)seconds;
+    } else {
+        bool found = false;
+        for (uint8_t i = 0; i < d->ch_n; i++) {
+            if (d->ch_idx[i] == channel_index) {
+                d->ch_cd[i] = (int16_t)seconds;
+                found = true;
+                break;
+            }
+        }
+        if (!found && d->ch_n < NL_CH_PER_DEV) {
+            d->ch_idx[d->ch_n] = (int16_t)channel_index;
+            d->ch_st[d->ch_n][0] = '\0';
+            d->ch_cd[d->ch_n] = (int16_t)seconds;
+            d->ch_n++;
+        }
+    }
+    cd_timer_ensure(any_countdown_active());
+}
+
+int nl_ov_widget_countdown(const nl_widget_t *w)
+{
+    if (!w || !w->bind.device_id[0] || w->bind.kind == NL_BIND_HOME_SCENARIO) {
+        return 0;
+    }
+    nl_dev_cache_t *d = nl_ov_find_dev(w->bind.device_id);
+    if (!d) {
+        return 0;
+    }
+    int ch = bind_channel_index(w);
+    if (ch < 0) {
+        return d->countdown > 0 ? d->countdown : 0;
+    }
+    for (uint8_t i = 0; i < d->ch_n; i++) {
+        if (d->ch_idx[i] == ch) {
+            return d->ch_cd[i] > 0 ? d->ch_cd[i] : 0;
+        }
+    }
+    return 0;
+}
+
 void nl_ov_apply_bind_state(const nl_bind_t *bind, const char *value)
 {
     if (!bind || !value || !value[0] || bind->device_id[0] == '\0') {
@@ -397,9 +529,29 @@ void nl_ov_apply_bind_state(const nl_bind_t *bind, const char *value)
     if (bind->kind != NL_BIND_DEVICE_CHANNEL && bind->kind != NL_BIND_DEVICE_PIN) {
         return;
     }
-    if (strncasecmp(value, "OFF_IN", 6) == 0 || strcasecmp(value, "CANCEL_COUNTDOWN") == 0 ||
-        strcasecmp(value, "SET_PWM") == 0) {
+    if (strcasecmp(value, "CANCEL_COUNTDOWN") == 0) {
+        nl_ov_set_countdown(bind->device_id, bind_channel_index_of(bind), 0);
         return;
+    }
+    if (strncasecmp(value, "OFF_IN", 6) == 0) {
+        const char *p = value + 6;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        int sec = atoi(p);
+        if (sec > 0) {
+            nl_ov_set_countdown(bind->device_id, bind_channel_index_of(bind), sec);
+        }
+        return;
+    }
+    if (strcasecmp(value, "SET_PWM") == 0) {
+        return;
+    }
+    /* 开关会取消倒计时（固件 OFF 亦清） */
+    if (strcasecmp(value, "ON") == 0 || strcasecmp(value, "OFF") == 0 ||
+        strcasecmp(value, "TOGGLE") == 0 || strcasecmp(value, "OPEN") == 0 ||
+        strcasecmp(value, "CLOSE") == 0) {
+        nl_ov_set_countdown(bind->device_id, bind_channel_index_of(bind), 0);
     }
     /* 点动只发脉冲，禁止把本地态翻成开 */
     if (bind_matches_momentary(bind)) {
@@ -553,9 +705,20 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                 lv_obj_set_style_text_font(ch, nl_ov_tile_icon_font(is_row), 0);
                 lv_obj_set_style_text_color(ch, icon_c, 0);
             } else if (role == TILE_CHILD_HINT) {
+                const int cd = nl_ov_widget_countdown(w);
                 if (is_1x1) {
-                    /* 1x1 规格：在线正常时隐藏文字药丸，仅离线时在右上角微型提示「离」 */
-                    if (!online) {
+                    /* 1x1：倒计时优先生效；否则仅离线显示「离」 */
+                    if (cd > 0) {
+                        char hb[12];
+                        format_countdown(cd, hb, sizeof(hb));
+                        lv_obj_clear_flag(ch, LV_OBJ_FLAG_HIDDEN);
+                        lv_label_set_text(ch, hb);
+                        nl_ov_set_font(ch);
+                        lv_obj_set_style_text_color(ch, UI_WARN, 0);
+                        lv_obj_set_style_bg_color(ch, UI_SURFACE_PRESSED, 0);
+                        lv_obj_set_style_bg_opa(ch, LV_OPA_70, 0);
+                        lv_obj_align(ch, LV_ALIGN_TOP_RIGHT, -2, 2);
+                    } else if (!online) {
                         lv_obj_clear_flag(ch, LV_OBJ_FLAG_HIDDEN);
                         lv_label_set_text(ch, "离");
                         nl_ov_set_font(ch);
@@ -569,7 +732,15 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                     continue;
                 }
                 lv_obj_clear_flag(ch, LV_OBJ_FLAG_HIDDEN);
-                if (kind == TILE_PWM) {
+                if (cd > 0) {
+                    char hb[12];
+                    format_countdown(cd, hb, sizeof(hb));
+                    lv_label_set_text(ch, hb);
+                    nl_ov_set_font(ch);
+                    lv_obj_set_style_text_color(ch, UI_WARN, 0);
+                    lv_obj_set_style_bg_color(ch, UI_SURFACE_PRESSED, 0);
+                    lv_obj_set_style_bg_opa(ch, LV_OPA_70, 0);
+                } else if (kind == TILE_PWM) {
                     char hb[20];
                     const char *prefix = "";
                     if (w && w->skin[0]) {

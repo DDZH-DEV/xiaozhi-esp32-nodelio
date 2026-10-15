@@ -533,7 +533,8 @@ static bool resolve_target_bind(const char *title, char *device_id, size_t devic
 static ToolResult schedule_tool(const nodelio_nvs_config_t *cfg, const std::string &op,
                                 const std::string &device_id_in, const std::string &target_title,
                                 int channel, const std::string &action, const std::string &trigger_time,
-                                const std::string &days, const std::string &schedule_id)
+                                const std::string &days, const std::string &schedule_id,
+                                const std::string &value, int scenario_id)
 {
     char base[160];
     nl_url_strip_base(cfg->server_url, base, sizeof(base));
@@ -587,20 +588,53 @@ static ToolResult schedule_tool(const nodelio_nvs_config_t *cfg, const std::stri
                 c = static_cast<char>(c - 'a' + 'A');
             }
         }
-        if (act != "ON" && act != "OFF") {
-            return std::unexpected(std::string("action 须为 ON 或 OFF"));
+        /* SET_PWM / SET_PWM:75 / action=SET_PWM + value=75 */
+        if (act == "SET_PWM" || strncmp(act.c_str(), "SET_PWM:", 8) == 0 ||
+            strncmp(act.c_str(), "SET_PWM ", 8) == 0) {
+            int duty = -1;
+            if (act == "SET_PWM") {
+                if (!value.empty()) {
+                    duty = atoi(value.c_str());
+                }
+            } else {
+                const char *p = act.c_str() + 7;
+                while (*p == ':' || *p == ' ') {
+                    p++;
+                }
+                duty = atoi(p);
+            }
+            if (duty < 0 || duty > 100) {
+                return std::unexpected(std::string("SET_PWM 需要 value=0-100（或 action=SET_PWM:75）"));
+            }
+            if (ch < 0) {
+                return std::unexpected(std::string("SET_PWM 定时需要通道号（target_title 或 channel）"));
+            }
+            char pwm_act[24];
+            std::snprintf(pwm_act, sizeof(pwm_act), "SET_PWM:%d", duty);
+            act = pwm_act;
+        } else if (act != "ON" && act != "OFF") {
+            return std::unexpected(std::string("action 须为 ON / OFF / SET_PWM（或 SET_PWM:N）"));
         }
         if (trigger_time.empty() || days.empty()) {
             return std::unexpected(std::string("需要 time(HH:MM) 与 days(如 mon,tue,wed,thu,fri,sat,sun)"));
         }
         char url[256];
         snprintf(url, sizeof(url), "%s/api/devices/%s/panel/schedules", base, cfg->device_id);
-        char body[512];
-        snprintf(body, sizeof(body),
-                 "{\"targetDeviceId\":\"%s\",\"channelIndex\":%d,\"action\":\"%s\","
-                 "\"triggerTime\":\"%s\",\"daysOfWeek\":\"%s\",\"isEnabled\":true,\"name\":\"%s %s\"}",
-                 device_id, ch, act.c_str(), trigger_time.c_str(), days.c_str(), act.c_str(),
-                 trigger_time.c_str());
+        char body[640];
+        if (scenario_id > 0) {
+            snprintf(body, sizeof(body),
+                     "{\"targetDeviceId\":\"%s\",\"channelIndex\":%d,\"action\":\"%s\","
+                     "\"triggerTime\":\"%s\",\"daysOfWeek\":\"%s\",\"isEnabled\":true,"
+                     "\"name\":\"%s %s\",\"scenarioId\":%d}",
+                     device_id, ch, act.c_str(), trigger_time.c_str(), days.c_str(), act.c_str(),
+                     trigger_time.c_str(), scenario_id);
+        } else {
+            snprintf(body, sizeof(body),
+                     "{\"targetDeviceId\":\"%s\",\"channelIndex\":%d,\"action\":\"%s\","
+                     "\"triggerTime\":\"%s\",\"daysOfWeek\":\"%s\",\"isEnabled\":true,\"name\":\"%s %s\"}",
+                     device_id, ch, act.c_str(), trigger_time.c_str(), days.c_str(), act.c_str(),
+                     trigger_time.c_str());
+        }
         char resp[1024] = {0};
         int status = 0;
         esp_err_t err =
@@ -734,19 +768,24 @@ void nodelio_mcp_register_tools(void)
         "- target_title: device/channel name from list_controls (preferred) "
         "- device_id: optional raw device id if title unknown "
         "- channel: channel index (-1=device-level); optional if title resolves it "
-        "- action: 'ON' or 'OFF' (add) "
+        "- action: 'ON' | 'OFF' | 'SET_PWM' | 'SET_PWM:75' (add) "
+        "- value: duty 0-100 when action=SET_PWM (add) "
         "- time: 'HH:MM' local (add) "
         "- days: e.g. 'mon,tue,wed,thu,fri,sat,sun' (add) "
+        "- scenario_id: optional device scenario id; omit/0 = global (add) "
         "- schedule_id: id from list (delete). "
-        "Example: 每天18:00开客厅灯 → op=add target_title=客厅灯 action=ON time=18:00 days=mon,tue,wed,thu,fri,sat,sun.",
+        "Example: 每天18:00开客厅灯 → op=add target_title=客厅灯 action=ON time=18:00 days=mon,tue,wed,thu,fri,sat,sun. "
+        "Example: 每天21:00调光50 → action=SET_PWM value=50.",
         PropertyList({
             Property("op", kPropertyTypeString, ""),
             Property("target_title", kPropertyTypeString, ""),
             Property("device_id", kPropertyTypeString, ""),
             Property("channel", kPropertyTypeInteger, -1),
             Property("action", kPropertyTypeString, ""),
+            Property("value", kPropertyTypeString, ""),
             Property("time", kPropertyTypeString, ""),
             Property("days", kPropertyTypeString, ""),
+            Property("scenario_id", kPropertyTypeInteger, 0),
             Property("schedule_id", kPropertyTypeString, ""),
         }),
         [](const PropertyList &properties) -> ToolResult {
@@ -759,10 +798,13 @@ void nodelio_mcp_register_tools(void)
             std::string device_id = properties["device_id"].value<std::string>();
             int channel = properties["channel"].value<int>();
             std::string action = properties["action"].value<std::string>();
+            std::string value = properties["value"].value<std::string>();
             std::string time = properties["time"].value<std::string>();
             std::string days = properties["days"].value<std::string>();
+            int scenario_id = properties["scenario_id"].value<int>();
             std::string schedule_id = properties["schedule_id"].value<std::string>();
-            return schedule_tool(&cfg, op, device_id, title, channel, action, time, days, schedule_id);
+            return schedule_tool(&cfg, op, device_id, title, channel, action, time, days, schedule_id,
+                                value, scenario_id);
         });
 
     mcp.AddTool(

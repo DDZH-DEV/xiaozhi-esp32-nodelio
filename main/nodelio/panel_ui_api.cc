@@ -212,7 +212,26 @@ extern "C" void nodelio_panel_ui_snapshot_add_channel(const char *device_id, int
         std::snprintf(d->ch_name[d->ch_n], sizeof(d->ch_name[0]), "%s", ch_name);
     }
     std::snprintf(d->ch_st[d->ch_n], sizeof(d->ch_st[0]), "%s", state);
+    d->ch_cd[d->ch_n] = 0;
     d->ch_n++;
+}
+
+extern "C" void nodelio_panel_ui_note_countdown(const char *device_id, int channel_index, int seconds)
+{
+    nl_ov_set_countdown(device_id, channel_index, seconds);
+}
+
+extern "C" void nodelio_panel_ui_set_countdown(const char *device_id, int channel_index, int seconds)
+{
+    nl_ov_set_countdown(device_id, channel_index, seconds);
+    if (!s_home) {
+        return;
+    }
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        return;
+    }
+    nl_ov_refresh_home_tiles();
 }
 
 extern "C" void nodelio_panel_ui_snapshot_end(void)

@@ -89,10 +89,12 @@ typedef struct {
     char name[NL_LAYOUT_STR];
     bool online;
     char power[12];
+    int16_t countdown; /* 设备级剩余秒；0=无 */
     uint8_t ch_n;
     int16_t ch_idx[NL_CH_PER_DEV];
     char ch_name[NL_CH_PER_DEV][NL_LAYOUT_STR];
     char ch_st[NL_CH_PER_DEV][12];
+    int16_t ch_cd[NL_CH_PER_DEV]; /* 通道倒计时剩余秒 */
 } nl_dev_cache_t;
 
 /** snapshot 增量写入（解析完后 end 刷新磁贴开/关色）。 */
@@ -102,10 +104,15 @@ void nodelio_panel_ui_snapshot_add_channel(const char *device_id, int channel_in
                                            const char *state);
 void nodelio_panel_ui_snapshot_end(void);
 
+/** 仅写缓存（snapshot 批量用）；channel_index 为负表示设备级。 */
+void nodelio_panel_ui_note_countdown(const char *device_id, int channel_index, int seconds);
+/** 写缓存并立刻刷磁贴（MQTT / 乐观控制）。 */
+void nodelio_panel_ui_set_countdown(const char *device_id, int channel_index, int seconds);
+
 /**
  * panel/command 成功后立刻同步首页磁贴（写本地 cache + 刷色）。
  * 语音会话期 MQTT snapshot 会让路，靠本接口避免「已开关但页面不变」。
- * OFF_IN / CANCEL_COUNTDOWN / 情景 忽略。
+ * OFF_IN / CANCEL_COUNTDOWN 会写本地 countdown。
  */
 void nodelio_panel_ui_apply_bind_state(const nl_bind_t *bind, const char *value);
 

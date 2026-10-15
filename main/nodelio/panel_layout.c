@@ -602,6 +602,12 @@ esp_err_t nodelio_snapshot_fetch(const nodelio_nvs_config_t *cfg)
                 online_n++;
             }
             nodelio_panel_ui_snapshot_add(id_s, name_s, online, power);
+            {
+                const cJSON *cd = cJSON_GetObjectItemCaseSensitive(d, "countdown");
+                if (cJSON_IsNumber(cd) && cd->valuedouble > 0) {
+                    nodelio_panel_ui_note_countdown(id_s, -1, (int)cd->valuedouble);
+                }
+            }
             if (cJSON_IsString(pon) && pon->valuestring[0]) {
                 nodelio_offline_cmd_add_dynamic(id_s, 0, "ON", name_s, pon->valuestring);
             }
@@ -616,6 +622,7 @@ esp_err_t nodelio_snapshot_fetch(const nodelio_nvs_config_t *cfg)
                     const cJSON *ix = cJSON_GetObjectItemCaseSensitive(ch, "index");
                     const cJSON *cn = cJSON_GetObjectItemCaseSensitive(ch, "name");
                     const cJSON *st = cJSON_GetObjectItemCaseSensitive(ch, "state");
+                    const cJSON *ccd = cJSON_GetObjectItemCaseSensitive(ch, "countdown");
                     const cJSON *cpon = cJSON_GetObjectItemCaseSensitive(ch, "pinyinOn");
                     const cJSON *cpoff = cJSON_GetObjectItemCaseSensitive(ch, "pinyinOff");
                     if (!cJSON_IsNumber(ix) || !cJSON_IsString(st)) {
@@ -624,6 +631,9 @@ esp_err_t nodelio_snapshot_fetch(const nodelio_nvs_config_t *cfg)
                     int ch_idx = (int)ix->valuedouble;
                     const char *ch_name_s = cJSON_IsString(cn) ? cn->valuestring : "";
                     nodelio_panel_ui_snapshot_add_channel(id_s, ch_idx, ch_name_s, st->valuestring);
+                    if (cJSON_IsNumber(ccd) && ccd->valuedouble > 0) {
+                        nodelio_panel_ui_note_countdown(id_s, ch_idx, (int)ccd->valuedouble);
+                    }
                     if (cJSON_IsString(cpon) && cpon->valuestring[0]) {
                         nodelio_offline_cmd_add_dynamic(id_s, ch_idx, "ON", ch_name_s, cpon->valuestring);
                     }

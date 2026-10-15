@@ -140,6 +140,10 @@ void nl_ov_refresh_home_tiles(void);
 nl_dev_cache_t *nl_ov_find_dev(const char *device_id);
 /** 本地乐观写缓存（不刷 LVGL）；语音会话中 panel/command 成功后用，免等 MQTT snapshot */
 void nl_ov_apply_bind_state(const nl_bind_t *bind, const char *value);
+/** channel 为负=设备级；秒小于等于 0 清除；内部确保本地秒表 tick */
+void nl_ov_set_countdown(const char *device_id, int channel_index, int seconds);
+/** 读绑定磁贴当前剩余秒（无则 0） */
+int nl_ov_widget_countdown(const nl_widget_t *w);
 void nl_ov_on_brand_click(lv_event_t *e);
 
 /* —— connect —— */
