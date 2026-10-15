@@ -130,7 +130,9 @@
 #define UI_BTN_H            48
 #define UI_BTN_H_SM         44
 /* 小智对话悬浮胶囊：收窄居中，正文保留最近 5 句 */
-#define UI_AI_DRAWER_W      348
-#define UI_AI_DRAWER_H      188
-#define UI_AI_DRAWER_TEXT_H 120
-#define UI_AI_DRAWER_BOTTOM 52
+#define UI_AI_DRAWER_W         348
+#define UI_AI_DRAWER_H         188
+#define UI_AI_DRAWER_COMPACT_W 296 /* 唤醒建链条：贴文案宽度 */
+#define UI_AI_DRAWER_COMPACT_H 56  /* 唤醒建链条：仅声波+标题 */
+#define UI_AI_DRAWER_TEXT_H    120
+#define UI_AI_DRAWER_BOTTOM    52

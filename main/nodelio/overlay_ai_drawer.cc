@@ -52,6 +52,13 @@ static char s_speak_text_pending[NL_CHAT_CAP];
 static bool s_speak_text_dirty;
 /** 助手告别后：禁止 … / listening / restore 再闪抽屉，至下次用户开口或建链 */
 static bool s_ai_farewell_closing;
+/** 息屏断网冷唤：CONNECT 晚 1s 再弹紧凑条；听/说提前到达则取消并展开正式抽屉 */
+#define CONNECT_SHOW_DELAY_MS 1000
+static lv_timer_t *s_connect_delay_timer = nullptr;
+static char s_connect_pending_status[48];
+static char s_connect_pending_body[96];
+static bool s_connect_pending_has_body;
+static bool s_connect_delay_force; /* timer 到期强制弹出，绕过 delay 门 */
 
 static bool text_is_farewell(const char *text)
 {
@@ -83,31 +90,26 @@ static void stop_eq_anims(void)
     }
 }
 
-/** 建链状态 → 正文：让 1~2s 等待看上去在推进，而非死句「请稍候」 */
-static const char *connect_body_for_status(const char *status)
+/** CONNECT 用紧凑条，不再刷长正文（首屏太快读不完） */
+static void apply_drawer_chrome(bool connect_compact)
 {
-    if (!status || !status[0]) {
-        return "正在唤醒无线，马上就好…";
+    if (!s_ai_drawer) {
+        return;
     }
-    if (strstr(status, "恢复网络") || strstr(status, "唤醒网络")) {
-        return "熄屏后正在唤醒无线…";
+    if (connect_compact) {
+        lv_obj_set_size(s_ai_drawer, UI_AI_DRAWER_COMPACT_W, UI_AI_DRAWER_COMPACT_H);
+        lv_obj_set_style_pad_bottom(s_ai_drawer, 8, 0);
+        if (s_ai_drawer_body) {
+            lv_obj_add_flag(s_ai_drawer_body, LV_OBJ_FLAG_HIDDEN);
+        }
+    } else {
+        lv_obj_set_size(s_ai_drawer, UI_AI_DRAWER_W, UI_AI_DRAWER_H);
+        lv_obj_set_style_pad_bottom(s_ai_drawer, 12, 0);
+        if (s_ai_drawer_body) {
+            lv_obj_clear_flag(s_ai_drawer_body, LV_OBJ_FLAG_HIDDEN);
+        }
     }
-    if (strstr(status, "入网")) {
-        return "正在联系路由器…";
-    }
-    if (strstr(status, "获取地址") || strstr(status, "地址")) {
-        return "路由器已应答，正在获取地址…";
-    }
-    if (strstr(status, "接通语音") || strstr(status, "登录")) {
-        return "网络已就绪，正在接通语音…";
-    }
-    if (strstr(status, "网络未就绪")) {
-        return "暂时连不上网，可先用本地控家…";
-    }
-    if (strstr(status, "连接中") || strstr(status, "Connecting")) {
-        return "正在建立安全通道…";
-    }
-    return "正在准备通话…";
+    lv_obj_align(s_ai_drawer, LV_ALIGN_BOTTOM_MID, 0, -UI_AI_DRAWER_BOTTOM);
 }
 
 static void start_eq_anims(chat_phase_t phase)
@@ -116,38 +118,22 @@ static void start_eq_anims(chat_phase_t phase)
     if (phase != CHAT_LISTEN && phase != CHAT_SPEAK && phase != CHAT_CONNECT) {
         return;
     }
-    /* 说话期禁止无限 anim：RGB full_refresh 会整屏刷，抢 PSRAM 导致 Opus 断续 */
+    /* 禁止无限 anim：RGB full_refresh 抢带宽 → 语音 Opus 断续；仅静态矮条示意相位 */
+    uint32_t color = UI_C_ACCENT;
+    int32_t h0 = 14;
     if (phase == CHAT_SPEAK) {
-        for (int i = 0; i < 3; i++) {
-            if (!s_eq_bars[i]) {
-                continue;
-            }
-            lv_obj_set_style_bg_color(s_eq_bars[i], lv_color_hex(UI_C_ACCENT_SOFT), 0);
-            lv_obj_set_height(s_eq_bars[i], 22 - (i * 4));
-        }
-        return;
+        color = UI_C_ACCENT_SOFT;
+        h0 = 18;
+    } else if (phase == CHAT_CONNECT) {
+        color = UI_C_WARN;
+        h0 = 12;
     }
-    const bool connect = (phase == CHAT_CONNECT);
-    const uint32_t color = connect ? UI_C_WARN : UI_C_ACCENT;
-    /* 建链：偏慢轻跳，营造「在干活」；聆听：稍快 */
-    const int32_t hi = connect ? 28 : 36;
-    const uint32_t period = connect ? 620 : 480;
     for (int i = 0; i < 3; i++) {
         if (!s_eq_bars[i]) {
             continue;
         }
         lv_obj_set_style_bg_color(s_eq_bars[i], lv_color_hex(color), 0);
-        lv_anim_t a;
-        lv_anim_init(&a);
-        lv_anim_set_var(&a, s_eq_bars[i]);
-        lv_anim_set_values(&a, 8, hi - (i * 4));
-        lv_anim_set_duration(&a, period + (uint32_t)i * 70);
-        lv_anim_set_reverse_duration(&a, period + (uint32_t)i * 50);
-        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-        lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-        lv_anim_set_exec_cb(&a, eq_anim_exec);
-        lv_anim_set_delay(&a, (uint32_t)i * 90);
-        lv_anim_start(&a);
+        lv_obj_set_height(s_eq_bars[i], h0 - (i * 3));
     }
 }
 
@@ -209,10 +195,24 @@ static bool status_is_clock(const char *status)
     return true;
 }
 
+static void cancel_connect_delay_timer(void)
+{
+    if (s_connect_delay_timer) {
+        lv_timer_del(s_connect_delay_timer);
+        s_connect_delay_timer = nullptr;
+    }
+    s_connect_pending_status[0] = '\0';
+    s_connect_pending_body[0] = '\0';
+    s_connect_pending_has_body = false;
+    s_connect_delay_force = false;
+}
+
 void nl_ov_hide_ai_drawer(void)
 {
+    cancel_connect_delay_timer();
     if (s_ai_drawer) {
         lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
+        apply_drawer_chrome(false); /* 收起时恢复全高，避免下次卡在紧凑条 */
     }
     stop_eq_anims();
     if (s_ai_hide_timer) {
@@ -264,7 +264,7 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
     lv_obj_set_size(left_box, LV_SIZE_CONTENT, 24);
     lv_obj_set_flex_flow(left_box, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(left_box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(left_box, 6, 0);
+    lv_obj_set_style_pad_column(left_box, 10, 0);
     lv_obj_clear_flag(left_box, LV_OBJ_FLAG_SCROLLABLE);
 
     for (int i = 0; i < 3; i++) {
@@ -352,6 +352,37 @@ static const char *chat_tail_lines(const char *src, int n)
     return src;
 }
 
+static void connect_delay_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    s_connect_delay_timer = nullptr;
+    if (!s_ai_drawer || !lv_obj_has_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN)) {
+        s_connect_pending_status[0] = '\0';
+        s_connect_pending_body[0] = '\0';
+        s_connect_pending_has_body = false;
+        return;
+    }
+    s_connect_pending_status[0] = '\0';
+    s_connect_pending_body[0] = '\0';
+    s_connect_pending_has_body = false;
+    s_connect_delay_force = true;
+    nl_ov_show_ai_drawer_locked(CHAT_CONNECT, "从省电模式唤醒中,请稍后...", nullptr);
+}
+
+static void arm_connect_delay(const char *status_text, const char *msg_text)
+{
+    (void)status_text;
+    (void)msg_text;
+    nl_ov_utf8_copy(s_connect_pending_status, sizeof(s_connect_pending_status),
+                    "从省电模式唤醒中,请稍后...");
+    s_connect_pending_body[0] = '\0';
+    s_connect_pending_has_body = false;
+    if (!s_connect_delay_timer) {
+        s_connect_delay_timer = lv_timer_create(connect_delay_timer_cb, CONNECT_SHOW_DELAY_MS, nullptr);
+        lv_timer_set_repeat_count(s_connect_delay_timer, 1);
+    }
+}
+
 void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, const char *msg_text)
 {
     if (!s_ai_drawer) {
@@ -378,10 +409,24 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
         s_speak_text_dirty = false;
         s_speak_text_last_us = 0;
     }
-    /* 开机/静默防误弹：隐藏时仅连接中/倾听/说话可弹出（先弹窗再文字体现进度） */
+    /* 隐藏时仅连接中/倾听/说话可弹出 */
     if (lv_obj_has_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN)) {
         if (phase != CHAT_LISTEN && phase != CHAT_SPEAK && phase != CHAT_CONNECT) {
             return;
+        }
+        /* CONNECT：晚 1s 再弹紧凑「唤醒中」条；听/说提前到则取消 */
+        if (phase == CHAT_CONNECT && !s_connect_delay_force) {
+            arm_connect_delay(status_text, msg_text);
+            return;
+        }
+        s_connect_delay_force = false;
+        if (phase != CHAT_CONNECT) {
+            cancel_connect_delay_timer();
+        }
+    } else {
+        s_connect_delay_force = false;
+        if (phase != CHAT_CONNECT) {
+            cancel_connect_delay_timer();
         }
     }
     lv_obj_clear_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
@@ -398,20 +443,23 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
     } else if (phase == CHAT_CONNECT) {
         border_color = UI_C_WARN;
         status_color = UI_C_WARN;
-        st_def = "连接中…";
+        st_def = "从省电模式唤醒中,请稍后...";
     }
+
+    apply_drawer_chrome(phase == CHAT_CONNECT);
 
     lv_obj_set_style_border_color(s_ai_drawer, lv_color_hex(border_color), 0);
     if (s_ai_drawer_status) {
-        lv_label_set_text(s_ai_drawer_status, status_text && status_text[0] ? status_text : st_def);
+        /* CONNECT 固定省电唤醒文案，不跟入网/DHCP 文案乱跳 */
+        const char *st = (phase == CHAT_CONNECT)
+                             ? "从省电模式唤醒中,请稍后..."
+                             : (status_text && status_text[0] ? status_text : st_def);
+        lv_label_set_text(s_ai_drawer_status, st);
         lv_obj_set_style_text_color(s_ai_drawer_status, lv_color_hex(status_color), 0);
     }
 
-    if (s_ai_drawer_text) {
+    if (s_ai_drawer_text && phase != CHAT_CONNECT) {
         const char *body = msg_text;
-        if ((!body || !body[0]) && phase == CHAT_CONNECT) {
-            body = connect_body_for_status(status_text);
-        }
         if (body && body[0]) {
             bool apply = true;
             if (phase == CHAT_SPEAK) {
@@ -453,14 +501,14 @@ void nl_ov_show_ai_drawer_session(chat_phase_t phase)
     if (phase == CHAT_SPEAK) {
         status = "小智回复";
     } else if (phase == CHAT_CONNECT) {
-        status = "连接中…";
+        status = "从省电模式唤醒中,请稍后...";
     } else if (phase == CHAT_IDLE) {
         status = "待命";
     }
 
     const char *body = "说唤醒词「你好小智」或吩咐指令…";
     if (phase == CHAT_CONNECT) {
-        body = connect_body_for_status(status);
+        body = nullptr; /* 紧凑条无正文 */
     } else if (s_chat_text[0]) {
         nl_ov_utf8_copy(s_ai_show_text, sizeof(s_ai_show_text),
                         chat_tail_lines(s_chat_text, NL_CHAT_SHOW_LINES));
