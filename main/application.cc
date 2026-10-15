@@ -302,6 +302,12 @@ void Application::Run() {
             if (GetDeviceState() == kDeviceStateListening) {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+                /* 仅在「开始说话」边沿清零，避免 VAD 粘滞导致永不超时 */
+                if (audio_service_.IsVoiceDetected()) {
+                    listen_idle_ticks_ = 0;
+                }
+#endif
             }
         }
 
@@ -318,6 +324,35 @@ void Application::Run() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
+
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            /* 聆听中无对话：先提示约 2s，再关通道（避免「自己消失」） */
+            if (GetDeviceState() == kDeviceStateListening && protocol_ &&
+                protocol_->IsAudioChannelOpened()) {
+                listen_idle_ticks_++;
+                const int lim = (int)nodelio_listen_idle_seconds();
+                constexpr int kAnnounceHoldS = 2;
+                if (!listen_idle_pending_close_) {
+                    if (lim > 0 && listen_idle_ticks_ >= lim) {
+                        listen_idle_pending_close_ = true;
+                        ESP_LOGI(TAG, "listen idle %ds → announce then close", lim);
+                        auto* display = Board::GetInstance().GetDisplay();
+                        /* 文案避开 farewell 关键字，让抽屉先亮出提示再收 */
+                        display->SetChatMessage("assistant", "先不聊了，有事再叫我");
+                        nodelio_panel_ui_toast("无对话，小智先退下了");
+                        audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+                    }
+                } else if (listen_idle_ticks_ >= lim + kAnnounceHoldS) {
+                    ESP_LOGI(TAG, "listen idle announce done → close channel");
+                    listen_idle_pending_close_ = false;
+                    listen_idle_ticks_ = 0;
+                    protocol_->CloseAudioChannel();
+                }
+            } else {
+                listen_idle_ticks_ = 0;
+                listen_idle_pending_close_ = false;
+            }
+#endif
 
             // Print debug info every 10 seconds（息屏跳过，少打 UART）
             if (clock_ticks_ % 10 == 0) {
@@ -1186,6 +1221,10 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
     clock_ticks_ = 0;
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    listen_idle_ticks_ = 0;
+    listen_idle_pending_close_ = false;
+#endif
     // Any state change invalidates a pending deferred listening start;
     // the Listening case below re-arms it when needed.
     pending_listening_start_ = false;

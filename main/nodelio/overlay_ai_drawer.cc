@@ -366,7 +366,7 @@ static void connect_delay_timer_cb(lv_timer_t *t)
     s_connect_pending_body[0] = '\0';
     s_connect_pending_has_body = false;
     s_connect_delay_force = true;
-    nl_ov_show_ai_drawer_locked(CHAT_CONNECT, "从省电模式唤醒中,请稍后...", nullptr);
+    nl_ov_show_ai_drawer_locked(CHAT_CONNECT, "初始化中，请稍后...", nullptr);
 }
 
 static void arm_connect_delay(const char *status_text, const char *msg_text)
@@ -374,7 +374,7 @@ static void arm_connect_delay(const char *status_text, const char *msg_text)
     (void)status_text;
     (void)msg_text;
     nl_ov_utf8_copy(s_connect_pending_status, sizeof(s_connect_pending_status),
-                    "从省电模式唤醒中,请稍后...");
+                    "初始化中，请稍后...");
     s_connect_pending_body[0] = '\0';
     s_connect_pending_has_body = false;
     if (!s_connect_delay_timer) {
@@ -443,7 +443,7 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
     } else if (phase == CHAT_CONNECT) {
         border_color = UI_C_WARN;
         status_color = UI_C_WARN;
-        st_def = "从省电模式唤醒中,请稍后...";
+        st_def = "初始化中，请稍后...";
     }
 
     apply_drawer_chrome(phase == CHAT_CONNECT);
@@ -452,7 +452,7 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
     if (s_ai_drawer_status) {
         /* CONNECT 固定省电唤醒文案，不跟入网/DHCP 文案乱跳 */
         const char *st = (phase == CHAT_CONNECT)
-                             ? "从省电模式唤醒中,请稍后..."
+                             ? "初始化中，请稍后..."
                              : (status_text && status_text[0] ? status_text : st_def);
         lv_label_set_text(s_ai_drawer_status, st);
         lv_obj_set_style_text_color(s_ai_drawer_status, lv_color_hex(status_color), 0);
@@ -501,7 +501,7 @@ void nl_ov_show_ai_drawer_session(chat_phase_t phase)
     if (phase == CHAT_SPEAK) {
         status = "小智回复";
     } else if (phase == CHAT_CONNECT) {
-        status = "从省电模式唤醒中,请稍后...";
+        status = "初始化中，请稍后...";
     } else if (phase == CHAT_IDLE) {
         status = "待命";
     }

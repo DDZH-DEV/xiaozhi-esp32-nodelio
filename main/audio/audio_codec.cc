@@ -37,10 +37,14 @@ void AudioCodec::Start() {
     ESP_LOGI(TAG, "Audio codec started");
 }
 
+void AudioCodec::SetOutputVolumeTransient(int volume) {
+    output_volume_ = volume;
+    ESP_LOGI(TAG, "Set output volume to %d (transient)", output_volume_);
+}
+
 void AudioCodec::SetOutputVolume(int volume) {
     output_volume_ = volume;
     ESP_LOGI(TAG, "Set output volume to %d", output_volume_);
-    
     Settings settings("audio", true);
     settings.SetInt("output_volume", output_volume_);
 }

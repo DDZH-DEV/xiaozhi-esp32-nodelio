@@ -38,6 +38,7 @@ void nodelio_nvs_cache_get(nodelio_nvs_config_t *out)
     out->idle_sleep_s = NODELIO_IDLE_SLEEP_DEFAULT;
     out->idle_wifi_s = NODELIO_IDLE_WIFI_DEFAULT;
     out->goodbye_sleep_s = NODELIO_BYE_SLEEP_DEFAULT;
+    out->listen_idle_s = NODELIO_LISTEN_IDLE_DEFAULT;
 }
 
 static esp_err_t get_str(nvs_handle_t h, const char *key, char *buf, size_t len)
@@ -87,6 +88,9 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     out->goodbye_sleep_s =
         clamp_u16(out->goodbye_sleep_s, NODELIO_BYE_SLEEP_MIN, NODELIO_BYE_SLEEP_MAX,
                   NODELIO_BYE_SLEEP_DEFAULT);
+    out->listen_idle_s =
+        clamp_u16(out->listen_idle_s, NODELIO_LISTEN_IDLE_MIN, NODELIO_LISTEN_IDLE_MAX,
+                  NODELIO_LISTEN_IDLE_DEFAULT);
 }
 
 /* 避免 save 路径把「关闭小智/省电」(0) 误当成未初始化 */
@@ -104,6 +108,9 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     out->goodbye_sleep_s =
         clamp_u16(out->goodbye_sleep_s, NODELIO_BYE_SLEEP_MIN, NODELIO_BYE_SLEEP_MAX,
                   NODELIO_BYE_SLEEP_DEFAULT);
+    out->listen_idle_s =
+        clamp_u16(out->listen_idle_s, NODELIO_LISTEN_IDLE_MIN, NODELIO_LISTEN_IDLE_MAX,
+                  NODELIO_LISTEN_IDLE_DEFAULT);
     if (out->xiaozhi_en > 1) {
         out->xiaozhi_en = 1;
     }
@@ -133,6 +140,7 @@ esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out)
     out->idle_sleep_s = NODELIO_IDLE_SLEEP_DEFAULT;
     out->idle_wifi_s = NODELIO_IDLE_WIFI_DEFAULT;
     out->goodbye_sleep_s = NODELIO_BYE_SLEEP_DEFAULT;
+    out->listen_idle_s = NODELIO_LISTEN_IDLE_DEFAULT;
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NODELIO_NVS_NS, NVS_READONLY, &h);
@@ -190,6 +198,10 @@ esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out)
         if (nvs_get_u16(h, "bye_slp", &u16) == ESP_OK) {
             out->goodbye_sleep_s = u16;
         }
+        u16 = 0;
+        if (nvs_get_u16(h, "lis_idle", &u16) == ESP_OK) {
+            out->listen_idle_s = u16;
+        }
     }
     nvs_close(h);
     apply_defaults(out);
@@ -229,6 +241,7 @@ esp_err_t nodelio_nvs_save(const nodelio_nvs_config_t *in)
     nvs_set_u16(h, "idle_slp", tmp.idle_sleep_s);
     nvs_set_u16(h, "wifi_slp", tmp.idle_wifi_s);
     nvs_set_u16(h, "bye_slp", tmp.goodbye_sleep_s);
+    nvs_set_u16(h, "lis_idle", tmp.listen_idle_s);
     err = nvs_commit(h);
     nvs_close(h);
     if (err == ESP_OK) {
@@ -309,6 +322,14 @@ uint16_t nodelio_goodbye_sleep_seconds(void)
     return s_ram.goodbye_sleep_s;
 }
 
+uint16_t nodelio_listen_idle_seconds(void)
+{
+    if (!s_ram_ok) {
+        return NODELIO_LISTEN_IDLE_DEFAULT;
+    }
+    return s_ram.listen_idle_s;
+}
+
 esp_err_t nodelio_set_sleep_seconds(uint16_t idle_s, uint16_t goodbye_s)
 {
     nodelio_nvs_config_t cfg;
@@ -344,6 +365,25 @@ esp_err_t nodelio_set_idle_wifi_seconds(uint16_t wifi_s)
     }
     if (wifi_s != 0) {
         cfg.idle_wifi_s = wifi_s;
+    }
+    apply_defaults_for_save(&cfg);
+    ram_put(&cfg);
+    return nodelio_nvs_save(&cfg);
+}
+
+esp_err_t nodelio_set_listen_idle_seconds(uint16_t listen_s)
+{
+    nodelio_nvs_config_t cfg;
+    if (s_ram_ok) {
+        cfg = s_ram;
+    } else {
+        esp_err_t err = nodelio_nvs_load(&cfg);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    if (listen_s != 0) {
+        cfg.listen_idle_s = listen_s;
     }
     apply_defaults_for_save(&cfg);
     ram_put(&cfg);

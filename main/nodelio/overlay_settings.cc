@@ -88,7 +88,8 @@ static void apply_brightness(uint8_t pct)
     s_cfg.brightness = pct;
     auto *bl = Board::GetInstance().GetBacklight();
     if (bl) {
-        bl->SetBrightness(pct, true);
+        /* permanent=false：不写 Settings/NVS（LVGL PSRAM 栈禁 flash） */
+        bl->SetBrightness(pct, false);
     }
 }
 
@@ -101,23 +102,36 @@ static void apply_volume(uint8_t pct)
     s_cfg.volume = pct;
     auto *codec = Board::GetInstance().GetAudioCodec();
     if (codec) {
-        codec->SetOutputVolume((int)pct);
+        codec->SetOutputVolumeTransient((int)pct);
     }
 }
 
 static void persist_ui_prefs(void)
 {
-    /* s_cfg 为权威镜像；LVGL 禁止 flash，主任务落盘 */
+    /* s_cfg 为权威镜像；LVGL 禁止 flash，主任务落盘（含 audio/display Settings） */
     s_cfg.brightness = s_brightness;
     s_cfg.volume = s_volume;
     nodelio_nvs_cache_put(&s_cfg);
     nodelio_nvs_config_t snap = s_cfg;
-    Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
+    uint8_t bri = s_brightness;
+    uint8_t vol = s_volume;
+    Application::GetInstance().Schedule([snap, bri, vol]() {
+        (void)nodelio_nvs_save(&snap);
+        auto *bl = Board::GetInstance().GetBacklight();
+        if (bl) {
+            bl->SetBrightness(bri, true);
+        }
+        auto *codec = Board::GetInstance().GetAudioCodec();
+        if (codec) {
+            codec->SetOutputVolume((int)vol);
+        }
+    });
 }
 
 static lv_obj_t *s_idle_slp_lbl;
 static lv_obj_t *s_wifi_slp_lbl;
 static lv_obj_t *s_bye_slp_lbl;
+static lv_obj_t *s_listen_idle_lbl;
 
 static void on_idle_sleep_changed(lv_event_t *e)
 {
@@ -150,6 +164,34 @@ static void on_bye_sleep_changed(lv_event_t *e)
         std::snprintf(buf, sizeof(buf), "%ds", v);
         lv_label_set_text(s_bye_slp_lbl, buf);
     }
+}
+
+static void on_listen_idle_changed(lv_event_t *e)
+{
+    lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
+    int v = (int)lv_slider_get_value(sl);
+    if (s_listen_idle_lbl) {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%ds", v);
+        lv_label_set_text(s_listen_idle_lbl, buf);
+    }
+}
+
+static void on_listen_idle_release(lv_event_t *e)
+{
+    lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
+    int v = (int)lv_slider_get_value(sl);
+    if (v < NODELIO_LISTEN_IDLE_MIN) {
+        v = NODELIO_LISTEN_IDLE_MIN;
+    }
+    if (v > NODELIO_LISTEN_IDLE_MAX) {
+        v = NODELIO_LISTEN_IDLE_MAX;
+    }
+    s_cfg.listen_idle_s = (uint16_t)v;
+    nodelio_nvs_cache_put(&s_cfg);
+    nodelio_nvs_config_t snap = s_cfg;
+    Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
+    nl_ov_toast("无对话退下时间已保存");
 }
 
 static void on_sleep_release(lv_event_t *e)
@@ -355,6 +397,7 @@ void nl_ov_close_settings_detail(void)
     s_vol_val_lbl = nullptr;
     s_idle_slp_lbl = nullptr;
     s_bye_slp_lbl = nullptr;
+    s_listen_idle_lbl = nullptr;
     if (s_tabbar && s_visible) {
         lv_obj_clear_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
     }
@@ -617,6 +660,8 @@ static void open_settings_detail(set_page_id_t page)
         nl_ov_set_font(bye_hint);
         lv_obj_set_style_text_color(bye_hint, UI_TEXT_TIP, 0);
     } else if (page == SET_PAGE_VOICE) {
+        lv_obj_set_style_pad_row(body, 12, 0);
+
         lv_obj_t *card = settings_card(body, "小智云对话");
         lv_obj_set_style_pad_all(card, 16, 0);
         lv_obj_set_style_pad_row(card, 12, 0);
@@ -684,6 +729,23 @@ static void open_settings_detail(set_page_id_t page)
         lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
         nl_ov_set_font(hint);
         lv_obj_set_style_text_color(hint, UI_TEXT_TIP, 0);
+
+        char sec[16];
+        uint16_t lis = s_cfg.listen_idle_s ? s_cfg.listen_idle_s : NODELIO_LISTEN_IDLE_DEFAULT;
+        std::snprintf(sec, sizeof(sec), "%ds", (int)lis);
+        lv_obj_t *lis_band = audio_ctrl_band(body, "无对话自动退下", sec, &s_listen_idle_lbl);
+        lv_obj_t *lis_sl = lv_slider_create(lis_band);
+        ui_style_slider(lis_sl);
+        lv_slider_set_range(lis_sl, NODELIO_LISTEN_IDLE_MIN, NODELIO_LISTEN_IDLE_MAX);
+        lv_slider_set_value(lis_sl, lis, LV_ANIM_OFF);
+        lv_obj_add_event_cb(lis_sl, on_listen_idle_changed, LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_add_event_cb(lis_sl, on_listen_idle_release, LV_EVENT_RELEASED, nullptr);
+        lv_obj_t *lis_hint = lv_label_create(lis_band);
+        lv_label_set_text(lis_hint, "唤醒后一直不说话，多久主动收起（10–30 秒）");
+        nl_ov_set_font(lis_hint);
+        lv_obj_set_style_text_color(lis_hint, UI_TEXT_TIP, 0);
+        lv_label_set_long_mode(lis_hint, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(lis_hint, lv_pct(100));
     } else if (page == SET_PAGE_RESET) {
         lv_obj_t *card = settings_card(body, "恢复出厂");
         lv_obj_set_style_pad_all(card, 16, 0);
@@ -730,11 +792,11 @@ void nl_ov_fill_settings(void)
     }
     nl_ov_close_settings_detail();
     lv_obj_clean(s_settings);
-    /* 全宽左右行列表 */
-    lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_COLUMN);
+    /* 一行两列；卡内左右布局 */
+    lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(s_settings, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(s_settings, UI_GAP, 0);
-    lv_obj_set_style_pad_column(s_settings, 0, 0);
+    lv_obj_set_style_pad_column(s_settings, UI_GAP, 0);
     lv_obj_set_style_pad_left(s_settings, 16, 0);
     lv_obj_set_style_pad_right(s_settings, 16, 0);
     lv_obj_set_style_pad_top(s_settings, 16, 0);
@@ -769,8 +831,9 @@ void nl_ov_fill_settings(void)
     });
     {
         char voice_sub[48];
-        std::snprintf(voice_sub, sizeof(voice_sub), "%s · 唤醒词「你好小智」",
-                      nodelio_xiaozhi_enabled() ? "小智云已开" : "仅本地口令");
+        std::snprintf(voice_sub, sizeof(voice_sub), "%s · 无对话 %ds",
+                      nodelio_xiaozhi_enabled() ? "小智云已开" : "仅本地口令",
+                      (int)nodelio_listen_idle_seconds());
         settings_tile(s_settings, "智", "语音助手", voice_sub, UI_C_ACCENT, nullptr,
                       [](lv_event_t *) { open_settings_detail(SET_PAGE_VOICE); });
     }

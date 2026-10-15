@@ -31,17 +31,21 @@ typedef struct {
     uint16_t idle_sleep_s;    /* 空闲息屏秒数，默认 60，范围 15–180 */
     uint16_t idle_wifi_s;     /* 空闲断网秒数，默认同息屏，范围 15–300；与息屏独立 */
     uint16_t goodbye_sleep_s; /* 退下后延迟息屏秒数，默认 15，范围 5–60 */
+    uint16_t listen_idle_s; /* 唤醒后无对话自动退下秒数，默认 15，范围 10–30 */
 } nodelio_nvs_config_t;
 
 #define NODELIO_IDLE_SLEEP_DEFAULT 60
 #define NODELIO_IDLE_WIFI_DEFAULT 60
 #define NODELIO_BYE_SLEEP_DEFAULT 15
+#define NODELIO_LISTEN_IDLE_DEFAULT 15
 #define NODELIO_IDLE_SLEEP_MIN 15
 #define NODELIO_IDLE_SLEEP_MAX 180
 #define NODELIO_IDLE_WIFI_MIN 15
 #define NODELIO_IDLE_WIFI_MAX 300
 #define NODELIO_BYE_SLEEP_MIN 5
 #define NODELIO_BYE_SLEEP_MAX 60
+#define NODELIO_LISTEN_IDLE_MIN 10
+#define NODELIO_LISTEN_IDLE_MAX 30
 
 esp_err_t nodelio_nvs_init(void);
 /** Flash 读写：禁止在 LVGL 任务（PSRAM 栈）中调用。 */
@@ -63,9 +67,11 @@ esp_err_t nodelio_power_save_set_enabled(bool on);
 uint16_t nodelio_idle_sleep_seconds(void);
 uint16_t nodelio_idle_wifi_seconds(void);
 uint16_t nodelio_goodbye_sleep_seconds(void);
+uint16_t nodelio_listen_idle_seconds(void);
 /** 写入并钳位；某项为 0 则保持原值。含 flash，勿在 LVGL 任务调用。 */
 esp_err_t nodelio_set_sleep_seconds(uint16_t idle_s, uint16_t goodbye_s);
 esp_err_t nodelio_set_idle_wifi_seconds(uint16_t wifi_s);
+esp_err_t nodelio_set_listen_idle_seconds(uint16_t listen_s);
 
 #ifdef __cplusplus
 }

@@ -11,7 +11,7 @@ extern "C" {
 
 void ui_styles_init(void);
 
-/** 设置页入口：全宽左右行（左 Icon Pod · 中标题/副文 · 右箭头）. */
+/** 设置页入口：半宽卡片（一行两列），卡内左右（左 Icon Pod · 右标题/副文）. */
 lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char *title,
                                 const char *sub, uint32_t accent_c, const char *right_icon,
                                 lv_event_cb_t cb);

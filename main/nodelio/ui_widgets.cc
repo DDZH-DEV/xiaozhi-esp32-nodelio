@@ -70,11 +70,15 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
 {
     ui_styles_init();
 
+    /* 一行两列半宽；卡内左右：Icon Pod | 标题/副文 */
+    const int pad_x = 16;
+    const int gap = UI_GAP;
+    const int tile_w = (LV_HOR_RES - pad_x * 2 - gap) / 2;
+
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);
-    lv_obj_set_width(btn, lv_pct(100));
-    lv_obj_set_height(btn, UI_SETTINGS_TILE_H);
-    lv_obj_set_ext_click_area(btn, 8);
+    lv_obj_set_size(btn, tile_w, UI_SETTINGS_TILE_H);
+    lv_obj_set_ext_click_area(btn, 6);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -83,11 +87,11 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_set_style_radius(btn, UI_RADIUS_SM, 0);
     lv_obj_set_style_border_width(btn, 1, 0);
     lv_obj_set_style_border_color(btn, UI_TILE_OFF_BORDER, 0);
-    lv_obj_set_style_pad_left(btn, 12, 0);
-    lv_obj_set_style_pad_right(btn, 12, 0);
+    lv_obj_set_style_pad_left(btn, 10, 0);
+    lv_obj_set_style_pad_right(btn, 8, 0);
     lv_obj_set_style_pad_top(btn, 0, 0);
     lv_obj_set_style_pad_bottom(btn, 0, 0);
-    lv_obj_set_style_pad_column(btn, 12, 0);
+    lv_obj_set_style_pad_column(btn, 8, 0);
 
     lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
     lv_obj_set_style_border_color(btn, lv_color_hex(accent_c), LV_STATE_PRESSED);
@@ -146,10 +150,12 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_set_style_text_color(s, UI_TEXT_MUTED, 0);
     lv_obj_clear_flag(s, LV_OBJ_FLAG_CLICKABLE);
 
-    lv_obj_t *chev = lv_label_create(btn);
-    lv_label_set_text(chev, right_icon && right_icon[0] ? right_icon : LV_SYMBOL_RIGHT);
-    lv_obj_set_style_text_color(chev, UI_TEXT_MUTED, 0);
-    lv_obj_clear_flag(chev, LV_OBJ_FLAG_CLICKABLE);
+    if (right_icon && right_icon[0]) {
+        lv_obj_t *ric = lv_label_create(btn);
+        lv_label_set_text(ric, right_icon);
+        lv_obj_set_style_text_color(ric, UI_TEXT_MUTED, 0);
+        lv_obj_clear_flag(ric, LV_OBJ_FLAG_CLICKABLE);
+    }
 
     return btn;
 }

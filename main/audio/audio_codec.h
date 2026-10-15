@@ -30,6 +30,8 @@ public:
     virtual ~AudioCodec();
     
     virtual void SetOutputVolume(int volume);
+    /** 只改 RAM（及子类硬件），不写 NVS；供 LVGL/PSRAM 栈滑条拖动。 */
+    virtual void SetOutputVolumeTransient(int volume);
     virtual void SetInputGain(float gain);
     virtual void EnableInput(bool enable);
     virtual void EnableOutput(bool enable);
