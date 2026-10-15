@@ -38,7 +38,6 @@
 #define UI_C_BACK_BTN        0x1e3a2b
 #define UI_C_OFFLINE         0x232932
 #define UI_C_DISABLED_FG     0x64748b
-#define UI_C_CHAT_BAND       0x141822
 #define UI_C_SLIDER_TRACK    0x1c2330
 /* 开态：大厂经典环境微发光表面（Luminous Glass），清澈通透，质感高级 */
 #define UI_C_TILE_SWITCH     0x0d3822
@@ -95,7 +94,6 @@
 #define UI_BACK_BTN         lv_color_hex(UI_C_BACK_BTN)
 #define UI_OFFLINE          lv_color_hex(UI_C_OFFLINE)
 #define UI_DISABLED_FG      lv_color_hex(UI_C_DISABLED_FG)
-#define UI_CHAT_BAND        lv_color_hex(UI_C_CHAT_BAND)
 #define UI_SLIDER_TRACK     lv_color_hex(UI_C_SLIDER_TRACK)
 #define UI_TILE_OFF         lv_color_hex(UI_C_TILE_OFF)
 #define UI_TILE_SWITCH_OFF  lv_color_hex(UI_C_TILE_SWITCH_OFF)

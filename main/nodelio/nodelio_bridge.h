@@ -14,6 +14,9 @@ esp_err_t nodelio_bridge_restart(void);
 
 void nodelio_bridge_stop(void);
 
+/** 小智正在连接/聆听/说话：布局 snapshot 应让路，避免抢 UDP 语音. */
+bool nodelio_voice_session_active(void);
+
 #ifdef __cplusplus
 }
 #endif

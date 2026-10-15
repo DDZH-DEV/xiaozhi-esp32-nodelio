@@ -103,18 +103,11 @@ void WifiBoard::StartNetwork() {
     });
 
 #if defined(CONFIG_NODELIO_PANEL)
-    /* 监听底层 WIFI_EVENT_STA_CONNECTED：在 L2 关联成功的瞬间重置 listen_interval 为 0 并保持高性能，杜绝 DHCP 广播包丢弃 */
+    /* L2 关联瞬间：保持 PS_NONE 全速收发广播，绝不中途修改 config 或重启 DHCP 打断系统原生握手 */
     esp_event_handler_instance_register(
         WIFI_EVENT, WIFI_EVENT_STA_CONNECTED,
         [](void *, esp_event_base_t, int32_t, void *) {
             (void)esp_wifi_set_ps(WIFI_PS_NONE);
-            wifi_config_t cfg;
-            if (esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK) {
-                if (cfg.sta.listen_interval != 0) {
-                    cfg.sta.listen_interval = 0;
-                    (void)esp_wifi_set_config(WIFI_IF_STA, &cfg);
-                }
-            }
         },
         nullptr, nullptr);
 #endif
@@ -133,8 +126,7 @@ void WifiBoard::TryWifiConnect() {
         esp_timer_start_once(connect_timer_, CONNECT_TIMEOUT_SEC * 1000000ULL);
         WifiManager::GetInstance().StartStation();
 #if defined(CONFIG_NODELIO_PANEL)
-        /* 关联后默认 MIN_MODEM + listen_interval 会拖死 DHCP（曾见 L2 1s、IP 56s）。
-         * 拿 IP 前强制 PERFORMANCE；激活完成后再由 Application 切回 LOW_POWER。 */
+        /* StartStation 后 station_active_ 变为 true，此时设 PERFORMANCE (PS_NONE) 立即生效 */
         WifiManager::GetInstance().SetPowerSaveLevel(WifiPowerSaveLevel::PERFORMANCE);
 #endif
     } else {

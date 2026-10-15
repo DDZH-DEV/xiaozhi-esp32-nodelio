@@ -110,18 +110,19 @@ esp_err_t nodelio_panel_command(const nodelio_nvs_config_t *cfg, const char *wid
                                 const nl_bind_t *bind, const char *value_str, int *http_status);
 
 /**
- * 后台：开机 layout+snapshot 一次；之后 MQTT notify / 手动刷新 /
- * 无推送时半小时兜底 snapshot。禁止定时闪频轮询。
+ * 起后台 kick 任务；若尚未成功过云端同步则同步拉 layout+snapshot 一次。
+ * 策略：开机一次 + MQTT 推送（snapshot ≥60s 限频）+ 设置页手动刷新；
+ * 无定时轮询；语音会话中延后。应在 register 成功之后调用。
  */
 esp_err_t nodelio_layout_start_poll(const nodelio_nvs_config_t *cfg);
 
 /**
- * 立即拉一次 layout + snapshot（设置页「刷新布局」）。
+ * 立即拉一次 layout + snapshot（设置页「刷新布局」，不受限频）。
  * 可从 LVGL 线程调用。
  */
 void nodelio_layout_request_sync(void);
 
-/** MQTT panel/notify(kind=snapshot) 触发：只拉 snapshot，不重建布局。 */
+/** MQTT panel/notify 触发：只拉 snapshot（限频）；不重建布局。 */
 void nodelio_layout_request_snapshot(void);
 
 #ifdef __cplusplus

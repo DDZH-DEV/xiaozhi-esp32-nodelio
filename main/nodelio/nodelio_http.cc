@@ -1,5 +1,7 @@
 #include "nodelio_http.h"
 
+#include "nodelio_bridge.h"
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <esp_log.h>
@@ -24,8 +26,16 @@
 #define NOD_HTTP_IO_MS 2500
 #endif
 
+/** 对话期小智已 PERFORMANCE；再 esp_wifi_set_ps 易与 coexist 死锁 → IWDT 重启 */
 static void force_wifi_perf(void)
 {
+    if (nodelio_voice_session_active()) {
+        return;
+    }
+    wifi_ps_type_t cur = WIFI_PS_MAX_MODEM;
+    if (esp_wifi_get_ps(&cur) == ESP_OK && cur == WIFI_PS_NONE) {
+        return;
+    }
     (void)esp_wifi_set_ps(WIFI_PS_NONE);
 }
 
@@ -417,4 +427,9 @@ esp_err_t nodelio_http_get(const char *url, const char *device_key, const char *
                            char *resp, int resp_cap)
 {
     return http_exchange("GET", url, device_key, nullptr, if_none_match, out_status, resp, resp_cap);
+}
+
+esp_err_t nodelio_http_delete(const char *url, const char *device_key, int *out_status, char *resp, int resp_cap)
+{
+    return http_exchange("DELETE", url, device_key, nullptr, nullptr, out_status, resp, resp_cap);
 }

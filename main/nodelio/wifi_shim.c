@@ -116,6 +116,7 @@ bool nodelio_wifi_wait_ip(uint32_t timeout_ms)
     }
     const uint32_t step = 100;
     uint32_t waited = 0;
+    /* 勿在等待中 dhcpc_stop/start：双路 wait（bridge+主任务）会互踢，打断即将完成的 DHCP */
     while (waited < timeout_ms) {
         if (nodelio_wifi_has_ip()) {
             return true;

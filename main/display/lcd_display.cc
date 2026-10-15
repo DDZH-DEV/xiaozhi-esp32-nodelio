@@ -20,6 +20,7 @@
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
 #include "nodelio_overlay.h"
+#include "ui_theme.h"
 #endif
 
 #define TAG "LcdDisplay"
@@ -81,10 +82,20 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     // Initialize LCD themes
     InitializeLcdThemes();
 
-    // Load theme from settings
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 墙板永不亮小智白底：强制 dark，底色对齐曜夜 UI_C_BG */
+    if (auto* dark = LvglThemeManager::GetInstance().GetTheme("dark")) {
+        dark->set_background_color(lv_color_hex(UI_C_BG));
+        dark->set_chat_background_color(lv_color_hex(UI_C_BG));
+        dark->set_system_bubble_color(lv_color_hex(UI_C_SURFACE));
+        dark->set_border_color(lv_color_hex(UI_C_BORDER));
+    }
+    current_theme_ = LvglThemeManager::GetInstance().GetTheme("dark");
+#else
     Settings settings("display", false);
     std::string theme_name = settings.GetString("theme", "light");
     current_theme_ = LvglThemeManager::GetInstance().GetTheme(theme_name);
+#endif
 
     // Create a timer to hide the preview image
     esp_timer_create_args_t preview_timer_args = {
@@ -393,7 +404,15 @@ void LcdDisplay::HideXiaozhiChromeForNodeLio()
 {
     auto screen = lv_screen_active();
     if (screen) {
-        lv_obj_set_style_bg_color(screen, lv_color_hex(0x1e2622), 0);
+        lv_obj_set_style_bg_color(screen, UI_BG, 0);
+        lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+    }
+    /* emoji 布局：top_bar_/status_bar_ 挂在 screen 上，藏 container 盖不住白顶+WiFi 图标 */
+    if (top_bar_) {
+        lv_obj_add_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (status_bar_) {
+        lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
     }
     if (container_) {
         lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
@@ -418,10 +437,10 @@ void LcdDisplay::HideXiaozhiChromeForNodeLio()
         lv_obj_set_parent(notification_label_, lv_layer_top());
         lv_obj_set_width(notification_label_, LV_HOR_RES * 0.9);
         lv_obj_align(notification_label_, LV_ALIGN_TOP_MID, 0, 10);
-        lv_obj_set_style_bg_color(notification_label_, lv_color_hex(0x252d28), 0);
+        lv_obj_set_style_bg_color(notification_label_, UI_SURFACE, 0);
         lv_obj_set_style_bg_opa(notification_label_, LV_OPA_COVER, 0);
         lv_obj_set_style_pad_all(notification_label_, 8, 0);
-        lv_obj_set_style_text_color(notification_label_, lv_color_hex(0xe8f0ea), 0);
+        lv_obj_set_style_text_color(notification_label_, UI_TEXT, 0);
         lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
     }
     ESP_LOGI(TAG, "Xiaozhi chrome hidden (NodeLio panel)");

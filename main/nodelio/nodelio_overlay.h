@@ -22,6 +22,9 @@ bool nodelio_overlay_visible(void);
 /** 切到 overlay 对话页（唤醒/聆听时调用，盖住小智白底聊天气泡）. */
 void nodelio_overlay_show_chat(void);
 
+/** 唤醒建链：先弹出抽屉，正文显示连接进度（旧小智体验）. */
+void nodelio_overlay_show_connecting(void);
+
 /** 已持 LVGL/Display 锁时喂对话行（role: user/assistant/system）. */
 void nodelio_overlay_on_chat_locked(const char *role, const char *text);
 

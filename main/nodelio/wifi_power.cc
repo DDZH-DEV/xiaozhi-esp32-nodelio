@@ -3,6 +3,7 @@
 #include "wifi_manager.h"
 
 #include <esp_log.h>
+#include <esp_netif.h>
 #include <esp_wifi.h>
 
 #define TAG "nl_wifi"
@@ -15,9 +16,18 @@ void nodelio_wifi_sleep(void)
         return;
     }
     s_asleep = true;
-    /* 息屏切 Modem-sleep 模式：保持与 AP 连接与心跳，射频按 DTIM 休眠，电流仅 ~15mA */
-    (void)esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-    ESP_LOGI(TAG, "WiFi modem sleep (screen off, connection maintained)");
+    /*
+     * Soft sleep：只 wifi_stop，保留 WifiManager STA netif / DHCP 客户端。
+     * 勿 StopStation()（毁 netif），勿 dhcpc_stop（唤醒后可续租）。
+     * 清 IP 仅避免 has_ip 在射频停掉后仍为 true。
+     */
+    (void)esp_wifi_stop();
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif) {
+        esp_netif_ip_info_t zero = {};
+        (void)esp_netif_set_ip_info(netif, &zero);
+    }
+    ESP_LOGI(TAG, "WiFi sleep (screen off)");
 }
 
 void nodelio_wifi_wake(void)
@@ -26,12 +36,23 @@ void nodelio_wifi_wake(void)
         return;
     }
     s_asleep = false;
-    /* 亮屏恢复全速高性能射频 */
+
+    WifiManager::GetInstance().SetPowerSaveLevel(WifiPowerSaveLevel::PERFORMANCE);
     (void)esp_wifi_set_ps(WIFI_PS_NONE);
-    if (!WifiManager::GetInstance().IsConnected()) {
-        WifiManager::GetInstance().StartStation();
+
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif) {
+        esp_err_t err = esp_wifi_start();
+        if (err == ESP_OK || err == ESP_ERR_WIFI_CONN) {
+            ESP_LOGI(TAG, "WiFi wake");
+            return;
+        }
+        ESP_LOGW(TAG, "soft wake wifi_start %s — StartStation", esp_err_to_name(err));
     }
-    ESP_LOGI(TAG, "WiFi wake (performance mode)");
+
+    WifiManager::GetInstance().StartStation();
+    WifiManager::GetInstance().SetPowerSaveLevel(WifiPowerSaveLevel::PERFORMANCE);
+    ESP_LOGI(TAG, "WiFi wake");
 }
 
 bool nodelio_wifi_is_asleep(void)

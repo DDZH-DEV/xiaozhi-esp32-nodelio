@@ -102,6 +102,13 @@ void nodelio_panel_ui_snapshot_add_channel(const char *device_id, int channel_in
                                            const char *state);
 void nodelio_panel_ui_snapshot_end(void);
 
+/**
+ * panel/command 成功后立刻同步首页磁贴（写本地 cache + 刷色）。
+ * 语音会话期 MQTT snapshot 会让路，靠本接口避免「已开关但页面不变」。
+ * OFF_IN / CANCEL_COUNTDOWN / 情景 忽略。
+ */
+void nodelio_panel_ui_apply_bind_state(const nl_bind_t *bind, const char *value);
+
 /** 获取当前缓存的设备总数与单个设备快照（供 MCP 等模块枚举未排布设备） */
 int nodelio_panel_ui_get_dev_count(void);
 const nl_dev_cache_t *nodelio_panel_ui_get_dev(int index);

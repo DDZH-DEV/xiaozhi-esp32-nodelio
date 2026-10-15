@@ -123,6 +123,15 @@ void AudioService::Start() {
 
     esp_timer_start_periodic(audio_power_timer_, 1000000);
 
+#if CONFIG_BOARD_TYPE_SILA_86
+    /* RGB full_refresh + AFE 时原 opus=2 易饿死 → 播音断续 */
+    constexpr UBaseType_t kOutPrio = 6;
+    constexpr UBaseType_t kOpusPrio = 6;
+#else
+    constexpr UBaseType_t kOutPrio = 4;
+    constexpr UBaseType_t kOpusPrio = 2;
+#endif
+
 #if CONFIG_USE_AUDIO_PROCESSOR
     /* Start the audio input task */
     xTaskCreatePinnedToCore(
@@ -140,7 +149,7 @@ void AudioService::Start() {
             audio_service->AudioOutputTask();
             vTaskDelete(NULL);
         },
-        "audio_output", 2048 * 2, this, 4, &audio_output_task_handle_);
+        "audio_output", 2048 * 2, this, kOutPrio, &audio_output_task_handle_);
 #else
     /* Start the audio input task */
     xTaskCreate(
@@ -158,7 +167,7 @@ void AudioService::Start() {
             audio_service->AudioOutputTask();
             vTaskDelete(NULL);
         },
-        "audio_output", 2048, this, 4, &audio_output_task_handle_);
+        "audio_output", 2048, this, kOutPrio, &audio_output_task_handle_);
 #endif
 
     /* Start the opus codec task */
@@ -168,7 +177,7 @@ void AudioService::Start() {
             audio_service->OpusCodecTask();
             vTaskDelete(NULL);
         },
-        "opus_codec", 2048 * 12, this, 2, &opus_codec_task_handle_);
+        "opus_codec", 2048 * 12, this, kOpusPrio, &opus_codec_task_handle_);
 }
 
 void AudioService::Stop() {

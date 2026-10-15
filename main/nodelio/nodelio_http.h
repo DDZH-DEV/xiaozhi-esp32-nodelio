@@ -20,6 +20,8 @@ esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const
 esp_err_t nodelio_http_get(const char *url, const char *device_key, const char *if_none_match, int *out_status,
                            char *resp, int resp_cap);
 
+esp_err_t nodelio_http_delete(const char *url, const char *device_key, int *out_status, char *resp, int resp_cap);
+
 /** 纯 TCP 探测 host:port，打日志；成功 ESP_OK。 */
 esp_err_t nodelio_http_probe_tcp(const char *host, int port);
 

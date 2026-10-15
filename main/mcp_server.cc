@@ -7,9 +7,13 @@
 #include <esp_app_desc.h>
 #include <esp_log.h>
 #include <esp_pthread.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <iterator>
+#include <new>
 #include <optional>
 
 #include "application.h"
@@ -611,10 +615,8 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
         }
     }
 
-    // Use main thread to call the tool
-    auto& app = Application::GetInstance();
-    app.Schedule([this, id, tool, arguments = std::move(arguments),
-                  response_sender = std::move(response_sender)]() {
+    auto run = [this, id, tool, arguments = std::move(arguments),
+                response_sender = std::move(response_sender)]() {
         auto result = tool->Call(arguments);
         if (!result) {
             ESP_LOGE(TAG, "tools/call: %s", result.error().c_str());
@@ -622,5 +624,35 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
             return;
         }
         ReplyResult(id, *result, response_sender);
-    });
+    };
+
+    /* NodeLio/技能工具含阻塞 HTTP：勿占 Application::Run（说话态会拖死主循环 / 易 IWDT） */
+    const bool offload = tool_name.rfind("self.nodelio.", 0) == 0 ||
+                         tool_name.rfind("self.skill.", 0) == 0;
+    if (!offload) {
+        Application::GetInstance().Schedule(std::move(run));
+        return;
+    }
+
+    struct Job {
+        std::function<void()> fn;
+    };
+    auto* job = new (std::nothrow) Job{std::move(run)};
+    if (!job) {
+        ReplyError(id, "Out of memory", response_sender);
+        return;
+    }
+    /* IDF xTaskCreate 栈单位为 bytes；schedule list 响应缓冲约 4KB */
+    constexpr uint32_t kStackBytes = 12288;
+    if (xTaskCreate(
+            [](void* arg) {
+                auto* j = static_cast<Job*>(arg);
+                j->fn();
+                delete j;
+                vTaskDelete(nullptr);
+            },
+            "mcp_http", kStackBytes, job, 3, nullptr) != pdPASS) {
+        delete job;
+        ReplyError(id, "Failed to start tool worker", response_sender);
+    }
 }

@@ -325,6 +325,19 @@ public:
     }
 
     virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
+        if (level == PowerSaveLevel::LOW_POWER) {
+            /* 唤醒建链/聆听/说话期间禁止 WiFi MAX_MODEM，否则 UDP 语音断续 */
+            DeviceState st = Application::GetInstance().GetDeviceState();
+            if (st == kDeviceStateConnecting || st == kDeviceStateListening ||
+                st == kDeviceStateSpeaking || st == kDeviceStateNotifying) {
+                ESP_LOGW(TAG, "ignore LOW_POWER during voice (state=%d)", (int)st);
+                if (power_save_timer_) {
+                    power_save_timer_->WakeUp();
+                }
+                WifiBoard::SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+                return;
+            }
+        }
         if (level != PowerSaveLevel::LOW_POWER && power_save_timer_) {
             power_save_timer_->WakeUp();
         }

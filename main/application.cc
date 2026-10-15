@@ -17,6 +17,7 @@
 #include "nodelio_mcp.h"
 #include "nodelio_overlay.h"
 #include "offline_cmd.h"
+#include "wifi_provision.h"
 #endif
 
 #include <driver/gpio.h>
@@ -72,14 +73,13 @@ void Application::Initialize() {
     // Setup the display
     auto display = board.GetDisplay();
     display->SetupUI();
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 立刻建 NodeLio 壳，勿 Schedule：否则会闪一帧小智白顶+WiFi 栏 */
+    (void)nodelio_overlay_init();
+    nodelio_overlay_show(false);
+#else
     // Print board name/version info
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-    /* 延后建壳并进入 NodeLio 首页，遮盖小智原生白底 UI */
-    Schedule([]() {
-        (void)nodelio_overlay_init();
-        nodelio_overlay_show(false);
-    });
 #endif
 
     // Setup the audio service
@@ -141,7 +141,10 @@ void Application::Initialize() {
         switch (event) {
             case NetworkEvent::Scanning:
                 display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000);
+#if !(CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL)
+                /* 面板息屏断网再唤醒时，重连扫描会误置 DISCONNECTED，把刚建的会话掐掉 */
                 xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_DISCONNECTED);
+#endif
                 break;
             case NetworkEvent::Connecting: {
                 if (data.empty()) {
@@ -229,7 +232,10 @@ void Application::Run() {
         }
 
         if (bits & MAIN_EVENT_NETWORK_DISCONNECTED) {
-            HandleNetworkDisconnectedEvent();
+            /* 同轮已 Connected（唤醒重连：先 Scan 置位再 Got IP）→ 勿关刚开的音频会话 */
+            if (!(bits & MAIN_EVENT_NETWORK_CONNECTED)) {
+                HandleNetworkDisconnectedEvent();
+            }
         }
 
         if (bits & MAIN_EVENT_ACTIVATION_DONE) {
@@ -345,6 +351,15 @@ void Application::HandleNetworkConnectedEvent() {
 }
 
 void Application::HandleNetworkDisconnectedEvent() {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 扫描/抖动误报：STA 已有关联则不当真断网（息屏唤醒首唤会被掐） */
+    if (nodelio_wifi_is_connected()) {
+        ESP_LOGW(TAG, "ignore network-disconnect while WiFi still associated");
+        auto display = Board::GetInstance().GetDisplay();
+        display->UpdateStatusBar(true);
+        return;
+    }
+#endif
     // Close current conversation when network disconnected
     auto state = GetDeviceState();
     if (state == kDeviceStateNotifying) {
@@ -604,8 +619,7 @@ void Application::InitializeProtocol() {
     });
 
     protocol_->OnAudioChannelClosed([this, &board]() {
-        /* WiFi 先降功耗；idle 后再 SetPowerSaveLevel，板级可立刻息屏 */
-        board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        /* 先回 idle 再降功耗：避免 goodbye 瞬间 MAX_MODEM 把尾包 UDP 打丢 */
         Schedule([this, &board]() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
@@ -857,6 +871,58 @@ void Application::HandleToggleChatEvent() {
     }
 }
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+/** 息屏断网后首唤：先起 STA、解除 transport suspend，再 OpenAudioChannel */
+static void EnsureNetReadyAfterScreenSleep()
+{
+    auto display = Board::GetInstance().GetDisplay();
+    if (nodelio_wifi_is_asleep()) {
+        ESP_LOGI(TAG, "screen-off net sleep — wake WiFi for voice");
+        if (display) {
+            display->SetStatus("唤醒网络…");
+        }
+        nodelio_wifi_wake();
+    }
+    if (!nodelio_wifi_has_ip()) {
+        ESP_LOGI(TAG, "waiting WiFi/IP before cloud voice...");
+        /* 分段刷状态：等 IP 时 UI 有推进感（物理仍要约 1~2s） */
+        static const char *k_steps[] = {"入网中…", "获取地址…", "接通语音…"};
+        const uint32_t timeout_ms = 30000;
+        const uint32_t step_ms = 100;
+        const uint32_t tip_every_ms = 450;
+        uint32_t waited = 0;
+        int tip_i = 0;
+        if (display) {
+            display->SetStatus(k_steps[0]);
+        }
+        while (waited < timeout_ms) {
+            if (nodelio_wifi_has_ip()) {
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(step_ms));
+            waited += step_ms;
+            if (display && tip_every_ms > 0 && (waited % tip_every_ms) < step_ms) {
+                tip_i = (tip_i + 1) % 3;
+                display->SetStatus(k_steps[tip_i]);
+            }
+        }
+        if (!nodelio_wifi_has_ip()) {
+            ESP_LOGW(TAG, "WiFi not ready — OpenAudioChannel may fall back offline");
+            if (display) {
+                display->SetStatus("网络未就绪");
+            }
+            /* 清 suspended，避免后续 StartMqttClient skipped (suspended) 永久卡死 */
+            Application::GetInstance().MarkTransportSuspended(false);
+            return;
+        }
+    }
+    if (display) {
+        display->SetStatus("接通语音…");
+    }
+    Application::GetInstance().ResumeTransport();
+}
+#endif
+
 void Application::ContinueOpenAudioChannel(ListeningMode mode) {
     // Check state again in case it was changed during scheduling
     if (GetDeviceState() != kDeviceStateConnecting) {
@@ -866,6 +932,10 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
     // Switch to performance mode before connecting to reduce latency
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    EnsureNetReadyAfterScreenSleep();
+#endif
 
     if (!protocol_->IsAudioChannelOpened()) {
         if (!protocol_->OpenAudioChannel()) {
@@ -1003,6 +1073,11 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 否则息屏断网后首唤：StartMqttClient skipped (suspended) → 必败，要喊第二次 */
+    EnsureNetReadyAfterScreenSleep();
+#endif
+
     if (!protocol_->IsAudioChannelOpened()) {
         if (!protocol_->OpenAudioChannel()) {
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
@@ -1074,10 +1149,15 @@ void Application::HandleStateChangedEvent() {
             display->SetChatMessage("system", "");
             /* 唤醒建链即亮屏（sila PowerSaveTimer WakeUp） */
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            /* 先弹窗，连接/登录进度用抽屉文字体现（旧小智体验） */
+            nodelio_overlay_show_connecting();
+#endif
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
+            board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
             nodelio_overlay_show_chat();
 #endif
@@ -1099,9 +1179,8 @@ void Application::HandleStateChangedEvent() {
             break;
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-            nodelio_overlay_show_chat();
-#endif
+            board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+            /* 勿再 show_chat：会把标题打成「在听」；正文由 SetStatus/on_chat 维护 */
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);

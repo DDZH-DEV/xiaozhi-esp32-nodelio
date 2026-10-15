@@ -13,12 +13,15 @@
 
 #include <esp_wifi.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <functional>
 
 #define TAG "nl_bridge"
 
@@ -28,6 +31,46 @@ static nodelio_nvs_config_t s_cfg;
 static QueueHandle_t s_pwr_q;
 
 enum { PWR_SLEEP = 0, PWR_WAKE = 1 };
+
+struct MainSyncGate {
+    SemaphoreHandle_t sem = nullptr;
+    std::atomic<bool> done{false};
+};
+
+/**
+ * 在主任务执行并等待完成（息屏挂起小智 MQTT 须先于断网）。
+ * 禁止超时后删 semaphore：主线程若卡在 HTTP，迟到 Give 会 UAF。
+ */
+static void run_on_main_sync(std::function<void()> fn)
+{
+    auto *gate = new MainSyncGate();
+    gate->sem = xSemaphoreCreateBinary();
+    if (!gate->sem) {
+        delete gate;
+        fn();
+        return;
+    }
+    Application::GetInstance().Schedule([fn = std::move(fn), gate]() {
+        fn();
+        gate->done.store(true, std::memory_order_release);
+        xSemaphoreGive(gate->sem);
+    });
+
+    TickType_t last_warn = xTaskGetTickCount();
+    while (!gate->done.load(std::memory_order_acquire)) {
+        if (xSemaphoreTake(gate->sem, pdMS_TO_TICKS(1000)) == pdTRUE) {
+            break;
+        }
+        TickType_t now = xTaskGetTickCount();
+        if ((now - last_warn) >= pdMS_TO_TICKS(5000)) {
+            ESP_LOGW(TAG, "main sync still waiting — Application main may be blocked");
+            last_warn = now;
+        }
+    }
+    (void)xSemaphoreTake(gate->sem, 0);
+    vSemaphoreDelete(gate->sem);
+    delete gate;
+}
 
 static void seed_from_kconfig(nodelio_nvs_config_t *cfg)
 {
@@ -43,7 +86,7 @@ static void pwr_task(void *arg)
 {
     (void)arg;
     int cmd = PWR_WAKE;
-    ESP_LOGI(TAG, "pwr task up (modem-sleep power save, ready for instant wake)");
+    ESP_LOGI(TAG, "pwr task up (screen-off → WiFi/MQTT off)");
     while (true) {
         if (xQueueReceive(s_pwr_q, &cmd, portMAX_DELAY) != pdTRUE) {
             continue;
@@ -54,23 +97,28 @@ static void pwr_task(void *arg)
         }
 
         if (cmd == PWR_SLEEP) {
-            ESP_LOGI(TAG, "net sleep: screen-off -> WiFi modem-sleep (keep MQTT & wake word ready)");
-            /* 息屏切 Modem-sleep：WiFi 保持与 AP 关联，小智/NodeLio MQTT 均保持长连接，
-             * 既大幅降低射频功耗，又确保“你好小智”随时秒开通道，首唤即连，云端推送不丢 */
+            ESP_LOGI(TAG, "net sleep: suspend xz MQTT → panel MQTT → wifi");
+            /* 先挡重连，再主任务挂起协议，最后停 STA（息屏超省电，无云端流量） */
+            Application::GetInstance().MarkTransportSuspended(true);
+            run_on_main_sync([]() { Application::GetInstance().SuspendTransport(); });
+            nodelio_mqtt_panel_stop();
             nodelio_wifi_sleep();
             continue;
         }
 
-        ESP_LOGI(TAG, "net wake: screen-on -> restore performance");
+        ESP_LOGI(TAG, "net wake: wifi + mqtt + heartbeat");
         nodelio_wifi_wake();
 
-        /* 若意外掉线，给短暂重连宽限 */
-        if (!nodelio_wifi_has_ip()) {
-            if (!nodelio_wifi_wait_connected(6000) || !nodelio_wifi_wait_ip(4000)) {
-                ESP_LOGW(TAG, "WiFi reconnecting in background...");
-                continue;
-            }
+        /* 等 Got IP（含关联时间）；勿先 wait L2 再短等 DHCP，易在重认证窗口耗尽 */
+        if (!nodelio_wifi_wait_ip(30000)) {
+            ESP_LOGW(TAG, "WiFi not up — skip hb/mqtt");
+            continue;
         }
+
+        /* 异步恢复小智通道：勿 run_on_main_sync，否则主任务卡在首唤 wait/OpenAudio 时会死锁 */
+        Application::GetInstance().Schedule([]() {
+            Application::GetInstance().ResumeTransport();
+        });
 
         /* 仅缺 broker 时再 register（换 server 已清 mqtt）；已有则直接连 */
         if (s_cfg.mqtt_server[0] == '\0') {
@@ -163,8 +211,7 @@ static esp_err_t start_client(void)
     }
 
     s_cfg = cfg;
-    (void)nodelio_panel_ui_start(&cfg);
-    (void)nodelio_layout_start_poll(&cfg);
+    (void)nodelio_panel_ui_start(&cfg); /* overlay 已可出缓存布局 */
     ensure_pwr_task();
 
     /* 勿 SetPowerSaveLevel(PERFORMANCE)：会 WakeUp + 打乱小智刚设的 LOW_POWER 时序 */
@@ -209,13 +256,14 @@ static esp_err_t start_client(void)
         } else {
             cloud = true;
         }
-        err = nodelio_mqtt_panel_start(&cfg);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "mqtt panel: %s", esp_err_to_name(err));
-        }
+        /* register 后再拉 layout+snapshot（一次），再开 MQTT，避免并行竞态与 notify 连打 */
         err = nodelio_layout_start_poll(&cfg);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "layout poll: %s", esp_err_to_name(err));
+        }
+        err = nodelio_mqtt_panel_start(&cfg);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "mqtt panel: %s", esp_err_to_name(err));
         }
     } else {
         ESP_LOGW(TAG, "skip hb/mqtt/layout: register not OK — 检查绑定码/账号是否与 APP 一致");
@@ -278,4 +326,11 @@ void nodelio_bridge_stop(void)
     nodelio_mqtt_panel_stop();
     s_started = false;
     s_starting = false;
+}
+
+bool nodelio_voice_session_active(void)
+{
+    DeviceState st = Application::GetInstance().GetDeviceState();
+    return st == kDeviceStateConnecting || st == kDeviceStateListening ||
+           st == kDeviceStateSpeaking || st == kDeviceStateNotifying;
 }

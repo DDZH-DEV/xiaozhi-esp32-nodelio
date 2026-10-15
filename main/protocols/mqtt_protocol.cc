@@ -92,10 +92,11 @@ void MqttProtocol::SuspendTransport() {
 }
 
 void MqttProtocol::ResumeTransport() {
-    if (!transport_suspended_) {
+    const bool need_start = transport_suspended_ || mqtt_ == nullptr;
+    transport_suspended_ = false;
+    if (!need_start) {
         return;
     }
-    transport_suspended_ = false;
     ESP_LOGI(TAG, "transport resume");
     StartMqttClient(false);
 }
