@@ -163,6 +163,7 @@ private:
     int clock_ticks_ = 0;
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     int listen_idle_ticks_ = 0; /* 聆听无语音累计秒；勿复用 clock_ticks_ */
+    int listen_announce_hold_ticks_ = 0; /* 已提示后独立计时关通道，不受 VAD 清零 */
     bool listen_idle_pending_close_ = false; /* 已提示，待短暂展示后再关通道 */
 #endif
     TaskHandle_t activation_task_handle_ = nullptr;

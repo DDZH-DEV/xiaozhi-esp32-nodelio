@@ -26,6 +26,7 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #include "audio_codec.h"
 #include "backlight.h"
 
+#include <esp_app_desc.h>
 #include <esp_chip_info.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -408,13 +409,16 @@ static lv_obj_t *settings_card(lv_obj_t *parent, const char *title)
 {
     lv_obj_t *card = lv_obj_create(parent);
     lv_obj_remove_style_all(card);
+    /* 高度跟内容走；否则默认矮框会裁掉按钮/作者等行 */
     lv_obj_set_width(card, lv_pct(100));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(card, UI_PANEL, 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, 10, 0);
     lv_obj_set_style_pad_all(card, 14, 0);
     lv_obj_set_style_pad_row(card, 6, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_grow(card, 0);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     if (title && title[0]) {
         lv_obj_t *t = lv_label_create(card);
@@ -516,6 +520,16 @@ static void open_settings_detail(set_page_id_t page)
             std::string ua = SystemInfo::GetUserAgent();
             sys_kv_row(dev, "固件", ua.c_str(), nullptr);
         }
+        {
+            const esp_app_desc_t *app = esp_app_get_description();
+            if (app) {
+                std::snprintf(line, sizeof(line), "%s %s", app->date, app->time);
+            } else {
+                std::snprintf(line, sizeof(line), "-");
+            }
+            sys_kv_row(dev, "编译时间", line, nullptr);
+        }
+        sys_kv_row(dev, "作者", "Dev-SL", nullptr);
         sys_kv_row(dev, "唤醒词", "你好小智", nullptr);
         sys_kv_row(dev, "小智云", s_cfg.xiaozhi_en ? "已启用" : "已关闭", nullptr);
         if (s_cfg.power_save_en) {
@@ -750,7 +764,6 @@ static void open_settings_detail(set_page_id_t page)
         lv_obj_t *card = settings_card(body, "恢复出厂");
         lv_obj_set_style_pad_all(card, 16, 0);
         lv_obj_set_style_pad_row(card, 16, 0);
-        lv_obj_set_style_pad_bottom(card, 28, 0);
 
         lv_obj_t *warn = lv_label_create(card);
         lv_label_set_text(warn, "将清空 WiFi、服务器凭证与布局缓存，设备会立即重启。");
@@ -759,18 +772,16 @@ static void open_settings_detail(set_page_id_t page)
         nl_ov_set_font(warn);
         lv_obj_set_style_text_color(warn, UI_DANGER_FG, 0);
 
-        lv_obj_t *btn = ui_make_text_btn(card, "确认重置并重启", 1, on_factory_confirm);
-        lv_obj_set_style_margin_top(btn, 8, 0);
-        lv_obj_set_style_margin_bottom(btn, 10, 0);
+        /* 按钮放 body 上，避免再被卡片裁切 */
+        lv_obj_t *btn = ui_make_text_btn(body, "确认重置并重启", 1, on_factory_confirm);
+        lv_obj_set_style_margin_top(btn, 4, 0);
 
-        lv_obj_t *hint = lv_label_create(card);
+        lv_obj_t *hint = lv_label_create(body);
         lv_label_set_text(hint, "取消请点左上角返回");
         lv_obj_set_width(hint, lv_pct(100));
         nl_ov_set_font(hint);
         lv_obj_set_style_text_color(hint, UI_TEXT_MUTED, 0);
         lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_pad_top(hint, 4, 0);
-        lv_obj_set_style_pad_bottom(hint, 8, 0);
     }
 
     if (s_tabbar) {

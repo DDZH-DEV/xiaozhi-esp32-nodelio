@@ -28,6 +28,7 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #include "system_info.h"
 #include "wifi_manager.h"
 
+#include <esp_app_desc.h>
 #include <esp_chip_info.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -169,23 +170,70 @@ const lv_font_t *nl_ov_tile_icon_font(bool is_row)
     return is_row ? &font_material_symbols_20_4 : &font_material_symbols_30_4;
 }
 
-/* 字体视觉重心偏上：统一 +1；右侧留白与左侧 12px 接近 */
+/* 字体视觉重心偏上：统一 +1；左右留白对称 */
 #define NL_STATUS_Y 1
-#define NL_STATUS_RIGHT_PAD (-18)
+#define NL_STATUS_LEFT_PAD 12
+#define NL_STATUS_RIGHT_PAD (-12)
+
+/** 顶栏左挂：VYYYYDDMM（编译日，与网络/布局无关，离线也常显） */
+static int month_from_abbr(const char *mon)
+{
+    static const char *kMons[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    if (!mon || !mon[0]) {
+        return 0;
+    }
+    for (int i = 0; i < 12; i++) {
+        if (strncmp(mon, kMons[i], 3) == 0) {
+            return i + 1;
+        }
+    }
+    return 0;
+}
+
+static void fill_build_stamp(char *out, size_t out_len)
+{
+    if (!out || out_len == 0) {
+        return;
+    }
+    const esp_app_desc_t *app = esp_app_get_description();
+    if (!app || !app->date[0]) {
+        std::snprintf(out, out_len, "V-");
+        return;
+    }
+    /* __DATE__："Oct 16 2026" / "Oct  6 2026" → V20261610 */
+    char mon[4] = {};
+    int day = 0;
+    int year = 0;
+    if (std::sscanf(app->date, "%3s %d %d", mon, &day, &year) == 3) {
+        int m = month_from_abbr(mon);
+        if (m > 0 && day > 0 && year >= 2000) {
+            std::snprintf(out, out_len, "V%04d%02d%02d", year, day, m);
+            return;
+        }
+    }
+    std::snprintf(out, out_len, "V-");
+}
 
 static void status_bar_relayout(void)
 {
-    if (!s_status_lbl || !s_cloud_lbl || !s_wifi_lbl) {
-        return;
-    }
-    lv_obj_align(s_status_lbl, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD, NL_STATUS_Y);
-    lv_obj_align_to(s_cloud_lbl, s_status_lbl, LV_ALIGN_OUT_LEFT_MID, -10, 0);
-    lv_obj_align_to(s_wifi_lbl, s_cloud_lbl, LV_ALIGN_OUT_LEFT_MID, -8, 0);
-    if (s_clock_lbl) {
-        lv_obj_align(s_clock_lbl, LV_ALIGN_CENTER, 0, NL_STATUS_Y);
-    }
     if (s_brand_lbl) {
-        lv_obj_align(s_brand_lbl, LV_ALIGN_LEFT_MID, 12, NL_STATUS_Y);
+        lv_obj_align(s_brand_lbl, LV_ALIGN_LEFT_MID, NL_STATUS_LEFT_PAD, NL_STATUS_Y);
+    }
+    if (s_status_lbl && s_brand_lbl) {
+        lv_obj_align_to(s_status_lbl, s_brand_lbl, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    }
+    /* 右：时钟 · WiFi · 云，时钟贴图标只留一点空 */
+    if (s_cloud_lbl) {
+        lv_obj_align(s_cloud_lbl, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD, NL_STATUS_Y);
+    }
+    if (s_wifi_lbl && s_cloud_lbl) {
+        lv_obj_align_to(s_wifi_lbl, s_cloud_lbl, LV_ALIGN_OUT_LEFT_MID, -6, 0);
+    }
+    if (s_clock_lbl && s_wifi_lbl) {
+        lv_obj_align_to(s_clock_lbl, s_wifi_lbl, LV_ALIGN_OUT_LEFT_MID, -4, 0);
+    } else if (s_clock_lbl) {
+        lv_obj_align(s_clock_lbl, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD - 40, NL_STATUS_Y);
     }
 }
 
@@ -225,9 +273,8 @@ void nl_ov_refresh_status_icons(bool wifi_ok, bool cloud_ok, const char *msg)
         nl_ov_set_icon_font(s_cloud_lbl);
         lv_obj_set_style_text_color(s_cloud_lbl, cloud_ok ? UI_ACCENT : UI_TEXT_MUTED, 0);
     }
-    if (s_status_lbl && msg) {
-        lv_label_set_text(s_status_lbl, msg);
-    }
+    /* msg 不再刷布局版本；左挂编译戳开机写死，避免断网变 v0 */
+    (void)msg;
     refresh_clock_lbl();
     status_bar_relayout();
 }
@@ -249,10 +296,7 @@ static void status_poll_cb(void *arg)
         /* 未配 MQTT 时用最近业务成功作「云」 */
         cloud_ok = s_cloud_ok;
     }
-    char msg[20];
-    std::snprintf(msg, sizeof(msg), "v%d",
-                  (s_have_layout && s_layout) ? s_layout->layout_version : 0);
-    nodelio_panel_ui_set_status(wifi_ok, cloud_ok, msg);
+    nodelio_panel_ui_set_status(wifi_ok, cloud_ok, nullptr);
 }
 
 void nl_ov_status_poll_set_period(bool awake)
@@ -420,7 +464,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_clear_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_root, LV_OBJ_FLAG_HIDDEN);
 
-    /* top chrome：左品牌 · 中时钟 · 右 WiFi/云 + 布局版本 */
+    /* top chrome：左品牌+编译戳 · 右 时钟/WiFi/云 */
     s_status_bar = lv_obj_create(s_root);
     lv_obj_t *bar = s_status_bar;
     lv_obj_remove_style_all(bar);
@@ -445,11 +489,11 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     nl_ov_set_font(s_clock_lbl);
     lv_obj_set_style_text_color(s_clock_lbl, UI_TEXT_SUB, 0);
 
+    char build_stamp[40];
+    fill_build_stamp(build_stamp, sizeof(build_stamp));
     s_status_lbl = lv_label_create(bar);
-    lv_label_set_text(s_status_lbl, "v0");
-    lv_obj_set_width(s_status_lbl, 36);
+    lv_label_set_text(s_status_lbl, build_stamp);
     lv_label_set_long_mode(s_status_lbl, LV_LABEL_LONG_CLIP);
-    lv_obj_set_style_text_align(s_status_lbl, LV_TEXT_ALIGN_RIGHT, 0);
     nl_ov_set_font(s_status_lbl);
     lv_obj_set_style_text_color(s_status_lbl, UI_STATUS_CHROME, 0);
 

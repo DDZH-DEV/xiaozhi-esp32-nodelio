@@ -209,6 +209,12 @@ static esp_err_t start_client(void)
     if (cfg.server_url[0] == '\0' || cfg.owner[0] == '\0') {
         ESP_LOGW(TAG, "未绑定：点右下角「家」→ 设置里填服务器与绑定码");
         (void)nodelio_overlay_init();
+        /* 未绑定也须开息屏计时，禁止常亮 */
+        Board::GetInstance().SetIdleSleepSeconds((int)nodelio_idle_sleep_seconds());
+        Board::GetInstance().SetIdleWifiSeconds((int)nodelio_idle_wifi_seconds());
+        Board::GetInstance().SetPowerSaveEnabled(nodelio_power_save_enabled());
+        s_started = true;
+        s_starting = false;
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -230,20 +236,22 @@ static esp_err_t start_client(void)
     }
 
     bool cloud = false;
-    bool reg_ok = false;
     err = nodelio_device_register(&cfg);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "register: %s", esp_err_to_name(err));
-        if (cfg.device_id[0] == '\0' || cfg.device_key[0] == '\0') {
-            return err;
-        }
+        ESP_LOGW(TAG, "register: %s — keep local UI + power save (no cloud)",
+                 esp_err_to_name(err));
         s_cfg = cfg;
-    } else {
-        (void)nodelio_nvs_save(&cfg);
-        s_cfg = cfg;
-        cloud = true;
-        reg_ok = true;
+        /* 标 started，避免反复 HTTP 打关着的 server；息屏断网仍可用 */
+        s_started = true;
+        s_starting = false;
+        nodelio_mqtt_panel_stop();
+        bool wifi_ok = nodelio_wifi_is_connected();
+        nodelio_panel_ui_set_status(wifi_ok, false, "v0");
+        return err;
     }
+    (void)nodelio_nvs_save(&cfg);
+    s_cfg = cfg;
+    cloud = true;
 
     if (nodelio_wifi_is_asleep()) {
         ESP_LOGW(TAG, "WiFi asleep during start — defer hb/mqtt/layout to net wake");
@@ -254,33 +262,27 @@ static esp_err_t start_client(void)
         return ESP_OK;
     }
 
-    if (reg_ok) {
-        err = nodelio_device_heartbeat(&cfg);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "heartbeat: %s", esp_err_to_name(err));
-        } else {
-            cloud = true;
-        }
-        /* register 后再拉 layout+snapshot（一次），再开 MQTT，避免并行竞态与 notify 连打 */
-        err = nodelio_layout_start_poll(&cfg);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "layout poll: %s", esp_err_to_name(err));
-        }
-        err = nodelio_mqtt_panel_start(&cfg);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "mqtt panel: %s", esp_err_to_name(err));
-        }
+    err = nodelio_device_heartbeat(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "heartbeat: %s", esp_err_to_name(err));
     } else {
-        ESP_LOGW(TAG, "skip hb/mqtt/layout: register not OK — 检查绑定码/账号是否与 APP 一致");
-        nodelio_mqtt_panel_stop();
+        cloud = true;
+    }
+    /* register 后再拉 layout+snapshot（一次），再开 MQTT，避免并行竞态与 notify 连打 */
+    err = nodelio_layout_start_poll(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "layout poll: %s", esp_err_to_name(err));
+    }
+    err = nodelio_mqtt_panel_start(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "mqtt panel: %s", esp_err_to_name(err));
     }
 
     s_started = true;
     s_starting = false;
     bool wifi_ok = nodelio_wifi_is_connected();
     nodelio_panel_ui_set_status(wifi_ok, cloud || nodelio_mqtt_panel_connected(), "v0");
-    ESP_LOGI(TAG, "NodeLio panel up device_id=%s server=%s reg_ok=%d", cfg.device_id, cfg.server_url,
-             (int)reg_ok);
+    ESP_LOGI(TAG, "NodeLio panel up device_id=%s server=%s reg_ok=1", cfg.device_id, cfg.server_url);
     return ESP_OK;
 }
 

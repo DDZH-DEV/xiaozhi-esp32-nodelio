@@ -303,8 +303,8 @@ void Application::Run() {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-                /* 仅在「开始说话」边沿清零，避免 VAD 粘滞导致永不超时 */
-                if (audio_service_.IsVoiceDetected()) {
+                /* 仅在「开始说话」边沿清零；已提示退下后勿清，否则环境噪声会永远关不掉抽屉 */
+                if (!listen_idle_pending_close_ && audio_service_.IsVoiceDetected()) {
                     listen_idle_ticks_ = 0;
                 }
 #endif
@@ -326,30 +326,36 @@ void Application::Run() {
             display->UpdateStatusBar();
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-            /* 聆听中无对话：先提示约 2s，再关通道（避免「自己消失」） */
+            /* 聆听中无对话：提示（抽屉按 farewell 即时收）→ 独立 1s 后关通道 */
             if (GetDeviceState() == kDeviceStateListening && protocol_ &&
                 protocol_->IsAudioChannelOpened()) {
-                listen_idle_ticks_++;
                 const int lim = (int)nodelio_listen_idle_seconds();
-                constexpr int kAnnounceHoldS = 2;
+                constexpr int kAnnounceHoldS = 1;
                 if (!listen_idle_pending_close_) {
+                    listen_idle_ticks_++;
                     if (lim > 0 && listen_idle_ticks_ >= lim) {
                         listen_idle_pending_close_ = true;
+                        listen_announce_hold_ticks_ = 0;
                         ESP_LOGI(TAG, "listen idle %ds → announce then close", lim);
                         auto* display = Board::GetInstance().GetDisplay();
-                        /* 文案避开 farewell 关键字，让抽屉先亮出提示再收 */
+                        /* 「先不聊了/有事再叫我」走 farewell：同帧收抽屉；toast 仍可见 */
                         display->SetChatMessage("assistant", "先不聊了，有事再叫我");
                         nodelio_panel_ui_toast("无对话，小智先退下了");
                         audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
                     }
-                } else if (listen_idle_ticks_ >= lim + kAnnounceHoldS) {
-                    ESP_LOGI(TAG, "listen idle announce done → close channel");
-                    listen_idle_pending_close_ = false;
-                    listen_idle_ticks_ = 0;
-                    protocol_->CloseAudioChannel();
+                } else {
+                    listen_announce_hold_ticks_++;
+                    if (listen_announce_hold_ticks_ >= kAnnounceHoldS) {
+                        ESP_LOGI(TAG, "listen idle announce done → close channel");
+                        listen_idle_pending_close_ = false;
+                        listen_idle_ticks_ = 0;
+                        listen_announce_hold_ticks_ = 0;
+                        protocol_->CloseAudioChannel();
+                    }
                 }
             } else {
                 listen_idle_ticks_ = 0;
+                listen_announce_hold_ticks_ = 0;
                 listen_idle_pending_close_ = false;
             }
 #endif
@@ -540,9 +546,15 @@ void Application::CheckAssetsVersion() {
 }
 
 void Application::CheckNewVersion() {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 墙板：少重试、短退避；云端挂了也不能把 Activating 拖成一晚 */
+    const int MAX_RETRY = 3;
+    int retry_delay = 5;
+#else
     const int MAX_RETRY = 10;
-    int retry_count = 0;
     int retry_delay = 10;  // Initial retry delay in seconds
+#endif
+    int retry_count = 0;
 
     auto& board = Board::GetInstance();
     while (true) {
@@ -588,7 +600,11 @@ void Application::CheckNewVersion() {
             continue;
         }
         retry_count = 0;
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        retry_delay = 5;
+#else
         retry_delay = 10;  // Reset retry delay
+#endif
 
         if (ota_->HasNewVersion()) {
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
@@ -617,10 +633,12 @@ void Application::CheckNewVersion() {
         }
 
         // This will block the loop until the activation is done or timeout
+        bool activated = false;
         for (int i = 0; i < 10; ++i) {
             ESP_LOGI(TAG, "Activating... %d/%d", i + 1, 10);
             esp_err_t err = ota_->Activate();
             if (err == ESP_OK) {
+                activated = true;
                 break;
             } else if (err == ESP_ERR_TIMEOUT) {
                 vTaskDelay(pdMS_TO_TICKS(3000));
@@ -631,6 +649,15 @@ void Application::CheckNewVersion() {
                 break;
             }
         }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        /* 墙板：一轮激活失败就继续开机，禁止 while(true) 整夜占 Activating 挡息屏 */
+        if (!activated) {
+            ESP_LOGW(TAG, "activation incomplete — continue panel boot (power save)");
+            break;
+        }
+#else
+        (void)activated;
+#endif
     }
 }
 
@@ -1223,6 +1250,7 @@ void Application::HandleStateChangedEvent() {
     clock_ticks_ = 0;
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     listen_idle_ticks_ = 0;
+    listen_announce_hold_ticks_ = 0;
     listen_idle_pending_close_ = false;
 #endif
     // Any state change invalidates a pending deferred listening start;
@@ -1591,9 +1619,20 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
 }
 
 bool Application::CanEnterSleepMode() {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 墙板：息屏只挡对话/升级/配网。Activating（OTA/注册失败重试）不得锁死背光整晚发热。 */
+    const auto state = GetDeviceState();
+    if (state == kDeviceStateConnecting || state == kDeviceStateListening ||
+        state == kDeviceStateSpeaking || state == kDeviceStateNotifying ||
+        state == kDeviceStateUpgrading || state == kDeviceStateWifiConfiguring ||
+        state == kDeviceStateAudioTesting) {
+        return false;
+    }
+#else
     if (GetDeviceState() != kDeviceStateIdle) {
         return false;
     }
+#endif
 
     if (protocol_ && protocol_->IsAudioChannelOpened()) {
         return false;

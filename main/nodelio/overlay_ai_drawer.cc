@@ -66,7 +66,8 @@ static bool text_is_farewell(const char *text)
         return false;
     }
     return strstr(text, "再见") || strstr(text, "退下") || strstr(text, "拜拜") ||
-           strstr(text, "退出") || strstr(text, "我先休息了") || strstr(text, "随时叫我");
+           strstr(text, "退出") || strstr(text, "我先休息了") || strstr(text, "随时叫我") ||
+           strstr(text, "先不聊了") || strstr(text, "有事再叫我");
 }
 
 bool nl_ov_ai_farewell_closing(void)
