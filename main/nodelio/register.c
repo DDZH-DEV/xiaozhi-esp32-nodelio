@@ -1,6 +1,7 @@
 #include "register.h"
 
 #include "board_info.h"
+#include "device_caps.h"
 #include "nodelio_http.h"
 #include "sdkconfig.h"
 
@@ -16,7 +17,7 @@
 
 static const char *TAG = "nl_reg";
 
-#define FW_VERSION "0.3.17"
+#define FW_VERSION "0.3.18"
 
 static void ensure_ids(nodelio_nvs_config_t *cfg)
 {
@@ -199,6 +200,15 @@ esp_err_t nodelio_device_heartbeat(const nodelio_nvs_config_t *cfg)
     }
     char url[192];
     build_heartbeat_url(cfg->server_url, cfg->device_id, url, sizeof(url));
+
+    char caps[1536];
+    int n = nodelio_caps_export_json(caps, sizeof(caps));
+    char body[1600];
+    if (n > 0) {
+        snprintf(body, sizeof(body), "{\"capabilities\":%s}", caps);
+    } else {
+        snprintf(body, sizeof(body), "{}");
+    }
     int status = 0;
-    return nodelio_http_post_json(url, cfg->device_key, "{}", &status, NULL, 0);
+    return nodelio_http_post_json(url, cfg->device_key, body, &status, NULL, 0);
 }

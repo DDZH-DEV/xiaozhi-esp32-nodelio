@@ -642,8 +642,8 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
         ReplyError(id, "Out of memory", response_sender);
         return;
     }
-    /* IDF xTaskCreate 栈单位为 bytes；schedule list 响应缓冲约 4KB */
-    constexpr uint32_t kStackBytes = 12288;
+    /* IDF xTaskCreate 栈单位为 bytes；HTTP + cJSON，Envelope 已改堆分配 */
+    constexpr uint32_t kStackBytes = 16384;
     if (xTaskCreate(
             [](void* arg) {
                 auto* j = static_cast<Job*>(arg);

@@ -1,5 +1,8 @@
 #include "offline_cmd_map.h"
 
+#include "media_player.h"
+#include "skill_result_ui.h"
+
 #include "panel_layout.h"
 #include "panel_ui.h"
 
@@ -179,6 +182,13 @@ static const char *widget_label(const nl_widget_t *w)
     return w->id;
 }
 
+bool nodelio_offline_cmd_is_local(int command_id)
+{
+    return command_id == NL_OC_REBOOT || command_id == NL_OC_GOODBYE ||
+           command_id == NL_OC_MEDIA_PREV || command_id == NL_OC_MEDIA_NEXT ||
+           command_id == NL_OC_MEDIA_PAUSE || command_id == NL_OC_MEDIA_RESUME;
+}
+
 const char *nodelio_offline_cmd_zh(int command_id)
 {
     switch (command_id) {
@@ -194,6 +204,18 @@ const char *nodelio_offline_cmd_zh(int command_id)
         return "打开窗帘";
     case NL_OC_CURTAIN_CLOSE:
         return "关闭窗帘";
+    case NL_OC_REBOOT:
+        return "重启";
+    case NL_OC_GOODBYE:
+        return "退下";
+    case NL_OC_MEDIA_PREV:
+        return "上一首";
+    case NL_OC_MEDIA_NEXT:
+        return "下一首";
+    case NL_OC_MEDIA_PAUSE:
+        return "暂停";
+    case NL_OC_MEDIA_RESUME:
+        return "继续播放";
     default:
         return "未知口令";
     }
@@ -202,6 +224,60 @@ const char *nodelio_offline_cmd_zh(int command_id)
 esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int command_id,
                                        const nodelio_panel_layout_t *layout)
 {
+    /* 本机动作：不依赖 cfg / layout / WiFi */
+    if (command_id == NL_OC_REBOOT) {
+        nodelio_panel_ui_set_voice_hint("正在重启…");
+        nodelio_panel_ui_local_reboot();
+        return ESP_OK;
+    }
+    if (command_id == NL_OC_GOODBYE) {
+        nodelio_panel_ui_set_voice_hint("已退下");
+        nodelio_panel_ui_local_goodbye();
+        return ESP_OK;
+    }
+    if (command_id == NL_OC_MEDIA_PREV) {
+        if (!nodelio_skill_media_prev()) {
+            nodelio_panel_ui_set_voice_hint("没有上一首");
+            return ESP_ERR_NOT_FOUND;
+        }
+        nodelio_panel_ui_set_voice_hint("上一首");
+        return ESP_OK;
+    }
+    if (command_id == NL_OC_MEDIA_NEXT) {
+        if (!nodelio_skill_media_next()) {
+            nodelio_panel_ui_set_voice_hint("没有下一首");
+            return ESP_ERR_NOT_FOUND;
+        }
+        nodelio_panel_ui_set_voice_hint("下一首");
+        return ESP_OK;
+    }
+    if (command_id == NL_OC_MEDIA_PAUSE) {
+        if (nodelio_media_is_paused()) {
+            nodelio_panel_ui_set_voice_hint("已暂停");
+            return ESP_OK;
+        }
+        if (!nodelio_media_is_playing()) {
+            nodelio_panel_ui_set_voice_hint("没有在播");
+            return ESP_ERR_INVALID_STATE;
+        }
+        nodelio_media_pause();
+        nodelio_panel_ui_set_voice_hint("已暂停");
+        return ESP_OK;
+    }
+    if (command_id == NL_OC_MEDIA_RESUME) {
+        if (nodelio_media_is_playing()) {
+            nodelio_panel_ui_set_voice_hint("正在播放");
+            return ESP_OK;
+        }
+        if (!nodelio_media_is_paused()) {
+            nodelio_panel_ui_set_voice_hint("没有可继续的曲");
+            return ESP_ERR_INVALID_STATE;
+        }
+        nodelio_media_resume();
+        nodelio_panel_ui_set_voice_hint("继续播放");
+        return ESP_OK;
+    }
+
     if (!cfg) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -347,6 +423,25 @@ static int phrase_to_cmd_id(const char *phrase)
 {
     if (!phrase || !phrase[0]) {
         return 0;
+    }
+    if (strstr(phrase, "重启") || strstr(phrase, "重新启动")) {
+        return NL_OC_REBOOT;
+    }
+    if (strstr(phrase, "退下") || strstr(phrase, "再见") || strstr(phrase, "拜拜") ||
+        strstr(phrase, "息屏") || strstr(phrase, "睡觉")) {
+        return NL_OC_GOODBYE;
+    }
+    if (strstr(phrase, "上一首") || strstr(phrase, "上一曲")) {
+        return NL_OC_MEDIA_PREV;
+    }
+    if (strstr(phrase, "下一首") || strstr(phrase, "下一曲") || strstr(phrase, "切歌")) {
+        return NL_OC_MEDIA_NEXT;
+    }
+    if (strstr(phrase, "暂停")) {
+        return NL_OC_MEDIA_PAUSE;
+    }
+    if (strstr(phrase, "继续播放") || strstr(phrase, "继续播") || strstr(phrase, "恢复播放")) {
+        return NL_OC_MEDIA_RESUME;
     }
     if (strstr(phrase, "回家") || strstr(phrase, "到家") || strstr(phrase, "我回来了")) {
         return NL_OC_SCENE_HOME;

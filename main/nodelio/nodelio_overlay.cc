@@ -54,6 +54,7 @@ bool s_have_layout;
 bool s_fab_ready;
 bool s_ready;
 bool s_visible;
+bool s_skill_ui_active;
 bool s_building;
 bool s_want_settings;
 bool s_want_chat;
@@ -74,7 +75,7 @@ lv_timer_t *s_ai_hide_timer;     /* 会话闲置自动收起定时器 */
 char s_ai_show_text[NL_CHAT_SHOW_CAP]; /* 抽屉展示缓冲 */
 lv_obj_t *s_settings;
 lv_obj_t *s_tabbar;
-lv_obj_t *s_tab_btns[2]; /* 0=首页 1=设置，已去除对话 Tab */
+lv_obj_t *s_tab_btns[NL_TAB_N]; /* 0=首页 1=应用 2=设置 */
 lv_obj_t *s_brand_lbl;
 lv_obj_t *s_clock_lbl;
 lv_obj_t *s_status_lbl;
@@ -119,7 +120,7 @@ int s_scan_n;
 bool s_wifi_scanning;
 int s_grid_ox;
 int s_grid_oy;
-int s_active_tab; /* 0=home 1=settings */
+int s_active_tab; /* NL_TAB_HOME / APPS / SET */
 
 chat_phase_t s_chat_phase = CHAT_IDLE;
 char s_chat_text[NL_CHAT_CAP];
@@ -344,7 +345,8 @@ bool nl_ov_ai_session_active(void)
 /** 会话进行中：抽屉保持可见并置顶（切 Tab / 关表单后仍找得到小智） */
 void nl_ov_restore_ai_drawer_if_session(void)
 {
-    if (!s_ai_drawer || !nl_ov_ai_session_active() || nl_ov_ai_farewell_closing()) {
+    if (!s_ai_drawer || s_skill_ui_active || !nl_ov_ai_session_active() ||
+        nl_ov_ai_farewell_closing()) {
         return;
     }
     lv_obj_clear_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
@@ -372,28 +374,32 @@ void nl_ov_show_page(int tab)
 {
     s_active_tab = tab;
     s_want_chat = false;
-    if (tab != 1) {
+    if (tab != NL_TAB_SET) {
         s_want_settings = false;
     }
     nl_ov_close_forms();
     if (s_home) {
-        if (tab == 0) {
+        if (tab == NL_TAB_HOME) {
             lv_obj_clear_flag(s_home, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(s_home, LV_OBJ_FLAG_HIDDEN);
         }
     }
+    nl_ov_apps_set_visible(tab == NL_TAB_APPS);
     if (s_settings) {
-        if (tab == 1) {
+        if (tab == NL_TAB_SET) {
             lv_obj_clear_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
         }
     }
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < NL_TAB_N; i++) {
         if (s_tab_btns[i]) {
             ui_tab_set_checked(s_tab_btns[i], i == tab);
         }
+    }
+    if (tab == NL_TAB_APPS) {
+        nl_ov_apps_refresh();
     }
     /* 切 Tab 不再藏小智；听/说中保持底部胶囊 */
     nl_ov_restore_ai_drawer_if_session();
@@ -405,7 +411,7 @@ static void apply_visible_locked(void)
         return;
     }
     if (s_want_settings) {
-        nl_ov_show_page(1);
+        nl_ov_show_page(NL_TAB_SET);
     } else {
         nl_ov_show_page(0);
         if (s_want_chat) {
@@ -540,8 +546,9 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_set_flex_align(s_tabbar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(s_tabbar, LV_OBJ_FLAG_SCROLLABLE);
 
-    s_tab_btns[0] = mk_tab(s_tabbar, "首页", 0);
-    s_tab_btns[1] = mk_tab(s_tabbar, "设置", 1); /* Tab 1 → nl_ov_show_page(1) */
+    s_tab_btns[0] = mk_tab(s_tabbar, "首页", NL_TAB_HOME);
+    s_tab_btns[1] = mk_tab(s_tabbar, "应用", NL_TAB_APPS);
+    s_tab_btns[2] = mk_tab(s_tabbar, "设置", NL_TAB_SET);
 
     /* 全局 AI 对话浮层抽屉（唤醒词触发，不依赖 Tab，挂在 lv_layer_top()） */
     nl_ov_create_ai_drawer(lv_layer_top());
@@ -571,6 +578,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     nl_ov_fill_home();
     /* removed */
     nl_ov_fill_settings();
+    nl_ov_build_apps();
     nl_ov_build_connect();
     /* WiFi 扫描已并入「连接」页；不再单独建 WiFi 页，避免覆盖 s_ta_ssid 等指针 */
 

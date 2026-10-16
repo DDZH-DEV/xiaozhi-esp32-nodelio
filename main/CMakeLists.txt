@@ -952,6 +952,7 @@ if(CONFIG_BOARD_TYPE_SILA_86 AND CONFIG_NODELIO_PANEL)
         "nodelio/overlay_home_tiles.cc"
         "nodelio/overlay_connect.cc"
         "nodelio/overlay_settings.cc"
+        "nodelio/overlay_apps.cc"
         "nodelio/overlay_ai_drawer.cc"
         "nodelio/panel_ui_api.cc"
         "nodelio/nodelio_mcp.cc"
@@ -965,8 +966,16 @@ if(CONFIG_BOARD_TYPE_SILA_86 AND CONFIG_NODELIO_PANEL)
         "nodelio/panel_layout.c"
         "nodelio/nodelio_bridge.cc"
         "nodelio/fonts/font_puhui_14_1.c"
+        "nodelio/skill/device_caps.c"
+        "nodelio/skill/content_envelope.c"
+        "nodelio/skill/skill_runtime.c"
+        "nodelio/skill/skill_result_ui.cc"
+        "nodelio/skill/media_player.cc"
     )
-    list(APPEND INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/nodelio)
+    list(APPEND INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/nodelio
+        ${CMAKE_CURRENT_SOURCE_DIR}/nodelio/skill
+    )
 endif()
 
 # Select one audio engine for each chip family

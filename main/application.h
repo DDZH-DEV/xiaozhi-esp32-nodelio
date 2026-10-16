@@ -127,6 +127,11 @@ public:
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /** 本机 HTTP 音频（Ogg/Opus）；须在主任务或经 Schedule。与语音会话互斥。 */
+    void PlayHttpAudio(std::string audio_url, std::string device_key = {});
+    void StopHttpAudio();
+#endif
     
     /**
      * Reset protocol resources (thread-safe)
@@ -183,7 +188,8 @@ private:
     void ContinueWakeWordInvoke(const std::string& wake_word);
     void StartListeningAudio();
     void ConfigureWakeWordForListening();
-    void StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles);
+    void StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles,
+                           std::string device_key = {});
     void StopNotification();
     void HandleNotificationFinished(uint32_t playback_id, bool success);
 

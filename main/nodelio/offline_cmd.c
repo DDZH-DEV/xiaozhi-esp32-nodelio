@@ -74,7 +74,8 @@ static int64_t s_deadline_us;
 static int s_mn_div;
 
 #define CMD_STACK_WORDS 6144
-#define LISTEN_MS       5000
+/** 口令窗：须长于「唤醒后等网失败再进本地」的体感；5s 来不及说完 */
+#define LISTEN_MS       12000
 
 #define NL_DYN_CMD_MAX 32
 
@@ -112,8 +113,13 @@ bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel_or_pin, 
     if (!device_id || !device_id[0] || !action || !action[0] || !pinyin || !pinyin[0]) {
         return false;
     }
-    /* 裸「打开/关闭」无辨识度，且会撞车 */
-    if (strcmp(pinyin, "da kai") == 0 || strcmp(pinyin, "guan bi") == 0) {
+    /* 裸「打开/关闭」无辨识度，且会撞车；本机系统口令保留 */
+    if (strcmp(pinyin, "da kai") == 0 || strcmp(pinyin, "guan bi") == 0 ||
+        strcmp(pinyin, "chong qi") == 0 || strcmp(pinyin, "tui xia") == 0 ||
+        strcmp(pinyin, "zai jian") == 0 || strcmp(pinyin, "bai bai") == 0 ||
+        strcmp(pinyin, "xi ping") == 0 || strcmp(pinyin, "shang yi shou") == 0 ||
+        strcmp(pinyin, "xia yi shou") == 0 || strcmp(pinyin, "zan ting") == 0 ||
+        strcmp(pinyin, "ji xu bo fang") == 0) {
         return false;
     }
     for (int i = 0; i < s_dyn_cmd_count; i++) {
@@ -194,7 +200,30 @@ void nodelio_offline_cmd_set_done_cb(nodelio_offline_cmd_done_cb_t cb)
 static void install_commands(void)
 {
     esp_mn_commands_clear();
-    /* 仅布局下发的动态拼音；不再注册开灯/回家等固件兜底词 */
+    /* 本机系统口令：断网也可执行 */
+    static const struct {
+        int id;
+        const char *py;
+    } k_local[] = {
+        {NL_OC_REBOOT, "chong qi"},
+        {NL_OC_GOODBYE, "tui xia"},
+        {NL_OC_GOODBYE, "zai jian"},
+        {NL_OC_GOODBYE, "bai bai"},
+        {NL_OC_GOODBYE, "xi ping"},
+        {NL_OC_MEDIA_PREV, "shang yi shou"},
+        {NL_OC_MEDIA_NEXT, "xia yi shou"},
+        {NL_OC_MEDIA_PAUSE, "zan ting"},
+        {NL_OC_MEDIA_RESUME, "ji xu bo fang"},
+    };
+    for (int i = 0; i < (int)(sizeof(k_local) / sizeof(k_local[0])); i++) {
+        esp_err_t ret = esp_mn_commands_add(k_local[i].id, k_local[i].py);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "local voice cmd: id=%d pinyin='%s'", k_local[i].id, k_local[i].py);
+        } else {
+            ESP_LOGW(TAG, "Fail to add local voice cmd: '%s'", k_local[i].py);
+        }
+    }
+    /* 布局下发的动态拼音（控家仍走 panel/command，需联网） */
     for (int i = 0; i < s_dyn_cmd_count; i++) {
         esp_err_t ret = esp_mn_commands_add(s_dyn_cmds[i].cmd_id, s_dyn_cmds[i].pinyin);
         if (ret == ESP_OK) {
@@ -291,6 +320,17 @@ static void cmd_worker(void *arg)
             continue;
         }
         if (cid <= 0) {
+            continue;
+        }
+        /* 本机口令：不查服务器 / 不走 HTTP */
+        if (nodelio_offline_cmd_is_local(cid)) {
+            esp_err_t err = nodelio_offline_cmd_dispatch(NULL, cid, NULL);
+            const char *zh = nodelio_offline_cmd_zh(cid);
+            if (err == ESP_OK) {
+                finish_listen(zh ? zh : "已执行", true);
+            } else {
+                finish_listen("执行失败", false);
+            }
             continue;
         }
         /* PSRAM 栈任务禁止 nvs_load（flash 关 cache 会 assert）；用 RAM 镜像 */
@@ -394,12 +434,8 @@ esp_err_t nodelio_offline_cmd_begin_listen(void)
         ESP_LOGW(TAG, "begin_listen blocked: not registered");
         return ESP_ERR_INVALID_STATE;
     }
-    if (nodelio_panel_ui_get_layout() == NULL) {
-        nodelio_panel_ui_set_voice_hint("无布局");
-        nodelio_panel_ui_toast("尚未拉取布局，请先联网完成初始化");
-        ESP_LOGW(TAG, "begin_listen blocked: no layout");
-        return ESP_ERR_INVALID_STATE;
-    }
+    /* 无布局仍可听「重启/退下」；控家口令需布局 */
+    const bool have_layout = nodelio_panel_ui_get_layout() != NULL;
 
     esp_err_t err = ensure_multinet();
     if (err != ESP_OK) {
@@ -421,10 +457,19 @@ esp_err_t nodelio_offline_cmd_begin_listen(void)
     s_session = true;
     s_listening = true;
     nodelio_panel_ui_note_activity();
-    nodelio_panel_ui_set_voice_hint(s_dyn_cmd_count > 0 ? "请说设备名称" : "无可用口令");
-    nodelio_panel_ui_toast(s_dyn_cmd_count > 0 ? "本地口令" : "布局无语音口令");
+    if (s_dyn_cmd_count > 0) {
+        nodelio_panel_ui_set_voice_hint("请说设备名或重启/退下");
+        nodelio_panel_ui_toast("本地口令");
+    } else if (have_layout) {
+        nodelio_panel_ui_set_voice_hint("可说重启或退下");
+        nodelio_panel_ui_toast("本地口令（重启/退下）");
+    } else {
+        nodelio_panel_ui_set_voice_hint("可说重启或退下");
+        nodelio_panel_ui_toast("无布局：仅重启/退下");
+    }
     nodelio_panel_ui_play_cue(0); /* 与小智进听同款 POPUP */
-    ESP_LOGI(TAG, "local command window %dms", LISTEN_MS);
+    ESP_LOGI(TAG, "local command window %dms dyn=%d layout=%d", LISTEN_MS, s_dyn_cmd_count,
+             have_layout ? 1 : 0);
     return ESP_OK;
 }
 

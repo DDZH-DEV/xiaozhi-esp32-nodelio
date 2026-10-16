@@ -29,7 +29,7 @@ NotifyPlayer::~NotifyPlayer() { Stop(); }
 
 bool NotifyPlayer::Start(std::string audio_url, std::vector<NotifySubtitle> subtitles,
                          uint32_t playback_id, SubtitleCallback subtitle_callback,
-                         FinishedCallback finished_callback) {
+                         FinishedCallback finished_callback, std::string device_key) {
     if (playback_id == 0 || !IsSupportedUrl(audio_url)) {
         return false;
     }
@@ -45,6 +45,7 @@ bool NotifyPlayer::Start(std::string audio_url, std::vector<NotifySubtitle> subt
             return false;
         }
         audio_url_ = std::move(audio_url);
+        device_key_ = std::move(device_key);
         subtitles_ = std::move(subtitles);
         displayed_text_.clear();
         subtitle_callback_ = std::move(subtitle_callback);
@@ -173,10 +174,12 @@ void NotifyPlayer::WorkerEntry(void* arg) {
 
 void NotifyPlayer::WorkerTask() {
     std::string audio_url;
+    std::string device_key;
     uint32_t playback_id = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         audio_url = audio_url_;
+        device_key = device_key_;
         playback_id = playback_id_;
     }
 
@@ -186,6 +189,9 @@ void NotifyPlayer::WorkerTask() {
         http->SetTimeout(kHttpTimeoutMs);
         http->SetHeader("Accept", "audio/ogg, application/ogg");
         http->SetHeader("Accept-Encoding", "identity");
+        if (!device_key.empty()) {
+            http->SetHeader("X-Device-Key", device_key);
+        }
         auto opened = http->Open("GET", audio_url);
         if (opened) {
             auto status = http->GetStatusCode();

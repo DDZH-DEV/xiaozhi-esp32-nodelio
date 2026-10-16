@@ -1,4 +1,5 @@
 #include "nodelio_bridge.h"
+#include "media_player.h"
 
 #include "application.h"
 #include "board.h"
@@ -223,6 +224,7 @@ static esp_err_t start_client(void)
     Board::GetInstance().SetIdleWifiSeconds((int)nodelio_idle_wifi_seconds());
     Board::GetInstance().SetPowerSaveEnabled(nodelio_power_save_enabled());
     (void)nodelio_panel_ui_start(&cfg); /* overlay 已可出缓存布局 */
+    (void)nodelio_media_init();
     ensure_pwr_task();
 
     /* 勿 SetPowerSaveLevel(PERFORMANCE)：会 WakeUp + 打乱小智刚设的 LOW_POWER 时序 */

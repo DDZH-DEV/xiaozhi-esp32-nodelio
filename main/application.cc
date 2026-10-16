@@ -13,6 +13,7 @@
 #include "websocket_protocol.h"
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#include "media_player.h"
 #include "nodelio_bridge.h"
 #include "nodelio_mcp.h"
 #include "nodelio_overlay.h"
@@ -979,9 +980,9 @@ static void EnsureNetReadyAfterScreenSleep()
     }
     if (!nodelio_wifi_has_ip()) {
         ESP_LOGI(TAG, "waiting WiFi/IP before cloud voice...");
-        /* 分段刷状态：等 IP 时 UI 有推进感（物理仍要约 1~2s） */
+        /* 短等即可：DHCP 卡死时勿占满口令窗；后台 WifiBoard 仍会继续拿 IP */
         static const char *k_steps[] = {"入网中…", "获取地址…", "接通语音…"};
-        const uint32_t timeout_ms = 30000;
+        const uint32_t timeout_ms = 5000;
         const uint32_t step_ms = 100;
         const uint32_t tip_every_ms = 450;
         uint32_t waited = 0;
@@ -1001,7 +1002,8 @@ static void EnsureNetReadyAfterScreenSleep()
             }
         }
         if (!nodelio_wifi_has_ip()) {
-            ESP_LOGW(TAG, "WiFi not ready — OpenAudioChannel may fall back offline");
+            ESP_LOGW(TAG, "WiFi not ready in %ums — skip cloud, local cmd",
+                     (unsigned)timeout_ms);
             if (display) {
                 display->SetStatus("网络未就绪");
             }
@@ -1047,6 +1049,18 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
         return;
     }
     EnsureNetReadyAfterScreenSleep();
+    if (!nodelio_wifi_has_ip()) {
+        if (nodelio_offline_cmd_begin_listen() == ESP_OK) {
+            audio_service_.EnableLocalCommandMode(true);
+            auto display = board.GetDisplay();
+            if (display) {
+                display->SetStatus("本地控家");
+            }
+            return;
+        }
+        SetDeviceState(kDeviceStateIdle);
+        return;
+    }
 #endif
 
     if (!protocol_->IsAudioChannelOpened()) {
@@ -1205,6 +1219,19 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     }
     /* 否则息屏断网后首唤：StartMqttClient skipped (suspended) → 必败，要喊第二次 */
     EnsureNetReadyAfterScreenSleep();
+    /* 无 IP：跳过 MQTT（必 DNS 失败），立刻本地口令，给用户时间说话 */
+    if (!nodelio_wifi_has_ip()) {
+        if (nodelio_offline_cmd_begin_listen() == ESP_OK) {
+            audio_service_.EnableLocalCommandMode(true);
+            auto display = Board::GetInstance().GetDisplay();
+            if (display) {
+                display->SetStatus("本地控家");
+            }
+            return;
+        }
+        SetDeviceState(kDeviceStateIdle);
+        return;
+    }
 #endif
 
     if (!protocol_->IsAudioChannelOpened()) {
@@ -1326,7 +1353,8 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateNotifying:
             display->SetStatus(Lang::Strings::SPEAKING);
             audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+            /* 长 HTTP 曲目时勿再 Feed AFE：fetch 跟不上会 FEED full + IDLE0 TWDT */
+            audio_service_.EnableWakeWordDetection(false);
             break;
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableVoiceProcessing(false);
@@ -1368,7 +1396,8 @@ void Application::ConfigureWakeWordForListening() {
 #endif
 }
 
-void Application::StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles) {
+void Application::StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles,
+                                    std::string device_key) {
     if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy()) {
         ESP_LOGW(TAG, "Ignoring notify message while device is busy");
         return;
@@ -1377,7 +1406,7 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
     audio_service_.EnableVoiceProcessing(false);
-    audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+    audio_service_.EnableWakeWordDetection(false);
     audio_service_.ReleaseWakeWordResources();
     while (audio_service_.PopPacketFromSendQueue()) {
         // Discard microphone audio left over from a previous conversation.
@@ -1406,7 +1435,8 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
         },
         [this](uint32_t id, bool success) {
             Schedule([this, id, success]() { HandleNotificationFinished(id, success); });
-        });
+        },
+        std::move(device_key));
 
     if (!started) {
         ESP_LOGE(TAG, "Failed to start notification playback");
@@ -1432,6 +1462,9 @@ void Application::HandleNotificationFinished(uint32_t playback_id, bool success)
     ESP_LOGI(TAG, "Notification playback %lu %s", static_cast<unsigned long>(playback_id),
              success ? "completed" : "failed");
     StopNotification();
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    nodelio_media_on_playback_ended(success);
+#endif
 }
 
 void Application::Schedule(std::function<void()>&& callback) {
@@ -1714,6 +1747,14 @@ void Application::SetAecMode(AecMode mode) {
 }
 
 void Application::PlaySound(const std::string_view& sound) { audio_service_.PlaySound(sound); }
+
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+void Application::PlayHttpAudio(std::string audio_url, std::string device_key) {
+    StartNotification(std::move(audio_url), std::vector<NotifySubtitle>{}, std::move(device_key));
+}
+
+void Application::StopHttpAudio() { StopNotification(); }
+#endif
 
 void Application::ResetProtocol() {
     Schedule([this]() {

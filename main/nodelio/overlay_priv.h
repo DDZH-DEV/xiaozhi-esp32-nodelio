@@ -49,6 +49,8 @@ extern bool s_have_layout;
 extern bool s_fab_ready;
 extern bool s_ready;
 extern bool s_visible;
+/** 技能结果卡可见时抑制小智抽屉，避免盖住搜索结果 */
+extern bool s_skill_ui_active;
 extern bool s_building;
 extern bool s_want_settings;
 extern bool s_want_chat;
@@ -69,7 +71,12 @@ extern lv_timer_t *s_ai_hide_timer;
 extern char s_ai_show_text[NL_CHAT_SHOW_CAP];
 extern lv_obj_t *s_settings;
 extern lv_obj_t *s_tabbar;
-extern lv_obj_t *s_tab_btns[2];
+extern lv_obj_t *s_tab_btns[3];
+
+#define NL_TAB_HOME 0
+#define NL_TAB_APPS 1
+#define NL_TAB_SET 2
+#define NL_TAB_N 3
 extern lv_obj_t *s_brand_lbl;
 extern lv_obj_t *s_clock_lbl;
 extern lv_obj_t *s_status_lbl;
@@ -157,6 +164,9 @@ void nl_ov_kb_set_visible(bool on);
 
 /* —— settings —— */
 void nl_ov_fill_settings(void);
+void nl_ov_build_apps(void);
+void nl_ov_apps_set_visible(bool on);
+void nl_ov_apps_refresh(void);
 void nl_ov_close_settings_detail(void);
 void nl_ov_stop_sys_monitor(void);
 

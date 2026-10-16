@@ -1,14 +1,20 @@
 #include "nodelio_mcp.h"
 
+#include "content_envelope.h"
+#include "device_caps.h"
 #include "nl_url_util.h"
 #include "nodelio_http.h"
 #include "nvs_config.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
+#include "media_player.h"
+#include "skill_result_ui.h"
+#include "skill_runtime.h"
 
 #include "mcp_server.h"
 
 #include <cJSON.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 
 #include <cstdio>
@@ -467,18 +473,49 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
              skill_id.c_str());
 
     std::string body = params.empty() ? "{}" : params;
-    if (body.front() != '{') {
-        body = "{\"query\":\"" + body + "\"}";
+    if (body.empty() || body.front() != '{') {
+        body = std::string("{\"keyword\":\"") + params + "\"}";
     }
 
-    char resp[2048] = {0};
+    const int cap = nodelio_caps_max_content_bytes() + 512;
+    char *resp = (char *)heap_caps_malloc((size_t)cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!resp) {
+        resp = (char *)malloc((size_t)cap);
+    }
+    if (!resp) {
+        return std::unexpected(std::string("内存不足"));
+    }
+    resp[0] = '\0';
     int status = 0;
-    esp_err_t err = nodelio_http_post_json(url, cfg->device_key, body.c_str(), &status, resp, sizeof(resp) - 1);
+    esp_err_t err = nodelio_http_post_json(url, cfg->device_key, body.c_str(), &status, resp, cap - 1);
     if (err != ESP_OK || (status != 200 && status != 201)) {
         ESP_LOGW(TAG, "invoke skill '%s' fail: status=%d err=%d", skill_id.c_str(), status, err);
+        free(resp);
         return std::unexpected(std::string("调用技能失败：HTTP ") + std::to_string(status));
     }
-    return std::string(resp);
+
+    const size_t n = strlen(resp);
+    /* http 层按 cap 截断仍返回 200；截断 JSON 必解析失败 */
+    if (n >= (size_t)(cap - 2)) {
+        ESP_LOGW(TAG, "invoke skill '%s' resp truncated bytes=%u cap=%d", skill_id.c_str(),
+                 (unsigned)n, cap);
+        free(resp);
+        return std::string("曲库结果过大已截断，请直接说歌名搜索");
+    }
+    if (n > 0 && resp[n - 1] != '}' && resp[n - 1] != ']') {
+        ESP_LOGW(TAG, "invoke skill '%s' resp looks incomplete bytes=%u tail=0x%02x", skill_id.c_str(),
+                 (unsigned)n, (unsigned)(unsigned char)resp[n - 1]);
+    }
+
+    /* 双投递：UI Envelope + 模型短摘要（禁止只塞整段 JSON） */
+    char spoken[NL_ENV_SPOKEN];
+    nodelio_skill_deliver_json(cfg, resp, true /* N4：有 media 则播首条 */, spoken, sizeof(spoken));
+    free(resp);
+    ESP_LOGI(TAG, "invoke skill '%s' spoken=%s", skill_id.c_str(), spoken[0] ? spoken : "(empty)");
+    if (spoken[0]) {
+        return std::string(spoken);
+    }
+    return std::string("已展示技能结果");
 }
 
 static std::string list_skills_json(const nodelio_nvs_config_t *cfg)
@@ -488,14 +525,25 @@ static std::string list_skills_json(const nodelio_nvs_config_t *cfg)
     char url[256];
     snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills", base, cfg->device_id);
 
-    char resp[4096] = {0};
-    int status = 0;
-    esp_err_t err = nodelio_http_get(url, cfg->device_key, NULL, &status, resp, sizeof(resp) - 1);
-    if (err != ESP_OK || status != 200) {
-        ESP_LOGW(TAG, "list skills fail: status=%d err=%d", status, err);
+    constexpr int kCap = 4096;
+    char *resp = (char *)heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!resp) {
+        resp = (char *)malloc(kCap);
+    }
+    if (!resp) {
         return "[]";
     }
-    return std::string(resp);
+    resp[0] = '\0';
+    int status = 0;
+    esp_err_t err = nodelio_http_get(url, cfg->device_key, NULL, &status, resp, kCap - 1);
+    if (err != ESP_OK || status != 200) {
+        ESP_LOGW(TAG, "list skills fail: status=%d err=%d", status, err);
+        free(resp);
+        return "[]";
+    }
+    std::string out(resp);
+    free(resp);
+    return out;
 }
 
 /** 从 layout 标题解析 device_id + channel；失败返回 false */
@@ -809,10 +857,18 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.skill.invoke",
-        "Invoke an external dynamic skill registered in NodeLio (e.g. online music search, weather, etc.). "
+        "Call an installed NodeLio panel skill (results show on this wall panel). "
+        "IMPORTANT: For search, list, or play songs ON THIS PANEL, you MUST use this tool "
+        "(skill_id from self.skill.list, typically music.search). "
+        "Do NOT use Xiaozhi cloud music / player tools for panel playback. "
+        "Listing the library does NOT need a keyword: if the user asks what songs there are, "
+        "随便看看, 换一批, or to show the list, call immediately with params {\"keyword\":\"\"}. "
+        "Each browse returns a fresh random sample, not the same first page. "
+        "Never refuse for a missing keyword. "
         "Parameters: "
-        "- skill_id: unique skill identifier (e.g. 'music_search') "
-        "- params: JSON object string of input parameters, e.g. '{\"keyword\":\"周杰伦\"}'",
+        "- skill_id: e.g. music.search "
+        "- params: JSON string. Search: {\"keyword\":\"周杰伦\"}. Browse or reshuffle: {\"keyword\":\"\"} "
+        "上一首/下一首/暂停/继续播放 use self.skill.transport, not a new search.",
         PropertyList({
             Property("skill_id", kPropertyTypeString, ""),
             Property("params", kPropertyTypeString, ""),
@@ -828,8 +884,57 @@ void nodelio_mcp_register_tools(void)
         });
 
     mcp.AddTool(
+        "self.skill.transport",
+        "Control the song already playing on THIS wall panel (current result list). "
+        "Use when the user says 上一首, 下一首, 暂停, or 继续播放. "
+        "Do NOT call Xiaozhi cloud music tools and do NOT re-search. "
+        "op: prev | next | pause | resume",
+        PropertyList({
+            Property("op", kPropertyTypeString, ""),
+        }),
+        [](const PropertyList &properties) -> ToolResult {
+            std::string op = properties["op"].value<std::string>();
+            if (op == "prev") {
+                if (!nodelio_skill_media_prev()) {
+                    return std::unexpected(std::string("没有上一首"));
+                }
+                return std::string("已切换上一首");
+            }
+            if (op == "next") {
+                if (!nodelio_skill_media_next()) {
+                    return std::unexpected(std::string("没有下一首"));
+                }
+                return std::string("已切换下一首");
+            }
+            if (op == "pause") {
+                if (nodelio_media_is_paused()) {
+                    return std::string("已暂停");
+                }
+                if (!nodelio_media_is_playing()) {
+                    return std::unexpected(std::string("当前没有在播"));
+                }
+                nodelio_media_pause();
+                return std::string("已暂停");
+            }
+            if (op == "resume") {
+                if (nodelio_media_is_playing()) {
+                    return std::string("正在播放");
+                }
+                if (!nodelio_media_is_paused()) {
+                    return std::unexpected(std::string("没有可继续的曲目"));
+                }
+                nodelio_media_resume();
+                return std::string("继续播放");
+            }
+            return std::unexpected(std::string("op 须为 prev/next/pause/resume"));
+        });
+
+    mcp.AddTool(
         "self.skill.list",
-        "List all available dynamic skills enabled for this panel. Returns JSON list of skills and descriptions.",
+        "List NodeLio skills installed for this wall panel. "
+        "If the list includes music.search (面板曲库), prefer self.skill.invoke for any "
+        "on-panel song/track/list request instead of Xiaozhi cloud music tools. "
+        "Empty keyword lists the account library.",
         PropertyList(), [](const PropertyList &) -> ReturnValue {
             nodelio_nvs_config_t cfg{};
             if (!load_cfg(&cfg)) {

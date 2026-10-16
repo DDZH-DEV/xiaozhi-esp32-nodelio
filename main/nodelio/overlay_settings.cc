@@ -7,8 +7,6 @@
 #include "fonts/font_puhui_14_1.h"
 #include "layout_cache.h"
 #include "mqtt_panel.h"
-#include "nl_url_util.h"
-#include "nodelio_http.h"
 #include "nvs_config.h"
 #include "panel_layout.h"
 #include "panel_ui.h"

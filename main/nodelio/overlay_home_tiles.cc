@@ -1351,7 +1351,7 @@ void nl_ov_fill_home(void)
         lv_obj_add_event_cb(
             card,
             [](lv_event_t *) {
-                nl_ov_show_page(1);
+                nl_ov_show_page(NL_TAB_SET);
                 nl_ov_open_connect();
             },
             LV_EVENT_CLICKED, nullptr);

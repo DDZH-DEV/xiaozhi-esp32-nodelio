@@ -17,7 +17,18 @@ enum {
     NL_OC_SCENE_AWAY = 4,
     NL_OC_CURTAIN_OPEN = 5,
     NL_OC_CURTAIN_CLOSE = 6,
+    /* 本机动作：断网/无云也可执行，不走 panel/command */
+    NL_OC_REBOOT = 7,
+    NL_OC_GOODBYE = 8,
+    /* 面板曲库切歌/暂停（依赖内存中的当前列表，不走 HTTP） */
+    NL_OC_MEDIA_PREV = 9,
+    NL_OC_MEDIA_NEXT = 10,
+    NL_OC_MEDIA_PAUSE = 11,
+    NL_OC_MEDIA_RESUME = 12,
 };
+
+/** 重启/退下等纯本机口令（不依赖 WiFi / layout）。 */
+bool nodelio_offline_cmd_is_local(int command_id);
 
 /** 命令 ID → 中文口令（供 MCP / 口令提示）. */
 const char *nodelio_offline_cmd_zh(int command_id);

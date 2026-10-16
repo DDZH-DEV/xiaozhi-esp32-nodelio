@@ -26,7 +26,8 @@ public:
     ~NotifyPlayer();
 
     bool Start(std::string audio_url, std::vector<NotifySubtitle> subtitles, uint32_t playback_id,
-               SubtitleCallback subtitle_callback, FinishedCallback finished_callback);
+               SubtitleCallback subtitle_callback, FinishedCallback finished_callback,
+               std::string device_key = {});
     void Stop();
     void OnPlaybackProgress(uint32_t playback_id, uint32_t media_position_ms);
     void OnPlaybackDrained();
@@ -37,6 +38,7 @@ private:
     AudioService& audio_service_;
     mutable std::mutex mutex_;
     std::string audio_url_;
+    std::string device_key_;
     std::vector<NotifySubtitle> subtitles_;
     std::string displayed_text_;
     SubtitleCallback subtitle_callback_;

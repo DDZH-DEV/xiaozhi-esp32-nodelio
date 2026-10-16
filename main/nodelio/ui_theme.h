@@ -96,6 +96,7 @@
 #define UI_DISABLED_FG      lv_color_hex(UI_C_DISABLED_FG)
 #define UI_SLIDER_TRACK     lv_color_hex(UI_C_SLIDER_TRACK)
 #define UI_TILE_OFF         lv_color_hex(UI_C_TILE_OFF)
+#define UI_TILE_SWITCH      lv_color_hex(UI_C_TILE_SWITCH)
 #define UI_TILE_SWITCH_OFF  lv_color_hex(UI_C_TILE_SWITCH_OFF)
 #define UI_TILE_SCENE_OFF   lv_color_hex(UI_C_TILE_SCENE_OFF)
 #define UI_TILE_GPIO_OFF    lv_color_hex(UI_C_TILE_GPIO_OFF)

@@ -1,5 +1,7 @@
 #include "overlay_priv.h"
 
+#include "skill_result_ui.h"
+
 #include "application.h"
 #include "board.h"
 #include "board_info.h"
@@ -387,6 +389,26 @@ static void arm_connect_delay(const char *status_text, const char *msg_text)
 void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, const char *msg_text)
 {
     if (!s_ai_drawer) {
+        return;
+    }
+    /* 技能结果卡优先：只更新文案，不弹抽屉，并保持结果卡在最前 */
+    if (s_skill_ui_active) {
+        if (phase == CHAT_IDLE) {
+            nodelio_skill_result_raise();
+            return;
+        }
+        if (msg_text && msg_text[0] && s_ai_drawer_text) {
+            nl_ov_utf8_copy(s_ai_show_text, sizeof(s_ai_show_text), msg_text);
+            lv_label_set_text(s_ai_drawer_text, s_ai_show_text);
+        }
+        if (status_text && status_text[0] && s_ai_drawer_status) {
+            lv_label_set_text(s_ai_drawer_status, status_text);
+        }
+        s_chat_phase = phase;
+        if (s_ai_drawer) {
+            lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
+        }
+        nodelio_skill_result_raise();
         return;
     }
     if (phase == CHAT_CONNECT) {

@@ -133,6 +133,12 @@ const nl_dev_cache_t *nodelio_panel_ui_get_dev(int index);
 /** snapshot 缓存的在线态；未知设备视为在线（与灰显逻辑一致）。 */
 bool nodelio_panel_ui_device_online(const char *device_id);
 
+/** 离线口令「重启」：主任务延时后 Application::Reboot。 */
+void nodelio_panel_ui_local_reboot(void);
+
+/** 离线口令「退下」：收束会话并 RequestGoodbyeSleep（不依赖云）。 */
+void nodelio_panel_ui_local_goodbye(void);
+
 #ifdef __cplusplus
 }
 #endif

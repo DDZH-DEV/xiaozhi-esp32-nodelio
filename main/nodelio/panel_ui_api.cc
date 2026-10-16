@@ -209,6 +209,40 @@ extern "C" bool nodelio_panel_ui_device_online(const char *device_id)
     return d->online;
 }
 
+extern "C" void nodelio_panel_ui_local_reboot(void)
+{
+    nl_ov_toast("正在重启…");
+    Application::GetInstance().Schedule([]() {
+        ESP_LOGW(TAG, "offline cmd: reboot");
+        Application::GetInstance().Reboot();
+    });
+}
+
+extern "C" void nodelio_panel_ui_local_goodbye(void)
+{
+    /* 触发抽屉 farewell 收束（与云端「退下」同路径） */
+    {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            nodelio_overlay_on_chat_locked("assistant", "退下");
+        }
+    }
+    nl_ov_toast("好的，退下了");
+    Application::GetInstance().Schedule([]() {
+        auto &app = Application::GetInstance();
+        DeviceState st = app.GetDeviceState();
+        if (st == kDeviceStateSpeaking) {
+            app.AbortSpeaking(kAbortReasonNone);
+        }
+        if (st != kDeviceStateIdle && st != kDeviceStateStarting &&
+            st != kDeviceStateWifiConfiguring && st != kDeviceStateUpgrading) {
+            app.SetDeviceState(kDeviceStateIdle);
+        }
+        Board::GetInstance().RequestGoodbyeSleep();
+        ESP_LOGI(TAG, "offline cmd: goodbye → sleep");
+    });
+}
+
 extern "C" void nodelio_panel_ui_snapshot_begin(void)
 {
     s_dev_n = 0;
