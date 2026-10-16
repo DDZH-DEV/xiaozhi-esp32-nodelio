@@ -20,6 +20,17 @@ esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const
 esp_err_t nodelio_http_get(const char *url, const char *device_key, const char *if_none_match, int *out_status,
                            char *resp, int resp_cap);
 
+/** 同 nodelio_http_get，io_ms 为读超时（云端回源拉正文时用）。 */
+esp_err_t nodelio_http_get_ms(const char *url, const char *device_key, const char *if_none_match, int *out_status,
+                              char *resp, int resp_cap, int io_ms);
+
+/** 二进制 GET。*out_n 为正文长度，缓冲内不追加 '\\0'。正文超过 resp_cap 则失败。 */
+esp_err_t nodelio_http_get_bin(const char *url, const char *device_key, int *out_status, uint8_t *resp, int resp_cap,
+                               size_t *out_n);
+
+esp_err_t nodelio_http_get_bin_ms(const char *url, const char *device_key, int *out_status, uint8_t *resp, int resp_cap,
+                                  size_t *out_n, int io_ms);
+
 esp_err_t nodelio_http_delete(const char *url, const char *device_key, int *out_status, char *resp, int resp_cap);
 
 /** 纯 TCP 探测 host:port，打日志；成功 ESP_OK。 */

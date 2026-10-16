@@ -21,7 +21,9 @@ static void copy_str(char *dst, size_t dst_len, const cJSON *obj, const char *ke
 static void degrade_card_type(nl_content_envelope_t *out)
 {
     if (out->card_type[0] == '\0') {
-        if (out->track_n > 0) {
+        if (out->news_n > 0) {
+            snprintf(out->card_type, sizeof(out->card_type), "news_list");
+        } else if (out->track_n > 0) {
             snprintf(out->card_type, sizeof(out->card_type), "music_list");
         } else if (out->spoken[0]) {
             snprintf(out->card_type, sizeof(out->card_type), "plain_result");
@@ -32,6 +34,13 @@ static void degrade_card_type(nl_content_envelope_t *out)
     }
     if (strcmp(out->card_type, "music_list") == 0) {
         if (!nodelio_caps_has("content.music_list")) {
+            snprintf(out->card_type, sizeof(out->card_type),
+                     nodelio_caps_has("content.list") ? "list" : "plain_result");
+        }
+        return;
+    }
+    if (strcmp(out->card_type, "news_list") == 0) {
+        if (!nodelio_caps_has("content.news_list")) {
             snprintf(out->card_type, sizeof(out->card_type),
                      nodelio_caps_has("content.list") ? "list" : "plain_result");
         }
@@ -82,6 +91,17 @@ static void parse_track_obj(const cJSON *item, nl_env_track_t *t, bool allow_pla
     if (!allow_play) {
         t->has_play_action = false;
     }
+}
+
+static void parse_news_obj(const cJSON *item, nl_env_news_t *n)
+{
+    memset(n, 0, sizeof(*n));
+    copy_str(n->id, sizeof(n->id), item, "id");
+    copy_str(n->title, sizeof(n->title), item, "title");
+    copy_str(n->summary, sizeof(n->summary), item, "summary");
+    copy_str(n->source, sizeof(n->source), item, "source");
+    copy_str(n->published_at, sizeof(n->published_at), item, "published_at");
+    copy_str(n->image_url, sizeof(n->image_url), item, "image_url");
 }
 
 static bool parse_legacy_mock(cJSON *root, nl_content_envelope_t *out)
@@ -201,6 +221,18 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
                 }
                 continue;
             }
+            if (strcmp(ts, "news") == 0) {
+                if (out->news_n >= NL_ENV_NEWS_MAX || out->news_n >= limit) {
+                    out->truncated = true;
+                    continue;
+                }
+                parse_news_obj(item, &out->news[out->news_n]);
+                if (out->news[out->news_n].title[0] == '\0') {
+                    continue;
+                }
+                out->news_n++;
+                continue;
+            }
             if (strcmp(ts, "music") != 0 && strcmp(ts, "list_item") != 0 && ts[0] != '\0') {
                 /* 其它类型：尽量当列表项 */
                 if (strcmp(ts, "text") == 0) {
@@ -254,6 +286,10 @@ void nodelio_envelope_spoken_summary(const nl_content_envelope_t *env, char *buf
     }
     if (strcmp(env->status, "ok") != 0) {
         snprintf(buf, buf_len, "%s", env->error_message[0] ? env->error_message : "技能失败");
+        return;
+    }
+    if (env->news_n > 0 && env->track_n <= 0) {
+        snprintf(buf, buf_len, "%s", env->news[0].title);
         return;
     }
     if (env->track_n <= 0) {

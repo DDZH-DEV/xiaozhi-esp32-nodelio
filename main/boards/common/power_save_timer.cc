@@ -3,6 +3,10 @@
 #include "board.h"
 #include "settings.h"
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#include "media_player.h"
+#endif
+
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -79,6 +83,12 @@ void PowerSaveTimer::TryEnterNetSleep() {
     if (!app.CanEnterSleepMode()) {
         return;
     }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* HTTP 音乐流依赖 WiFi：播放中禁止断网，息屏仍可 */
+    if (nodelio_media_is_playing()) {
+        return;
+    }
+#endif
     ESP_LOGI(TAG, "Enabling net sleep");
     in_net_sleep_ = true;
     on_enter_net_sleep_();

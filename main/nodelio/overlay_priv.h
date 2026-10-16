@@ -36,6 +36,7 @@ typedef enum {
     SET_PAGE_RESET = 3,
     SET_PAGE_VOICE = 4,
     SET_PAGE_POWER = 5,
+    SET_PAGE_MEDIA = 6,
 } set_page_id_t;
 
 #define NL_CHAT_SHOW_LINES 5

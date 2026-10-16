@@ -34,6 +34,9 @@ void nodelio_media_now_title(char *buf, size_t len);
 /** HTTP 通知音结束/失败时由 Application 回调，清理 playing 态。 */
 void nodelio_media_on_playback_ended(bool success);
 
+/** 兼容旧调用：仅表示「正在播放」（息屏策略见 media_sleep_en）。 */
+bool nodelio_media_has_session(void);
+
 #ifdef __cplusplus
 }
 #endif

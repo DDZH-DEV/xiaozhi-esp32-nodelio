@@ -26,6 +26,10 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing);
 bool nodelio_skill_media_prev(void);
 bool nodelio_skill_media_next(void);
 
+/** 语音/MCP：新闻详情。delta<0 上一篇，>0 下一篇，0 读当前（未打开则打开第一篇）。
+ *  成功时 out 写入「标题 + 正文」（可空）；正文同步向云端拉取。 */
+bool nodelio_skill_news_step(int delta, char *out, size_t out_len);
+
 #ifdef __cplusplus
 }
 #endif

@@ -140,7 +140,7 @@ void AudioService::Start() {
             audio_service->AudioInputTask();
             vTaskDelete(NULL);
         },
-        "audio_input", 2048 * 3, this, 8, &audio_input_task_handle_, 0);
+        "audio_input", 2048 * 3, this, 6, &audio_input_task_handle_, 0);
 
     /* Start the audio output task */
     xTaskCreate(
@@ -323,8 +323,9 @@ void AudioService::AudioInputTask() {
             std::vector<int16_t> data;
             if (ReadAudioData(data, 16000, samples)) {
                 audio_engine_->Feed(std::move(data));
-                /* 连续可读时勿空转占满 CPU0，否则 IDLE0 触发 TWDT、屏会闪 */
-                taskYIELD();
+                /* taskYIELD 调度不到 IDLE（优先级更低）。播放时重采样会占满 CPU0，
+                 * IDLE0 喂不了看门狗，屏会闪。让出 1ms 给 IDLE。 */
+                vTaskDelay(pdMS_TO_TICKS(1));
                 continue;
             }
         }

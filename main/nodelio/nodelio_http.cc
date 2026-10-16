@@ -64,8 +64,8 @@ static bool parse_host_port(const char *url, std::string *host, int *port, std::
     return !host->empty() && *port > 0;
 }
 
-/** 短超时 TCP（勿用小智 EspTcp：其 connect 无超时，SYN 可卡数十秒拖垮音频） */
-static int tcp_connect_ms(const char *host, int port, int timeout_ms)
+/** 短超时 TCP（勿用小智 EspTcp：其 connect 无超时，SYN 可卡数十秒拖垮音频）。io_ms 为读写超时。 */
+static int tcp_connect_ms(const char *host, int port, int timeout_ms, int io_ms)
 {
     struct addrinfo hints = {};
     hints.ai_family = AF_INET;
@@ -123,7 +123,10 @@ static int tcp_connect_ms(const char *host, int port, int timeout_ms)
     if (flags >= 0) {
         fcntl(fd, F_SETFL, flags);
     }
-    struct timeval rcv = {.tv_sec = NOD_HTTP_IO_MS / 1000, .tv_usec = (NOD_HTTP_IO_MS % 1000) * 1000};
+    if (io_ms <= 0) {
+        io_ms = NOD_HTTP_IO_MS;
+    }
+    struct timeval rcv = {.tv_sec = io_ms / 1000, .tv_usec = (io_ms % 1000) * 1000};
     struct timeval snd = rcv;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcv, sizeof(rcv));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof(snd));
@@ -137,7 +140,7 @@ esp_err_t nodelio_http_probe_tcp(const char *host, int port)
     }
     force_wifi_perf();
     ESP_LOGI(TAG, "TCP probe → %s:%d (%dms)…", host, port, NOD_HTTP_CONNECT_MS);
-    int fd = tcp_connect_ms(host, port, NOD_HTTP_CONNECT_MS);
+    int fd = tcp_connect_ms(host, port, NOD_HTTP_CONNECT_MS, NOD_HTTP_IO_MS);
     if (fd < 0) {
         ESP_LOGW(TAG, "TCP probe %s:%d FAIL", host, port);
         return ESP_FAIL;
@@ -226,7 +229,8 @@ static bool decode_chunked(const char *in, size_t in_len, std::string *out)
 }
 
 static esp_err_t http_exchange(const char *method, const char *url, const char *device_key, const char *body,
-                               const char *if_none_match, int *out_status, char *resp, int resp_cap)
+                               const char *if_none_match, int *out_status, char *resp, int resp_cap, size_t *out_n,
+                               int io_ms)
 {
     if (!url || !url[0]) {
         return ESP_ERR_INVALID_ARG;
@@ -246,7 +250,7 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
     }
 
     /* 单次短超时 connect（勿先 probe 再连，翻倍延迟） */
-    int fd = tcp_connect_ms(host.c_str(), port, NOD_HTTP_CONNECT_MS);
+    int fd = tcp_connect_ms(host.c_str(), port, NOD_HTTP_CONNECT_MS, io_ms);
     if (fd < 0) {
         ESP_LOGW(TAG, "TCP %s:%d fail (within %dms)", host.c_str(), port, NOD_HTTP_CONNECT_MS);
         return ESP_FAIL;
@@ -340,12 +344,21 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
     }
 
     if (resp && resp_cap > 0) {
-        size_t n = resp_n;
-        if (n >= (size_t)resp_cap) {
-            n = (size_t)resp_cap - 1;
+        if (out_n) {
+            if (resp_n > (size_t)resp_cap) {
+                ESP_LOGW(TAG, "body %u exceeds cap %d", (unsigned)resp_n, resp_cap);
+                return ESP_ERR_INVALID_SIZE;
+            }
+            memcpy(resp, resp_body, resp_n);
+            *out_n = resp_n;
+        } else {
+            size_t n = resp_n;
+            if (n >= (size_t)resp_cap) {
+                n = (size_t)resp_cap - 1;
+            }
+            memcpy(resp, resp_body, n);
+            resp[n] = '\0';
         }
-        memcpy(resp, resp_body, n);
-        resp[n] = '\0';
     }
     if (status != 200 && status != 201 && status != 304) {
         /* 打出 body 便于定位 401/403（绑定码、密钥、配额等） */
@@ -363,7 +376,8 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
 esp_err_t nodelio_http_post_json(const char *url, const char *device_key, const char *body, int *out_status,
                                  char *resp, int resp_cap)
 {
-    return http_exchange("POST", url, device_key, body ? body : "{}", nullptr, out_status, resp, resp_cap);
+    return http_exchange("POST", url, device_key, body ? body : "{}", nullptr, out_status, resp, resp_cap, nullptr,
+                         NOD_HTTP_IO_MS);
 }
 
 esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const void *data, size_t len,
@@ -382,7 +396,7 @@ esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const
         return ESP_ERR_INVALID_ARG;
     }
 
-    int fd = tcp_connect_ms(host.c_str(), port, NOD_HTTP_CONNECT_MS);
+    int fd = tcp_connect_ms(host.c_str(), port, NOD_HTTP_CONNECT_MS, NOD_HTTP_IO_MS);
     if (fd < 0) {
         return ESP_FAIL;
     }
@@ -426,10 +440,34 @@ esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const
 esp_err_t nodelio_http_get(const char *url, const char *device_key, const char *if_none_match, int *out_status,
                            char *resp, int resp_cap)
 {
-    return http_exchange("GET", url, device_key, nullptr, if_none_match, out_status, resp, resp_cap);
+    return http_exchange("GET", url, device_key, nullptr, if_none_match, out_status, resp, resp_cap, nullptr,
+                         NOD_HTTP_IO_MS);
+}
+
+esp_err_t nodelio_http_get_ms(const char *url, const char *device_key, const char *if_none_match, int *out_status,
+                              char *resp, int resp_cap, int io_ms)
+{
+    return http_exchange("GET", url, device_key, nullptr, if_none_match, out_status, resp, resp_cap, nullptr, io_ms);
+}
+
+esp_err_t nodelio_http_get_bin(const char *url, const char *device_key, int *out_status, uint8_t *resp, int resp_cap,
+                               size_t *out_n)
+{
+    return nodelio_http_get_bin_ms(url, device_key, out_status, resp, resp_cap, out_n, NOD_HTTP_IO_MS);
+}
+
+esp_err_t nodelio_http_get_bin_ms(const char *url, const char *device_key, int *out_status, uint8_t *resp, int resp_cap,
+                                  size_t *out_n, int io_ms)
+{
+    if (!out_n) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_n = 0;
+    return http_exchange("GET", url, device_key, nullptr, nullptr, out_status, (char *)resp, resp_cap, out_n, io_ms);
 }
 
 esp_err_t nodelio_http_delete(const char *url, const char *device_key, int *out_status, char *resp, int resp_cap)
 {
-    return http_exchange("DELETE", url, device_key, nullptr, nullptr, out_status, resp, resp_cap);
+    return http_exchange("DELETE", url, device_key, nullptr, nullptr, out_status, resp, resp_cap, nullptr,
+                         NOD_HTTP_IO_MS);
 }

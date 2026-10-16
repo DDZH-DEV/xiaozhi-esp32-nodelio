@@ -35,10 +35,12 @@ void nodelio_nvs_cache_get(nodelio_nvs_config_t *out)
     memset(out, 0, sizeof(*out));
     out->xiaozhi_en = 1;
     out->power_save_en = 1;
+    out->media_sleep_en = 1;
     out->idle_sleep_s = NODELIO_IDLE_SLEEP_DEFAULT;
     out->idle_wifi_s = NODELIO_IDLE_WIFI_DEFAULT;
     out->goodbye_sleep_s = NODELIO_BYE_SLEEP_DEFAULT;
     out->listen_idle_s = NODELIO_LISTEN_IDLE_DEFAULT;
+    out->media_pause_s = NODELIO_MEDIA_PAUSE_DEFAULT;
 }
 
 static esp_err_t get_str(nvs_handle_t h, const char *key, char *buf, size_t len)
@@ -79,6 +81,9 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     if (out->power_save_en > 1) {
         out->power_save_en = 1;
     }
+    if (out->media_sleep_en > 1) {
+        out->media_sleep_en = 1;
+    }
     out->idle_sleep_s =
         clamp_u16(out->idle_sleep_s, NODELIO_IDLE_SLEEP_MIN, NODELIO_IDLE_SLEEP_MAX,
                   NODELIO_IDLE_SLEEP_DEFAULT);
@@ -91,6 +96,9 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     out->listen_idle_s =
         clamp_u16(out->listen_idle_s, NODELIO_LISTEN_IDLE_MIN, NODELIO_LISTEN_IDLE_MAX,
                   NODELIO_LISTEN_IDLE_DEFAULT);
+    out->media_pause_s =
+        clamp_u16(out->media_pause_s, NODELIO_MEDIA_PAUSE_MIN, NODELIO_MEDIA_PAUSE_MAX,
+                  NODELIO_MEDIA_PAUSE_DEFAULT);
 }
 
 /* 避免 save 路径把「关闭小智/省电」(0) 误当成未初始化 */
@@ -111,11 +119,17 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     out->listen_idle_s =
         clamp_u16(out->listen_idle_s, NODELIO_LISTEN_IDLE_MIN, NODELIO_LISTEN_IDLE_MAX,
                   NODELIO_LISTEN_IDLE_DEFAULT);
+    out->media_pause_s =
+        clamp_u16(out->media_pause_s, NODELIO_MEDIA_PAUSE_MIN, NODELIO_MEDIA_PAUSE_MAX,
+                  NODELIO_MEDIA_PAUSE_DEFAULT);
     if (out->xiaozhi_en > 1) {
         out->xiaozhi_en = 1;
     }
     if (out->power_save_en > 1) {
         out->power_save_en = 1;
+    }
+    if (out->media_sleep_en > 1) {
+        out->media_sleep_en = 1;
     }
 }
 
@@ -137,10 +151,12 @@ esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out)
     memset(out, 0, sizeof(*out));
     out->xiaozhi_en = 1;
     out->power_save_en = 1;
+    out->media_sleep_en = 1;
     out->idle_sleep_s = NODELIO_IDLE_SLEEP_DEFAULT;
     out->idle_wifi_s = NODELIO_IDLE_WIFI_DEFAULT;
     out->goodbye_sleep_s = NODELIO_BYE_SLEEP_DEFAULT;
     out->listen_idle_s = NODELIO_LISTEN_IDLE_DEFAULT;
+    out->media_pause_s = NODELIO_MEDIA_PAUSE_DEFAULT;
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NODELIO_NVS_NS, NVS_READONLY, &h);
@@ -202,6 +218,16 @@ esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out)
         if (nvs_get_u16(h, "lis_idle", &u16) == ESP_OK) {
             out->listen_idle_s = u16;
         }
+        v = 1;
+        if (nvs_get_u8(h, "md_slp", &v) == ESP_OK) {
+            out->media_sleep_en = v ? 1 : 0;
+        } else {
+            out->media_sleep_en = 1;
+        }
+        u16 = 0;
+        if (nvs_get_u16(h, "md_pause", &u16) == ESP_OK) {
+            out->media_pause_s = u16;
+        }
     }
     nvs_close(h);
     apply_defaults(out);
@@ -238,10 +264,12 @@ esp_err_t nodelio_nvs_save(const nodelio_nvs_config_t *in)
     nvs_set_u8(h, "volume", tmp.volume);
     nvs_set_u8(h, "xz_en", tmp.xiaozhi_en ? 1 : 0);
     nvs_set_u8(h, "ps_en", tmp.power_save_en ? 1 : 0);
+    nvs_set_u8(h, "md_slp", tmp.media_sleep_en ? 1 : 0);
     nvs_set_u16(h, "idle_slp", tmp.idle_sleep_s);
     nvs_set_u16(h, "wifi_slp", tmp.idle_wifi_s);
     nvs_set_u16(h, "bye_slp", tmp.goodbye_sleep_s);
     nvs_set_u16(h, "lis_idle", tmp.listen_idle_s);
+    nvs_set_u16(h, "md_pause", tmp.media_pause_s);
     err = nvs_commit(h);
     nvs_close(h);
     if (err == ESP_OK) {
@@ -328,6 +356,22 @@ uint16_t nodelio_listen_idle_seconds(void)
         return NODELIO_LISTEN_IDLE_DEFAULT;
     }
     return s_ram.listen_idle_s;
+}
+
+bool nodelio_media_sleep_enabled(void)
+{
+    if (!s_ram_ok) {
+        return true;
+    }
+    return s_ram.media_sleep_en != 0;
+}
+
+uint16_t nodelio_media_pause_seconds(void)
+{
+    if (!s_ram_ok) {
+        return NODELIO_MEDIA_PAUSE_DEFAULT;
+    }
+    return s_ram.media_pause_s ? s_ram.media_pause_s : NODELIO_MEDIA_PAUSE_DEFAULT;
 }
 
 esp_err_t nodelio_set_sleep_seconds(uint16_t idle_s, uint16_t goodbye_s)

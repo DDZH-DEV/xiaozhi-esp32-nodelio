@@ -128,9 +128,11 @@ public:
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-    /** 本机 HTTP 音频（Ogg/Opus）；须在主任务或经 Schedule。与语音会话互斥。 */
-    void PlayHttpAudio(std::string audio_url, std::string device_key = {});
+    /** 本机 HTTP 音频（Ogg/Opus）；须在主任务或经 Schedule。与语音会话互斥。
+     *  设备非 Idle 或上一首 HTTP 任务未退出时返回 false，调用方需稍后重试。 */
+    bool PlayHttpAudio(std::string audio_url, std::string device_key = {});
     void StopHttpAudio();
+    bool IsHttpAudioBusy() const;
 #endif
     
     /**

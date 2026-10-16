@@ -28,16 +28,19 @@ typedef struct {
     uint8_t volume;     /* 0–100；助手音频启用后生效 */
     uint8_t xiaozhi_en; /* 1=启用小智云对话（默认）；0=关闭，唤醒仅本地口令 */
     uint8_t power_save_en; /* 1=允许息屏/断网省电（默认）；0=永不息屏/不断 WiFi */
+    uint8_t media_sleep_en; /* 1=播放中可息屏不停播（默认）；0=播放中常亮 */
     uint16_t idle_sleep_s;    /* 空闲息屏秒数，默认 60，范围 15–180 */
     uint16_t idle_wifi_s;     /* 空闲断网秒数，默认同息屏，范围 15–300；与息屏独立 */
     uint16_t goodbye_sleep_s; /* 退下后延迟息屏秒数，默认 15，范围 5–60 */
     uint16_t listen_idle_s; /* 唤醒后无对话自动退下秒数，默认 15，范围 10–30 */
+    uint16_t media_pause_s; /* 暂停后关闭播放器秒数，默认 20，范围 10–120 */
 } nodelio_nvs_config_t;
 
 #define NODELIO_IDLE_SLEEP_DEFAULT 60
 #define NODELIO_IDLE_WIFI_DEFAULT 60
 #define NODELIO_BYE_SLEEP_DEFAULT 15
 #define NODELIO_LISTEN_IDLE_DEFAULT 15
+#define NODELIO_MEDIA_PAUSE_DEFAULT 20
 #define NODELIO_IDLE_SLEEP_MIN 15
 #define NODELIO_IDLE_SLEEP_MAX 180
 #define NODELIO_IDLE_WIFI_MIN 15
@@ -46,6 +49,8 @@ typedef struct {
 #define NODELIO_BYE_SLEEP_MAX 60
 #define NODELIO_LISTEN_IDLE_MIN 10
 #define NODELIO_LISTEN_IDLE_MAX 30
+#define NODELIO_MEDIA_PAUSE_MIN 10
+#define NODELIO_MEDIA_PAUSE_MAX 120
 
 esp_err_t nodelio_nvs_init(void);
 /** Flash 读写：禁止在 LVGL 任务（PSRAM 栈）中调用。 */
@@ -68,6 +73,10 @@ uint16_t nodelio_idle_sleep_seconds(void);
 uint16_t nodelio_idle_wifi_seconds(void);
 uint16_t nodelio_goodbye_sleep_seconds(void);
 uint16_t nodelio_listen_idle_seconds(void);
+/** 播放中是否允许息屏（不停播）；默认开。 */
+bool nodelio_media_sleep_enabled(void);
+/** 暂停后关闭播放器秒数。 */
+uint16_t nodelio_media_pause_seconds(void);
 /** 写入并钳位；某项为 0 则保持原值。含 flash，勿在 LVGL 任务调用。 */
 esp_err_t nodelio_set_sleep_seconds(uint16_t idle_s, uint16_t goodbye_s);
 esp_err_t nodelio_set_idle_wifi_seconds(uint16_t wifi_s);

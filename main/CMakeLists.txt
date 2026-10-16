@@ -1224,6 +1224,17 @@ endif()
 set(TEXT_FONT_SIZE "${CMAKE_MATCH_1}")
 set(TEXT_FONT_BPP "${CMAKE_MATCH_2}")
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
+    # esp_app_desc 的 __DATE__ 只在该 .c 重编时更新，增量编译会停在昨天。
+    set(NL_BUILD_STAMP_H "${CMAKE_BINARY_DIR}/nl_build_stamp.h")
+    set(NL_BUILD_STAMP_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/nodelio/write_build_stamp.cmake")
+    execute_process(COMMAND ${CMAKE_COMMAND} -DOUT=${NL_BUILD_STAMP_H} -P ${NL_BUILD_STAMP_SCRIPT})
+    add_custom_target(nl_build_stamp
+        COMMAND ${CMAKE_COMMAND} -DOUT=${NL_BUILD_STAMP_H} -P ${NL_BUILD_STAMP_SCRIPT}
+        BYPRODUCTS ${NL_BUILD_STAMP_H}
+        VERBATIM
+    )
+    add_dependencies(${COMPONENT_LIB} nl_build_stamp)
+    target_include_directories(${COMPONENT_LIB} PRIVATE "${CMAKE_BINARY_DIR}")
     target_compile_definitions(${COMPONENT_LIB}
                         PRIVATE BOARD_TYPE=\"${BOARD_TYPE}\" BOARD_NAME=\"${BOARD_NAME}\"
                         PRIVATE BOARD_MANUFACTURER=\"${BOARD_MANUFACTURER}\"

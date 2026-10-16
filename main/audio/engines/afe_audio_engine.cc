@@ -14,6 +14,7 @@
 #include "wake_words/custom_wake_word.h"
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#include "media_player.h"
 #include "offline_cmd.h"
 #endif
 
@@ -274,17 +275,25 @@ void AfeAudioEngine::Feed(std::vector<int16_t>&& data) {
         return;
     }
 
-    std::lock_guard<std::mutex> lock(input_buffer_mutex_);
+    std::unique_lock<std::mutex> lock(input_buffer_mutex_);
     if ((xEventGroupGetBits(event_group_) & kAfeActive) == 0) {
         return;
     }
     input_buffer_.insert(input_buffer_.end(), data.begin(), data.end());
     size_t chunk_size = afe_iface_->get_feed_chunksize(afe_data_) * codec_->input_channels();
+    if (chunk_size == 0) {
+        return;
+    }
     while (input_buffer_.size() >= chunk_size) {
         afe_iface_->feed(afe_data_, input_buffer_.data());
         input_buffer_.erase(input_buffer_.begin(), input_buffer_.begin() + chunk_size);
-        /* AEC feed 可能数十 ms；让 IDLE/LVGL 有机会跑，避免 TWDT */
-        taskYIELD();
+        /* taskYIELD 唤不醒更低优先级的 IDLE0。AEC 一帧可占满 CPU0 超过看门狗。 */
+        lock.unlock();
+        vTaskDelay(pdMS_TO_TICKS(1));
+        lock.lock();
+        if ((xEventGroupGetBits(event_group_) & kAfeActive) == 0) {
+            return;
+        }
     }
 }
 
@@ -414,10 +423,17 @@ void AfeAudioEngine::ApplyAfeControls() {
         }
     }
     if (codec_->input_reference()) {
-        /* 通话全双工要 AEC；唤醒态仅在扬声器开着时开，避免空闲 NLP 占满 CPU0 */
+        /* 通话全双工要 AEC；唤醒态仅在扬声器开着时开，避免空闲 NLP 占满 CPU0。
+         * HTTP 音乐也算 output on，但 AEC3 会把 CPU0 占满超过 10s，IDLE0 看门狗复位。 */
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        const bool media_playing = nodelio_media_is_playing();
+#else
+        const bool media_playing = false;
+#endif
         const bool enable_aec =
-            (device_aec_enabled_.load() && (bits & kVoiceProcessingEnabled)) ||
-            ((bits & kWakeWordEnabled) && codec_->output_enabled());
+            !media_playing &&
+            ((device_aec_enabled_.load() && (bits & kVoiceProcessingEnabled)) ||
+             ((bits & kWakeWordEnabled) && codec_->output_enabled()));
         if (enable_aec) {
             afe_iface_->enable_aec(afe_data_);
         } else {
@@ -453,6 +469,14 @@ void AfeAudioEngine::ProcessingTask() {
                 afe_control_dirty_ = true;
             }
         }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        static bool last_media_playing = false;
+        const bool media_playing = nodelio_media_is_playing();
+        if (media_playing != last_media_playing) {
+            last_media_playing = media_playing;
+            afe_control_dirty_ = true;
+        }
+#endif
         if (afe_control_dirty_.exchange(false)) {
             // WakeNet/AEC toggles are not safe against a concurrent fetch,
             // so they are applied here, in the task that owns the fetch side.

@@ -95,7 +95,9 @@ bool DeviceStateMachine::IsValidTransition(DeviceState from, DeviceState to) con
                    to == kDeviceStateIdle;
 
         case kDeviceStateNotifying:
-            return to == kDeviceStateIdle;
+            // Can go to idle or speaking (wake word during media playback)
+            return to == kDeviceStateIdle ||
+                   to == kDeviceStateSpeaking;
 
         case kDeviceStateFatalError:
             // Cannot transition out of fatal error

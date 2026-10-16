@@ -1,0 +1,13 @@
+# 每次编译写入本地日期。内容不变则不改文件，避免同一天反复重编。
+if(NOT DEFINED OUT OR OUT STREQUAL "")
+    message(FATAL_ERROR "write_build_stamp.cmake: OUT is required")
+endif()
+string(TIMESTAMP STAMP "%Y%m%d")
+set(CONTENT "#define NL_BUILD_STAMP \"V${STAMP}\"\n")
+if(EXISTS "${OUT}")
+    file(READ "${OUT}" OLD)
+    if(OLD STREQUAL CONTENT)
+        return()
+    endif()
+endif()
+file(WRITE "${OUT}" "${CONTENT}")

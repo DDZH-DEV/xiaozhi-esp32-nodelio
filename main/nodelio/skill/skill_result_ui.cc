@@ -12,10 +12,12 @@
 
 #include "display.h"
 
+#include <cJSON.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <freertos/task.h>
 #include <lvgl.h>
 #include <material_symbols.h>
@@ -29,7 +31,7 @@ LV_FONT_DECLARE(font_material_symbols_20_4);
 #define TAG "nl_skill_ui"
 
 #define SKILL_CARD_W 412
-#define SKILL_CARD_H_MAX 300
+#define SKILL_CARD_H_MAX 360
 #define SKILL_NOW_H 56
 #define SKILL_GAP 10
 #define SKILL_BORDER_OPA 200
@@ -39,6 +41,11 @@ LV_FONT_DECLARE(font_material_symbols_20_4);
 #define SKILL_MINI_SZ 52
 #define SKILL_ANIM_MS 240
 #define SKILL_ANIM_SLIDE 22
+#define SKILL_LIST_VISIBLE_MAX 5
+#define NEWS_ARTICLE_CAP (6 * 1024)
+/* 云端回源拉正文最多约 8s，默认 HTTP 读超时 2.5s 会在状态行到达前断开 */
+#define NEWS_HTTP_IO_MS 12000
+#define NEWS_TASK_STACK 10240
 
 static lv_obj_t *s_scrim;
 static lv_obj_t *s_card;
@@ -63,6 +70,21 @@ static nodelio_nvs_config_t s_skill_cfg;
 static nl_content_envelope_t s_env;
 static bool s_have_env;
 static int s_play_idx = -1;
+static lv_obj_t *s_row_idx_labels[64];  /* 序号胶囊标签（数字/耳机） */
+static lv_obj_t *s_row_btns[64];       /* 播放/暂停按钮 */
+static int s_news_detail = -1;
+static uint32_t s_news_gen = 1;
+static bool s_news_screen_hook = false;
+
+struct news_job_t {
+    int slot;
+    uint32_t gen;
+    char url[320];
+};
+static QueueHandle_t s_news_q = nullptr;
+static lv_obj_t *s_news_body_lbl = nullptr;
+static StackType_t *s_news_stack = nullptr;
+static StaticTask_t s_news_tcb;
 
 /** 禁止 move_foreground(status_bar)：flex 列里会把它挤到屏幕最底 */
 static void ensure_chrome_order(void)
@@ -193,6 +215,12 @@ static void on_scrim_click(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
         return;
     }
+    /* 检查点击是否在顶栏区域，如果是则不处理（让点击穿透到 status_bar） */
+    lv_point_t p;
+    lv_indev_get_point(lv_indev_get_act(), &p);
+    if (p.y < NL_UI_STATUS_H) {
+        return;
+    }
     /* 点遮罩：有内容可恢复则收成悬浮球，否则关掉 */
     if (nodelio_media_is_playing() || nodelio_media_is_paused() ||
         (s_have_env && s_env.track_n > 0)) {
@@ -316,6 +344,56 @@ static void request_reshuffle(void)
         "nl_reshuffle", 16384, nullptr, 3, nullptr);
 }
 
+static void play_at(int idx);
+
+/* 播放器关闭时恢复列表序号，避免耳机图标一直占着当前行 */
+static void clear_play_mark(void)
+{
+    if (s_play_idx < 0 || s_play_idx >= 64) {
+        s_play_idx = -1;
+        return;
+    }
+    if (s_row_idx_labels[s_play_idx]) {
+        char idx_buf[16];
+        snprintf(idx_buf, sizeof(idx_buf), "%d", s_play_idx + 1);
+        nl_ov_set_font(s_row_idx_labels[s_play_idx]);
+        lv_label_set_text(s_row_idx_labels[s_play_idx], idx_buf);
+        lv_obj_set_style_text_color(s_row_idx_labels[s_play_idx], UI_ACCENT_SOFT, 0);
+    }
+    if (s_row_btns[s_play_idx]) {
+        lv_obj_t *lbl = lv_obj_get_child(s_row_btns[s_play_idx], 0);
+        if (lbl) {
+            lv_label_set_text(lbl, MATERIAL_SYMBOLS_PLAY_ARROW);
+        }
+    }
+    s_play_idx = -1;
+}
+
+/* 只更新指定行的图标，避免重建整个列表 */
+static void update_row_icon(int idx)
+{
+    if (idx < 0 || idx >= 64) {
+        return;
+    }
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        return;
+    }
+    /* 更新序号胶囊：当前播放显示耳机 */
+    if (s_row_idx_labels[idx]) {
+        lv_obj_set_style_text_font(s_row_idx_labels[idx], &font_material_symbols_20_4, 0);
+        lv_label_set_text(s_row_idx_labels[idx], MATERIAL_SYMBOLS_HEADPHONES);
+        lv_obj_set_style_text_color(s_row_idx_labels[idx], UI_ACCENT, 0);
+    }
+    /* 更新播放按钮：改为暂停图标 */
+    if (s_row_btns[idx]) {
+        lv_obj_t *lbl = lv_obj_get_child(s_row_btns[idx], 0);
+        if (lbl) {
+            lv_label_set_text(lbl, MATERIAL_SYMBOLS_PAUSE);
+        }
+    }
+}
+
 static void play_at(int idx)
 {
     if (!nodelio_caps_has_media()) {
@@ -325,8 +403,29 @@ static void play_at(int idx)
     if (idx < 0 || idx >= s_env.track_n || !s_env.tracks[idx].playback_url[0]) {
         return;
     }
+    /* 恢复上一首的图标 */
+    if (s_play_idx >= 0 && s_play_idx < 64) {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            if (s_row_idx_labels[s_play_idx]) {
+                char idx_buf[16];
+                snprintf(idx_buf, sizeof(idx_buf), "%d", s_play_idx + 1);
+                nl_ov_set_font(s_row_idx_labels[s_play_idx]);
+                lv_label_set_text(s_row_idx_labels[s_play_idx], idx_buf);
+                lv_obj_set_style_text_color(s_row_idx_labels[s_play_idx], UI_ACCENT_SOFT, 0);
+            }
+            if (s_row_btns[s_play_idx]) {
+                lv_obj_t *lbl = lv_obj_get_child(s_row_btns[s_play_idx], 0);
+                if (lbl) {
+                    lv_label_set_text(lbl, MATERIAL_SYMBOLS_PLAY_ARROW);
+                }
+            }
+        }
+    }
     s_play_idx = idx;
     (void)nodelio_media_play_track(&s_skill_cfg, &s_env.tracks[idx]);
+    /* 只更新当前行的图标，避免重建整个列表 */
+    update_row_icon(idx);
 }
 
 static int neighbor_playable(int from, int dir)
@@ -438,6 +537,29 @@ static lv_obj_t *make_icon_btn(lv_obj_t *parent, lv_color_t bg, lv_color_t fg, c
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(btn, 8);
+    if (cb) {
+        lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
+    }
+    lv_obj_t *ic = lv_label_create(btn);
+    lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
+    lv_label_set_text(ic, sym);
+    lv_obj_set_style_text_color(ic, fg, 0);
+    lv_obj_center(ic);
+    return btn;
+}
+
+/** 播放控制专用大图标钮（提高点击命中率） */
+static lv_obj_t *make_play_ctrl_btn(lv_obj_t *parent, lv_color_t bg, lv_color_t fg, const char *sym,
+                                    lv_event_cb_t cb)
+{
+    lv_obj_t *btn = lv_obj_create(parent);
+    lv_obj_remove_style_all(btn);
+    lv_obj_set_size(btn, 44, 44);
+    lv_obj_set_style_radius(btn, 22, 0);
+    lv_obj_set_style_bg_color(btn, bg, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(btn, 12);
     if (cb) {
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
     }
@@ -741,14 +863,6 @@ static void ensure_card(void)
     lv_obj_clear_flag(s_card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_card, LV_OBJ_FLAG_HIDDEN);
 
-    /* 顶部分隔微光条 */
-    lv_obj_t *accent = lv_obj_create(s_card);
-    lv_obj_remove_style_all(accent);
-    lv_obj_set_size(accent, 36, 3);
-    lv_obj_set_style_radius(accent, 2, 0);
-    lv_obj_set_style_bg_color(accent, UI_ACCENT, 0);
-    lv_obj_set_style_bg_opa(accent, LV_OPA_COVER, 0);
-
     lv_obj_t *hdr = lv_obj_create(s_card);
     lv_obj_remove_style_all(hdr);
     lv_obj_set_width(hdr, lv_pct(100));
@@ -780,18 +894,18 @@ static void ensure_card(void)
     lv_obj_set_style_pad_column(hdr_btns, 6, 0);
     lv_obj_clear_flag(hdr_btns, LV_OBJ_FLAG_CLICKABLE);
 
-    make_icon_btn(hdr_btns, UI_CAPSULE_OFF, UI_ACCENT_SOFT, MATERIAL_SYMBOLS_REFRESH, on_reshuffle);
-    make_icon_btn(hdr_btns, UI_CAPSULE_OFF, UI_TEXT_SUB, MATERIAL_SYMBOLS_KEYBOARD_ARROW_DOWN,
+    make_play_ctrl_btn(hdr_btns, UI_CAPSULE_OFF, UI_ACCENT_SOFT, MATERIAL_SYMBOLS_REFRESH, on_reshuffle);
+    make_play_ctrl_btn(hdr_btns, UI_CAPSULE_OFF, UI_TEXT_SUB, MATERIAL_SYMBOLS_KEYBOARD_ARROW_DOWN,
                   on_minimize);
 
     lv_obj_t *xbtn = lv_obj_create(hdr_btns);
     lv_obj_remove_style_all(xbtn);
-    lv_obj_set_size(xbtn, 36, 36);
-    lv_obj_set_style_radius(xbtn, 18, 0);
+    lv_obj_set_size(xbtn, 44, 44);
+    lv_obj_set_style_radius(xbtn, 22, 0);
     lv_obj_set_style_bg_color(xbtn, UI_CAPSULE_OFF, 0);
     lv_obj_set_style_bg_opa(xbtn, LV_OPA_COVER, 0);
     lv_obj_add_flag(xbtn, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(xbtn, 8);
+    lv_obj_set_ext_click_area(xbtn, 12);
     lv_obj_add_event_cb(xbtn, on_close_card, LV_EVENT_CLICKED, nullptr);
     lv_obj_t *xl = lv_label_create(xbtn);
     lv_obj_set_style_text_font(xl, &font_material_symbols_20_4, 0);
@@ -805,9 +919,8 @@ static void ensure_card(void)
     lv_obj_set_flex_grow(s_card_list, 1);
     lv_obj_set_flex_flow(s_card_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(s_card_list, 6, 0);
-    lv_obj_add_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(s_card_list, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(s_card_list, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_clear_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(s_card_list, LV_SCROLLBAR_MODE_OFF);
 
     if (nodelio_caps_has_surface("now_playing")) {
         s_now_bar = lv_obj_create(parent);
@@ -887,11 +1000,11 @@ static void ensure_card(void)
         lv_obj_set_style_pad_column(s_now_btns, 4, 0);
         lv_obj_clear_flag(s_now_btns, LV_OBJ_FLAG_CLICKABLE);
 
-        make_icon_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_SKIP_PREVIOUS, on_prev_now);
+        make_play_ctrl_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_SKIP_PREVIOUS, on_prev_now);
         s_now_pause_btn =
-            make_icon_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_PAUSE, on_pause_now);
-        make_icon_btn(s_now_btns, UI_DANGER_BG, UI_DANGER_FG, MATERIAL_SYMBOLS_STOP, on_stop_now);
-        make_icon_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_SKIP_NEXT, on_next_now);
+            make_play_ctrl_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_PAUSE, on_pause_now);
+        make_play_ctrl_btn(s_now_btns, UI_DANGER_BG, UI_DANGER_FG, MATERIAL_SYMBOLS_STOP, on_stop_now);
+        make_play_ctrl_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_SKIP_NEXT, on_next_now);
         make_icon_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT_SUB, MATERIAL_SYMBOLS_KEYBOARD_ARROW_DOWN,
                       on_minimize);
     }
@@ -925,18 +1038,32 @@ static void ensure_card(void)
     ensure_chrome_order();
 }
 
+#include "news_list_ui.inc"
+
 static void fill_list(void)
 {
     if (!s_card_list) {
         return;
     }
+    if (strcmp(s_env.card_type, "news_list") == 0) {
+        fill_news();
+        return;
+    }
+    lv_obj_clear_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clean(s_card_list);
+    /* 清空控件引用数组 */
+    bzero(s_row_idx_labels, sizeof(s_row_idx_labels));
+    bzero(s_row_btns, sizeof(s_row_btns));
     const bool can_play = nodelio_caps_has_media();
 
     if (s_card_sub) {
         if (s_env.track_n > 0) {
             char sub[48];
-            snprintf(sub, sizeof(sub), "%d 首 · 点播或说歌名", s_env.track_n);
+            if (s_env.track_n > SKILL_LIST_VISIBLE_MAX) {
+                snprintf(sub, sizeof(sub), "共 %d 首 · 点播或说歌名", s_env.track_n);
+            } else {
+                snprintf(sub, sizeof(sub), "%d 首 · 点播或说歌名", s_env.track_n);
+            }
             lv_label_set_text(s_card_sub, sub);
         } else {
             lv_label_set_text(s_card_sub, "点关闭或点遮罩收起");
@@ -959,7 +1086,8 @@ static void fill_list(void)
         return;
     }
 
-    for (int i = 0; i < s_env.track_n; i++) {
+    const int visible_n = (s_env.track_n > SKILL_LIST_VISIBLE_MAX) ? SKILL_LIST_VISIBLE_MAX : s_env.track_n;
+    for (int i = 0; i < visible_n; i++) {
         lv_obj_t *row = lv_obj_create(s_card_list);
         lv_obj_remove_style_all(row);
         lv_obj_set_width(row, lv_pct(100));
@@ -981,7 +1109,7 @@ static void fill_list(void)
             lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
         }
 
-        /* 序号胶囊 */
+        /* 序号胶囊（当前播放显示图标） */
         lv_obj_t *idx_pod = lv_obj_create(row);
         lv_obj_remove_style_all(idx_pod);
         lv_obj_set_size(idx_pod, 28, 28);
@@ -991,11 +1119,20 @@ static void fill_list(void)
         lv_obj_clear_flag(idx_pod, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_t *idx_l = lv_label_create(idx_pod);
         nl_ov_set_font(idx_l);
-        char idx_buf[8];
-        snprintf(idx_buf, sizeof(idx_buf), "%d", i + 1);
-        lv_label_set_text(idx_l, idx_buf);
-        lv_obj_set_style_text_color(idx_l, UI_ACCENT_SOFT, 0);
+        if (i == s_play_idx) {
+            lv_obj_set_style_text_font(idx_l, &font_material_symbols_20_4, 0);
+            lv_label_set_text(idx_l, MATERIAL_SYMBOLS_HEADPHONES);
+            lv_obj_set_style_text_color(idx_l, UI_ACCENT, 0);
+        } else {
+            char idx_buf[16];
+            snprintf(idx_buf, sizeof(idx_buf), "%d", i + 1);
+            lv_label_set_text(idx_l, idx_buf);
+            lv_obj_set_style_text_color(idx_l, UI_ACCENT_SOFT, 0);
+        }
         lv_obj_center(idx_l);
+        if (i < 64) {
+            s_row_idx_labels[i] = idx_l;
+        }
 
         lv_obj_t *txt = lv_obj_create(row);
         lv_obj_remove_style_all(txt);
@@ -1020,15 +1157,21 @@ static void fill_list(void)
         lv_obj_set_width(a, 250);
 
         if (can_play && s_env.tracks[i].playback_url[0]) {
+            const char *icon = (i == s_play_idx) ? MATERIAL_SYMBOLS_PAUSE : MATERIAL_SYMBOLS_PLAY_ARROW;
             lv_obj_t *btn =
-                make_icon_btn(row, UI_ACCENT, UI_BG, MATERIAL_SYMBOLS_PLAY_ARROW, nullptr);
+                make_icon_btn(row, UI_ACCENT, UI_BG, icon, nullptr);
             lv_obj_add_event_cb(btn, on_play_row, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            if (i < 64) {
+                s_row_btns[i] = btn;
+            }
         }
     }
 }
 
 void nodelio_skill_result_hide(void)
 {
+    s_news_gen += 1;
+    s_news_detail = -1;
     clear_ttl();
     DisplayLockGuard lock(nl_ov_disp());
     if (!lock) {
@@ -1084,7 +1227,15 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content
 
     ensure_chrome_order();
 
+    if (!s_news_screen_hook) {
+        nodelio_panel_ui_set_screen_cb(news_on_screen);
+        s_news_screen_hook = true;
+    }
+    s_news_detail = -1;
     const char *title = s_env.display_title[0] ? s_env.display_title : "搜索结果";
+    if (strcmp(s_env.card_type, "news_list") == 0 && !s_env.display_title[0]) {
+        title = "最新新闻";
+    }
     lv_label_set_text(s_card_title, title);
     fill_list();
 
@@ -1116,7 +1267,7 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content
         play_at(0);
     }
 
-    ESP_LOGI(TAG, "show card_type=%s tracks=%d", s_env.card_type, s_env.track_n);
+    ESP_LOGI(TAG, "show card_type=%s tracks=%d news=%d", s_env.card_type, s_env.track_n, s_env.news_n);
 }
 
 void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
@@ -1132,6 +1283,7 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
     if (!title || !title[0]) {
         stop_now_anims();
         set_pause_btn_icon(true);
+        clear_play_mark();
         lv_obj_add_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
         if (s_minimized) {
             if (s_have_env && s_env.track_n > 0) {

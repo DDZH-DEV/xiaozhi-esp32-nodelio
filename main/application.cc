@@ -1352,9 +1352,10 @@ void Application::HandleStateChangedEvent() {
             break;
         case kDeviceStateNotifying:
             display->SetStatus(Lang::Strings::SPEAKING);
-            audio_service_.EnableVoiceProcessing(false);
-            /* 长 HTTP 曲目时勿再 Feed AFE：fetch 跟不上会 FEED full + IDLE0 TWDT */
-            audio_service_.EnableWakeWordDetection(false);
+            // Keep voice processing enabled during media playback so microphone works for wake word detection
+            // audio_service_.EnableVoiceProcessing(false);
+            /* Keep wake word detection enabled during media playback so user can interrupt */
+            // audio_service_.EnableWakeWordDetection(false);
             break;
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableVoiceProcessing(false);
@@ -1405,9 +1406,11 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
 
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-    audio_service_.EnableVoiceProcessing(false);
-    audio_service_.EnableWakeWordDetection(false);
-    audio_service_.ReleaseWakeWordResources();
+    // Keep voice processing enabled during media playback so microphone works for wake word detection
+    // audio_service_.EnableVoiceProcessing(false);
+    // Keep wake word detection enabled during media playback so user can interrupt
+    // audio_service_.EnableWakeWordDetection(false);
+    // audio_service_.ReleaseWakeWordResources();
     while (audio_service_.PopPacketFromSendQueue()) {
         // Discard microphone audio left over from a previous conversation.
     }
@@ -1453,6 +1456,9 @@ void Application::StopNotification() {
     if (GetDeviceState() == kDeviceStateNotifying) {
         SetDeviceState(kDeviceStateIdle);
     }
+    // Re-enable voice processing and wake word detection after stopping notification
+    audio_service_.EnableVoiceProcessing(true);
+    audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
 }
 
 void Application::HandleNotificationFinished(uint32_t playback_id, bool success) {
@@ -1543,6 +1549,9 @@ void Application::RequestManualFirmwareCheck() {
             std::string ver = ota.GetFirmwareVersion();
             ESP_LOGI(TAG, "manual check: new firmware %s", ver.c_str());
             Application::GetInstance().Schedule([url = std::move(url), ver = std::move(ver)]() {
+                char tip[72];
+                snprintf(tip, sizeof(tip), "发现新版本 %s，开始升级", ver.c_str());
+                nodelio_panel_ui_toast_defer(tip);
                 bool ok = Application::GetInstance().UpgradeFirmware(url, ver);
                 busy = false; /* 成功会 reboot；失败回 idle */
                 if (!ok) {
@@ -1595,6 +1604,9 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
         snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress, speed / 1024);
         Schedule([display, message = std::string(buffer)]() {
             display->SetChatMessage("system", message.c_str());
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            nodelio_panel_ui_toast_defer(message.c_str());
+#endif
         });
     });
 
@@ -1653,30 +1665,38 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
 
 bool Application::CanEnterSleepMode() {
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-    /* 墙板：息屏只挡对话/升级/配网。Activating（OTA/注册失败重试）不得锁死背光整晚发热。 */
+    /* 墙板：息屏只挡对话/升级/配网。Activating（OTA/注册失败重试）不得锁死背光整晚发热。
+     * 音乐 Notifying：若开启「播放可息屏」则允许关背光，不停播（断网另挡）。 */
+    const bool media_ok = nodelio_media_is_playing() && nodelio_media_sleep_enabled();
     const auto state = GetDeviceState();
     if (state == kDeviceStateConnecting || state == kDeviceStateListening ||
-        state == kDeviceStateSpeaking || state == kDeviceStateNotifying ||
-        state == kDeviceStateUpgrading || state == kDeviceStateWifiConfiguring ||
-        state == kDeviceStateAudioTesting) {
+        state == kDeviceStateSpeaking || state == kDeviceStateUpgrading ||
+        state == kDeviceStateWifiConfiguring || state == kDeviceStateAudioTesting) {
         return false;
     }
+    if (state == kDeviceStateNotifying && !media_ok) {
+        return false;
+    }
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        return false;
+    }
+    /* 媒体播时 decode/playback 队列非空，仍允许息屏 */
+    if (!media_ok && !audio_service_.IsIdle()) {
+        return false;
+    }
+    return true;
 #else
     if (GetDeviceState() != kDeviceStateIdle) {
         return false;
     }
-#endif
-
     if (protocol_ && protocol_->IsAudioChannelOpened()) {
         return false;
     }
-
     if (!audio_service_.IsIdle()) {
         return false;
     }
-
-    // Now it is safe to enter sleep mode
     return true;
+#endif
 }
 
 void Application::SuspendTransport() {
@@ -1749,8 +1769,15 @@ void Application::SetAecMode(AecMode mode) {
 void Application::PlaySound(const std::string_view& sound) { audio_service_.PlaySound(sound); }
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-void Application::PlayHttpAudio(std::string audio_url, std::string device_key) {
+bool Application::IsHttpAudioBusy() const { return notify_player_.IsBusy(); }
+
+bool Application::PlayHttpAudio(std::string audio_url, std::string device_key) {
+    if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy()) {
+        ESP_LOGW(TAG, "PlayHttpAudio ignored while busy");
+        return false;
+    }
     StartNotification(std::move(audio_url), std::vector<NotifySubtitle>{}, std::move(device_key));
+    return GetDeviceState() == kDeviceStateNotifying;
 }
 
 void Application::StopHttpAudio() { StopNotification(); }

@@ -131,6 +131,7 @@ static lv_obj_t *s_idle_slp_lbl;
 static lv_obj_t *s_wifi_slp_lbl;
 static lv_obj_t *s_bye_slp_lbl;
 static lv_obj_t *s_listen_idle_lbl;
+static lv_obj_t *s_media_pause_lbl;
 
 static void on_idle_sleep_changed(lv_event_t *e)
 {
@@ -395,8 +396,10 @@ void nl_ov_close_settings_detail(void)
     s_bri_val_lbl = nullptr;
     s_vol_val_lbl = nullptr;
     s_idle_slp_lbl = nullptr;
+    s_wifi_slp_lbl = nullptr;
     s_bye_slp_lbl = nullptr;
     s_listen_idle_lbl = nullptr;
+    s_media_pause_lbl = nullptr;
     if (s_tabbar && s_visible) {
         lv_obj_clear_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
     }
@@ -457,6 +460,8 @@ static void open_settings_detail(set_page_id_t page)
         title = "语音助手";
     } else if (page == SET_PAGE_POWER) {
         title = "省电";
+    } else if (page == SET_PAGE_MEDIA) {
+        title = "播放器";
     }
     (void)ui_make_nav_bar(s_settings_detail, UI_NAV_H, title,
                           [](lv_event_t *) { nl_ov_close_settings_detail(); });
@@ -671,6 +676,103 @@ static void open_settings_detail(set_page_id_t page)
         lv_label_set_text(bye_hint, "小智说完再见后，多久关屏（触摸会再延一段）");
         nl_ov_set_font(bye_hint);
         lv_obj_set_style_text_color(bye_hint, UI_TEXT_TIP, 0);
+    } else if (page == SET_PAGE_MEDIA) {
+        lv_obj_set_style_pad_row(body, 12, 0);
+
+        lv_obj_t *ms_card = settings_card(body, "播放中息屏");
+        lv_obj_set_style_pad_all(ms_card, 16, 0);
+        lv_obj_set_style_pad_row(ms_card, 12, 0);
+
+        lv_obj_t *ms_row = lv_obj_create(ms_card);
+        lv_obj_remove_style_all(ms_row);
+        lv_obj_set_width(ms_row, lv_pct(100));
+        lv_obj_set_height(ms_row, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(ms_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(ms_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(ms_row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *ms_lab = lv_label_create(ms_row);
+        lv_label_set_text(ms_lab, "允许息屏");
+        nl_ov_set_font(ms_lab);
+        lv_obj_set_style_text_color(ms_lab, UI_TEXT, 0);
+
+        lv_obj_t *ms_sw = lv_switch_create(ms_row);
+        lv_obj_set_size(ms_sw, 52, 30);
+        lv_obj_set_style_bg_color(ms_sw, lv_color_hex(UI_C_SLIDER_TRACK), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(ms_sw, UI_ACCENT,
+                                  (lv_style_selector_t)((uint32_t)LV_PART_INDICATOR |
+                                                       (uint32_t)LV_STATE_CHECKED));
+        if (s_cfg.media_sleep_en) {
+            lv_obj_add_state(ms_sw, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(ms_sw, LV_STATE_CHECKED);
+        }
+        lv_obj_add_event_cb(
+            ms_sw,
+            [](lv_event_t *e) {
+                lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
+                bool on = lv_obj_has_state(obj, LV_STATE_CHECKED);
+                s_cfg.media_sleep_en = on ? 1 : 0;
+                nodelio_nvs_cache_put(&s_cfg);
+                nodelio_nvs_config_t snap = s_cfg;
+                Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
+                nl_ov_toast(on ? "播放中可息屏，音乐继续" : "播放中保持亮屏");
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_t *ms_hint = lv_label_create(ms_card);
+        lv_label_set_text(ms_hint, "关背光不停播；播放中不会断网，避免音乐中断");
+        nl_ov_set_font(ms_hint);
+        lv_obj_set_style_text_color(ms_hint, UI_TEXT_TIP, 0);
+        lv_label_set_long_mode(ms_hint, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(ms_hint, lv_pct(100));
+
+        char sec[16];
+        if (!s_cfg.media_pause_s) {
+            s_cfg.media_pause_s = NODELIO_MEDIA_PAUSE_DEFAULT;
+        }
+        std::snprintf(sec, sizeof(sec), "%ds", (int)s_cfg.media_pause_s);
+        lv_obj_t *pause_band = audio_ctrl_band(body, "暂停后关闭播放器", sec, &s_media_pause_lbl);
+        lv_obj_t *pause_sl = lv_slider_create(pause_band);
+        ui_style_slider(pause_sl);
+        lv_slider_set_range(pause_sl, NODELIO_MEDIA_PAUSE_MIN, NODELIO_MEDIA_PAUSE_MAX);
+        lv_slider_set_value(pause_sl, s_cfg.media_pause_s, LV_ANIM_OFF);
+        lv_obj_add_event_cb(
+            pause_sl,
+            [](lv_event_t *e) {
+                lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
+                int v = (int)lv_slider_get_value(sl);
+                if (s_media_pause_lbl) {
+                    char buf[16];
+                    std::snprintf(buf, sizeof(buf), "%ds", v);
+                    lv_label_set_text(s_media_pause_lbl, buf);
+                }
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_add_event_cb(
+            pause_sl,
+            [](lv_event_t *e) {
+                lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
+                int v = (int)lv_slider_get_value(sl);
+                if (v < NODELIO_MEDIA_PAUSE_MIN) {
+                    v = NODELIO_MEDIA_PAUSE_MIN;
+                }
+                if (v > NODELIO_MEDIA_PAUSE_MAX) {
+                    v = NODELIO_MEDIA_PAUSE_MAX;
+                }
+                s_cfg.media_pause_s = (uint16_t)v;
+                nodelio_nvs_cache_put(&s_cfg);
+                nodelio_nvs_config_t snap = s_cfg;
+                Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
+                nl_ov_toast("暂停关闭时间已保存");
+            },
+            LV_EVENT_RELEASED, nullptr);
+        lv_obj_t *pause_hint = lv_label_create(pause_band);
+        lv_label_set_text(pause_hint, "暂停后多久自动关掉播放条并释放会话");
+        nl_ov_set_font(pause_hint);
+        lv_obj_set_style_text_color(pause_hint, UI_TEXT_TIP, 0);
+        lv_label_set_long_mode(pause_hint, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(pause_hint, lv_pct(100));
     } else if (page == SET_PAGE_VOICE) {
         lv_obj_set_style_pad_row(body, 12, 0);
 
@@ -831,6 +933,14 @@ void nl_ov_fill_settings(void)
         }
         settings_tile(s_settings, "电", "省电", pwr_sub, UI_C_WARN, nullptr,
                       [](lv_event_t *) { open_settings_detail(SET_PAGE_POWER); });
+    }
+    {
+        char media_sub[48];
+        std::snprintf(media_sub, sizeof(media_sub), "%s · 暂停 %ds",
+                      nodelio_media_sleep_enabled() ? "播放可息屏" : "播放常亮",
+                      (int)nodelio_media_pause_seconds());
+        settings_tile(s_settings, "播", "播放器", media_sub, UI_C_INFO, nullptr,
+                      [](lv_event_t *) { open_settings_detail(SET_PAGE_MEDIA); });
     }
     settings_tile(s_settings, "连", "网络与连接", "扫描 WiFi / 服务器 / 绑定", UI_C_WARN, nullptr,
                   [](lv_event_t *) { nl_ov_open_connect(); });

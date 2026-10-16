@@ -7,6 +7,7 @@
 #include "config.h"
 
 #if CONFIG_NODELIO_PANEL
+#include "media_player.h"
 #include "nvs_config.h"
 #include "panel_ui.h"
 #endif
@@ -86,9 +87,16 @@ private:
         power_save_timer_->OnEnterSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(true);
             GetBacklight()->SetBrightness(0);
-            /* 原理图无 AMP_EN：尽量关 ES8311 输出，减轻 NS4150 空闲滋滋 */
-            if (auto* codec = GetAudioCodec()) {
-                codec->EnableOutput(false);
+            /* 原理图无 AMP_EN：空闲关输出减滋滋；正在播媒体则勿掐功放 */
+#if CONFIG_NODELIO_PANEL
+            const bool keep_audio = nodelio_media_is_playing();
+#else
+            const bool keep_audio = false;
+#endif
+            if (!keep_audio) {
+                if (auto* codec = GetAudioCodec()) {
+                    codec->EnableOutput(false);
+                }
             }
             if (panel_handle_) {
                 (void)esp_lcd_panel_disp_on_off(panel_handle_, false);
@@ -342,10 +350,19 @@ public:
 
     virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
         if (level == PowerSaveLevel::LOW_POWER) {
-            /* 唤醒建链/聆听/说话期间禁止 WiFi MAX_MODEM，否则 UDP 语音断续 */
+            /* 唤醒建链/聆听/说话期间禁止 WiFi MAX_MODEM，否则 UDP 语音断续。
+             * 音乐 Notifying 且允许播放息屏时勿 WakeUp，否则刚灭的屏会被点亮。 */
             DeviceState st = Application::GetInstance().GetDeviceState();
-            if (st == kDeviceStateConnecting || st == kDeviceStateListening ||
-                st == kDeviceStateSpeaking || st == kDeviceStateNotifying) {
+#if CONFIG_NODELIO_PANEL
+            const bool media_screen_ok =
+                st == kDeviceStateNotifying && nodelio_media_is_playing() &&
+                nodelio_media_sleep_enabled();
+#else
+            const bool media_screen_ok = false;
+#endif
+            if (!media_screen_ok &&
+                (st == kDeviceStateConnecting || st == kDeviceStateListening ||
+                 st == kDeviceStateSpeaking || st == kDeviceStateNotifying)) {
                 ESP_LOGW(TAG, "ignore LOW_POWER during voice (state=%d)", (int)st);
                 if (power_save_timer_) {
                     power_save_timer_->WakeUp();

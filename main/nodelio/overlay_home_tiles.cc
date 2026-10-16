@@ -938,16 +938,8 @@ static void capture_and_upload_screenshot(void)
         nl_ov_toast("未检测到显示屏");
         return;
     }
-    nl_ov_toast("截屏中…");
-    /* 设置内页 / 配网页挂在 lv_layer_top()，与 s_root 同级；只拍 s_root 会仍是列表页 */
-    lv_obj_t *snap = s_root;
-    const bool detail_open =
-        s_settings_detail != nullptr && !lv_obj_has_flag(s_settings_detail, LV_OBJ_FLAG_HIDDEN);
-    const bool connect_open =
-        s_connect != nullptr && !lv_obj_has_flag(s_connect, LV_OBJ_FLAG_HIDDEN);
-    if (detail_open || connect_open) {
-        snap = lv_layer_top();
-    }
+    /* 播放器挂在 lv_layer_top()，与首页同级。拍整层，不要只拍 s_root。 */
+    lv_obj_t *snap = lv_layer_top();
     std::string jpeg;
     if (!disp->SnapshotToJpeg(jpeg, 80, snap) || jpeg.empty()) {
         ESP_LOGW(TAG, "SnapshotToJpeg failed");

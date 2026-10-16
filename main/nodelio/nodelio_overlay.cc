@@ -15,6 +15,7 @@
 #include "ui_theme.h"
 #include "ui_widgets.h"
 #include "wifi_provision.h"
+#include "nl_build_stamp.h"
 #include <material_symbols.h>
 
 LV_FONT_DECLARE(font_material_symbols_20_4);
@@ -28,7 +29,6 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #include "system_info.h"
 #include "wifi_manager.h"
 
-#include <esp_app_desc.h>
 #include <esp_chip_info.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -176,44 +176,17 @@ const lv_font_t *nl_ov_tile_icon_font(bool is_row)
 #define NL_STATUS_LEFT_PAD 12
 #define NL_STATUS_RIGHT_PAD (-12)
 
-/** 顶栏左挂：VYYYYDDMM（编译日，与网络/布局无关，离线也常显） */
-static int month_from_abbr(const char *mon)
-{
-    static const char *kMons[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    if (!mon || !mon[0]) {
-        return 0;
-    }
-    for (int i = 0; i < 12; i++) {
-        if (strncmp(mon, kMons[i], 3) == 0) {
-            return i + 1;
-        }
-    }
-    return 0;
-}
-
+/** 顶栏左挂：VYYYYMMDD（本机编译日；见 nl_build_stamp.h，不读 esp_app_desc） */
 static void fill_build_stamp(char *out, size_t out_len)
 {
     if (!out || out_len == 0) {
         return;
     }
-    const esp_app_desc_t *app = esp_app_get_description();
-    if (!app || !app->date[0]) {
-        std::snprintf(out, out_len, "V-");
-        return;
-    }
-    /* __DATE__："Oct 16 2026" / "Oct  6 2026" → V20261610 */
-    char mon[4] = {};
-    int day = 0;
-    int year = 0;
-    if (std::sscanf(app->date, "%3s %d %d", mon, &day, &year) == 3) {
-        int m = month_from_abbr(mon);
-        if (m > 0 && day > 0 && year >= 2000) {
-            std::snprintf(out, out_len, "V%04d%02d%02d", year, day, m);
-            return;
-        }
-    }
+#ifdef NL_BUILD_STAMP
+    std::snprintf(out, out_len, "%s", NL_BUILD_STAMP);
+#else
     std::snprintf(out, out_len, "V-");
+#endif
 }
 
 static void status_bar_relayout(void)
@@ -331,8 +304,70 @@ static void start_status_poll(void)
 
 void nl_ov_toast(const char *msg)
 {
-    if (msg && msg[0] && nl_ov_disp()) {
-        nl_ov_disp()->ShowNotification(msg, 2500);
+    if (!nl_ov_disp()) {
+        return;
+    }
+    /* 小智状态栏在墙板底下，设置页看不见。提示挂在最上层。msg 空则只收起。 */
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        return;
+    }
+    static lv_obj_t *toast;
+    static lv_obj_t *toast_lbl;
+    static lv_timer_t *hide_tmr;
+    if (!toast) {
+        if (!msg || !msg[0]) {
+            return;
+        }
+        toast = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(toast);
+        lv_obj_set_width(toast, LV_HOR_RES - 48);
+        lv_obj_set_height(toast, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(toast, UI_SURFACE, 0);
+        lv_obj_set_style_bg_opa(toast, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(toast, 16, 0);
+        lv_obj_set_style_border_width(toast, 1, 0);
+        lv_obj_set_style_border_color(toast, UI_ACCENT, 0);
+        lv_obj_set_style_border_opa(toast, 160, 0);
+        lv_obj_set_style_pad_hor(toast, 16, 0);
+        lv_obj_set_style_pad_ver(toast, 10, 0);
+        lv_obj_align(toast, LV_ALIGN_BOTTOM_MID, 0, -(NL_UI_TAB_H + 16));
+        lv_obj_clear_flag(toast, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(toast, LV_OBJ_FLAG_SCROLLABLE);
+        toast_lbl = lv_label_create(toast);
+        lv_obj_set_width(toast_lbl, LV_HOR_RES - 80);
+        lv_label_set_long_mode(toast_lbl, LV_LABEL_LONG_WRAP);
+        nl_ov_set_font(toast_lbl);
+        lv_obj_set_style_text_color(toast_lbl, UI_TEXT, 0);
+        lv_obj_set_style_text_align(toast_lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_add_flag(toast, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (!msg || !msg[0]) {
+        lv_obj_add_flag(toast, LV_OBJ_FLAG_HIDDEN);
+        if (hide_tmr) {
+            lv_timer_del(hide_tmr);
+            hide_tmr = nullptr;
+        }
+        return;
+    }
+    lv_label_set_text(toast_lbl, msg);
+    lv_obj_clear_flag(toast, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(toast);
+    if (hide_tmr) {
+        lv_timer_del(hide_tmr);
+        hide_tmr = nullptr;
+    }
+    hide_tmr = lv_timer_create(
+        [](lv_timer_t *t) {
+            (void)t;
+            if (toast) {
+                lv_obj_add_flag(toast, LV_OBJ_FLAG_HIDDEN);
+            }
+            hide_tmr = nullptr;
+        },
+        2500, nullptr);
+    if (hide_tmr) {
+        lv_timer_set_repeat_count(hide_tmr, 1);
     }
 }
 

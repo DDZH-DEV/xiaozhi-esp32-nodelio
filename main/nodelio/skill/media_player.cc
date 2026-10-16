@@ -1,13 +1,16 @@
 #include "media_player.h"
 
 #include "application.h"
+#include "board.h"
 #include "device_caps.h"
 #include "nl_url_util.h"
+#include "nvs_config.h"
 #include "panel_ui.h"
 #include "skill_result_ui.h"
 
 #include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
@@ -21,25 +24,67 @@
 
 #define TAG "nl_media"
 
-enum media_op_t : uint8_t { MEDIA_OP_PLAY = 1, MEDIA_OP_STOP = 2, MEDIA_OP_RETRY = 3 };
+enum media_op_t : uint8_t { MEDIA_OP_PLAY = 1, MEDIA_OP_STOP = 2 };
 
 struct media_msg_t {
     media_op_t op;
     char url[NL_ENV_URL];
     char title[NL_ENV_STR];
     char device_key[65];
-    int8_t retries_left; /* RETRY：会话未结束时延后再试 */
 };
 
 static QueueHandle_t s_q;
 static TaskHandle_t s_task;
 static char s_now_title[NL_ENV_STR];
 static char s_now_url[NL_ENV_URL];
+/** 已经交给 HTTP 播放器的地址。请求地址会提前写入 s_now_url，不能拿它判断「同一首」。 */
+static char s_started_url[NL_ENV_URL];
 static char s_now_key[65];
 static volatile bool s_playing;
 static volatile bool s_paused;
 static uint32_t s_playback_id = 1;
 static TickType_t s_play_started_at;
+static int s_retry_count = 0;
+/** 主动掐流换曲时，忽略上一首的 ended，避免误清状态或再跳一首。 */
+static volatile bool s_suppress_ended = false;
+/** 暂停后无操作则关掉播放器；秒数来自 NVS「播放器」设置。 */
+static esp_timer_handle_t s_pause_close_timer;
+
+static void pause_close_cb(void *arg)
+{
+    (void)arg;
+    if (!s_paused) {
+        return;
+    }
+    ESP_LOGI(TAG, "pause timeout, close player");
+    nodelio_media_stop();
+}
+
+static void disarm_pause_close(void)
+{
+    if (s_pause_close_timer) {
+        esp_timer_stop(s_pause_close_timer);
+    }
+}
+
+static void arm_pause_close(void)
+{
+    if (!s_pause_close_timer) {
+        esp_timer_create_args_t args = {};
+        args.callback = pause_close_cb;
+        args.name = "nl_pause_close";
+        if (esp_timer_create(&args, &s_pause_close_timer) != ESP_OK) {
+            ESP_LOGW(TAG, "pause close timer create failed");
+            return;
+        }
+    }
+    esp_timer_stop(s_pause_close_timer);
+    uint16_t sec = nodelio_media_pause_seconds();
+    if (sec < NODELIO_MEDIA_PAUSE_MIN) {
+        sec = NODELIO_MEDIA_PAUSE_MIN;
+    }
+    esp_timer_start_once(s_pause_close_timer, (uint64_t)sec * 1000000ull);
+}
 
 static bool same_url(const char *a, const char *b)
 {
@@ -49,13 +94,22 @@ static bool same_url(const char *a, const char *b)
     return strcmp(a, b) == 0;
 }
 
-/** 同 URL 且仍在播 → 跳过，避免 LLM 连打 music.search+auto_play 打断 HTTP 流 */
+static const char *url_tail(const char *url)
+{
+    if (!url || !url[0]) {
+        return "";
+    }
+    size_t n = strlen(url);
+    return n > 48 ? url + (n - 48) : url;
+}
+
+/** 仅当这条 URL 已经在出声时才跳过。s_now_url 在入队前就会改成新曲。 */
 static bool should_skip_restart(const char *url)
 {
-    if (!s_playing || !url || !url[0] || !s_now_url[0]) {
+    if (!s_playing || !url || !url[0] || !s_started_url[0]) {
         return false;
     }
-    return same_url(s_now_url, url);
+    return same_url(s_started_url, url);
 }
 
 static bool cat_url(char *out, size_t out_len, const char *a, const char *b)
@@ -116,6 +170,39 @@ static void resolve_url(const nodelio_nvs_config_t *cfg, const char *in, char *o
     (void)cat_url(out, out_len, in, nullptr);
 }
 
+/** StartNotification 在上一首 HTTP 任务未退出时会直接丢弃。先停再等。 */
+static void release_previous_http(void)
+{
+    auto &app = Application::GetInstance();
+    DeviceState st0 = app.GetDeviceState();
+    const bool busy0 = app.IsHttpAudioBusy();
+    const bool need_stop = st0 == kDeviceStateNotifying || busy0;
+    ESP_LOGI(TAG, "release prev state=%s busy=%d stop=%d", DeviceStateMachine::GetStateName(st0),
+             (int)busy0, (int)need_stop);
+    if (need_stop) {
+        s_suppress_ended = true;
+        app.Schedule([]() { Application::GetInstance().StopHttpAudio(); });
+    }
+    for (int i = 0; i < 80; ++i) {
+        DeviceState st = app.GetDeviceState();
+        if (!app.IsHttpAudioBusy() && st != kDeviceStateNotifying && st != kDeviceStateSpeaking) {
+            s_suppress_ended = false;
+            ESP_LOGI(TAG, "release prev done i=%d state=%s", i, DeviceStateMachine::GetStateName(st));
+            return;
+        }
+        if (st == kDeviceStateSpeaking && i == 30) {
+            ESP_LOGW(TAG, "release prev abort speaking");
+            app.Schedule([]() {
+                Application::GetInstance().AbortSpeaking(kAbortReasonWakeWordDetected);
+            });
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    s_suppress_ended = false;
+    ESP_LOGW(TAG, "wait previous audio timeout state=%s busy=%d",
+             DeviceStateMachine::GetStateName(app.GetDeviceState()), (int)app.IsHttpAudioBusy());
+}
+
 static void media_worker(void *arg)
 {
     (void)arg;
@@ -125,14 +212,20 @@ static void media_worker(void *arg)
             continue;
         }
         if (msg.op == MEDIA_OP_STOP) {
-            Application::GetInstance().Schedule([]() { Application::GetInstance().StopHttpAudio(); });
+            s_suppress_ended = true;
             s_playing = false;
+            Application::GetInstance().Schedule([]() { Application::GetInstance().StopHttpAudio(); });
             if (!s_paused) {
                 s_now_title[0] = '\0';
                 s_now_url[0] = '\0';
+                s_started_url[0] = '\0';
                 s_now_key[0] = '\0';
                 nodelio_panel_ui_media_now_playing("", false);
             }
+            for (int i = 0; i < 80 && Application::GetInstance().IsHttpAudioBusy(); ++i) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+            s_suppress_ended = false;
             continue;
         }
         if (msg.op != MEDIA_OP_PLAY || msg.url[0] == '\0') {
@@ -143,14 +236,23 @@ static void media_worker(void *arg)
             continue;
         }
 
-        /* 队列里积压的同曲 PLAY：worker 侧再挡一层 */
+        /* 只跳过「这条流已经在播」。入队前 s_now_url 已是新曲，不能拿它比较。 */
         if (should_skip_restart(msg.url)) {
-            ESP_LOGI(TAG, "queue skip same url title=%s", msg.title);
+            ESP_LOGI(TAG, "queue skip streaming title=%s tail=%s", msg.title, url_tail(msg.url));
             snprintf(s_now_title, sizeof(s_now_title), "%s", msg.title);
             s_playing = true;
             s_paused = false;
             nodelio_panel_ui_media_now_playing(s_now_title, true);
             continue;
+        }
+        ESP_LOGI(TAG, "worker play title=%s state=%s busy=%d tail=%s", msg.title,
+                 DeviceStateMachine::GetStateName(Application::GetInstance().GetDeviceState()),
+                 (int)Application::GetInstance().IsHttpAudioBusy(), url_tail(msg.url));
+
+        /* 重试请求：延迟 2 秒后再启动，避免立即重试 */
+        if (s_retry_count > 0) {
+            ESP_LOGI(TAG, "retry delay 2s: %s", msg.title);
+            vTaskDelay(pdMS_TO_TICKS(2000));
         }
 
         std::string url(msg.url);
@@ -164,38 +266,91 @@ static void media_worker(void *arg)
         s_paused = false;
         s_play_started_at = xTaskGetTickCount();
         nodelio_panel_ui_media_now_playing(s_now_title, true);
+        /* 允许播放息屏时切歌不要唤醒。常亮才记活动，且必须丢到主任务：
+         * 本任务栈在 PSRAM，息屏 RestoreBrightness 会读 NVS，关 cache 时栈不可用会断言重启。 */
+        if (!nodelio_media_sleep_enabled()) {
+            Application::GetInstance().Schedule([]() { Board::GetInstance().NoteUserActivity(); });
+        }
+        /* 上一首的下载任务没退出时，StartNotification 会丢弃本次播放 */
+        release_previous_http();
+        if (!same_url(s_now_url, url.c_str())) {
+            ESP_LOGW(TAG, "stale play drop before start id=%lu", (unsigned long)id);
+            continue;
+        }
 
         auto try_start = std::make_shared<std::function<void(int)>>();
         *try_start = [url, title, device_key, id, try_start](int left) {
             auto &app = Application::GetInstance();
+            if (!same_url(s_now_url, url.c_str())) {
+                ESP_LOGW(TAG, "stale play drop id=%lu", (unsigned long)id);
+                return;
+            }
             DeviceState st = app.GetDeviceState();
-            /* 仅换曲时打断当前 HTTP；同 id 重入不应走到这里 */
-            if (st == kDeviceStateNotifying) {
+            if (st == kDeviceStateNotifying || app.IsHttpAudioBusy()) {
+                ESP_LOGW(TAG, "try_start busy left=%d state=%s http=%d title=%s", left,
+                         DeviceStateMachine::GetStateName(st), (int)app.IsHttpAudioBusy(), title.c_str());
                 app.StopHttpAudio();
-            } else if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
-                       st == kDeviceStateConnecting) {
+                if (left > 0) {
+                    app.Schedule([try_start, left]() { (*try_start)(left - 1); });
+                } else {
+                    ESP_LOGW(TAG, "play give up busy title=%s", title.c_str());
+                    s_playing = false;
+                    s_now_url[0] = '\0';
+                    s_started_url[0] = '\0';
+                    nodelio_panel_ui_media_now_playing("", false);
+                }
+                return;
+            }
+            if (st == kDeviceStateSpeaking) {
+                ESP_LOGW(TAG, "try_start speaking left=%d title=%s", left, title.c_str());
+                app.AbortSpeaking(kAbortReasonWakeWordDetected);
+                if (left > 0) {
+                    app.Schedule([try_start, left]() { (*try_start)(left - 1); });
+                } else {
+                    ESP_LOGW(TAG, "play give up - speaking timeout title=%s", title.c_str());
+                    s_playing = false;
+                    s_now_url[0] = '\0';
+                    s_started_url[0] = '\0';
+                    nodelio_panel_ui_media_now_playing("", false);
+                }
+                return;
+            }
+            if (st == kDeviceStateListening || st == kDeviceStateConnecting) {
                 app.SetDeviceState(kDeviceStateIdle);
             }
             if (app.GetDeviceState() != kDeviceStateIdle) {
+                ESP_LOGW(TAG, "try_start not idle left=%d state=%s title=%s", left,
+                         DeviceStateMachine::GetStateName(app.GetDeviceState()), title.c_str());
                 if (left > 0) {
                     app.Schedule([try_start, left]() { (*try_start)(left - 1); });
                 } else {
                     ESP_LOGW(TAG, "play give up title=%s", title.c_str());
                     s_playing = false;
                     s_now_url[0] = '\0';
+                    s_started_url[0] = '\0';
                     nodelio_panel_ui_media_now_playing("", false);
                 }
                 return;
             }
-            /* 若排队期间又被要求播别的曲，丢弃过期启动 */
-            if (!same_url(s_now_url, url.c_str())) {
-                ESP_LOGW(TAG, "stale play drop id=%lu", (unsigned long)id);
+            if (!app.PlayHttpAudio(url, device_key)) {
+                ESP_LOGW(TAG, "PlayHttpAudio false left=%d state=%s busy=%d title=%s", left,
+                         DeviceStateMachine::GetStateName(app.GetDeviceState()), (int)app.IsHttpAudioBusy(),
+                         title.c_str());
+                if (left > 0) {
+                    app.Schedule([try_start, left]() { (*try_start)(left - 1); });
+                } else {
+                    ESP_LOGW(TAG, "play give up title=%s", title.c_str());
+                    s_playing = false;
+                    s_now_url[0] = '\0';
+                    s_started_url[0] = '\0';
+                    nodelio_panel_ui_media_now_playing("", false);
+                }
                 return;
             }
-            app.PlayHttpAudio(url, device_key);
-            ESP_LOGI(TAG, "play id=%lu title=%s", (unsigned long)id, title.c_str());
+            snprintf(s_started_url, sizeof(s_started_url), "%s", url.c_str());
+            ESP_LOGI(TAG, "play id=%lu title=%s tail=%s", (unsigned long)id, title.c_str(), url_tail(url.c_str()));
         };
-        Application::GetInstance().Schedule([try_start]() { (*try_start)(8); });
+        Application::GetInstance().Schedule([try_start]() { (*try_start)(20); });
     }
 }
 
@@ -264,7 +419,8 @@ esp_err_t nodelio_media_play_track(const nodelio_nvs_config_t *cfg, const nl_env
     }
 
     if (should_skip_restart(msg.url)) {
-        ESP_LOGI(TAG, "skip restart same url title=%s", msg.title);
+        ESP_LOGI(TAG, "skip restart streaming title=%s tail=%s", msg.title, url_tail(msg.url));
+        disarm_pause_close();
         snprintf(s_now_title, sizeof(s_now_title), "%s", msg.title);
         s_playing = true;
         s_paused = false;
@@ -272,10 +428,15 @@ esp_err_t nodelio_media_play_track(const nodelio_nvs_config_t *cfg, const nl_env
         return ESP_OK;
     }
 
-    /* 换曲才停；同曲不发 STOP，避免掐断下载。暂停态不抑制清空。 */
+    /* 只入队 PLAY。worker 里先等上一首 HTTP 退出再开流，避免 STOP 与 PLAY 抢主循环把新曲掐掉。 */
+    disarm_pause_close();
     s_paused = false;
-    media_msg_t stop{.op = MEDIA_OP_STOP};
-    xQueueSend(s_q, &stop, 0);
+    s_retry_count = 0;
+    snprintf(s_now_title, sizeof(s_now_title), "%s", msg.title);
+    snprintf(s_now_url, sizeof(s_now_url), "%s", msg.url);
+    snprintf(s_now_key, sizeof(s_now_key), "%s", msg.device_key);
+    ESP_LOGI(TAG, "enqueue title=%s playing=%d tail=%s", msg.title, (int)s_playing, url_tail(msg.url));
+
     if (xQueueSend(s_q, &msg, pdMS_TO_TICKS(100)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
@@ -287,6 +448,7 @@ void nodelio_media_stop(void)
     if (!s_q) {
         return;
     }
+    disarm_pause_close();
     s_paused = false;
     media_msg_t msg{.op = MEDIA_OP_STOP};
     xQueueSend(s_q, &msg, 0);
@@ -299,6 +461,7 @@ void nodelio_media_pause(void)
     }
     s_paused = true;
     s_playing = false;
+    arm_pause_close();
     /* 先刷新 UI（保留条），再掐流。ended 回调见到 paused 不会清标题 */
     nodelio_panel_ui_media_now_playing(s_now_title, false);
     Application::GetInstance().Schedule([]() { Application::GetInstance().StopHttpAudio(); });
@@ -318,6 +481,7 @@ void nodelio_media_resume(void)
     snprintf(msg.url, sizeof(msg.url), "%s", s_now_url);
     snprintf(msg.title, sizeof(msg.title), "%s", s_now_title[0] ? s_now_title : "播放中");
     snprintf(msg.device_key, sizeof(msg.device_key), "%s", s_now_key);
+    disarm_pause_close();
     s_paused = false;
     if (xQueueSend(s_q, &msg, pdMS_TO_TICKS(100)) != pdTRUE) {
         s_paused = true;
@@ -333,19 +497,46 @@ void nodelio_media_now_title(char *buf, size_t len)
     snprintf(buf, len, "%s", s_now_title);
 }
 
+bool nodelio_media_has_session(void)
+{
+    return s_playing;
+}
+
 void nodelio_media_on_playback_ended(bool success)
 {
-    (void)success;
-    /* 暂停掐流也会走到这里：保留标题与 URL，播放器不关 */
-    if (s_paused) {
+    /* 暂停或换曲掐流：保留当前曲目，不自动跳下一首 */
+    if (s_paused || s_suppress_ended) {
         return;
     }
-    /* 若已换曲进入新一轮 notifying，勿清新曲状态 */
-    if (Application::GetInstance().GetDeviceState() == kDeviceStateNotifying) {
+    /* 若已换曲进入新一轮 notifying 且播放成功：勿清新曲状态 */
+    if (success && Application::GetInstance().GetDeviceState() == kDeviceStateNotifying) {
         return;
     }
+    /* 播放失败且未超过重试次数：发送重试消息到队列（由 worker 处理延迟） */
+    if (!success && s_playing && s_now_url[0] != '\0' && s_retry_count == 0 && s_q) {
+        ESP_LOGW(TAG, "playback failed, will retry: %s", s_now_title);
+        s_retry_count++;
+        media_msg_t msg{};
+        msg.op = MEDIA_OP_PLAY;
+        snprintf(msg.url, sizeof(msg.url), "%s", s_now_url);
+        snprintf(msg.title, sizeof(msg.title), "%s", s_now_title);
+        snprintf(msg.device_key, sizeof(msg.device_key), "%s", s_now_key);
+        xQueueSend(s_q, &msg, 0);
+        return;
+    }
+    /* 自然播完：切到列表下一首。须先清 playing，否则同 URL 会被 should_skip_restart 吃掉。 */
+    if (success) {
+        s_playing = false;
+        s_retry_count = 0;
+        if (nodelio_skill_media_next()) {
+            return;
+        }
+    }
+    /* 没有下一首，或失败重试耗尽：关闭播放器 */
     s_playing = false;
+    s_retry_count = 0;
     s_now_url[0] = '\0';
+    s_started_url[0] = '\0';
     s_now_title[0] = '\0';
     s_now_key[0] = '\0';
     nodelio_panel_ui_media_now_playing("", false);

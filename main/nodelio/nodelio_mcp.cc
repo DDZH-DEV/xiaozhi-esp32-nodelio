@@ -868,7 +868,8 @@ void nodelio_mcp_register_tools(void)
         "Parameters: "
         "- skill_id: e.g. music.search "
         "- params: JSON string. Search: {\"keyword\":\"周杰伦\"}. Browse or reshuffle: {\"keyword\":\"\"} "
-        "上一首/下一首/暂停/继续播放 use self.skill.transport, not a new search.",
+        "上一首/下一首/暂停/继续播放 use self.skill.transport, not a new search. "
+        "新闻上一篇/下一篇 use self.skill.news, not a new invoke.",
         PropertyList({
             Property("skill_id", kPropertyTypeString, ""),
             Property("params", kPropertyTypeString, ""),
@@ -927,6 +928,43 @@ void nodelio_mcp_register_tools(void)
                 return std::string("继续播放");
             }
             return std::unexpected(std::string("op 须为 prev/next/pause/resume"));
+        });
+
+    mcp.AddTool(
+        "self.skill.news",
+        "Read or flip the 最新新闻 card already open on THIS wall panel. "
+        "Returns the article title and body text so you can read it aloud to the user. "
+        "Use when the user says 上一篇, 下一篇, 读一下, 读内容, 念正文, or asks what an article says. "
+        "If the news card is not open, call self.skill.invoke with skill_id news.latest first, then this tool. "
+        "Do NOT invoke news.latest again just to flip or read articles. "
+        "op: prev | next | read",
+        PropertyList({
+            Property("op", kPropertyTypeString, ""),
+        }),
+        [](const PropertyList &properties) -> ToolResult {
+            std::string op = properties["op"].value<std::string>();
+            int delta = 0;
+            const char *edge = "没有下一篇";
+            if (op == "prev") {
+                delta = -1;
+                edge = "没有上一篇";
+            } else if (op == "next") {
+                delta = 1;
+            } else if (op == "read") {
+                delta = 0;
+                edge = "没有可朗读的新闻";
+            } else {
+                return std::unexpected(std::string("op 须为 prev/next/read"));
+            }
+            char spoken[2048];
+            spoken[0] = '\0';
+            if (!nodelio_skill_news_step(delta, spoken, sizeof(spoken))) {
+                return std::unexpected(std::string(edge));
+            }
+            if (!spoken[0]) {
+                return std::unexpected(std::string("正文加载失败"));
+            }
+            return std::string(spoken);
         });
 
     mcp.AddTool(
