@@ -933,38 +933,55 @@ void nodelio_mcp_register_tools(void)
     mcp.AddTool(
         "self.skill.news",
         "Read or flip the 最新新闻 card already open on THIS wall panel. "
-        "Returns the article title and body text so you can read it aloud to the user. "
-        "Use when the user says 上一篇, 下一篇, 读一下, 读内容, 念正文, or asks what an article says. "
-        "If the news card is not open, call self.skill.invoke with skill_id news.latest first, then this tool. "
-        "Do NOT invoke news.latest again just to flip or read articles. "
-        "op: prev | next | read",
+        "op=read / op=continue return one chunk of the SAME article. "
+        "If the result contains 【续】, speak it, then immediately call op=continue. "
+        "Do not ask 要不要接着听. Do not switch articles. Do not mark read. "
+        "User says 没读完, 继续, 接着念, 念下去: op=continue only. "
+        "op=next / skip / mark_read ONLY when the user explicitly says 下一篇, 换一篇, 略过, or 标已读. "
+        "Those mark the current article read, then open another. "
+        "Do not say the panel cannot mark news as read. "
+        "If the news card is not open, call self.skill.invoke with skill_id news.latest first. "
+        "Do NOT invoke news.latest again just to flip or read. "
+        "op: prev | next | read | continue | mark_read | skip",
         PropertyList({
             Property("op", kPropertyTypeString, ""),
         }),
         [](const PropertyList &properties) -> ToolResult {
             std::string op = properties["op"].value<std::string>();
-            int delta = 0;
-            const char *edge = "没有下一篇";
-            if (op == "prev") {
-                delta = -1;
-                edge = "没有上一篇";
-            } else if (op == "next") {
-                delta = 1;
-            } else if (op == "read") {
-                delta = 0;
-                edge = "没有可朗读的新闻";
-            } else {
-                return std::unexpected(std::string("op 须为 prev/next/read"));
+            if (op != "prev" && op != "next" && op != "read" && op != "continue" && op != "mark_read" &&
+                op != "mark" && op != "skip") {
+                return std::unexpected(std::string("op 须为 prev/next/read/continue/mark_read/skip"));
             }
-            char spoken[2048];
+            // 分段回包：约 900 字/段，避免整篇顶爆 MQTT。
+            constexpr size_t kNewsSpokenCap = 4096;
+            char *spoken = static_cast<char *>(
+                heap_caps_malloc(kNewsSpokenCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+            if (!spoken) {
+                spoken = static_cast<char *>(malloc(kNewsSpokenCap));
+            }
+            if (!spoken) {
+                return std::unexpected(std::string("内存不足"));
+            }
             spoken[0] = '\0';
-            if (!nodelio_skill_news_step(delta, spoken, sizeof(spoken))) {
-                return std::unexpected(std::string(edge));
+            const bool ok = nodelio_skill_news_action(op.c_str(), spoken, kNewsSpokenCap);
+            std::string out = spoken;
+            heap_caps_free(spoken);
+            if (!ok) {
+                if (op == "prev") {
+                    return std::unexpected(std::string("没有上一篇"));
+                }
+                if (op == "continue") {
+                    return std::unexpected(std::string("没有更多正文"));
+                }
+                if (op == "mark_read" || op == "mark") {
+                    return std::unexpected(std::string("没有可标记的新闻"));
+                }
+                return std::unexpected(std::string("没有下一篇"));
             }
-            if (!spoken[0]) {
+            if (out.empty()) {
                 return std::unexpected(std::string("正文加载失败"));
             }
-            return std::string(spoken);
+            return out;
         });
 
     mcp.AddTool(

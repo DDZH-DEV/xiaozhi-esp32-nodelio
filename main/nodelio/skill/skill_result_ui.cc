@@ -42,7 +42,9 @@ LV_FONT_DECLARE(font_material_symbols_20_4);
 #define SKILL_ANIM_MS 240
 #define SKILL_ANIM_SLIDE 22
 #define SKILL_LIST_VISIBLE_MAX 5
-#define NEWS_ARTICLE_CAP (6 * 1024)
+#define NEWS_ARTICLE_CAP (20 * 1024)
+/* MQTT MCP 回包总长易被对端掐断；约 900 汉字一段，多数文章 1～2 段。 */
+#define NEWS_MCP_CHUNK 2800
 /* 云端回源拉正文最多约 8s，默认 HTTP 读超时 2.5s 会在状态行到达前断开 */
 #define NEWS_HTTP_IO_MS 12000
 #define NEWS_TASK_STACK 10240
@@ -80,6 +82,7 @@ struct news_job_t {
     int slot;
     uint32_t gen;
     char url[320];
+    int nav; /* 0 拉正文；>0 下一篇并标已读；<0 上一篇并标已读 */
 };
 static QueueHandle_t s_news_q = nullptr;
 static lv_obj_t *s_news_body_lbl = nullptr;
