@@ -9,6 +9,7 @@
 #include "mqtt_panel.h"
 #include "nl_url_util.h"
 #include "nodelio_http.h"
+#include "nodelio_overlay.h"
 #include "nvs_config.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
@@ -1524,6 +1525,145 @@ static void add_tile_labels(lv_obj_t *tile, nl_widget_t *w, tile_kind_t kind, co
     }
 }
 
+/** B0：可渲染控家磁贴（不含 spacer / header / unknown） */
+static bool widget_is_control_tile(const nl_widget_t *w)
+{
+    if (!w) {
+        return false;
+    }
+    switch (w->type) {
+    case NL_WIDGET_SCENE_CHIP:
+    case NL_WIDGET_SCENE_GRID:
+    case NL_WIDGET_SWITCH_TILE:
+    case NL_WIDGET_PIN_TOGGLE:
+    case NL_WIDGET_SLIDER_TILE:
+    case NL_WIDGET_STATUS_BADGE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static int count_home_control_tiles(const nl_page_t *home)
+{
+    if (!home) {
+        return 0;
+    }
+    int n = 0;
+    for (int si = 0; si < home->section_count; si++) {
+        const nl_section_t *sec = &home->sections[si];
+        for (int wi = 0; wi < sec->widget_count; wi++) {
+            if (widget_is_control_tile(&sec->widgets[wi])) {
+                n++;
+            }
+        }
+    }
+    return n;
+}
+
+static lv_obj_t *make_launcher_card(lv_obj_t *parent, const char *icon, const char *title,
+                                    const char *subtitle, lv_event_cb_t on_click)
+{
+    lv_obj_t *card = lv_obj_create(parent);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_width(card, lv_pct(100));
+    lv_obj_set_height(card, 88);
+    lv_obj_set_style_bg_color(card, UI_SURFACE, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_color(card, UI_TILE_OFF_BORDER, 0);
+    lv_obj_set_style_border_opa(card, LV_OPA_80, 0);
+    lv_obj_set_style_pad_hor(card, 14, 0);
+    lv_obj_set_style_pad_column(card, 12, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(card, UI_EXT_CLICK);
+    lv_obj_set_style_bg_color(card, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_translate_y(card, 1, LV_STATE_PRESSED);
+    if (on_click) {
+        lv_obj_add_event_cb(card, on_click, LV_EVENT_CLICKED, nullptr);
+    }
+
+    lv_obj_t *pod = lv_obj_create(card);
+    lv_obj_remove_style_all(pod);
+    lv_obj_set_size(pod, 48, 48);
+    lv_obj_set_style_radius(pod, UI_RADIUS_SM, 0);
+    lv_obj_set_style_bg_color(pod, lv_color_hex(UI_C_CAPSULE_ON), 0);
+    lv_obj_set_style_bg_opa(pod, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(pod, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_t *ic = lv_label_create(pod);
+    lv_label_set_text(ic, icon);
+    lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
+    lv_obj_set_style_text_color(ic, UI_ON_TILE, 0);
+    lv_obj_center(ic);
+
+    lv_obj_t *col = lv_obj_create(card);
+    lv_obj_remove_style_all(col);
+    lv_obj_set_flex_grow(col, 1);
+    lv_obj_set_height(col, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(col, 4, 0);
+    lv_obj_clear_flag(col, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    lv_obj_t *tit = lv_label_create(col);
+    nl_ov_set_font(tit);
+    lv_label_set_text(tit, title);
+    lv_obj_set_style_text_color(tit, UI_TEXT, 0);
+    lv_label_set_long_mode(tit, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(tit, lv_pct(100));
+
+    lv_obj_t *sub = lv_label_create(col);
+    nl_ov_set_font(sub);
+    lv_label_set_text(sub, subtitle);
+    lv_obj_set_style_text_color(sub, UI_TEXT_MUTED, 0);
+    lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(sub, lv_pct(100));
+    return card;
+}
+
+/** 空控家启动台：已装应用入口 + 进入对话（不拉市场） */
+static void fill_home_launcher(void)
+{
+    lv_obj_set_layout(s_home, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(s_home, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_home, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_hor(s_home, 20, 0);
+    lv_obj_set_style_pad_ver(s_home, 16, 0);
+    lv_obj_set_style_pad_row(s_home, 12, 0);
+    lv_obj_clear_flag(s_home, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *hdr = lv_obj_create(s_home);
+    lv_obj_remove_style_all(hdr);
+    lv_obj_set_width(hdr, lv_pct(100));
+    lv_obj_set_height(hdr, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(hdr, 6, 0);
+    lv_obj_clear_flag(hdr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    lv_obj_t *title = lv_label_create(hdr);
+    nl_ov_set_font(title);
+    lv_label_set_text(title, "启动台");
+    lv_obj_set_style_text_color(title, UI_TEXT, 0);
+
+    lv_obj_t *hint = lv_label_create(hdr);
+    nl_ov_set_font(hint);
+    lv_label_set_text(hint, "未配置控家 · 可先用应用与对话");
+    lv_obj_set_style_text_color(hint, UI_TEXT_MUTED, 0);
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+
+    make_launcher_card(
+        s_home, MATERIAL_SYMBOLS_EXPLORE, "已安装应用", "打开技能列表 · 手机可安装更多",
+        [](lv_event_t *) { nl_ov_show_page(NL_TAB_APPS); });
+
+    make_launcher_card(s_home, MATERIAL_SYMBOLS_MIC, "进入对话", "唤醒助手 · 语音控家或提问",
+                       [](lv_event_t *) { nodelio_overlay_show_chat(); });
+}
+
 void nl_ov_fill_home(void)
 {
     if (!s_home) {
@@ -1636,26 +1776,18 @@ void nl_ov_fill_home(void)
         }
     }
     if (home_idx < 0) {
-        lv_obj_t *hint = lv_label_create(s_home);
-        lv_label_set_text(hint, "无首页\n请在 APP 编辑布局");
-        nl_ov_set_font(hint);
-        lv_obj_set_style_text_color(hint, UI_TEXT_SUB, 0);
-        lv_obj_center(hint);
+        fill_home_launcher();
+        return;
+    }
+
+    if (!nodelio_controls_enabled()) {
+        fill_home_launcher();
         return;
     }
 
     const nl_page_t *home = &s_layout->pages[home_idx];
-    int widget_total = 0;
-    for (int si = 0; si < home->section_count; si++) {
-        widget_total += home->sections[si].widget_count;
-    }
-    if (widget_total == 0) {
-        lv_obj_t *hint = lv_label_create(s_home);
-        lv_label_set_text(hint, "首页为空\nAPP 添加开关后自动刷新");
-        nl_ov_set_font(hint);
-        lv_obj_set_style_text_color(hint, UI_TEXT_SUB, 0);
-        lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_center(hint);
+    if (count_home_control_tiles(home) == 0) {
+        fill_home_launcher();
         return;
     }
 

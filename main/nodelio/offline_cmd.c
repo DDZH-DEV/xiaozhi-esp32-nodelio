@@ -145,6 +145,11 @@ bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel_or_pin, 
 void nodelio_offline_cmd_rebuild_from_layout(const nodelio_panel_layout_t *layout)
 {
     nodelio_offline_cmd_reset_dynamic();
+    if (!nodelio_controls_enabled()) {
+        nodelio_offline_cmd_commit_dynamic();
+        ESP_LOGI(TAG, "voice cmds skipped: controls module off");
+        return;
+    }
     if (!layout) {
         nodelio_offline_cmd_commit_dynamic();
         return;
@@ -215,12 +220,30 @@ static void install_commands(void)
         {NL_OC_MEDIA_PAUSE, "zan ting"},
         {NL_OC_MEDIA_RESUME, "ji xu bo fang"},
     };
+    static const struct {
+        int id;
+        const char *py;
+    } k_ctrl_off[] = {
+        {NL_OC_CTRL_OFF, "kai deng"},
+        {NL_OC_CTRL_OFF, "guan deng"},
+        {NL_OC_CTRL_OFF, "hui jia"},
+        {NL_OC_CTRL_OFF, "chu men"},
+    };
+    const bool ctrl_off = !nodelio_controls_enabled();
     for (int i = 0; i < (int)(sizeof(k_local) / sizeof(k_local[0])); i++) {
         esp_err_t ret = esp_mn_commands_add(k_local[i].id, k_local[i].py);
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "local voice cmd: id=%d pinyin='%s'", k_local[i].id, k_local[i].py);
         } else {
             ESP_LOGW(TAG, "Fail to add local voice cmd: '%s'", k_local[i].py);
+        }
+    }
+    if (ctrl_off) {
+        for (int i = 0; i < (int)(sizeof(k_ctrl_off) / sizeof(k_ctrl_off[0])); i++) {
+            esp_err_t ret = esp_mn_commands_add(k_ctrl_off[i].id, k_ctrl_off[i].py);
+            if (ret != ESP_OK) {
+                ESP_LOGW(TAG, "Fail to add ctrl-off voice cmd: '%s'", k_ctrl_off[i].py);
+            }
         }
     }
     /* 布局下发的动态拼音（控家仍走 panel/command，需联网） */

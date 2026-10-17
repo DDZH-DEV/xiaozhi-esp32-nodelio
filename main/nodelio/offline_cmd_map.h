@@ -25,6 +25,8 @@ enum {
     NL_OC_MEDIA_NEXT = 10,
     NL_OC_MEDIA_PAUSE = 11,
     NL_OC_MEDIA_RESUME = 12,
+    /* 控家模块关闭时的降级口令：只提示，不发 panel/command */
+    NL_OC_CTRL_OFF = 13,
 };
 
 /** 重启/退下等纯本机口令（不依赖 WiFi / layout）。 */

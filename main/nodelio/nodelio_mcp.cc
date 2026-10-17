@@ -316,8 +316,14 @@ static bool title_worth_listing(const char *title, const char *device_id)
  * 语音用精简列表：MQTT MCP 约 8KB 上限。
  * 只含首页排布控件（按 title 去重）+ 少量已命名未排布；不含 actions/device_id/id。
  */
+static const char *kControlsOff =
+    "控家模块已关闭。请告诉用户到墙板「设置 → 控家」打开「允许控家模块」，不要假装已经开灯或执行成功。";
+
 static std::string list_controls_json()
 {
+    if (!nodelio_controls_enabled()) {
+        return std::string(kControlsOff);
+    }
     const nodelio_panel_layout_t *layout = nodelio_panel_ui_get_layout();
     cJSON *arr = cJSON_CreateArray();
     if (!arr) {
@@ -737,6 +743,9 @@ void nodelio_mcp_register_tools(void)
                 return std::unexpected(
                     std::string("未绑定 NodeLio：请在屏幕右下角「家」→ 设置填服务器与绑定码"));
             }
+            if (!nodelio_controls_enabled()) {
+                return std::unexpected(std::string(kControlsOff));
+            }
             const nodelio_panel_layout_t *layout = nodelio_panel_ui_get_layout();
 
             std::string title = properties["target_title"].value<std::string>();
@@ -844,6 +853,9 @@ void nodelio_mcp_register_tools(void)
             nodelio_nvs_config_t cfg{};
             if (!load_cfg(&cfg)) {
                 return std::unexpected(std::string("未绑定 NodeLio 服务"));
+            }
+            if (!nodelio_controls_enabled()) {
+                return std::unexpected(std::string(kControlsOff));
             }
             std::string op = properties["op"].value<std::string>();
             std::string title = properties["target_title"].value<std::string>();

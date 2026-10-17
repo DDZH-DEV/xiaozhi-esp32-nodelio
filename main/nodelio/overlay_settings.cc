@@ -8,6 +8,7 @@
 #include "layout_cache.h"
 #include "mqtt_panel.h"
 #include "nvs_config.h"
+#include "offline_cmd.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
 #include "ssid_manager.h"
@@ -462,6 +463,8 @@ static void open_settings_detail(set_page_id_t page)
         title = "省电";
     } else if (page == SET_PAGE_MEDIA) {
         title = "播放器";
+    } else if (page == SET_PAGE_CTRL) {
+        title = "控家";
     }
     (void)ui_make_nav_bar(s_settings_detail, UI_NAV_H, title,
                           [](lv_event_t *) { nl_ov_close_settings_detail(); });
@@ -676,6 +679,55 @@ static void open_settings_detail(set_page_id_t page)
         lv_label_set_text(bye_hint, "小智说完再见后，多久关屏（触摸会再延一段）");
         nl_ov_set_font(bye_hint);
         lv_obj_set_style_text_color(bye_hint, UI_TEXT_TIP, 0);
+    } else if (page == SET_PAGE_CTRL) {
+        lv_obj_set_style_pad_row(body, 12, 0);
+        lv_obj_t *card = settings_card(body, "控家模块");
+        lv_obj_set_style_pad_all(card, 16, 0);
+        lv_obj_set_style_pad_row(card, 12, 0);
+
+        lv_obj_t *row = lv_obj_create(card);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_width(row, lv_pct(100));
+        lv_obj_set_height(row, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *lab = lv_label_create(row);
+        lv_label_set_text(lab, "允许控家模块");
+        nl_ov_set_font(lab);
+        lv_obj_set_style_text_color(lab, UI_TEXT, 0);
+
+        lv_obj_t *sw = lv_switch_create(row);
+        lv_obj_set_size(sw, 52, 30);
+        lv_obj_set_style_bg_color(sw, lv_color_hex(UI_C_SLIDER_TRACK), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(sw, UI_ACCENT,
+                                  (lv_style_selector_t)((uint32_t)LV_PART_INDICATOR |
+                                                       (uint32_t)LV_STATE_CHECKED));
+        if (nodelio_controls_enabled()) {
+            lv_obj_add_state(sw, LV_STATE_CHECKED);
+        }
+        lv_obj_add_event_cb(
+            sw,
+            [](lv_event_t *e) {
+                bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+                s_cfg.controls_en = on ? 1 : 0;
+                nodelio_nvs_cache_put(&s_cfg);
+                nodelio_nvs_config_t snap = s_cfg;
+                Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
+                nl_ov_fill_home();
+                nodelio_offline_cmd_rebuild_from_layout(s_layout);
+                nl_ov_toast(on ? "已开启控家" : "已关闭控家，首页改为启动台");
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+
+        lv_obj_t *hint = lv_label_create(card);
+        lv_label_set_text(hint, "关闭后首页不显示灯与继电器，开灯口令会提示未启用");
+        nl_ov_set_font(hint);
+        lv_obj_set_style_text_color(hint, UI_TEXT_TIP, 0);
+        lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(hint, lv_pct(100));
     } else if (page == SET_PAGE_MEDIA) {
         lv_obj_set_style_pad_row(body, 12, 0);
 
@@ -923,6 +975,8 @@ void nl_ov_fill_settings(void)
 
     settings_tile(s_settings, "显", "显示与声音", bri_sub, UI_C_ACCENT, nullptr,
                   [](lv_event_t *) { open_settings_detail(SET_PAGE_DISP); });
+    settings_tile(s_settings, "家", "控家", nodelio_controls_enabled() ? "已开启" : "已关闭 · 启动台",
+                  UI_C_ACCENT, nullptr, [](lv_event_t *) { open_settings_detail(SET_PAGE_CTRL); });
     {
         char pwr_sub[48];
         if (nodelio_power_save_enabled()) {

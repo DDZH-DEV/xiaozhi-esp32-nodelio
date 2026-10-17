@@ -186,7 +186,8 @@ bool nodelio_offline_cmd_is_local(int command_id)
 {
     return command_id == NL_OC_REBOOT || command_id == NL_OC_GOODBYE ||
            command_id == NL_OC_MEDIA_PREV || command_id == NL_OC_MEDIA_NEXT ||
-           command_id == NL_OC_MEDIA_PAUSE || command_id == NL_OC_MEDIA_RESUME;
+           command_id == NL_OC_MEDIA_PAUSE || command_id == NL_OC_MEDIA_RESUME ||
+           command_id == NL_OC_CTRL_OFF;
 }
 
 const char *nodelio_offline_cmd_zh(int command_id)
@@ -216,6 +217,8 @@ const char *nodelio_offline_cmd_zh(int command_id)
         return "暂停";
     case NL_OC_MEDIA_RESUME:
         return "继续播放";
+    case NL_OC_CTRL_OFF:
+        return "控家未启用";
     default:
         return "未知口令";
     }
@@ -233,6 +236,10 @@ esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int comm
     if (command_id == NL_OC_GOODBYE) {
         nodelio_panel_ui_set_voice_hint("已退下");
         nodelio_panel_ui_local_goodbye();
+        return ESP_OK;
+    }
+    if (command_id == NL_OC_CTRL_OFF) {
+        nodelio_panel_ui_set_voice_hint("控家未启用");
         return ESP_OK;
     }
     if (command_id == NL_OC_MEDIA_PREV) {
@@ -276,6 +283,11 @@ esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int comm
         nodelio_media_resume();
         nodelio_panel_ui_set_voice_hint("继续播放");
         return ESP_OK;
+    }
+
+    if (!nodelio_controls_enabled()) {
+        nodelio_panel_ui_set_voice_hint("控家未启用");
+        return ESP_ERR_INVALID_STATE;
     }
 
     if (!cfg) {
