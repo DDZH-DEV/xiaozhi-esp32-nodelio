@@ -97,7 +97,7 @@ Keep detailed or fast-changing information in those files, not here. Add a neste
 > 本仓库（`D:\xz25`）同时承载 NodeLio 墙板固件（`main/nodelio/`、`main/boards/sila/sila-86/`）。
 
 - **固件根**：本仓库（`main/nodelio/`、`main/boards/sila/sila-86/`）
-- **计划/协议**：`D:\SITES\NodeLio\ESP32-IDF\PLAN.md`、`D:\SITES\NodeLio\ESP32-IDF\docs\hw-constraints.md`
+- **计划/协议**：`D:\SITES\NodeLio\ESP32-IDF\PLAN-PLATFORM.md`、`D:\SITES\NodeLio\ESP32-IDF\docs\hw-constraints.md`
 - **动态技能规划**：`D:\SITES\NodeLio\ESP32-IDF\docs\panel-skills.md`（PLAN 阶段 L）
 - UI 令牌：`main/nodelio/ui_theme.h`；控件：`ui_widgets.*`；壳：`nodelio_overlay.cc`；**禁止**散落裸 hex
 - **禁止** `idf.py flash`（代烧录）；本机 OOM 时用 `idf.py build -- -j2`

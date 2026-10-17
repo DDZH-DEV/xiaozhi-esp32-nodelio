@@ -6,7 +6,7 @@ alwaysApply: false
 
 # xz25 × NodeLio
 
-- **固件根就是本仓库**（`D:\xz25`）。计划/协议：`D:\SITES\NodeLio\ESP32-IDF\PLAN.md` 与 `docs/`。
+- **固件根就是本仓库**（`D:\xz25`）。计划/协议：`D:\SITES\NodeLio\ESP32-IDF\PLAN-PLATFORM.md` 与 `docs/`。
 - 硬件与省电：`NodeLio/ESP32-IDF/docs/hw-constraints.md`。
 - 动态技能（少改固件加第三方能力）：`docs/panel-skills.md` / PLAN 阶段 L。
 - UI：`main/nodelio/ui_theme.h` + `ui_widgets.*`；禁止散落裸 hex。
