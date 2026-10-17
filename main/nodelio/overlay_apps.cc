@@ -282,6 +282,8 @@ static void apply_snap(nl_app_snap *snap)
         memcpy(s_items, snap->items, sizeof(nl_app_item) * (size_t)s_item_n);
         set_hint(s_item_n > 0 ? "点按打开" : "暂无已安装应用");
         render_list();
+        /* 钉选可能变化：首页下次 ensure 再拉 */
+        nl_ov_home_skills_invalidate();
         free(snap);
     });
 }

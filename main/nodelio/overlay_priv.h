@@ -157,6 +157,13 @@ void nl_ov_ensure_devs_cache(void);
 /* —— home tiles —— */
 void nl_ov_fill_home(void);
 void nl_ov_refresh_home_tiles(void);
+/** PLAN C：已钉 home_tile 缓存；invalidate 后下次 ensure 再拉（无定时轮询） */
+void nl_ov_home_skills_invalidate(void);
+void nl_ov_home_skills_ensure_fetched(void);
+void nl_ov_home_skills_append_launcher(lv_obj_t *parent);
+void nl_ov_home_skills_append_strip(lv_obj_t *parent);
+int nl_ov_home_skill_pinned_count(void);
+int nl_ov_home_skill_strip_h(void);
 nl_dev_cache_t *nl_ov_find_dev(const char *device_id);
 /** 本地乐观写缓存（不刷 LVGL）；语音会话中 panel/command 成功后用，免等 MQTT snapshot */
 void nl_ov_apply_bind_state(const nl_bind_t *bind, const char *value);

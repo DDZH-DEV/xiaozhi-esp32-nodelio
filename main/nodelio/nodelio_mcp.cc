@@ -551,8 +551,50 @@ static std::string list_skills_json(const nodelio_nvs_config_t *cfg)
         free(resp);
         return "[]";
     }
-    std::string out(resp);
+
+    /* C5：重写为短清单，区分「已钉首页」与「仅技能页」 */
+    cJSON *root = cJSON_Parse(resp);
     free(resp);
+    const cJSON *skills = root ? cJSON_GetObjectItemCaseSensitive(root, "skills") : nullptr;
+    cJSON *out_arr = cJSON_CreateArray();
+    if (cJSON_IsArray(skills) && out_arr) {
+        const cJSON *it = nullptr;
+        cJSON_ArrayForEach(it, skills) {
+            cJSON *row = cJSON_CreateObject();
+            if (!row) {
+                continue;
+            }
+            const cJSON *sid = cJSON_GetObjectItemCaseSensitive(it, "skillId");
+            const cJSON *name = cJSON_GetObjectItemCaseSensitive(it, "name");
+            const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
+            const cJSON *pin = cJSON_GetObjectItemCaseSensitive(it, "pinned");
+            if (cJSON_IsString(sid) && sid->valuestring) {
+                cJSON_AddStringToObject(row, "skillId", sid->valuestring);
+            }
+            if (cJSON_IsString(name) && name->valuestring) {
+                cJSON_AddStringToObject(row, "name", name->valuestring);
+            }
+            const bool enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
+            const bool pinned = cJSON_IsTrue(pin);
+            cJSON_AddBoolToObject(row, "enabled", enabled);
+            cJSON_AddBoolToObject(row, "pinned", pinned);
+            cJSON_AddStringToObject(row, "placement", pinned ? "已钉首页" : "仅技能页");
+            cJSON_AddItemToArray(out_arr, row);
+        }
+    }
+    if (root) {
+        cJSON_Delete(root);
+    }
+    if (!out_arr) {
+        return "[]";
+    }
+    char *printed = cJSON_PrintUnformatted(out_arr);
+    cJSON_Delete(out_arr);
+    if (!printed) {
+        return "[]";
+    }
+    std::string out(printed);
+    cJSON_free(printed);
     return out;
 }
 
@@ -1021,6 +1063,7 @@ void nodelio_mcp_register_tools(void)
     mcp.AddTool(
         "self.skill.list",
         "List NodeLio skills installed for this wall panel. "
+        "Each item has placement: 「已钉首页」(home_tile, also on launcher) or 「仅技能页」(apps tab only). "
         "If the list includes music.search (面板曲库), prefer self.skill.invoke for any "
         "on-panel song/track/list request instead of Xiaozhi cloud music tools. "
         "Empty keyword lists the account library.",

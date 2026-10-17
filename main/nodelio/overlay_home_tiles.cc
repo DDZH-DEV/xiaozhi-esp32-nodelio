@@ -1625,16 +1625,18 @@ static lv_obj_t *make_launcher_card(lv_obj_t *parent, const char *icon, const ch
     return card;
 }
 
-/** 空控家启动台：已装应用入口 + 进入对话（不拉市场） */
+/** 空控家启动台：已钉 home_tile + 全部应用入口 + 进入对话（不拉市场） */
 static void fill_home_launcher(void)
 {
     lv_obj_set_layout(s_home, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(s_home, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(s_home, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(s_home, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_hor(s_home, 20, 0);
-    lv_obj_set_style_pad_ver(s_home, 16, 0);
-    lv_obj_set_style_pad_row(s_home, 12, 0);
-    lv_obj_clear_flag(s_home, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_ver(s_home, 12, 0);
+    lv_obj_set_style_pad_row(s_home, 10, 0);
+    lv_obj_add_flag(s_home, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(s_home, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(s_home, LV_SCROLLBAR_MODE_OFF);
 
     lv_obj_t *hdr = lv_obj_create(s_home);
     lv_obj_remove_style_all(hdr);
@@ -1652,12 +1654,19 @@ static void fill_home_launcher(void)
 
     lv_obj_t *hint = lv_label_create(hdr);
     nl_ov_set_font(hint);
-    lv_label_set_text(hint, "未配置控家 · 可先用应用与对话");
+    if (nl_ov_home_skill_pinned_count() > 0) {
+        lv_label_set_text(hint, "未配置控家 · 下方为已钉应用");
+    } else {
+        lv_label_set_text(hint, "未配置控家 · 可先用应用与对话");
+    }
     lv_obj_set_style_text_color(hint, UI_TEXT_MUTED, 0);
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
 
+    /* C3：已钉技能磁贴（技能通道，非 panel/command） */
+    nl_ov_home_skills_append_launcher(s_home);
+
     make_launcher_card(
-        s_home, MATERIAL_SYMBOLS_EXPLORE, "已安装应用", "打开技能列表 · 手机可安装更多",
+        s_home, MATERIAL_SYMBOLS_EXPLORE, "全部应用", "打开技能列表 · 手机可钉选首页",
         [](lv_event_t *) { nl_ov_show_page(NL_TAB_APPS); });
 
     make_launcher_card(s_home, MATERIAL_SYMBOLS_MIC, "进入对话", "唤醒助手 · 语音控家或提问",
@@ -1669,6 +1678,9 @@ void nl_ov_fill_home(void)
     if (!s_home) {
         return;
     }
+    /* C3：钉选清单仅开机/invalidate 后拉一次，无定时轮询市场 */
+    nl_ov_home_skills_ensure_fetched();
+
     lv_obj_clean(s_home);
     lv_obj_set_layout(s_home, 0);
     lv_obj_set_style_pad_left(s_home, NL_UI_HOME_PAD_H, 0);
@@ -1802,6 +1814,11 @@ void nl_ov_fill_home(void)
     if (area_h < 40) {
         area_h = 380;
     }
+    /* C4：为底部应用条预留高度，控家网格与 home_tile 同屏不互踩 */
+    const int strip_h = nl_ov_home_skill_strip_h();
+    if (strip_h > 0 && area_h > strip_h + 80) {
+        area_h -= strip_h;
+    }
     int cell_w = (area_w - GRID_GAP * (cols - 1)) / cols;
     int cell_h = (area_h - GRID_GAP * (rows - 1)) / rows;
     if (cell_w < 20) {
@@ -1924,6 +1941,11 @@ void nl_ov_fill_home(void)
             add_tile_labels(tile, w, kind, title);
             style_tile_visual(tile, w);
         }
+    }
+
+    /* C4：控家磁贴走 panel/command；应用条走技能 invoke，通道不串 */
+    if (strip_h > 0) {
+        nl_ov_home_skills_append_strip(s_home);
     }
 }
 

@@ -430,6 +430,8 @@ void nl_ov_show_page(int tab)
     if (s_home) {
         if (tab == NL_TAB_HOME) {
             lv_obj_clear_flag(s_home, LV_OBJ_FLAG_HIDDEN);
+            /* 应用页刷新后可能 invalidate 钉选；回首页再拉一次（无定时器） */
+            nl_ov_home_skills_ensure_fetched();
         } else {
             lv_obj_add_flag(s_home, LV_OBJ_FLAG_HIDDEN);
         }

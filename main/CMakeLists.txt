@@ -950,6 +950,7 @@ if(CONFIG_BOARD_TYPE_SILA_86 AND CONFIG_NODELIO_PANEL)
         "nodelio/nl_url_util.c"
         "nodelio/nodelio_overlay.cc"
         "nodelio/overlay_home_tiles.cc"
+        "nodelio/overlay_home_skills.cc"
         "nodelio/overlay_connect.cc"
         "nodelio/overlay_settings.cc"
         "nodelio/overlay_apps.cc"

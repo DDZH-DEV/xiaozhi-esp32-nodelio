@@ -13,6 +13,7 @@ extern "C" {
  * 诚实申报：
  * - N0～N2：NL_CAPS_WITH_MEDIA=0（content-only，disabled media）
  * - N0b 后：NL_CAPS_WITH_MEDIA=1（含 media.play_local / now_playing）
+ * - surfaces 含 home_tile（PLAN C）：钉选槽位 + 首页磁贴渲染（overlay_home_skills）
  * 编译覆盖：-DNL_CAPS_WITH_MEDIA=0|1
  */
 bool nodelio_caps_has(const char *capability);
