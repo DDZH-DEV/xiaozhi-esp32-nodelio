@@ -7,6 +7,7 @@
 #include "nodelio_http.h"
 #include "panel_ui.h"
 #include "skill_runtime.h"
+#include "wifi_provision.h"
 
 #include <cJSON.h>
 #include <esp_heap_caps.h>
@@ -38,9 +39,22 @@ static int s_pin_n;
 static bool s_fetching;
 static bool s_dirty = true;
 
+static int home_skill_strip_visible_n(void)
+{
+    int n = 0;
+    for (int i = 0; i < s_pin_n; i++) {
+        /* P3a：当前屏已挂同 skill_tile 则底条跳过，避免双入口 */
+        if (nl_ov_layout_current_page_has_skill(s_pins[i].id)) {
+            continue;
+        }
+        n++;
+    }
+    return n;
+}
+
 int nl_ov_home_skill_strip_h(void)
 {
-    return s_pin_n > 0 ? HOME_SKILL_STRIP_H : 0;
+    return home_skill_strip_visible_n() > 0 ? HOME_SKILL_STRIP_H : 0;
 }
 
 int nl_ov_home_skill_pinned_count(void)
@@ -93,7 +107,7 @@ static void store_default_invoke(char *dst, size_t n, const cJSON *it)
     cJSON_free(printed);
 }
 
-static void invoke_home_skill_async(const char *skill_id, const char *body)
+void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
 {
     if (!skill_id || !skill_id[0]) {
         return;
@@ -185,6 +199,7 @@ static void invoke_home_skill_async(const char *skill_id, const char *body)
                 StaticTask_t *tb = job->tcb;
                 free(job);
                 Application::GetInstance().Schedule([st, tb]() {
+                    vTaskDelay(pdMS_TO_TICKS(200));
                     free(st);
                     free(tb);
                 });
@@ -212,7 +227,7 @@ static void on_pin_click(lv_event_t *e)
         nl_ov_toast("本机暂不支持");
         return;
     }
-    invoke_home_skill_async(s_pins[idx].id, s_pins[idx].body);
+    nl_ov_invoke_skill_async(s_pins[idx].id, s_pins[idx].body);
 }
 
 static lv_obj_t *make_pin_card(lv_obj_t *parent, int idx, bool compact)
@@ -306,7 +321,7 @@ void nl_ov_home_skills_append_launcher(lv_obj_t *parent)
 
 void nl_ov_home_skills_append_strip(lv_obj_t *parent)
 {
-    if (!parent || s_pin_n <= 0) {
+    if (!parent || home_skill_strip_visible_n() <= 0) {
         return;
     }
     lv_obj_t *strip = lv_obj_create(parent);
@@ -323,6 +338,9 @@ void nl_ov_home_skills_append_strip(lv_obj_t *parent)
     lv_obj_clear_flag(strip, LV_OBJ_FLAG_CLICKABLE);
 
     for (int i = 0; i < s_pin_n; i++) {
+        if (nl_ov_layout_current_page_has_skill(s_pins[i].id)) {
+            continue;
+        }
         make_pin_card(strip, i, true);
     }
 }
@@ -360,6 +378,10 @@ void nl_ov_home_skills_ensure_fetched(void)
         s_pin_n = 0;
         return;
     }
+    /* 断网/息屏休眠：保留 dirty，等有 IP 再拉；禁止进 getaddrinfo（Invalid mbox） */
+    if (nodelio_wifi_is_asleep() || !nodelio_wifi_has_ip()) {
+        return;
+    }
     s_fetching = true;
     auto *cfgp = static_cast<nodelio_nvs_config_t *>(malloc(sizeof(nodelio_nvs_config_t)));
     if (!cfgp) {
@@ -367,15 +389,54 @@ void nl_ov_home_skills_ensure_fetched(void)
         return;
     }
     *cfgp = s_cfg;
-    if (xTaskCreate(
-            [](void *arg) {
-                auto *cfg = static_cast<nodelio_nvs_config_t *>(arg);
+    constexpr uint32_t kStackBytes = 16384;
+    struct pins_job {
+        nodelio_nvs_config_t *cfg;
+        StackType_t *stack;
+        StaticTask_t *tcb;
+    };
+    auto *job = static_cast<pins_job *>(malloc(sizeof(pins_job)));
+    StackType_t *stack = static_cast<StackType_t *>(
+        heap_caps_malloc(kStackBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!stack) {
+        stack = static_cast<StackType_t *>(malloc(kStackBytes));
+    }
+    auto *tcb = static_cast<StaticTask_t *>(
+        heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (!job || !stack || !tcb) {
+        free(job);
+        free(stack);
+        free(tcb);
+        free(cfgp);
+        s_fetching = false;
+        return;
+    }
+    job->cfg = cfgp;
+    job->stack = stack;
+    job->tcb = tcb;
+    if (xTaskCreateStatic(
+            [](void *p) {
+                auto *job = static_cast<pins_job *>(p);
+                auto *cfg = job->cfg;
+                auto finish = [job](bool clear_fetching) {
+                    StackType_t *st = job->stack;
+                    StaticTask_t *tb = job->tcb;
+                    free(job);
+                    Application::GetInstance().Schedule([st, tb, clear_fetching]() {
+                        vTaskDelay(pdMS_TO_TICKS(200));
+                        free(st);
+                        free(tb);
+                        if (clear_fetching) {
+                            s_fetching = false;
+                        }
+                    });
+                    vTaskDelete(nullptr);
+                };
                 auto *items = static_cast<nl_home_skill *>(calloc(HOME_SKILL_MAX, sizeof(nl_home_skill)));
                 int n = 0;
                 if (!items) {
                     free(cfg);
-                    Application::GetInstance().Schedule([]() { s_fetching = false; });
-                    vTaskDelete(nullptr);
+                    finish(true);
                     return;
                 }
                 char base[160];
@@ -389,51 +450,65 @@ void nl_ov_home_skills_ensure_fetched(void)
                 if (!buf) {
                     free(items);
                     free(cfg);
-                    Application::GetInstance().Schedule([]() { s_fetching = false; });
-                    vTaskDelete(nullptr);
+                    finish(true);
                     return;
                 }
                 buf[0] = '\0';
                 int status = 0;
+                if (nodelio_wifi_is_asleep() || !nodelio_wifi_has_ip()) {
+                    free(buf);
+                    free(items);
+                    free(cfg);
+                    finish(true);
+                    return;
+                }
                 esp_err_t err = nodelio_http_get(url, cfg->device_key, nullptr, &status, buf, 4095);
-                if (err == ESP_OK && (status == 200 || status == 201)) {
-                    cJSON *root = cJSON_Parse(buf);
-                    const cJSON *skills = root ? cJSON_GetObjectItemCaseSensitive(root, "skills") : nullptr;
-                    if (cJSON_IsArray(skills)) {
-                        const cJSON *it = nullptr;
-                        cJSON_ArrayForEach(it, skills) {
-                            if (n >= HOME_SKILL_MAX) {
-                                break;
-                            }
-                            const cJSON *pin = cJSON_GetObjectItemCaseSensitive(it, "pinned");
-                            if (!cJSON_IsTrue(pin)) {
-                                continue;
-                            }
-                            nl_home_skill *row = &items[n];
-                            copy_json_field(row->id, sizeof(row->id), it, "skillId");
-                            if (!row->id[0]) {
-                                continue;
-                            }
-                            copy_json_field(row->name, sizeof(row->name), it, "name");
-                            store_default_invoke(row->body, sizeof(row->body), it);
-                            const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
-                            row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
-                            n++;
-                        }
-                    }
-                    if (root) {
-                        cJSON_Delete(root);
-                    }
-                } else {
+                if (err != ESP_OK || (status != 200 && status != 201)) {
                     ESP_LOGW(TAG, "fetch pins status=%d err=%d", status, err);
+                    free(buf);
+                    free(items);
+                    free(cfg);
+                    /* 保留 dirty，唤醒后重试；勿用 n=0 清空已有钉选 */
+                    finish(true);
+                    return;
+                }
+                cJSON *root = cJSON_Parse(buf);
+                const cJSON *skills = root ? cJSON_GetObjectItemCaseSensitive(root, "skills") : nullptr;
+                if (cJSON_IsArray(skills)) {
+                    const cJSON *it = nullptr;
+                    cJSON_ArrayForEach(it, skills) {
+                        if (n >= HOME_SKILL_MAX) {
+                            break;
+                        }
+                        const cJSON *pin = cJSON_GetObjectItemCaseSensitive(it, "pinned");
+                        if (!cJSON_IsTrue(pin)) {
+                            continue;
+                        }
+                        nl_home_skill *row = &items[n];
+                        copy_json_field(row->id, sizeof(row->id), it, "skillId");
+                        if (!row->id[0]) {
+                            continue;
+                        }
+                        copy_json_field(row->name, sizeof(row->name), it, "name");
+                        store_default_invoke(row->body, sizeof(row->body), it);
+                        const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
+                        row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
+                        n++;
+                    }
+                }
+                if (root) {
+                    cJSON_Delete(root);
                 }
                 free(buf);
                 free(cfg);
                 apply_pins_and_refill(items, n);
-                vTaskDelete(nullptr);
+                finish(false);
             },
-            "nl_home_pins", 10240, cfgp, 3, nullptr) != pdPASS) {
-        s_fetching = false;
+            "nl_home_pins", kStackBytes / sizeof(StackType_t), job, 3, stack, tcb) == nullptr) {
+        free(job);
+        free(stack);
+        free(tcb);
         free(cfgp);
+        s_fetching = false;
     }
 }

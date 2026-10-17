@@ -11,7 +11,10 @@ extern "C" {
 #endif
 
 /* 结构体会进 PSRAM；上限按中控面板够用即可 */
-#define NL_LAYOUT_MAX_PAGES 4
+/** 用户首页屏上限（与 APP MAX_USER_HOME_PAGES / layout-schema 一致） */
+#define NL_LAYOUT_MAX_USER_PAGES 6
+/** 用户屏 + assistant/settings 等系统页 */
+#define NL_LAYOUT_MAX_PAGES 8
 #define NL_LAYOUT_MAX_SECTIONS 6
 #define NL_LAYOUT_MAX_WIDGETS 16
 #define NL_LAYOUT_STR 32
@@ -26,7 +29,12 @@ typedef enum {
     NL_WIDGET_STATUS_BADGE,
     NL_WIDGET_SECTION_HEADER,
     NL_WIDGET_SPACER,
+    /** 画布挂已装应用；点按 → Envelope invoke，禁止 panel/command */
+    NL_WIDGET_SKILL_TILE,
 } nl_widget_type_t;
+
+#define NL_WIDGET_SKILL_ID_MAX 64
+#define NL_WIDGET_INVOKE_MAX 128
 
 typedef enum {
     NL_BIND_NONE = 0,
@@ -62,6 +70,9 @@ typedef struct {
     char bg_color[16]; /* 可选 "#RRGGBB"；空则按 type 默认色 */
     char pinyin_on[48];  /* 服务端按 title 生成；本地口令 */
     char pinyin_off[48];
+    /* skill_tile：安装 instance_id（常 market::app）；default_invoke 为 JSON 体，缺省 "{}" */
+    char skill_id[NL_WIDGET_SKILL_ID_MAX];
+    char default_invoke[NL_WIDGET_INVOKE_MAX];
 } nl_widget_t;
 
 typedef struct {

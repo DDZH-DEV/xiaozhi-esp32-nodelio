@@ -169,6 +169,8 @@ static void pwr_task(void *arg)
         /* 异步恢复小智通道：勿 run_on_main_sync，否则主任务卡在首唤 wait/OpenAudio 时会死锁 */
         Application::GetInstance().Schedule([]() {
             Application::GetInstance().ResumeTransport();
+            /* 息屏期间跳过的钉选拉取，有 IP 后再补 */
+            nodelio_panel_ui_skills_changed();
         });
 
         /* 仅缺 broker 时再 register（换 server 已清 mqtt）；已有则直接连 */

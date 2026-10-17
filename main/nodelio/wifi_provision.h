@@ -28,6 +28,13 @@ void nodelio_wifi_wake(void);
 
 bool nodelio_wifi_is_asleep(void);
 
+/**
+ * HTTP / DNS 与 wifi_stop 互斥：持锁期间禁止 sleep 停射频。
+ * timeout_ms=0 立即尝试；拿不到返回 false。
+ */
+bool nodelio_wifi_net_acquire(uint32_t timeout_ms);
+void nodelio_wifi_net_release(void);
+
 /** 等待 L2 关联；timeout_ms=0 立即返回当前态. */
 bool nodelio_wifi_wait_connected(uint32_t timeout_ms);
 /** 等待 DHCP；HTTP 前用. */

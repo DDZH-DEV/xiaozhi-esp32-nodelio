@@ -1,6 +1,7 @@
 #include "nodelio_http.h"
 
 #include "nodelio_bridge.h"
+#include "wifi_provision.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -26,10 +27,58 @@
 #define NOD_HTTP_IO_MS 2500
 #endif
 
+/**
+ * 息屏断网后 esp_wifi_stop，再 getaddrinfo → lwIP assert Invalid mbox。
+ * 所有短 TCP 入口先拦，并与 wifi_sleep 互斥。
+ */
+static bool http_net_ready(void)
+{
+    if (nodelio_wifi_is_asleep()) {
+        ESP_LOGW(TAG, "skip: wifi asleep");
+        return false;
+    }
+    if (!nodelio_wifi_has_ip()) {
+        ESP_LOGW(TAG, "skip: no IP");
+        return false;
+    }
+    return true;
+}
+
+struct HttpNetGuard {
+    bool ok = false;
+    HttpNetGuard()
+    {
+        if (!http_net_ready()) {
+            return;
+        }
+        if (!nodelio_wifi_net_acquire(2000)) {
+            ESP_LOGW(TAG, "skip: net lock busy");
+            return;
+        }
+        if (!http_net_ready()) {
+            nodelio_wifi_net_release();
+            return;
+        }
+        ok = true;
+    }
+    ~HttpNetGuard()
+    {
+        if (ok) {
+            nodelio_wifi_net_release();
+        }
+    }
+    explicit operator bool() const
+    {
+        return ok;
+    }
+    HttpNetGuard(const HttpNetGuard &) = delete;
+    HttpNetGuard &operator=(const HttpNetGuard &) = delete;
+};
+
 /** 对话期小智已 PERFORMANCE；再 esp_wifi_set_ps 易与 coexist 死锁 → IWDT 重启 */
 static void force_wifi_perf(void)
 {
-    if (nodelio_voice_session_active()) {
+    if (nodelio_voice_session_active() || nodelio_wifi_is_asleep()) {
         return;
     }
     wifi_ps_type_t cur = WIFI_PS_MAX_MODEM;
@@ -67,6 +116,10 @@ static bool parse_host_port(const char *url, std::string *host, int *port, std::
 /** 短超时 TCP（勿用小智 EspTcp：其 connect 无超时，SYN 可卡数十秒拖垮音频）。io_ms 为读写超时。 */
 static int tcp_connect_ms(const char *host, int port, int timeout_ms, int io_ms)
 {
+    /* 调用方须已持 HttpNetGuard；此处再验，防 sleep 竞态 */
+    if (!http_net_ready()) {
+        return -1;
+    }
     struct addrinfo hints = {};
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -137,6 +190,10 @@ esp_err_t nodelio_http_probe_tcp(const char *host, int port)
 {
     if (!host || !host[0] || port <= 0) {
         return ESP_ERR_INVALID_ARG;
+    }
+    HttpNetGuard net;
+    if (!net) {
+        return ESP_ERR_INVALID_STATE;
     }
     force_wifi_perf();
     ESP_LOGI(TAG, "TCP probe → %s:%d (%dms)…", host, port, NOD_HTTP_CONNECT_MS);
@@ -234,6 +291,10 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
 {
     if (!url || !url[0]) {
         return ESP_ERR_INVALID_ARG;
+    }
+    HttpNetGuard net;
+    if (!net) {
+        return ESP_ERR_INVALID_STATE;
     }
     force_wifi_perf();
 
@@ -385,6 +446,10 @@ esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const
 {
     if (!url || !url[0] || !data || len == 0) {
         return ESP_ERR_INVALID_ARG;
+    }
+    HttpNetGuard net;
+    if (!net) {
+        return ESP_ERR_INVALID_STATE;
     }
     force_wifi_perf();
 

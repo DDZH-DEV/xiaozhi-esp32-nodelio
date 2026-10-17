@@ -164,6 +164,13 @@ void nl_ov_home_skills_append_launcher(lv_obj_t *parent);
 void nl_ov_home_skills_append_strip(lv_obj_t *parent);
 int nl_ov_home_skill_pinned_count(void);
 int nl_ov_home_skill_strip_h(void);
+/** 当前用户屏 layout 是否已有该 skillId 的 skill_tile（钉选条去重用） */
+bool nl_ov_layout_current_page_has_skill(const char *skill_id);
+/** 当前用户屏序号（0-based；无则 -1）；截图文案用 */
+int nl_ov_home_user_page_index(void);
+int nl_ov_home_user_page_count(void);
+/** 异步 invoke 已装技能（画布 skill_tile / 钉选共用）；LVGL 回调内调用，禁止同步 HTTP */
+void nl_ov_invoke_skill_async(const char *skill_id, const char *body_json);
 nl_dev_cache_t *nl_ov_find_dev(const char *device_id);
 /** 本地乐观写缓存（不刷 LVGL）；语音会话中 panel/command 成功后用，免等 MQTT snapshot */
 void nl_ov_apply_bind_state(const nl_bind_t *bind, const char *value);

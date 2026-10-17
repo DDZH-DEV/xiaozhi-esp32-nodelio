@@ -108,7 +108,37 @@ static nl_widget_type_t parse_widget_type(const char *t)
     if (strcmp(t, "spacer") == 0) {
         return NL_WIDGET_SPACER;
     }
+    if (strcmp(t, "skill_tile") == 0) {
+        return NL_WIDGET_SKILL_TILE;
+    }
     return NL_WIDGET_UNKNOWN;
+}
+
+static void parse_default_invoke(const cJSON *w, char *dst, size_t n)
+{
+    if (!dst || n == 0) {
+        return;
+    }
+    snprintf(dst, n, "{}");
+    if (!w) {
+        return;
+    }
+    const cJSON *di = cJSON_GetObjectItemCaseSensitive(w, "defaultInvoke");
+    if (cJSON_IsString(di) && di->valuestring && di->valuestring[0] == '{') {
+        snprintf(dst, n, "%s", di->valuestring);
+        return;
+    }
+    if (!cJSON_IsObject(di)) {
+        return;
+    }
+    char *printed = cJSON_PrintUnformatted(di);
+    if (!printed) {
+        return;
+    }
+    if (printed[0] == '{') {
+        snprintf(dst, n, "%s", printed);
+    }
+    cJSON_free(printed);
 }
 
 static void parse_bind(const cJSON *bind_obj, nl_bind_t *b)
@@ -291,16 +321,38 @@ static void parse_layout_object(const cJSON *root, int outer_version, nodelio_pa
     if (!cJSON_IsArray(pages)) {
         return;
     }
+    int user_pages = 0;
+    int skipped_user = 0;
     const cJSON *page;
     cJSON_ArrayForEach(page, pages)
     {
-        if (out->page_count >= NL_LAYOUT_MAX_PAGES || !cJSON_IsObject(page)) {
+        if (!cJSON_IsObject(page)) {
+            continue;
+        }
+        char sys_peek[24];
+        copy_str(sys_peek, sizeof(sys_peek), page, "systemPage");
+        const bool is_sys = (sys_peek[0] != '\0');
+        if (!is_sys) {
+            if (user_pages >= NL_LAYOUT_MAX_USER_PAGES) {
+                skipped_user++;
+                continue;
+            }
+        }
+        if (out->page_count >= NL_LAYOUT_MAX_PAGES) {
+            if (!is_sys) {
+                skipped_user++;
+            } else {
+                ESP_LOGW(TAG, "layout pages full; drop system page");
+            }
             continue;
         }
         nl_page_t *p = &out->pages[out->page_count++];
         copy_str(p->id, sizeof(p->id), page, "id");
         copy_str(p->title, sizeof(p->title), page, "title");
         copy_str(p->system_page, sizeof(p->system_page), page, "systemPage");
+        if (!is_sys) {
+            user_pages++;
+        }
 
         const cJSON *sections = cJSON_GetObjectItemCaseSensitive(page, "sections");
         if (!cJSON_IsArray(sections)) {
@@ -333,6 +385,8 @@ static void parse_layout_object(const cJSON *root, int outer_version, nodelio_pa
                 copy_str(wid->skin, sizeof(wid->skin), w, "skin");
                 copy_str(wid->pinyin_on, sizeof(wid->pinyin_on), w, "pinyinOn");
                 copy_str(wid->pinyin_off, sizeof(wid->pinyin_off), w, "pinyinOff");
+                copy_str(wid->skill_id, sizeof(wid->skill_id), w, "skillId");
+                parse_default_invoke(w, wid->default_invoke, sizeof(wid->default_invoke));
                 const cJSON *lbls = cJSON_GetObjectItemCaseSensitive(w, "labels");
                 if (cJSON_IsObject(lbls)) {
                     copy_str(wid->labels_on, sizeof(wid->labels_on), lbls, "on");
@@ -342,6 +396,13 @@ static void parse_layout_object(const cJSON *root, int outer_version, nodelio_pa
                 copy_str(tbuf, sizeof(tbuf), w, "type");
                 wid->type = parse_widget_type(tbuf);
                 parse_bind(cJSON_GetObjectItemCaseSensitive(w, "bind"), &wid->bind);
+                if (wid->type == NL_WIDGET_SKILL_TILE && wid->skill_id[0] == '\0' &&
+                    wid->bind.device_id[0] != '\0') {
+                    /* 兼容误写 bind.deviceId；勿 snprintf 同源重叠（-Werror=restrict） */
+                    char tmp[NL_WIDGET_SKILL_ID_MAX];
+                    snprintf(tmp, sizeof(tmp), "%s", wid->bind.device_id);
+                    snprintf(wid->skill_id, sizeof(wid->skill_id), "%s", tmp);
+                }
                 wid->col = (int8_t)json_int(w, "col", -1);
                 wid->row = (int8_t)json_int(w, "row", -1);
                 int def_w = (wid->type == NL_WIDGET_SLIDER_TILE) ? 2 : 1;
@@ -355,6 +416,9 @@ static void parse_layout_object(const cJSON *root, int outer_version, nodelio_pa
                 }
             }
         }
+    }
+    if (skipped_user > 0) {
+        ESP_LOGW(TAG, "truncated %d user page(s); max=%d", skipped_user, NL_LAYOUT_MAX_USER_PAGES);
     }
     layout_autopack(out);
 }

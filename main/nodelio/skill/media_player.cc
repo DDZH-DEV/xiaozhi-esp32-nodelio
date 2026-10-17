@@ -407,9 +407,14 @@ esp_err_t nodelio_media_play_track(const nodelio_nvs_config_t *cfg, const nl_env
     if (!nodelio_caps_has("media.play_local")) {
         return ESP_ERR_NOT_SUPPORTED;
     }
-    if (track->expires_at > 0) {
+    /* 本机曲库 URL 无 expires；外链才校验。墙钟未同步（时钟显示 --:--）时跳过，避免误报。 */
+    const bool first_party =
+        track->playback_url[0] && strstr(track->playback_url, "/panel/media/") != nullptr;
+    if (!first_party && track->expires_at > 0) {
         const time_t now = time(nullptr);
-        if (now > 0 && (int64_t)now > track->expires_at) {
+        struct tm tm_now {};
+        if (now > 0 && localtime_r(&now, &tm_now) && tm_now.tm_year >= (2025 - 1900) &&
+            (int64_t)now > track->expires_at) {
             nodelio_panel_ui_toast_defer("链接已过期");
             return ESP_ERR_INVALID_STATE;
         }

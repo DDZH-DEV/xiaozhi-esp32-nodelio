@@ -7,6 +7,7 @@
 #include "nodelio_http.h"
 #include "panel_ui.h"
 #include "skill_runtime.h"
+#include "wifi_provision.h"
 
 #include <cJSON.h>
 #include <esp_heap_caps.h>
@@ -202,7 +203,9 @@ static void render_list(void)
                                 StackType_t *st = job->stack;
                                 StaticTask_t *tb = job->tcb;
                                 free(job);
+                                /* 勿立刻 free 栈：Schedule 可能早于 vTaskDelete 收尾 → IllegalInstruction */
                                 Application::GetInstance().Schedule([st, tb]() {
+                                    vTaskDelay(pdMS_TO_TICKS(200));
                                     free(st);
                                     free(tb);
                                 });
@@ -311,87 +314,145 @@ void nl_ov_apps_refresh(void)
         return;
     }
     *cfgp = s_cfg;
-    if (xTaskCreate(
-        [](void *arg) {
-            auto *cfg = static_cast<nodelio_nvs_config_t *>(arg);
-            auto *snap = static_cast<nl_app_snap *>(calloc(1, sizeof(nl_app_snap)));
-            if (!snap) {
-                nodelio_panel_ui_toast_defer("内存不足");
-                free(cfg);
-                Application::GetInstance().Schedule([]() { s_loading = false; });
-                vTaskDelete(nullptr);
-                return;
-            }
-            char base[160];
-            nl_url_strip_base(cfg->server_url, base, sizeof(base));
-            char url[320];
-            snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills", base, cfg->device_id);
-            char *buf = static_cast<char *>(heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-            if (!buf) {
-                buf = static_cast<char *>(malloc(4096));
-            }
-            if (!buf) {
-                snprintf(snap->err, sizeof(snap->err), "内存不足");
-                apply_snap(snap);
-                free(cfg);
-                vTaskDelete(nullptr);
-                return;
-            }
-            buf[0] = '\0';
-            int status = 0;
-            esp_err_t err = ESP_FAIL;
-            /* 息屏唤醒后 WiFi 常有几秒空窗：TCP 能连上但读到 0 字节。多试几次，避免一闪就停在加载失败。 */
-            /* 这次空窗大约 15s（亮屏后 MQTT/心跳一起断，控灯请求先恢复）。间隔拉开，最后一次落在恢复之后。 */
-            static const uint32_t k_retry_ms[] = {0, 1500, 4000, 8000};
-            for (unsigned attempt = 0; attempt < sizeof(k_retry_ms) / sizeof(k_retry_ms[0]); attempt++) {
-                if (k_retry_ms[attempt]) {
-                    vTaskDelay(pdMS_TO_TICKS(k_retry_ms[attempt]));
-                }
-                buf[0] = '\0';
-                status = 0;
-                err = nodelio_http_get(url, cfg->device_key, nullptr, &status, buf, 4095);
-                if (err == ESP_OK && (status == 200 || status == 201)) {
-                    break;
-                }
-                ESP_LOGW(TAG, "list skills attempt %u status=%d err=%d", attempt + 1, status, err);
-            }
-            if (err != ESP_OK || (status != 200 && status != 201)) {
-                snprintf(snap->err, sizeof(snap->err), "加载失败");
-                ESP_LOGW(TAG, "list skills status=%d err=%d", status, err);
-            } else {
-                cJSON *root = cJSON_Parse(buf);
-                const cJSON *skills = root ? cJSON_GetObjectItemCaseSensitive(root, "skills") : nullptr;
-                if (cJSON_IsArray(skills)) {
-                    const cJSON *it = nullptr;
-                    cJSON_ArrayForEach(it, skills) {
-                        if (snap->n >= APP_MAX) {
-                            break;
-                        }
-                        nl_app_item *row = &snap->items[snap->n];
-                        copy_field(row->id, sizeof(row->id), it, "skillId");
-                        if (!row->id[0]) {
-                            continue;
-                        }
-                        copy_field(row->name, sizeof(row->name), it, "name");
-                        copy_field(row->desc, sizeof(row->desc), it, "description");
-                        const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
-                        row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
-                        snap->n++;
-                    }
-                }
-                if (root) {
-                    cJSON_Delete(root);
-                }
-            }
-            free(buf);
-            free(cfg);
-            apply_snap(snap);
-            vTaskDelete(nullptr);
-        },
-        "nl_apps", 12288, cfgp, 3, nullptr) != pdPASS) {
+    /* IDF 栈深按 StackType_t 字数；12288 实测会占 ~48KB。PSRAM 静态 16KB 即可。 */
+    constexpr uint32_t kListStackBytes = 16384;
+    struct list_job {
+        nodelio_nvs_config_t *cfg;
+        StackType_t *stack;
+        StaticTask_t *tcb;
+    };
+    auto *job = static_cast<list_job *>(malloc(sizeof(list_job)));
+    StackType_t *stack = static_cast<StackType_t *>(
+        heap_caps_malloc(kListStackBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!stack) {
+        stack = static_cast<StackType_t *>(malloc(kListStackBytes));
+    }
+    auto *tcb = static_cast<StaticTask_t *>(
+        heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (!job || !stack || !tcb) {
+        free(job);
+        free(stack);
+        free(tcb);
+        free(cfgp);
         s_loading = false;
         set_hint("无法加载");
+        return;
+    }
+    job->cfg = cfgp;
+    job->stack = stack;
+    job->tcb = tcb;
+    if (xTaskCreateStatic(
+            [](void *p) {
+                auto *job = static_cast<list_job *>(p);
+                auto *cfg = job->cfg;
+                auto *snap = static_cast<nl_app_snap *>(calloc(1, sizeof(nl_app_snap)));
+                if (!snap) {
+                    nodelio_panel_ui_toast_defer("内存不足");
+                    free(cfg);
+                    StackType_t *st = job->stack;
+                    StaticTask_t *tb = job->tcb;
+                    free(job);
+                    Application::GetInstance().Schedule([st, tb]() {
+                        vTaskDelay(pdMS_TO_TICKS(200));
+                        free(st);
+                        free(tb);
+                        s_loading = false;
+                    });
+                    vTaskDelete(nullptr);
+                    return;
+                }
+                char base[160];
+                nl_url_strip_base(cfg->server_url, base, sizeof(base));
+                char url[320];
+                snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills", base, cfg->device_id);
+                char *buf = static_cast<char *>(heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                if (!buf) {
+                    buf = static_cast<char *>(malloc(4096));
+                }
+                if (!buf) {
+                    snprintf(snap->err, sizeof(snap->err), "内存不足");
+                    apply_snap(snap);
+                    free(cfg);
+                    StackType_t *st = job->stack;
+                    StaticTask_t *tb = job->tcb;
+                    free(job);
+                    Application::GetInstance().Schedule([st, tb]() {
+                        vTaskDelay(pdMS_TO_TICKS(200));
+                        free(st);
+                        free(tb);
+                    });
+                    vTaskDelete(nullptr);
+                    return;
+                }
+                buf[0] = '\0';
+                int status = 0;
+                esp_err_t err = ESP_FAIL;
+                /* 唤醒空窗：少试几次；连不上就停，避免拖死 HTTP 互斥锁 */
+                static const uint32_t k_retry_ms[] = {0, 800, 2000};
+                for (unsigned attempt = 0; attempt < sizeof(k_retry_ms) / sizeof(k_retry_ms[0]); attempt++) {
+                    if (k_retry_ms[attempt]) {
+                        vTaskDelay(pdMS_TO_TICKS(k_retry_ms[attempt]));
+                    }
+                    if (nodelio_wifi_is_asleep() || !nodelio_wifi_has_ip()) {
+                        err = ESP_ERR_INVALID_STATE;
+                        break;
+                    }
+                    buf[0] = '\0';
+                    status = 0;
+                    err = nodelio_http_get(url, cfg->device_key, nullptr, &status, buf, 4095);
+                    if (err == ESP_OK && (status == 200 || status == 201)) {
+                        break;
+                    }
+                    ESP_LOGW(TAG, "list skills attempt %u status=%d err=%d", attempt + 1, status, err);
+                }
+                if (err != ESP_OK || (status != 200 && status != 201)) {
+                    snprintf(snap->err, sizeof(snap->err), "加载失败");
+                    ESP_LOGW(TAG, "list skills status=%d err=%d", status, err);
+                } else {
+                    cJSON *root = cJSON_Parse(buf);
+                    const cJSON *skills = root ? cJSON_GetObjectItemCaseSensitive(root, "skills") : nullptr;
+                    if (cJSON_IsArray(skills)) {
+                        const cJSON *it = nullptr;
+                        cJSON_ArrayForEach(it, skills) {
+                            if (snap->n >= APP_MAX) {
+                                break;
+                            }
+                            nl_app_item *row = &snap->items[snap->n];
+                            copy_field(row->id, sizeof(row->id), it, "skillId");
+                            if (!row->id[0]) {
+                                continue;
+                            }
+                            copy_field(row->name, sizeof(row->name), it, "name");
+                            copy_field(row->desc, sizeof(row->desc), it, "description");
+                            const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
+                            row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
+                            snap->n++;
+                        }
+                    }
+                    if (root) {
+                        cJSON_Delete(root);
+                    }
+                }
+                free(buf);
+                free(cfg);
+                apply_snap(snap);
+                StackType_t *st = job->stack;
+                StaticTask_t *tb = job->tcb;
+                free(job);
+                Application::GetInstance().Schedule([st, tb]() {
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    free(st);
+                    free(tb);
+                });
+                vTaskDelete(nullptr);
+            },
+            "nl_apps", kListStackBytes / sizeof(StackType_t), job, 3, stack, tcb) == nullptr) {
+        free(job);
+        free(stack);
+        free(tcb);
         free(cfgp);
+        s_loading = false;
+        set_hint("无法加载");
     }
 }
 
