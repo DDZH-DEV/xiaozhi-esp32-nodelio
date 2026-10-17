@@ -28,7 +28,15 @@ typedef enum {
 
 enum chat_phase_t : uint8_t { CHAT_IDLE = 0, CHAT_LISTEN, CHAT_SPEAK, CHAT_CONNECT };
 
-enum { TILE_CHILD_ICON = 1, TILE_CHILD_TITLE = 2, TILE_CHILD_HINT = 3, TILE_CHILD_CAPSULE = 4 };
+enum {
+    TILE_CHILD_ICON = 1,
+    TILE_CHILD_TITLE = 2,
+    TILE_CHILD_HINT = 3,
+    TILE_CHILD_CAPSULE = 4,
+    TILE_CHILD_DL_OFF = 5, /* DualLine OFF/NC 支路 */
+    TILE_CHILD_DL_ON = 6,  /* DualLine ON/NO 支路 */
+    TILE_CHILD_DL_ROW = 7,
+};
 
 typedef enum {
     SET_PAGE_DISP = 1,

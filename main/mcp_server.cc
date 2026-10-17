@@ -5,6 +5,7 @@
 
 #include "mcp_server.h"
 #include <esp_app_desc.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_pthread.h>
 #include <freertos/FreeRTOS.h>
@@ -652,6 +653,8 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
                 vTaskDelete(nullptr);
             },
             "mcp_http", kStackBytes, job, 3, nullptr) != pdPASS) {
+        ESP_LOGE(TAG, "tools/call: mcp_http create fail (stack=%u free=%u)", (unsigned)kStackBytes,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         delete job;
         ReplyError(id, "Failed to start tool worker", response_sender);
     }

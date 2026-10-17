@@ -84,6 +84,7 @@ static size_t s_speak_len = 0;
 static size_t s_speak_off = 0;
 static char s_speak_id[NL_ENV_STR];
 static char s_speak_title[NL_ENV_NEWS_TITLE];
+static int64_t s_chunk_sent_us = 0;
 
 static void news_speak_clear(void)
 {
@@ -95,6 +96,7 @@ static void news_speak_clear(void)
     s_speak_off = 0;
     s_speak_id[0] = '\0';
     s_speak_title[0] = '\0';
+    s_chunk_sent_us = 0;
 }
 
 static size_t news_utf8_chunk_end(const char *s, size_t off, size_t max_bytes)
@@ -170,19 +172,20 @@ static bool news_format_chunk(char *out, size_t out_len, bool with_title)
     memcpy(piece, s_speak_body + s_speak_off, take);
     piece[take] = '\0';
     s_speak_off = end;
+    s_chunk_sent_us = esp_timer_get_time();
     if (with_title && s_speak_title[0]) {
         if (more) {
             snprintf(out, out_len,
-                     "%s\n%s\n【续】同一篇未完。立刻再调 op=continue 接着念。不要问用户，不要换篇，不要标已读。",
+                     "逐字朗读下面原文，不要摘要，不要换篇：\n%s\n%s\n【续】念完这一段后再调 op=continue。同一轮不要连续调用。",
                      s_speak_title, piece);
         } else {
-            snprintf(out, out_len, "%s\n%s", s_speak_title, piece);
+            snprintf(out, out_len, "逐字朗读下面原文，不要摘要：\n%s\n%s", s_speak_title, piece);
         }
     } else if (more) {
-        snprintf(out, out_len, "%s\n【续】同一篇未完。立刻再调 op=continue 接着念。不要问用户，不要换篇，不要标已读。",
+        snprintf(out, out_len, "逐字朗读下面原文，不要摘要：\n%s\n【续】念完这一段后再调 op=continue。同一轮不要连续调用。",
                  piece);
     } else {
-        snprintf(out, out_len, "%s", piece);
+        snprintf(out, out_len, "逐字朗读下面原文，不要摘要：\n%s", piece);
     }
     return out[0] != '\0';
 }
@@ -370,6 +373,7 @@ static void on_news_nav(lv_event_t *e)
 
 static void fill_news(void)
 {
+    set_hdr_mid_icon(MATERIAL_SYMBOLS_KEYBOARD_ARROW_DOWN);
     s_news_gen += 1;
     news_speak_clear();
     s_news_body_lbl = nullptr;
@@ -457,8 +461,7 @@ static void fill_news(void)
         lv_obj_t *row = lv_obj_create(s_card_list);
         lv_obj_remove_style_all(row);
         lv_obj_set_width(row, lv_pct(100));
-        lv_obj_set_height(row, LV_SIZE_CONTENT);
-        lv_obj_set_style_pad_ver(row, 10, 0);
+        lv_obj_set_height(row, 52);
         lv_obj_set_style_bg_color(row, UI_FIELD, 0);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(row, 12, 0);
@@ -473,10 +476,26 @@ static void fill_news(void)
         lv_obj_add_event_cb(row, on_news_row, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_obj_set_style_bg_color(row, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
 
+        lv_obj_t *idx_pod = lv_obj_create(row);
+        lv_obj_remove_style_all(idx_pod);
+        lv_obj_set_size(idx_pod, 22, 22);
+        lv_obj_set_style_radius(idx_pod, 6, 0);
+        lv_obj_set_style_bg_color(idx_pod, UI_CAPSULE_OFF, 0);
+        lv_obj_set_style_bg_opa(idx_pod, LV_OPA_COVER, 0);
+        lv_obj_clear_flag(idx_pod, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_t *idx_l = lv_label_create(idx_pod);
+        nl_ov_set_font(idx_l);
+        char idx_buf[8];
+        snprintf(idx_buf, sizeof(idx_buf), "%d", i + 1);
+        lv_label_set_text(idx_l, idx_buf);
+        lv_obj_set_style_text_color(idx_l, UI_ACCENT_SOFT, 0);
+        lv_obj_center(idx_l);
+
         lv_obj_t *txt = lv_obj_create(row);
         lv_obj_remove_style_all(txt);
         lv_obj_set_flex_grow(txt, 1);
         lv_obj_set_height(txt, LV_SIZE_CONTENT);
+        lv_obj_set_style_min_width(txt, 0, 0);
         lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_row(txt, 2, 0);
         lv_obj_clear_flag(txt, LV_OBJ_FLAG_CLICKABLE);
@@ -487,6 +506,10 @@ static void fill_news(void)
         lv_obj_set_style_text_color(t, UI_TEXT, 0);
         lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
         lv_obj_set_width(t, lv_pct(100));
+        {
+            const lv_font_t *font = lv_obj_get_style_text_font(t, LV_PART_MAIN);
+            lv_obj_set_height(t, font ? lv_font_get_line_height(font) : 16);
+        }
 
         char when[24];
         news_time_short(n->published_at, when, sizeof(when));
@@ -566,6 +589,21 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
         return false;
     }
 
+    if (strcmp(op, "close") == 0 || strcmp(op, "dismiss") == 0) {
+        bool open = false;
+        {
+            DisplayLockGuard lock(nl_ov_disp());
+            open = lock && s_have_env && strcmp(s_env.card_type, "news_list") == 0;
+        }
+        if (open) {
+            nodelio_skill_result_hide();
+        }
+        if (out && out_len > 0) {
+            snprintf(out, out_len, open ? "已关闭新闻" : "新闻已经关了");
+        }
+        return true;
+    }
+
     if (strcmp(op, "continue") == 0) {
         int idx = -1;
         uint32_t gen = 0;
@@ -579,6 +617,12 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
             idx = s_news_detail;
             gen = s_news_gen;
             snprintf(id, sizeof(id), "%s", s_env.news[idx].id);
+        }
+        if (s_chunk_sent_us != 0 && esp_timer_get_time() - s_chunk_sent_us < 8000000) {
+            if (out && out_len > 0) {
+                snprintf(out, out_len, "上一段原文还没念完。请先逐字朗读上一段，不要摘要，不要换篇。念完后再调用 continue。");
+            }
+            return true;
         }
         if (s_speak_body && s_speak_off < s_speak_len && strcmp(s_speak_id, id) == 0) {
             return news_format_chunk(out, out_len, false);

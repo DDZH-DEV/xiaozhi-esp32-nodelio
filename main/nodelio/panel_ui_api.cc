@@ -7,6 +7,7 @@
 #include "display.h"
 #include "fonts/font_puhui_14_1.h"
 #include "layout_cache.h"
+#include "media_player.h"
 #include "mqtt_panel.h"
 #include "nl_url_util.h"
 #include "nodelio_http.h"
@@ -238,8 +239,13 @@ extern "C" void nodelio_panel_ui_local_goodbye(void)
             st != kDeviceStateWifiConfiguring && st != kDeviceStateUpgrading) {
             app.SetDeviceState(kDeviceStateIdle);
         }
-        Board::GetInstance().RequestGoodbyeSleep();
-        ESP_LOGI(TAG, "offline cmd: goodbye → sleep");
+        if (nodelio_media_resume_after_voice()) {
+            Board::GetInstance().NoteUserActivity();
+            ESP_LOGI(TAG, "offline cmd: goodbye → resume media");
+        } else {
+            Board::GetInstance().RequestGoodbyeSleep();
+            ESP_LOGI(TAG, "offline cmd: goodbye → sleep");
+        }
     });
 }
 

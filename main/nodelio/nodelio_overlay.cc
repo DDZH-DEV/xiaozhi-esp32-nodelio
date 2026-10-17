@@ -321,21 +321,20 @@ void nl_ov_toast(const char *msg)
         }
         toast = lv_obj_create(lv_layer_top());
         lv_obj_remove_style_all(toast);
-        lv_obj_set_width(toast, LV_HOR_RES - 48);
+        lv_obj_set_width(toast, LV_SIZE_CONTENT);
         lv_obj_set_height(toast, LV_SIZE_CONTENT);
         lv_obj_set_style_bg_color(toast, UI_SURFACE, 0);
         lv_obj_set_style_bg_opa(toast, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(toast, 16, 0);
+        lv_obj_set_style_radius(toast, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_border_width(toast, 1, 0);
         lv_obj_set_style_border_color(toast, UI_ACCENT, 0);
         lv_obj_set_style_border_opa(toast, 160, 0);
-        lv_obj_set_style_pad_hor(toast, 16, 0);
+        lv_obj_set_style_pad_hor(toast, 18, 0);
         lv_obj_set_style_pad_ver(toast, 10, 0);
         lv_obj_align(toast, LV_ALIGN_BOTTOM_MID, 0, -(NL_UI_TAB_H + 16));
         lv_obj_clear_flag(toast, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_clear_flag(toast, LV_OBJ_FLAG_SCROLLABLE);
         toast_lbl = lv_label_create(toast);
-        lv_obj_set_width(toast_lbl, LV_HOR_RES - 80);
         lv_label_set_long_mode(toast_lbl, LV_LABEL_LONG_WRAP);
         nl_ov_set_font(toast_lbl);
         lv_obj_set_style_text_color(toast_lbl, UI_TEXT, 0);
@@ -351,6 +350,21 @@ void nl_ov_toast(const char *msg)
         return;
     }
     lv_label_set_text(toast_lbl, msg);
+    /* 短句贴文字收窄；超长才在屏宽内换行 */
+    const lv_font_t *font = lv_obj_get_style_text_font(toast_lbl, LV_PART_MAIN);
+    const int32_t max_inner = LV_HOR_RES - 120;
+    lv_point_t sz;
+    lv_text_get_size(&sz, msg, font, 0, 0, max_inner, LV_TEXT_FLAG_NONE);
+    int32_t tw = sz.x + 2;
+    if (tw < 1) {
+        tw = 1;
+    }
+    if (tw > max_inner) {
+        tw = max_inner;
+    }
+    lv_obj_set_width(toast_lbl, tw);
+    lv_obj_set_width(toast, LV_SIZE_CONTENT);
+    lv_obj_align(toast, LV_ALIGN_BOTTOM_MID, 0, -(NL_UI_TAB_H + 16));
     lv_obj_clear_flag(toast, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(toast);
     if (hide_tmr) {

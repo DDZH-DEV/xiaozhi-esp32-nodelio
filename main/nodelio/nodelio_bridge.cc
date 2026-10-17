@@ -13,6 +13,7 @@
 #include "sdkconfig.h"
 #include "wifi_provision.h"
 
+#include <esp_heap_caps.h>
 #include <esp_wifi.h>
 
 #include <atomic>
@@ -31,6 +32,13 @@ static bool s_started;
 static bool s_starting;
 static nodelio_nvs_config_t s_cfg;
 static QueueHandle_t s_pwr_q;
+static bool s_hb_task;
+static StackType_t *s_hb_stack;
+static StaticTask_t s_hb_tcb;
+static constexpr uint32_t kHbStackBytes = 10240;
+
+/* 服务端 WALL_PANEL 离线窗口 ≥90s（再连续两轮 5s）。须小于该窗口，单次 POST 失败仍能在下一次刷 last_seen。 */
+static constexpr uint32_t kHeartbeatPeriodMs = 30000;
 
 enum { PWR_SLEEP = 0, PWR_WAKE = 1 };
 
@@ -82,6 +90,47 @@ static void seed_from_kconfig(nodelio_nvs_config_t *cfg)
     if (cfg->owner[0] == '\0' && CONFIG_NODELIO_OWNER[0] != '\0') {
         std::snprintf(cfg->owner, sizeof(cfg->owner), "%s", CONFIG_NODELIO_OWNER);
     }
+}
+
+static void hb_task(void *arg)
+{
+    (void)arg;
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(kHeartbeatPeriodMs));
+        if (!s_started || s_cfg.device_id[0] == '\0') {
+            continue;
+        }
+        /* 息屏断网：无链路，跳过；唤醒路径会立刻打一枪 */
+        if (nodelio_wifi_is_asleep() || !nodelio_wifi_has_ip()) {
+            continue;
+        }
+        esp_err_t hb = nodelio_device_heartbeat(&s_cfg);
+        if (hb != ESP_OK) {
+            ESP_LOGW(TAG, "periodic heartbeat: %s", esp_err_to_name(hb));
+        }
+    }
+}
+
+static void ensure_hb_task(void)
+{
+    if (s_hb_task) {
+        return;
+    }
+    /* 栈放 PSRAM。内部 RAM 再占 8KB 后，语音里 mcp_http（16KB）会创建失败，控家工具直接回错。 */
+    if (!s_hb_stack) {
+        s_hb_stack = static_cast<StackType_t *>(
+            heap_caps_malloc(kHbStackBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (!s_hb_stack) {
+        ESP_LOGW(TAG, "hb stack alloc fail");
+        return;
+    }
+    if (!xTaskCreateStatic(hb_task, "nl_hb", kHbStackBytes / sizeof(StackType_t), nullptr, 4, s_hb_stack,
+                           &s_hb_tcb)) {
+        ESP_LOGW(TAG, "hb task create fail");
+        return;
+    }
+    s_hb_task = true;
 }
 
 static void pwr_task(void *arg)
@@ -254,6 +303,7 @@ static esp_err_t start_client(void)
     (void)nodelio_nvs_save(&cfg);
     s_cfg = cfg;
     cloud = true;
+    ensure_hb_task();
 
     if (nodelio_wifi_is_asleep()) {
         ESP_LOGW(TAG, "WiFi asleep during start — defer hb/mqtt/layout to net wake");

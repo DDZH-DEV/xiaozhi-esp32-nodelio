@@ -29,6 +29,22 @@ void nodelio_media_stop(void);
 void nodelio_media_pause(void);
 void nodelio_media_resume(void);
 
+/**
+ * 唤醒/开麦打断播放：同步停 HTTP，保留曲目，不启动「暂停后关播放器」计时。
+ * 须在 Application 主任务调用。退下后用 nodelio_media_resume_after_voice。
+ */
+void nodelio_media_pause_for_voice(void);
+/**
+ * 语音通道关闭 / 离线下退后：若曾 pause_for_voice 则续播并返回 true（调用方应跳过 goodbye 息屏）。
+ */
+bool nodelio_media_resume_after_voice(void);
+
+/**
+ * 打开新闻等重应用前：停播并等到 HTTP 播放器空闲（最多约 5s）。
+ * 返回 true 表示本次确实停过媒体（可 toast）。
+ */
+bool nodelio_media_preempt_for_heavy_app(void);
+
 void nodelio_media_now_title(char *buf, size_t len);
 
 /** HTTP 通知音结束/失败时由 Application 回调，清理 playing 态。 */

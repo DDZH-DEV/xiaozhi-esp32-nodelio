@@ -49,6 +49,8 @@ static int s_retry_count = 0;
 static volatile bool s_suppress_ended = false;
 /** 暂停后无操作则关掉播放器；秒数来自 NVS「播放器」设置。 */
 static esp_timer_handle_t s_pause_close_timer;
+/** 语音打断后应在退下时续播（与用户手动暂停区分）。 */
+static volatile bool s_resume_after_voice = false;
 
 static void pause_close_cb(void *arg)
 {
@@ -450,6 +452,7 @@ void nodelio_media_stop(void)
     }
     disarm_pause_close();
     s_paused = false;
+    s_resume_after_voice = false;
     media_msg_t msg{.op = MEDIA_OP_STOP};
     xQueueSend(s_q, &msg, 0);
 }
@@ -459,6 +462,7 @@ void nodelio_media_pause(void)
     if (!s_playing || !s_now_url[0]) {
         return;
     }
+    s_resume_after_voice = false;
     s_paused = true;
     s_playing = false;
     arm_pause_close();
@@ -466,6 +470,60 @@ void nodelio_media_pause(void)
     nodelio_panel_ui_media_now_playing(s_now_title, false);
     Application::GetInstance().Schedule([]() { Application::GetInstance().StopHttpAudio(); });
     ESP_LOGI(TAG, "paused title=%s", s_now_title);
+}
+
+void nodelio_media_pause_for_voice(void)
+{
+    if (!s_playing || !s_now_url[0]) {
+        return;
+    }
+    s_paused = true;
+    s_playing = false;
+    s_resume_after_voice = true;
+    disarm_pause_close();
+    nodelio_panel_ui_media_now_playing(s_now_title, false);
+    /* 主任务同步掐流，避免 Schedule 晚于 BeginWakeWordInvoke */
+    Application::GetInstance().StopHttpAudio();
+    ESP_LOGI(TAG, "paused for voice title=%s", s_now_title);
+}
+
+bool nodelio_media_resume_after_voice(void)
+{
+    if (!s_resume_after_voice) {
+        return false;
+    }
+    s_resume_after_voice = false;
+    if (!s_paused || !s_now_url[0]) {
+        return false;
+    }
+    ESP_LOGI(TAG, "resume after voice title=%s", s_now_title);
+    nodelio_media_resume();
+    return true;
+}
+
+bool nodelio_media_preempt_for_heavy_app(void)
+{
+    auto &app = Application::GetInstance();
+    const bool had =
+        s_playing || s_paused || s_now_url[0] != '\0' || app.IsHttpAudioBusy() ||
+        app.GetDeviceState() == kDeviceStateNotifying;
+    if (!had) {
+        return false;
+    }
+    s_resume_after_voice = false;
+    nodelio_media_stop();
+    /* STOP 入队后仍可能短暂 busy；等空闲再开 TLS */
+    for (int i = 0; i < 100 && (app.IsHttpAudioBusy() || app.GetDeviceState() == kDeviceStateNotifying);
+         ++i) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (app.IsHttpAudioBusy() || app.GetDeviceState() == kDeviceStateNotifying) {
+        app.Schedule([]() { Application::GetInstance().StopHttpAudio(); });
+        for (int i = 0; i < 40 && Application::GetInstance().IsHttpAudioBusy(); ++i) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+    }
+    return true;
 }
 
 void nodelio_media_resume(void)
@@ -483,6 +541,7 @@ void nodelio_media_resume(void)
     snprintf(msg.device_key, sizeof(msg.device_key), "%s", s_now_key);
     disarm_pause_close();
     s_paused = false;
+    s_resume_after_voice = false;
     if (xQueueSend(s_q, &msg, pdMS_TO_TICKS(100)) != pdTRUE) {
         s_paused = true;
         ESP_LOGW(TAG, "resume queue full");

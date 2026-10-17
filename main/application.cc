@@ -20,6 +20,7 @@
 #include "nvs_config.h"
 #include "offline_cmd.h"
 #include "panel_ui.h"
+#include "skill_result_ui.h"
 #include "wifi_provision.h"
 #endif
 
@@ -709,7 +710,12 @@ void Application::InitializeProtocol() {
             SetDeviceState(kDeviceStateIdle);
             board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-            board.RequestGoodbyeSleep();
+            /* 听歌被语音打断：续播并保持亮屏，勿走退下息屏 */
+            if (nodelio_media_resume_after_voice()) {
+                board.NoteUserActivity();
+            } else {
+                board.RequestGoodbyeSleep();
+            }
 #endif
         });
     });
@@ -803,6 +809,9 @@ void Application::InitializeProtocol() {
                           glyphs = std::move(glyphs), bpp]() {
                     display->AddTextGlyphs(glyphs, bpp);
                     display->SetChatMessage("user", message.c_str());
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+                    nodelio_skill_try_dismiss_phrase(message.c_str());
+#endif
                 });
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
@@ -928,7 +937,15 @@ void Application::HandleToggleChatEvent() {
     auto state = GetDeviceState();
 
     if (state == kDeviceStateNotifying) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        if (nodelio_media_is_playing()) {
+            nodelio_media_pause_for_voice();
+        } else {
+            StopNotification();
+        }
+#else
         StopNotification();
+#endif
         state = kDeviceStateIdle;
     }
 
@@ -1079,7 +1096,15 @@ void Application::HandleStartListeningEvent() {
     auto state = GetDeviceState();
 
     if (state == kDeviceStateNotifying) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        if (nodelio_media_is_playing()) {
+            nodelio_media_pause_for_voice();
+        } else {
+            StopNotification();
+        }
+#else
         StopNotification();
+#endif
         state = kDeviceStateIdle;
     }
 
@@ -1140,7 +1165,15 @@ void Application::HandleWakeWordDetectedEvent() {
     if (state == kDeviceStateIdle) {
         BeginWakeWordInvoke(wake_word);
     } else if (state == kDeviceStateNotifying) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        if (nodelio_media_is_playing()) {
+            nodelio_media_pause_for_voice();
+        } else {
+            StopNotification();
+        }
+#else
         StopNotification();
+#endif
         BeginWakeWordInvoke(wake_word);
     } else if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
         AbortSpeaking(kAbortReasonWakeWordDetected);
@@ -1647,8 +1680,19 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
         });
     } else if (state == kDeviceStateNotifying) {
         Schedule([this, wake_word]() {
+            /* pause_for_voice 会把 Notifying→Idle，故不能再要求仍为 Notifying */
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            if (nodelio_media_is_playing()) {
+                nodelio_media_pause_for_voice();
+            } else if (GetDeviceState() == kDeviceStateNotifying) {
+                StopNotification();
+            }
+#else
             if (GetDeviceState() == kDeviceStateNotifying) {
                 StopNotification();
+            }
+#endif
+            if (GetDeviceState() == kDeviceStateIdle) {
                 BeginWakeWordInvoke(wake_word);
             }
         });

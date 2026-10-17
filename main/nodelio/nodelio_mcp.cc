@@ -466,6 +466,10 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
     if (skill_id.empty()) {
         return std::unexpected(std::string("skill_id 不能为空"));
     }
+    const bool music_app = skill_id == "music.search" || skill_id == "music_search";
+    if (!music_app && nodelio_media_preempt_for_heavy_app()) {
+        ESP_LOGI(TAG, "preempt media before skill '%s'", skill_id.c_str());
+    }
     char base[160];
     nl_url_strip_base(cfg->server_url, base, sizeof(base));
     char url[256];
@@ -865,10 +869,14 @@ void nodelio_mcp_register_tools(void)
         "随便看看, 换一批, or to show the list, call immediately with params {\"keyword\":\"\"}. "
         "Each browse returns a fresh random sample, not the same first page. "
         "Never refuse for a missing keyword. "
+        "CRITICAL: If the music list card is ALREADY open and the user says 随便, 来一首, "
+        "随便放, 放一首, or pick any song from the list — call self.skill.transport op=play. "
+        "Do NOT invoke music.search again (that replaces the 24-track playlist with one song). "
+        "Only invoke with a song title when the user names a specific song, or no list is open. "
         "Parameters: "
         "- skill_id: e.g. music.search "
         "- params: JSON string. Search: {\"keyword\":\"周杰伦\"}. Browse or reshuffle: {\"keyword\":\"\"} "
-        "上一首/下一首/暂停/继续播放 use self.skill.transport, not a new search. "
+        "上一首/下一首/暂停/继续播放/随便放一首 use self.skill.transport, not a new search. "
         "新闻上一篇/下一篇 use self.skill.news, not a new invoke.",
         PropertyList({
             Property("skill_id", kPropertyTypeString, ""),
@@ -886,10 +894,12 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.skill.transport",
-        "Control the song already playing on THIS wall panel (current result list). "
-        "Use when the user says 上一首, 下一首, 暂停, or 继续播放. "
+        "Control playback on THIS wall panel's current music result list. "
+        "Use when the user says 上一首, 下一首, 暂停, 继续播放, or 随便/来一首/随便放一首 "
+        "while the list is already open. "
         "Do NOT call Xiaozhi cloud music tools and do NOT re-search. "
-        "op: prev | next | pause | resume",
+        "op: prev | next | pause | resume | play "
+        "(play = pick a random track from the CURRENT list and start it; keeps the full playlist).",
         PropertyList({
             Property("op", kPropertyTypeString, ""),
         }),
@@ -927,7 +937,18 @@ void nodelio_mcp_register_tools(void)
                 nodelio_media_resume();
                 return std::string("继续播放");
             }
-            return std::unexpected(std::string("op 须为 prev/next/pause/resume"));
+            if (op == "play" || op == "random" || op == "any") {
+                char title[64];
+                title[0] = '\0';
+                if (!nodelio_skill_media_play_any(title, sizeof(title))) {
+                    return std::unexpected(std::string("当前没有可播放的曲目列表，请先打开面板曲库"));
+                }
+                if (title[0]) {
+                    return std::string("正在播放《") + title + "》，歌单保留可继续下一首";
+                }
+                return std::string("已从当前列表开播");
+            }
+            return std::unexpected(std::string("op 须为 prev/next/pause/resume/play"));
         });
 
     mcp.AddTool(
@@ -942,15 +963,16 @@ void nodelio_mcp_register_tools(void)
         "Do not say the panel cannot mark news as read. "
         "If the news card is not open, call self.skill.invoke with skill_id news.latest first. "
         "Do NOT invoke news.latest again just to flip or read. "
-        "op: prev | next | read | continue | mark_read | skip",
+        "User says 关闭新闻, 关掉新闻, 退出新闻: op=close. Do not only say it is closed. "
+        "op: prev | next | read | continue | mark_read | skip | close",
         PropertyList({
             Property("op", kPropertyTypeString, ""),
         }),
         [](const PropertyList &properties) -> ToolResult {
             std::string op = properties["op"].value<std::string>();
             if (op != "prev" && op != "next" && op != "read" && op != "continue" && op != "mark_read" &&
-                op != "mark" && op != "skip") {
-                return std::unexpected(std::string("op 须为 prev/next/read/continue/mark_read/skip"));
+                op != "mark" && op != "skip" && op != "close" && op != "dismiss") {
+                return std::unexpected(std::string("op 须为 prev/next/read/continue/mark_read/skip/close"));
             }
             // 分段回包：约 900 字/段，避免整篇顶爆 MQTT。
             constexpr size_t kNewsSpokenCap = 4096;

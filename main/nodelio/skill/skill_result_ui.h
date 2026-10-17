@@ -4,6 +4,7 @@
 #include "nvs_config.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,11 +27,18 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing);
 bool nodelio_skill_media_prev(void);
 bool nodelio_skill_media_next(void);
 
+/** 语音/MCP：从当前列表随机（或唯一可播）开播，不重新搜歌。
+ *  成功时 title_out 写入曲名（可空）；无列表返回 false。 */
+bool nodelio_skill_media_play_any(char *title_out, size_t title_out_len);
+
 /** 语音/MCP：新闻。
- *  op: "prev"|"next"|"read"|"continue"|"mark_read"|"skip"
+ *  op: "prev"|"next"|"read"|"continue"|"mark_read"|"skip"|"close"
  *  成功时 out 写入短回包（分段正文，避免 MQTT 超长被掐断）。
- *  next/skip/mark_read 会把当前篇标为已读。 */
+ *  next/skip/mark_read 会把当前篇标为已读。close 关掉新闻卡。 */
 bool nodelio_skill_news_action(const char *op, char *out, size_t out_len);
+
+/** 用户原话含「关掉/关闭新闻」时收起新闻卡。已处理返回 true。 */
+bool nodelio_skill_try_dismiss_phrase(const char *text);
 
 #ifdef __cplusplus
 }

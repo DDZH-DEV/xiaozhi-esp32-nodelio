@@ -109,6 +109,23 @@ static const lv_buttonmatrix_ctrl_t s_kb_ctrl_port[] = {
     LV_BUTTONMATRIX_CTRL_WIDTH_1, LV_BUTTONMATRIX_CTRL_WIDTH_1, LV_BUTTONMATRIX_CTRL_WIDTH_1,
 };
 
+static const char *proto_btn_text(void)
+{
+    return s_https ? "HTTPS" : "HTTP";
+}
+
+/** 主机用数字盘，字母盘上的键盘图标回到数字盘，而不是关掉键盘 */
+static lv_keyboard_mode_t kb_home_mode(lv_obj_t *ta)
+{
+    if (ta == s_ta_host) {
+        return LV_KEYBOARD_MODE_USER_1;
+    }
+    if (ta == s_ta_port) {
+        return LV_KEYBOARD_MODE_USER_2;
+    }
+    return LV_KEYBOARD_MODE_TEXT_LOWER;
+}
+
 /** 键盘弹出时加底垫，才能把绑定码等滚到键盘上方 */
 static void connect_scroll_kb_pad(bool kb_on)
 {
@@ -152,10 +169,11 @@ void nl_ov_kb_set_visible(bool on)
 
 static void ensure_kb(void)
 {
-    if (s_kb || !s_root) {
+    if (s_kb) {
         return;
     }
-    s_kb = lv_keyboard_create(s_root);
+    /* 连接页在 lv_layer_top()，键盘必须同层才能盖在表单上面 */
+    s_kb = lv_keyboard_create(lv_layer_top());
     lv_obj_add_flag(s_kb, LV_OBJ_FLAG_FLOATING);
     lv_obj_set_width(s_kb, lv_pct(100));
     lv_obj_set_height(s_kb, lv_pct(42));
@@ -173,6 +191,18 @@ static void ensure_kb(void)
         [](lv_event_t *e) {
             lv_event_code_t code = lv_event_get_code(e);
             lv_obj_t *kb = static_cast<lv_obj_t *>(lv_event_get_target(e));
+            if (code == LV_EVENT_CANCEL && kb) {
+                uint32_t id = lv_buttonmatrix_get_selected_button(kb);
+                const char *txt = (id == LV_BUTTONMATRIX_BUTTON_NONE)
+                                      ? nullptr
+                                      : lv_buttonmatrix_get_button_text(kb, id);
+                lv_keyboard_mode_t home = kb_home_mode(lv_keyboard_get_textarea(kb));
+                if (txt && strcmp(txt, LV_SYMBOL_KEYBOARD) == 0 &&
+                    lv_keyboard_get_mode(kb) != home) {
+                    lv_keyboard_set_mode(kb, home);
+                    return;
+                }
+            }
             if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
                 nl_ov_kb_set_visible(false);
                 return;
@@ -195,14 +225,9 @@ static void bind_kb_for_ta(lv_obj_t *ta)
         return;
     }
     lv_keyboard_set_textarea(s_kb, ta);
-    if (ta == s_ta_host) {
-        lv_keyboard_set_mode(s_kb, LV_KEYBOARD_MODE_USER_1);
-    } else if (ta == s_ta_port) {
-        lv_keyboard_set_mode(s_kb, LV_KEYBOARD_MODE_USER_2);
-    } else if (ta == s_ta_pass) {
-        lv_keyboard_set_mode(s_kb, LV_KEYBOARD_MODE_TEXT_LOWER);
-    } else {
-        lv_keyboard_set_mode(s_kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_keyboard_mode_t mode = kb_home_mode(ta);
+    if (lv_keyboard_get_mode(s_kb) != mode) {
+        lv_keyboard_set_mode(s_kb, mode);
     }
     nl_ov_kb_set_visible(true);
     lv_obj_scroll_to_view(ta, LV_ANIM_OFF);
@@ -357,7 +382,7 @@ void nl_ov_open_connect(void)
         lv_textarea_set_text(s_ta_owner, s_cfg.owner);
     }
     if (s_proto_lbl) {
-        lv_label_set_text(s_proto_lbl, s_https ? "https" : "http");
+        lv_label_set_text(s_proto_lbl, proto_btn_text());
     }
     if (s_scan_btn_lbl && !s_wifi_scanning) {
         lv_label_set_text(s_scan_btn_lbl, "扫描");
@@ -470,11 +495,11 @@ void nl_ov_build_connect(void)
     lv_obj_clear_flag(proto_row, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *proto_btn = ui_make_action_btn(
-        proto_row, s_https ? "https" : "http", 72, UI_BTN_H_SM,
+        proto_row, proto_btn_text(), 88, UI_BTN_H_SM,
         [](lv_event_t *) {
             s_https = !s_https;
             if (s_proto_lbl) {
-                lv_label_set_text(s_proto_lbl, s_https ? "https" : "http");
+                lv_label_set_text(s_proto_lbl, proto_btn_text());
             }
         });
     s_proto_lbl = lv_obj_get_child(proto_btn, 0);

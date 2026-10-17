@@ -2,6 +2,7 @@
 
 #include "application.h"
 #include "device_caps.h"
+#include "media_player.h"
 #include "nl_url_util.h"
 #include "nodelio_http.h"
 #include "panel_ui.h"
@@ -54,9 +55,17 @@ static void copy_field(char *dst, size_t n, const cJSON *obj, const char *key)
 
 static void set_hint(const char *text)
 {
-    if (s_hint) {
-        lv_label_set_text(s_hint, text ? text : "");
+    if (!s_hint) {
+        return;
     }
+    /* 已有应用时不占一行；仅空列表显示加载/失败/暂无 */
+    if (s_item_n > 0 || text == nullptr || text[0] == '\0') {
+        lv_label_set_text(s_hint, "");
+        lv_obj_add_flag(s_hint, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_label_set_text(s_hint, text);
+    lv_obj_clear_flag(s_hint, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void render_list(void)
@@ -124,42 +133,82 @@ static void render_list(void)
                     arg->cfg = cfgp;
                     snprintf(arg->id, sizeof(arg->id), "%s", sid);
                     nl_ov_toast("正在打开…");
-                    if (xTaskCreate(
-                        [](void *p) {
-                            auto *a = static_cast<invoke_arg *>(p);
-                            char base[160];
-                            nl_url_strip_base(a->cfg->server_url, base, sizeof(base));
-                            char url[400];
-                            snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/%s/invoke", base,
-                                     a->cfg->device_id, a->id);
-                            const int cap = nodelio_caps_max_content_bytes() + 512;
-                            char *resp = static_cast<char *>(
-                                heap_caps_malloc((size_t)cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-                            if (!resp) {
-                                resp = static_cast<char *>(malloc((size_t)cap));
-                            }
-                            if (!resp) {
-                                nodelio_panel_ui_toast_defer("内存不足");
+                    struct open_job {
+                        invoke_arg *arg;
+                        StackType_t *stack;
+                        StaticTask_t *tcb;
+                    };
+                    constexpr uint32_t kStackBytes = 16384;
+                    auto *job = static_cast<open_job *>(malloc(sizeof(open_job)));
+                    StackType_t *stack = static_cast<StackType_t *>(
+                        heap_caps_malloc(kStackBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                    if (!stack) {
+                        stack = static_cast<StackType_t *>(malloc(kStackBytes));
+                    }
+                    auto *tcb = static_cast<StaticTask_t *>(
+                        heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+                    if (!job || !stack || !tcb) {
+                        free(job);
+                        free(stack);
+                        free(tcb);
+                        free(arg->cfg);
+                        free(arg);
+                        nl_ov_toast("无法打开");
+                        return;
+                    }
+                    job->arg = arg;
+                    job->stack = stack;
+                    job->tcb = tcb;
+                    if (xTaskCreateStatic(
+                            [](void *p) {
+                                auto *job = static_cast<open_job *>(p);
+                                auto *a = job->arg;
+                                const bool music_app = strcmp(a->id, "music.search") == 0 ||
+                                                       strcmp(a->id, "music_search") == 0;
+                                if (!music_app && nodelio_media_preempt_for_heavy_app()) {
+                                    nodelio_panel_ui_toast_defer("已停止音乐以打开应用");
+                                }
+                                char base[160];
+                                nl_url_strip_base(a->cfg->server_url, base, sizeof(base));
+                                char url[400];
+                                snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/%s/invoke", base,
+                                         a->cfg->device_id, a->id);
+                                const int cap = nodelio_caps_max_content_bytes() + 512;
+                                char *resp = static_cast<char *>(
+                                    heap_caps_malloc((size_t)cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                                if (!resp) {
+                                    resp = static_cast<char *>(malloc((size_t)cap));
+                                }
+                                if (!resp) {
+                                    nodelio_panel_ui_toast_defer("内存不足");
+                                } else {
+                                    resp[0] = '\0';
+                                    int status = 0;
+                                    esp_err_t err =
+                                        nodelio_http_post_json(url, a->cfg->device_key, "{\"keyword\":\"\"}",
+                                                               &status, resp, cap - 1);
+                                    if (err == ESP_OK && (status == 200 || status == 201) && resp[0]) {
+                                        nodelio_skill_deliver_json(a->cfg, resp, false, nullptr, 0);
+                                    } else {
+                                        nodelio_panel_ui_toast_defer("打开失败");
+                                    }
+                                    free(resp);
+                                }
                                 free(a->cfg);
                                 free(a);
+                                StackType_t *st = job->stack;
+                                StaticTask_t *tb = job->tcb;
+                                free(job);
+                                Application::GetInstance().Schedule([st, tb]() {
+                                    free(st);
+                                    free(tb);
+                                });
                                 vTaskDelete(nullptr);
-                                return;
-                            }
-                            resp[0] = '\0';
-                            int status = 0;
-                            esp_err_t err = nodelio_http_post_json(url, a->cfg->device_key, "{\"keyword\":\"\"}",
-                                                                   &status, resp, cap - 1);
-                            if (err == ESP_OK && (status == 200 || status == 201) && resp[0]) {
-                                nodelio_skill_deliver_json(a->cfg, resp, false, nullptr, 0);
-                            } else {
-                                nodelio_panel_ui_toast_defer("打开失败");
-                            }
-                            free(resp);
-                            free(a->cfg);
-                            free(a);
-                            vTaskDelete(nullptr);
-                        },
-                        "nl_app_open", 16384, arg, 3, nullptr) != pdPASS) {
+                            },
+                            "nl_app_open", kStackBytes / sizeof(StackType_t), job, 3, stack, tcb) == nullptr) {
+                        free(job);
+                        free(stack);
+                        free(tcb);
                         free(arg->cfg);
                         free(arg);
                         nl_ov_toast("无法打开");
@@ -285,7 +334,22 @@ void nl_ov_apps_refresh(void)
             }
             buf[0] = '\0';
             int status = 0;
-            esp_err_t err = nodelio_http_get(url, cfg->device_key, nullptr, &status, buf, 4095);
+            esp_err_t err = ESP_FAIL;
+            /* 息屏唤醒后 WiFi 常有几秒空窗：TCP 能连上但读到 0 字节。多试几次，避免一闪就停在加载失败。 */
+            /* 这次空窗大约 15s（亮屏后 MQTT/心跳一起断，控灯请求先恢复）。间隔拉开，最后一次落在恢复之后。 */
+            static const uint32_t k_retry_ms[] = {0, 1500, 4000, 8000};
+            for (unsigned attempt = 0; attempt < sizeof(k_retry_ms) / sizeof(k_retry_ms[0]); attempt++) {
+                if (k_retry_ms[attempt]) {
+                    vTaskDelay(pdMS_TO_TICKS(k_retry_ms[attempt]));
+                }
+                buf[0] = '\0';
+                status = 0;
+                err = nodelio_http_get(url, cfg->device_key, nullptr, &status, buf, 4095);
+                if (err == ESP_OK && (status == 200 || status == 201)) {
+                    break;
+                }
+                ESP_LOGW(TAG, "list skills attempt %u status=%d err=%d", attempt + 1, status, err);
+            }
             if (err != ESP_OK || (status != 200 && status != 201)) {
                 snprintf(snap->err, sizeof(snap->err), "加载失败");
                 ESP_LOGW(TAG, "list skills status=%d err=%d", status, err);
@@ -349,8 +413,8 @@ void nl_ov_build_apps(void)
     lv_obj_set_style_bg_color(s_page, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_page, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(s_page, 16, 0);
-    lv_obj_set_style_pad_ver(s_page, 10, 0);
-    lv_obj_set_style_pad_row(s_page, 8, 0);
+    lv_obj_set_style_pad_ver(s_page, 8, 0);
+    lv_obj_set_style_pad_row(s_page, 4, 0);
     lv_obj_set_flex_flow(s_page, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(s_page, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_page, LV_OBJ_FLAG_HIDDEN);
@@ -385,8 +449,9 @@ void nl_ov_build_apps(void)
 
     s_hint = lv_label_create(s_page);
     nl_ov_set_font(s_hint);
-    lv_label_set_text(s_hint, "打开本页时加载");
+    lv_label_set_text(s_hint, "");
     lv_obj_set_style_text_color(s_hint, UI_TEXT_MUTED, 0);
+    lv_obj_add_flag(s_hint, LV_OBJ_FLAG_HIDDEN);
 
     s_list = lv_obj_create(s_page);
     lv_obj_remove_style_all(s_list);

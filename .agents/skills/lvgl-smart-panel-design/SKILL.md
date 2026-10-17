@@ -57,8 +57,8 @@ Never place a naked icon floating above raw text.
    - Badge: "点动" (Muted pill).
    - Touch Behavior: Down triggers visual press ripple; release dispatches action without sticking local state to "ON".
 3. **DualLine 互斥双段 (Changeover Tile)**:
-   - Icon: `LV_SYMBOL_SHUFFLE` (interlocked changeover).
-   - Badge: Dynamically shows active branch name (`NC` vs `NO`) based on relay state.
+   - `2×2+` / 宽横条：标题 + 左右支路按钮（`labels.off`=NC、`labels.on`=NO）；点支路下发绝对 OFF/ON。
+   - 窄卡：整卡翻转；角标显示当前导通支路名。勿复制 APP 接线动画。
 
 ---
 

@@ -230,9 +230,62 @@ static void short_label(const char *in, char *out, size_t out_len, size_t max_ru
         rune_count++;
     }
     out[n] = '\0';
-    if (in[n] != '\0' && n + 2 < out_len) {
-        out[n] = '.';
-        out[n + 1] = '\0';
+    /* 超长由 LV_LABEL_LONG_DOT 按像素打点，此处不再硬拼 '.' */
+}
+
+/** 按占格给标题字数：与 APP displayTitle 对齐；大方块放宽，交给宽度打点 */
+static size_t title_max_runes(const nl_widget_t *w)
+{
+    if (!w) {
+        return 4;
+    }
+    const int gw = w->gw > 0 ? w->gw : 1;
+    const int gh = w->gh > 0 ? w->gh : 1;
+    if (gw <= 1 && gh <= 1) {
+        return 0;
+    }
+    if (gw >= 2 && gh >= 2) {
+        return 10; /* 2×2+：厨房热水等 */
+    }
+    if (gh <= 1) {
+        if (gw >= 4) {
+            return 10;
+        }
+        if (gw >= 3) {
+            return 8;
+        }
+        return 6; /* 2×1 横条 */
+    }
+    return 4; /* 1×N 瘦高 */
+}
+
+static bool widget_is_dual_line(const nl_widget_t *w)
+{
+    return w && w->skin[0] && strcmp(w->skin, "dual_line") == 0;
+}
+
+/** 2×2+ 或 ≥3 宽横条：用互斥双段按钮；窄卡仍整点翻转 */
+static bool dual_line_use_segments(const nl_widget_t *w)
+{
+    if (!widget_is_dual_line(w)) {
+        return false;
+    }
+    const int gw = w->gw > 0 ? w->gw : 1;
+    const int gh = w->gh > 0 ? w->gh : 1;
+    if (gw >= 2 && gh >= 2) {
+        return true;
+    }
+    return (gw >= 3 && gh <= 1);
+}
+
+/** labels.off=NC（关态导通）、labels.on=NO（开态导通），对齐 layout-schema */
+static void dual_branch_names(const nl_widget_t *w, const char **off_name, const char **on_name)
+{
+    if (off_name) {
+        *off_name = (w && w->labels_off[0]) ? w->labels_off : "NC";
+    }
+    if (on_name) {
+        *on_name = (w && w->labels_on[0]) ? w->labels_on : "NO";
     }
 }
 
@@ -716,6 +769,24 @@ static uint32_t widget_fill_for_state(const nl_widget_t *w, tile_kind_t kind, bo
     return kind_fill_on(kind);
 }
 
+static void paint_dual_seg(lv_obj_t *seg, bool online, bool on, bool is_on_branch, lv_color_t active_c)
+{
+    if (!seg) {
+        return;
+    }
+    const bool active = online && (on == is_on_branch);
+    lv_obj_set_style_bg_color(seg, active ? active_c : UI_CAPSULE_OFF, 0);
+    lv_obj_set_style_bg_opa(seg, online ? (active ? LV_OPA_COVER : LV_OPA_60) : LV_OPA_40, 0);
+    lv_obj_set_style_border_width(seg, active ? 0 : 1, 0);
+    lv_obj_set_style_border_color(seg, UI_BORDER, 0);
+    lv_obj_set_style_border_opa(seg, active ? LV_OPA_TRANSP : LV_OPA_40, 0);
+    ui_set_enabled(seg, online);
+    if (lv_obj_get_child_count(seg) > 0) {
+        lv_obj_t *lb = lv_obj_get_child(seg, 0);
+        lv_obj_set_style_text_color(lb, active ? UI_ON_TILE : (online ? UI_TEXT_DIM : UI_DISABLED_FG), 0);
+    }
+}
+
 static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
 {
     if (!tile || !w) {
@@ -734,7 +805,19 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
     lv_obj_set_style_bg_color(tile, lv_color_hex(color_pressed(fill)), LV_STATE_PRESSED);
     /* 首页磁贴无外边框，保持沉浸纯净 */
     lv_obj_set_style_border_width(tile, 0, 0);
-    ui_set_enabled(tile, online || kind == TILE_SCENE || w->bind.kind == NL_BIND_HOME_SCENARIO);
+    /* 双段卡整卡不可点，只由支路响应；勿用 ui_set_enabled 把 CLICKABLE 加回去 */
+    if (dual_line_use_segments(w)) {
+        lv_obj_clear_flag(tile, LV_OBJ_FLAG_CLICKABLE);
+        if (online) {
+            lv_obj_remove_state(tile, LV_STATE_DISABLED);
+            lv_obj_set_style_opa(tile, LV_OPA_COVER, 0);
+        } else {
+            lv_obj_add_state(tile, LV_STATE_DISABLED);
+            lv_obj_set_style_opa(tile, LV_OPA_60, 0);
+        }
+    } else {
+        ui_set_enabled(tile, online || kind == TILE_SCENE || w->bind.kind == NL_BIND_HOME_SCENARIO);
+    }
 
     /* 开态图标使用高饱和品牌/语义亮色，关态暗白，离线灰暗 */
     lv_color_t active_c = UI_ACCENT;
@@ -760,10 +843,36 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
 
     bool is_1x1 = (w && w->gw <= 1 && w->gh <= 1);
     bool is_row = (w && w->gw >= 2 && w->gh <= 1);
+    bool dl_segs = dual_line_use_segments(w);
+    const char *dl_off = nullptr;
+    const char *dl_on = nullptr;
+    if (widget_is_dual_line(w)) {
+        dual_branch_names(w, &dl_off, &dl_on);
+    }
+
     uint32_t sub = lv_obj_get_child_count(tile);
     for (uint32_t j = 0; j < sub; j++) {
         lv_obj_t *ch = lv_obj_get_child(tile, j);
         intptr_t role = (intptr_t)lv_obj_get_user_data(ch);
+        if (role == TILE_CHILD_DL_ROW || role == TILE_CHILD_DL_OFF || role == TILE_CHILD_DL_ON) {
+            if (role == TILE_CHILD_DL_ROW) {
+                uint32_t nseg = lv_obj_get_child_count(ch);
+                for (uint32_t s = 0; s < nseg; s++) {
+                    lv_obj_t *seg = lv_obj_get_child(ch, s);
+                    intptr_t sr = (intptr_t)lv_obj_get_user_data(seg);
+                    if (sr == TILE_CHILD_DL_OFF) {
+                        paint_dual_seg(seg, online, on, false, active_c);
+                    } else if (sr == TILE_CHILD_DL_ON) {
+                        paint_dual_seg(seg, online, on, true, active_c);
+                    }
+                }
+            } else if (role == TILE_CHILD_DL_OFF) {
+                paint_dual_seg(ch, online, on, false, active_c);
+            } else {
+                paint_dual_seg(ch, online, on, true, active_c);
+            }
+            continue;
+        }
         if (role == TILE_CHILD_CAPSULE) {
             /* 彻底去除图标底座框框，保持 100% 透明无框 */
             lv_obj_set_style_bg_opa(ch, LV_OPA_TRANSP, 0);
@@ -808,6 +917,11 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                     } else {
                         lv_obj_add_flag(ch, LV_OBJ_FLAG_HIDDEN);
                     }
+                    continue;
+                }
+                /* 双段按钮已表达状态：在线且无倒计时则隐藏角标 */
+                if (dl_segs && cd <= 0 && online) {
+                    lv_obj_add_flag(ch, LV_OBJ_FLAG_HIDDEN);
                     continue;
                 }
                 lv_obj_clear_flag(ch, LV_OBJ_FLAG_HIDDEN);
@@ -855,11 +969,10 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                     lv_obj_set_style_text_color(ch, hint_c, 0);
                     lv_obj_set_style_bg_color(ch, badge_bg, 0);
                     lv_obj_set_style_bg_opa(ch, online ? LV_OPA_60 : LV_OPA_50, 0);
-                } else if (w && strcmp(w->skin, "dual_line") == 0) {
-                    /* DualLine 互斥双段：开态显示 NC 名，关态显示 NO 名 */
-                    const char *nc = (w->labels_on[0]) ? w->labels_on : "NC";
-                    const char *no = (w->labels_off[0]) ? w->labels_off : "NO";
-                    lv_label_set_text(ch, (!online) ? "离" : (on ? nc : no));
+                } else if (widget_is_dual_line(w)) {
+                    /* 窄卡 DualLine：角标显示当前导通支路名（开→NO，关→NC） */
+                    const char *act = on ? dl_on : dl_off;
+                    lv_label_set_text(ch, (!online) ? "离" : (act ? act : (on ? "NO" : "NC")));
                     nl_ov_set_font(ch);
                     style_hint_pill(ch, false);
                     lv_obj_set_style_text_color(ch, hint_c, 0);
@@ -1097,6 +1210,38 @@ static void widget_cmd(const nl_widget_t *w, const char *value)
     dispatch_async_cmd(w, value, false);
 }
 
+/** DualLine 支路：点 NC→OFF、点 NO→ON（绝对态，非翻转） */
+static void on_dual_seg(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    lv_obj_t *seg = static_cast<lv_obj_t *>(lv_event_get_target(e));
+    if (seg && lv_obj_has_state(seg, LV_STATE_DISABLED)) {
+        return;
+    }
+    nl_widget_t *w = static_cast<nl_widget_t *>(lv_event_get_user_data(e));
+    if (!w || !seg) {
+        return;
+    }
+    intptr_t role = (intptr_t)lv_obj_get_user_data(seg);
+    const bool want_on = (role == TILE_CHILD_DL_ON);
+    const char *want = want_on ? "ON" : "OFF";
+    tile_kind_t kind = tile_kind_of(w);
+    if (widget_is_on(w, kind) == want_on) {
+        return; /* 已在目标支路 */
+    }
+    set_widget_cache_state(w, want);
+    nl_ov_refresh_home_tiles();
+    if (w->bind.device_id[0] && !nodelio_panel_ui_device_online(w->bind.device_id)) {
+        nl_ov_toast("设备未在线");
+        set_widget_cache_state(w, want_on ? "OFF" : "ON");
+        nl_ov_refresh_home_tiles();
+        return;
+    }
+    dispatch_async_cmd(w, want, true);
+}
+
 static void on_btn(lv_event_t *e)
 {
     lv_obj_t *tgt = static_cast<lv_obj_t *>(lv_event_get_target(e));
@@ -1131,6 +1276,7 @@ static void on_btn(lv_event_t *e)
         dispatch_async_cmd(w, "TOGGLE", false);
         return;
     }
+    /* DualLine 无双段时（窄卡）：整卡翻转，与普通开关相同 */
     /* 先翻本地态，再异步下发绝对 ON/OFF；联动同引脚所有卡片瞬间同步响应（0ms 响应，完全不卡死 UI） */
     flip_widget_cache(w);
     nl_ov_refresh_home_tiles();
@@ -1186,47 +1332,94 @@ static lv_obj_t *make_tile_shell(const nl_widget_t *w, tile_kind_t kind, int cel
     return tile;
 }
 
-static void add_tile_labels(lv_obj_t *tile, const nl_widget_t *w, tile_kind_t kind, const char *title)
+static lv_obj_t *make_dual_seg(lv_obj_t *parent, nl_widget_t *w, intptr_t role, const char *text,
+                               bool is_row_layout)
+{
+    lv_obj_t *seg = lv_obj_create(parent);
+    lv_obj_remove_style_all(seg);
+    lv_obj_set_user_data(seg, (void *)role);
+    lv_obj_set_flex_grow(seg, 1);
+    lv_obj_set_height(seg, is_row_layout ? 30 : 40);
+    lv_obj_set_style_radius(seg, UI_RADIUS_SM, 0);
+    lv_obj_set_style_bg_color(seg, UI_CAPSULE_OFF, 0);
+    lv_obj_set_style_bg_opa(seg, LV_OPA_60, 0);
+    lv_obj_set_style_pad_left(seg, 4, 0);
+    lv_obj_set_style_pad_right(seg, 4, 0);
+    lv_obj_set_style_pad_top(seg, 2, 0);
+    lv_obj_set_style_pad_bottom(seg, 2, 0);
+    lv_obj_clear_flag(seg, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(seg, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(seg, 8);
+    lv_obj_set_style_bg_color(seg, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+    lv_obj_add_event_cb(seg, on_dual_seg, LV_EVENT_CLICKED, w);
+
+    char short_n[24];
+    short_label(text, short_n, sizeof(short_n), is_row_layout ? 4 : 5);
+    lv_obj_t *lb = lv_label_create(seg);
+    lv_label_set_text(lb, short_n[0] ? short_n : text);
+    nl_ov_set_font(lb);
+    lv_obj_set_style_text_color(lb, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(lb, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(lb, lv_pct(100));
+    lv_obj_center(lb);
+    return seg;
+}
+
+static void add_tile_labels(lv_obj_t *tile, nl_widget_t *w, tile_kind_t kind, const char *title)
 {
     bool is_1x1 = (w && w->gw <= 1 && w->gh <= 1);
     bool is_row = (w && w->gw >= 2 && w->gh <= 1);
     bool is_large = (w && (w->gw >= 2 && w->gh >= 2));
     bool is_col_slim = (w && w->gw <= 1 && w->gh >= 2);
+    bool dl_segs = dual_line_use_segments(w);
 
-    char short_t[24];
-    short_label(title, short_t, sizeof(short_t), is_row ? 5 : 3);
+    char short_t[48];
+    short_label(title, short_t, sizeof(short_t), title_max_runes(w));
 
     if (is_1x1) {
-        /* 1x1 极小单格：图标居中，无底部标题；「离」角标浮在右上角 */
         lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_style_pad_all(tile, 4, 0);
-    } else if (is_row) {
-        /* 行高为 1 且宽 >= 2：左右结构（左图标胶囊、中标题、右角标真正靠右） */
+    } else if (dl_segs && is_row) {
+        /* DualLine 宽横条：左标题 + 右双段 */
         lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(tile, 8, 0);
         lv_obj_set_style_pad_left(tile, 10, 0);
-        lv_obj_set_style_pad_right(tile, 8, 0); /* 贴近右边界，右侧状态微标真正靠右 */
+        lv_obj_set_style_pad_right(tile, 8, 0);
+        lv_obj_set_style_pad_top(tile, 4, 0);
+        lv_obj_set_style_pad_bottom(tile, 4, 0);
+    } else if (dl_segs && is_large) {
+        /* DualLine 大方块：上标题、下互斥双段（无大电源图标） */
+        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_all(tile, 8, 0);
+        lv_obj_set_style_pad_row(tile, 10, 0);
+    } else if (is_row) {
+        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(tile, 8, 0);
+        lv_obj_set_style_pad_left(tile, 10, 0);
+        lv_obj_set_style_pad_right(tile, 8, 0);
         lv_obj_set_style_pad_top(tile, 4, 0);
         lv_obj_set_style_pad_bottom(tile, 4, 0);
     } else if (is_col_slim) {
-        /* 瘦高卡片（1x2 / 1x3）：上下结构，图标与标题在中央成组紧凑对齐，避免名称沉底或中间过度空旷 */
         lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_all(tile, 4, 0);
         lv_obj_set_style_pad_row(tile, 8, 0);
     } else {
-        /* 大方块（>=2x2）：两行及以上大方块，图标与标题在中央成组对齐，层次分明，微标置于右上角 */
         lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_all(tile, 6, 0);
         lv_obj_set_style_pad_row(tile, is_large ? 10 : 8, 0);
     }
 
-    /* 1. 图标容器（无底座框框，纯净大图标直接悬浮在磁贴上） */
+    /* 1. 图标：双段大方块省略大图标，把空间留给支路名 */
     lv_coord_t cap_size = is_row ? 28 : (is_large ? 46 : (is_col_slim ? 36 : 42));
-    if (is_1x1) {
-        /* 1x1：图标直接 center 对齐，不通过 flex 胶囊容器 */
+    if (dl_segs && is_large) {
+        /* skip icon */
+    } else if (is_1x1) {
         lv_obj_t *icon_lbl = lv_label_create(tile);
         lv_obj_set_user_data(icon_lbl, (void *)(intptr_t)TILE_CHILD_ICON);
         lv_label_set_text(icon_lbl, kind_symbol(w, kind, false));
@@ -1242,7 +1435,6 @@ static void add_tile_labels(lv_obj_t *tile, const nl_widget_t *w, tile_kind_t ki
         lv_obj_set_style_border_width(capsule, 0, 0);
         lv_obj_clear_flag(capsule, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-        /* 矢量图标：非横条全用 30px 超大矢量图标 */
         lv_obj_t *icon_lbl = lv_label_create(capsule);
         lv_label_set_text(icon_lbl, kind_symbol(w, kind, false));
         lv_obj_set_style_text_font(icon_lbl, nl_ov_tile_icon_font(is_row), 0);
@@ -1250,7 +1442,7 @@ static void add_tile_labels(lv_obj_t *tile, const nl_widget_t *w, tile_kind_t ki
         lv_obj_center(icon_lbl);
     }
 
-    /* 2. 标题文字（1x1 隐藏） */
+    /* 2. 标题 */
     lv_obj_t *lb = lv_label_create(tile);
     lv_obj_set_user_data(lb, (void *)(intptr_t)TILE_CHILD_TITLE);
     lv_label_set_text(lb, short_t[0] ? short_t : title);
@@ -1258,20 +1450,45 @@ static void add_tile_labels(lv_obj_t *tile, const nl_widget_t *w, tile_kind_t ki
     lv_obj_set_style_text_color(lb, UI_TEXT, 0);
     if (is_1x1) {
         lv_obj_add_flag(lb, LV_OBJ_FLAG_HIDDEN);
+    } else if (dl_segs && is_row) {
+        lv_obj_clear_flag(lb, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_LEFT, 0);
+        lv_obj_set_width(lb, 96);
     } else if (is_row) {
         lv_obj_clear_flag(lb, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_LEFT, 0);
         lv_obj_set_flex_grow(lb, 1);
-        lv_obj_set_style_pad_right(lb, 26, 0); /* 预留右侧浮动药丸空隙，长文字自动打点截断 */
+        lv_obj_set_style_pad_right(lb, 26, 0);
     } else {
         lv_obj_clear_flag(lb, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_width(lb, lv_pct(94));
-        lv_obj_set_height(lb, LV_SIZE_CONTENT); /* 高度自适应，不硬编码 */
+        lv_obj_set_height(lb, LV_SIZE_CONTENT);
     }
     lv_label_set_long_mode(lb, LV_LABEL_LONG_DOT);
 
-    /* 3. 药丸浮动角标：左右结构靠中右，上下结构靠右上预留呼吸空隙 */
+    /* 2b. DualLine 互斥双段 */
+    if (dl_segs) {
+        const char *off_n = nullptr;
+        const char *on_n = nullptr;
+        dual_branch_names(w, &off_n, &on_n);
+        lv_obj_t *row = lv_obj_create(tile);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_user_data(row, (void *)(intptr_t)TILE_CHILD_DL_ROW);
+        lv_obj_set_width(row, lv_pct(is_row ? 58 : 100));
+        lv_obj_set_height(row, LV_SIZE_CONTENT);
+        if (is_row) {
+            lv_obj_set_flex_grow(row, 1);
+        }
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(row, 6, 0);
+        lv_obj_clear_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+        make_dual_seg(row, w, TILE_CHILD_DL_OFF, off_n, is_row);
+        make_dual_seg(row, w, TILE_CHILD_DL_ON, on_n, is_row);
+    }
+
+    /* 3. 药丸浮动角标 */
     lv_obj_t *hint = lv_label_create(tile);
     lv_obj_set_user_data(hint, (void *)(intptr_t)TILE_CHILD_HINT);
     lv_obj_add_flag(hint, (lv_obj_flag_t)(LV_OBJ_FLAG_IGNORE_LAYOUT | LV_OBJ_FLAG_FLOATING));
@@ -1282,8 +1499,7 @@ static void add_tile_labels(lv_obj_t *tile, const nl_widget_t *w, tile_kind_t ki
     style_hint_pill(hint, false);
     lv_obj_align(hint, is_row ? LV_ALIGN_RIGHT_MID : LV_ALIGN_TOP_RIGHT, is_row ? -2 : -4, is_row ? 0 : 4);
 
-    if (is_1x1) {
-        /* 1x1 正常在线隐藏微标，只在离线时展示 */
+    if (is_1x1 || dl_segs) {
         lv_obj_add_flag(hint, LV_OBJ_FLAG_HIDDEN);
     }
 
@@ -1295,9 +1511,10 @@ static void add_tile_labels(lv_obj_t *tile, const nl_widget_t *w, tile_kind_t ki
         lv_label_set_text(hint, "点动");
         nl_ov_set_font(hint);
         lv_obj_set_style_text_color(hint, UI_TEXT_MUTED, 0);
-    } else if (w && strcmp(w->skin, "dual_line") == 0) {
-        const char *no = (w->labels_off[0]) ? w->labels_off : "NO";
-        lv_label_set_text(hint, no);
+    } else if (widget_is_dual_line(w)) {
+        const char *off_n = nullptr;
+        dual_branch_names(w, &off_n, nullptr);
+        lv_label_set_text(hint, off_n ? off_n : "NC");
         nl_ov_set_font(hint);
         lv_obj_set_style_text_color(hint, UI_TEXT_MUTED, 0);
     } else {
@@ -1498,8 +1715,8 @@ void nl_ov_fill_home(void)
                     lv_obj_set_style_pad_row(row, 6, 0);
                 }
 
-                char short_t[24];
-                short_label(title, short_t, sizeof(short_t), is_row ? 5 : 3);
+                char short_t[48];
+                short_label(title, short_t, sizeof(short_t), title_max_runes(w));
                 lv_coord_t cap_size = is_row ? 28 : 42;
                 lv_obj_t *capsule = lv_obj_create(row);
                 lv_obj_remove_style_all(capsule);
@@ -1566,7 +1783,12 @@ void nl_ov_fill_home(void)
                 continue;
             }
             lv_obj_t *tile = make_tile_shell(w, kind, cell_w, cell_h);
-            lv_obj_add_event_cb(tile, on_btn, LV_EVENT_CLICKED, w);
+            if (dual_line_use_segments(w)) {
+                /* 双段按钮各自响应；整卡不再翻转，避免误触 */
+                lv_obj_clear_flag(tile, LV_OBJ_FLAG_CLICKABLE);
+            } else {
+                lv_obj_add_event_cb(tile, on_btn, LV_EVENT_CLICKED, w);
+            }
             add_tile_labels(tile, w, kind, title);
             style_tile_visual(tile, w);
         }
