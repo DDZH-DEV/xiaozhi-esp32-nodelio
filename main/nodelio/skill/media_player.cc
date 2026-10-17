@@ -15,6 +15,7 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
+#include <ctime>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -405,6 +406,13 @@ esp_err_t nodelio_media_play_track(const nodelio_nvs_config_t *cfg, const nl_env
     }
     if (!nodelio_caps_has("media.play_local")) {
         return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (track->expires_at > 0) {
+        const time_t now = time(nullptr);
+        if (now > 0 && (int64_t)now > track->expires_at) {
+            nodelio_panel_ui_toast_defer("链接已过期");
+            return ESP_ERR_INVALID_STATE;
+        }
     }
     if (!s_q && nodelio_media_init() != ESP_OK) {
         return ESP_ERR_NO_MEM;

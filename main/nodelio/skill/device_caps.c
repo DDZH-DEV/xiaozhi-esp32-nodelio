@@ -99,6 +99,7 @@ int nodelio_caps_max_list_items(void)
 
 const char *nodelio_caps_profile(void)
 {
+    /* 仅本地模板名；线上上报不得带 profile（Protocol 00 §4.1 / PLAN K4） */
     return "esp32-panel-480";
 }
 
@@ -124,10 +125,10 @@ int nodelio_caps_export_json(char *buf, size_t buf_len)
     if (!buf || buf_len < 64) {
         return -1;
     }
+    /* 线上形状：只写展开后的 capabilities（无 profile / disabled） */
     int off = snprintf(buf, buf_len,
                        "{\"schema_version\":1,\"protocol_version\":1,\"platform\":\"esp32-panel\","
-                       "\"profile\":\"%s\",\"capabilities\":[",
-                       nodelio_caps_profile());
+                       "\"capabilities\":[");
     if (off < 0 || off >= (int)buf_len) {
         return -1;
     }
@@ -159,6 +160,7 @@ int nodelio_caps_export_json(char *buf, size_t buf_len)
         }
     }
     if (nodelio_caps_has_media()) {
+        /* play_local → limits.media 必填；fetch 与 net.http_via_server 一致 */
         n = snprintf(buf + off, buf_len - (size_t)off,
                      "],\"limits\":{\"max_content_bytes\":%d,\"max_list_items\":%d,"
                      "\"image\":{\"allowed\":true,\"max_edge_px\":480,\"formats\":[\"jpeg\",\"png\"]},"
@@ -167,9 +169,9 @@ int nodelio_caps_export_json(char *buf, size_t buf_len)
                      "\"fetch\":\"http_via_server\"}}}",
                      NL_CAPS_MAX_BYTES, NL_CAPS_MAX_ITEMS);
     } else {
+        /* 无 media.*：禁止出现 limits.media；也不写 disabled 凑数 */
         n = snprintf(buf + off, buf_len - (size_t)off,
-                     "],\"disabled\":[\"media.play_local\",\"action.play\"],"
-                     "\"limits\":{\"max_content_bytes\":%d,\"max_list_items\":%d,"
+                     "],\"limits\":{\"max_content_bytes\":%d,\"max_list_items\":%d,"
                      "\"image\":{\"allowed\":true,\"max_edge_px\":480,\"formats\":[\"jpeg\",\"png\"]}}}",
                      NL_CAPS_MAX_BYTES, NL_CAPS_MAX_ITEMS);
     }

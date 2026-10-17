@@ -8,12 +8,13 @@ extern "C" {
 #endif
 
 /**
- * 墙板 DeviceCapabilities（Protocol esp32-panel-480）。
+ * 墙板 DeviceCapabilities（模板名 esp32-panel-480，仅本地；线上不报 profile）。
  *
- * 诚实申报：
- * - N0～N2：NL_CAPS_WITH_MEDIA=0（content-only，disabled media）
- * - N0b 后：NL_CAPS_WITH_MEDIA=1（含 media.play_local / now_playing）
- * - surfaces 含 home_tile（PLAN C）：钉选槽位 + 首页磁贴渲染（overlay_home_skills）
+ * 诚实申报 / 线上形状（Protocol 00 §4.1、PLAN K4）：
+ * - 只写展开后的 capabilities（无 profile、无 disabled 凑数）
+ * - NL_CAPS_WITH_MEDIA=0：content-only，无 media.*、无 limits.media
+ * - NL_CAPS_WITH_MEDIA=1：含 media.play_local + limits.media（fetch=http_via_server）
+ * - surfaces 含 home_tile；不报 action.open_url
  * 编译覆盖：-DNL_CAPS_WITH_MEDIA=0|1
  */
 bool nodelio_caps_has(const char *capability);
