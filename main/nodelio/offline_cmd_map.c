@@ -218,7 +218,7 @@ const char *nodelio_offline_cmd_zh(int command_id)
     case NL_OC_MEDIA_RESUME:
         return "继续播放";
     case NL_OC_CTRL_OFF:
-        return "控家未启用";
+        return "控家未启用 · 设置→控家 或装应用";
     default:
         return "未知口令";
     }
@@ -239,7 +239,8 @@ esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int comm
         return ESP_OK;
     }
     if (command_id == NL_OC_CTRL_OFF) {
-        nodelio_panel_ui_set_voice_hint("控家未启用");
+        /* G1：关控家时「开灯」类口令只提示，不执行；引导去设置或装应用 */
+        nodelio_panel_ui_set_voice_hint("控家未启用 · 设置→控家 或装应用");
         return ESP_OK;
     }
     if (command_id == NL_OC_MEDIA_PREV) {

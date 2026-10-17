@@ -319,6 +319,10 @@ static bool title_worth_listing(const char *title, const char *device_id)
 static const char *kControlsOff =
     "控家模块已关闭。请告诉用户到墙板「设置 → 控家」打开「允许控家模块」，不要假装已经开灯或执行成功。";
 
+static const char *kControlsEmpty =
+    "当前没有可控制的设备或情景。请告诉用户：可在手机 APP 绑定继电器/开关并排布到墙板，"
+    "或打开「面板应用」安装市场应用；不要假装已经开灯或执行成功。";
+
 static std::string list_controls_json()
 {
     if (!nodelio_controls_enabled()) {
@@ -327,7 +331,7 @@ static std::string list_controls_json()
     const nodelio_panel_layout_t *layout = nodelio_panel_ui_get_layout();
     cJSON *arr = cJSON_CreateArray();
     if (!arr) {
-        return "[]";
+        return std::string(kControlsEmpty);
     }
 
     std::unordered_set<std::string> seen_title;
@@ -443,9 +447,15 @@ static std::string list_controls_json()
         }
     }
 
+    if (n == 0) {
+        cJSON_Delete(arr);
+        ESP_LOGI(TAG, "list_controls empty (no bindings)");
+        return std::string(kControlsEmpty);
+    }
+
     char *printed = cJSON_PrintUnformatted(arr);
     cJSON_Delete(arr);
-    std::string out = printed ? printed : "[]";
+    std::string out = printed ? printed : std::string(kControlsEmpty);
     free(printed);
 
     /* 硬顶：MQTT MCP 常见 ~8KB；留余量给 jsonrpc 外壳 */
@@ -459,7 +469,7 @@ static std::string list_controls_json()
             out.resize(cut + 1);
             out.push_back(']');
         } else {
-            out = "[]";
+            out = std::string(kControlsEmpty);
         }
     }
     ESP_LOGI(TAG, "list_controls n≈%d bytes=%u", n, (unsigned)out.size());
@@ -759,6 +769,7 @@ void nodelio_mcp_register_tools(void)
         "Returns compact JSON: [{title, room?, kind?, online?}]; kind defaults to switch (scene/pwm when set). "
         "online=false means device is offline — do not call control on it; tell user it is offline. "
         "Missing online means online/unknown. "
+        "If module off or no bindings, returns plain Chinese guidance (bind in APP or install panel apps) — do not pretend success. "
         "Use title with self.nodelio.control. Actions: ON/OFF/TOGGLE/OFF_IN/CANCEL_COUNTDOWN/SET_PWM/apply. "
         "If user says 开灯 without room and several lights exist, ask which one.",
         PropertyList(), [](const PropertyList &) -> ReturnValue { return list_controls_json(); });
