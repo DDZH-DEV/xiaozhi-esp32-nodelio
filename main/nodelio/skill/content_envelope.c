@@ -60,6 +60,10 @@ static void parse_track_obj(const cJSON *item, nl_env_track_t *t, bool allow_pla
     if (t->title[0] == '\0') {
         copy_str(t->title, sizeof(t->title), item, "name");
     }
+    /* list_item 用 subtitle；无 artist 时落到第二行 */
+    if (t->artist[0] == '\0') {
+        copy_str(t->artist, sizeof(t->artist), item, "subtitle");
+    }
     const cJSON *playback = cJSON_GetObjectItemCaseSensitive(item, "playback");
     if (cJSON_IsObject(playback)) {
         copy_str(t->playback_url, sizeof(t->playback_url), playback, "url");

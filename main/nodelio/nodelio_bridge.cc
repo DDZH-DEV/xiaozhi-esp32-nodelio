@@ -104,6 +104,10 @@ static void hb_task(void *arg)
         if (nodelio_wifi_is_asleep() || !nodelio_wifi_has_ip()) {
             continue;
         }
+        /* 播通知/点歌时别抢 HTTP，否则 NotifyPlayer 容易 underrun */
+        if (Application::GetInstance().GetDeviceState() == kDeviceStateNotifying) {
+            continue;
+        }
         esp_err_t hb = nodelio_device_heartbeat(&s_cfg);
         if (hb != ESP_OK) {
             ESP_LOGW(TAG, "periodic heartbeat: %s", esp_err_to_name(hb));

@@ -144,6 +144,8 @@ public:
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
+    /** 已是单声道 PCM（采样率须等于 codec 输出）。播放队列满时阻塞，ResetDecoder 后返回 false。 */
+    bool EnqueuePlaybackPcm(std::vector<int16_t> pcm, uint32_t playback_id, uint32_t media_position_ms);
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
     void PlaySound(const std::string_view& sound);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);

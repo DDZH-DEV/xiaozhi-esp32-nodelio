@@ -29,11 +29,16 @@ protected:
 
 class PwmBacklight : public Backlight {
 public:
-    PwmBacklight(gpio_num_t pin, bool output_invert = false, uint32_t freq_hz = 25000);
+    /* off_level < 0：沿用 invert（灭时脚为高）。RY3730 的 EN 低电平才关，须显式传 0。 */
+    PwmBacklight(gpio_num_t pin, bool output_invert = false, uint32_t freq_hz = 25000, int off_level = -1);
     ~PwmBacklight();
 
     void SetBrightnessImpl(uint8_t brightness) override;
 
 private:
+    void BindChannel(uint32_t duty);
+    gpio_num_t pin_ = GPIO_NUM_NC;
     bool output_invert_ = false;
+    int off_level_ = 0;
+    bool held_off_ = false;
 };

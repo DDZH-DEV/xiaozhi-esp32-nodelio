@@ -175,6 +175,7 @@ static void on_ttl(lv_timer_t *t)
 }
 
 static void fill_list(void);
+static void apply_card_chrome(void);
 static void reopen_list(void);
 static void request_reshuffle(void);
 static void minimize_to_fab(void);
@@ -297,7 +298,7 @@ static void set_hdr_mid_icon(const char *sym)
     }
 }
 
-/** 曲库：下一页（每页 10 首，两列）。新闻列表：仍收成悬浮球。 */
+/** 曲库翻页；新闻收成悬浮球。正文卡没有下一页，不提示曲目。 */
 static void on_hdr_mid(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
@@ -307,9 +308,9 @@ static void on_hdr_mid(lv_event_t *e)
         minimize_to_fab();
         return;
     }
+    const bool music = strcmp(s_env.card_type, "music_list") == 0;
     const int pages = list_page_count();
-    if (pages <= 1) {
-        nl_ov_toast("没有更多曲目");
+    if (!music || pages <= 1) {
         return;
     }
     s_list_page = (s_list_page + 1) % pages;
@@ -1353,6 +1354,36 @@ static void ensure_card(void)
 
 #include "news_list_ui.inc"
 
+static void apply_card_chrome(void)
+{
+    const bool music = strcmp(s_env.card_type, "music_list") == 0;
+    const bool news = strcmp(s_env.card_type, "news_list") == 0;
+    const bool paged = music || news || list_page_count() > 1;
+    const bool compact = !paged && s_env.track_n <= 4;
+    if (s_hdr_mid_btn) {
+        if (paged) {
+            lv_obj_clear_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (!s_card) {
+        return;
+    }
+    if (compact) {
+        lv_obj_set_height(s_card, LV_SIZE_CONTENT);
+        if (s_card_list) {
+            lv_obj_set_flex_grow(s_card_list, 0);
+            lv_obj_set_height(s_card_list, LV_SIZE_CONTENT);
+        }
+    } else {
+        lv_obj_set_height(s_card, SKILL_CARD_H_MAX);
+        if (s_card_list) {
+            lv_obj_set_flex_grow(s_card_list, 1);
+        }
+    }
+}
+
 static void fill_list(void)
 {
     if (!s_card_list) {
@@ -1360,6 +1391,7 @@ static void fill_list(void)
     }
     if (strcmp(s_env.card_type, "news_list") == 0) {
         fill_news();
+        apply_card_chrome();
         return;
     }
     lv_obj_clear_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE);
@@ -1371,6 +1403,8 @@ static void fill_list(void)
 
     set_hdr_mid_icon(MATERIAL_SYMBOLS_SKIP_NEXT);
 
+    const bool music_card = strcmp(s_env.card_type, "music_list") == 0;
+
     if (s_card_sub) {
         if (s_env.track_n > 0) {
             char sub[48];
@@ -1378,10 +1412,16 @@ static void fill_list(void)
             if (s_list_page >= pages) {
                 s_list_page = 0;
             }
-            if (pages > 1) {
-                snprintf(sub, sizeof(sub), "共 %d 首 · %d/%d", s_env.track_n, s_list_page + 1, pages);
+            if (music_card) {
+                if (pages > 1) {
+                    snprintf(sub, sizeof(sub), "共 %d 首 · %d/%d", s_env.track_n, s_list_page + 1, pages);
+                } else {
+                    snprintf(sub, sizeof(sub), "共 %d 首 · 点播或说歌名", s_env.track_n);
+                }
+            } else if (pages > 1) {
+                snprintf(sub, sizeof(sub), "共 %d 条 · %d/%d", s_env.track_n, s_list_page + 1, pages);
             } else {
-                snprintf(sub, sizeof(sub), "共 %d 首 · 点播或说歌名", s_env.track_n);
+                snprintf(sub, sizeof(sub), "共 %d 条", s_env.track_n);
             }
             lv_label_set_text(s_card_sub, sub);
         } else {
@@ -1394,6 +1434,7 @@ static void fill_list(void)
         nl_ov_set_font(err);
         lv_label_set_text(err, s_env.error_message[0] ? s_env.error_message : "技能失败");
         lv_obj_set_style_text_color(err, UI_DANGER_FG, 0);
+        apply_card_chrome();
         return;
     }
 
@@ -1401,7 +1442,10 @@ static void fill_list(void)
         lv_obj_t *empty = lv_label_create(s_card_list);
         nl_ov_set_font(empty);
         lv_label_set_text(empty, s_env.spoken[0] ? s_env.spoken : "无结果");
-        lv_obj_set_style_text_color(empty, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(empty, UI_TEXT, 0);
+        lv_obj_set_width(empty, lv_pct(100));
+        lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
+        apply_card_chrome();
         return;
     }
 
@@ -1495,7 +1539,13 @@ static void fill_list(void)
 
             lv_obj_t *a = lv_label_create(txt);
             nl_ov_set_font(a);
-            lv_label_set_text(a, s_env.tracks[i].artist[0] ? s_env.tracks[i].artist : "未知艺人");
+            if (s_env.tracks[i].artist[0]) {
+                lv_label_set_text(a, s_env.tracks[i].artist);
+            } else if (music_card) {
+                lv_label_set_text(a, "未知艺人");
+            } else {
+                lv_label_set_text(a, " ");
+            }
             lv_obj_set_style_text_color(a, UI_TEXT_MUTED, 0);
             lv_label_set_long_mode(a, LV_LABEL_LONG_DOT);
             lv_obj_set_width(a, lv_pct(100));
@@ -1517,6 +1567,7 @@ static void fill_list(void)
             lv_obj_clear_flag(pad, LV_OBJ_FLAG_CLICKABLE);
         }
     }
+    apply_card_chrome();
 }
 
 bool nodelio_skill_try_dismiss_phrase(const char *text)

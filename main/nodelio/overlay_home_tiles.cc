@@ -795,7 +795,7 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
     if (!tile || !w) {
         return;
     }
-    if (w->type == NL_WIDGET_SKILL_TILE) {
+    if (w->type == NL_WIDGET_SKILL_TILE || w->type == NL_WIDGET_SKILL_WIDGET) {
         return;
     }
     tile_kind_t kind = tile_kind_of(w);
@@ -1717,7 +1717,9 @@ static int count_all_user_skill_tiles(void)
         for (int si = 0; si < pg->section_count; si++) {
             const nl_section_t *sec = &pg->sections[si];
             for (int wi = 0; wi < sec->widget_count; wi++) {
-                if (sec->widgets[wi].type == NL_WIDGET_SKILL_TILE && sec->widgets[wi].skill_id[0]) {
+                if ((sec->widgets[wi].type == NL_WIDGET_SKILL_TILE ||
+                     sec->widgets[wi].type == NL_WIDGET_SKILL_WIDGET) &&
+                    sec->widgets[wi].skill_id[0]) {
                     n++;
                 }
             }
@@ -1802,13 +1804,165 @@ static void fill_skill_tile(nl_widget_t *w, int cell_w, int cell_h)
     }
     lv_label_set_long_mode(lb, LV_LABEL_LONG_DOT);
 
-    lv_obj_t *badge = lv_label_create(tile);
-    nl_ov_set_font(badge);
-    lv_label_set_text(badge, "应用");
-    lv_obj_set_style_text_color(badge, UI_PURPLE, 0);
-    lv_obj_add_flag(badge, (lv_obj_flag_t)(LV_OBJ_FLAG_IGNORE_LAYOUT | LV_OBJ_FLAG_FLOATING));
-    lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(badge, is_row ? LV_ALIGN_RIGHT_MID : LV_ALIGN_TOP_RIGHT, is_row ? -4 : -4, is_row ? 0 : 4);
+    /* 1×1 只留图标：标题与「应用」角标都会压在胶囊上 */
+    if (!is_1x1) {
+        lv_obj_t *badge = lv_label_create(tile);
+        nl_ov_set_font(badge);
+        lv_label_set_text(badge, "应用");
+        lv_obj_set_style_text_color(badge, UI_PURPLE, 0);
+        lv_obj_add_flag(badge, (lv_obj_flag_t)(LV_OBJ_FLAG_IGNORE_LAYOUT | LV_OBJ_FLAG_FLOATING));
+        lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(badge, is_row ? LV_ALIGN_RIGHT_MID : LV_ALIGN_TOP_RIGHT, is_row ? -4 : -4, is_row ? 0 : 4);
+    }
+}
+
+static void on_skill_widget_click(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    nl_widget_t *w = static_cast<nl_widget_t *>(lv_event_get_user_data(e));
+    if (!w || w->type != NL_WIDGET_SKILL_WIDGET || !w->skill_id[0]) {
+        return;
+    }
+    const char *body = w->default_invoke[0] ? w->default_invoke : "{}";
+    nl_ov_invoke_skill_async(w->skill_id, body);
+}
+
+static lv_obj_t *widget_icon_pod(lv_obj_t *parent, const char *glyph, lv_color_t bg, int sz)
+{
+    lv_obj_t *pod = lv_obj_create(parent);
+    lv_obj_remove_style_all(pod);
+    lv_obj_set_size(pod, sz, sz);
+    lv_obj_set_style_radius(pod, UI_RADIUS_SM, 0);
+    lv_obj_set_style_bg_color(pod, bg, 0);
+    lv_obj_set_style_bg_opa(pod, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(pod, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_t *ic = lv_label_create(pod);
+    lv_label_set_text(ic, glyph);
+    lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
+    lv_obj_set_style_text_color(ic, UI_ON_TILE, 0);
+    lv_obj_center(ic);
+    return pod;
+}
+
+static void fill_skill_widget(nl_widget_t *w, int cell_w, int cell_h)
+{
+    if (!w || !w->skill_id[0]) {
+        return;
+    }
+    const char *fallback = w->title[0] ? w->title : w->skill_id;
+    lv_obj_t *tile = make_tile_shell(w, TILE_SCENE, cell_w, cell_h);
+    lv_obj_set_style_bg_color(tile, UI_TILE_OFF, 0);
+    lv_obj_set_style_border_width(tile, 1, 0);
+    lv_obj_set_style_border_color(tile, UI_TILE_OFF_BORDER, 0);
+    lv_obj_set_style_border_opa(tile, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(tile, on_skill_widget_click, LV_EVENT_CLICKED, w);
+
+    nl_widget_preview pv{};
+    const bool have = nl_ov_skill_widget_preview(w->skill_id, &pv);
+    const bool one_row = w->gh <= 1;
+    const char *invoke = w->default_invoke[0] ? w->default_invoke : "{}";
+    nl_ov_skill_widget_prefetch(w->skill_id, invoke, w->refresh_sec > 0 ? w->refresh_sec : 600);
+
+    /* 一行高（每日一句）：正文必须占满格子，标题单独一行会被裁掉 */
+    if (one_row || !pv.list) {
+        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_left(tile, 8, 0);
+        lv_obj_set_style_pad_right(tile, 8, 0);
+        lv_obj_set_style_pad_column(tile, 8, 0);
+        widget_icon_pod(tile, MATERIAL_SYMBOLS_CHAT_BUBBLE, UI_CAPSULE_SCENE, one_row ? 28 : 32);
+        lv_obj_t *body = lv_label_create(tile);
+        nl_ov_set_font(body);
+        const char *text = (have && pv.n > 0 && pv.title[0][0]) ? pv.title[0] : "加载中";
+        lv_label_set_text(body, text);
+        lv_obj_set_style_text_color(body, have && pv.ok ? UI_TEXT : UI_TEXT_MUTED, 0);
+        lv_obj_set_flex_grow(body, 1);
+        lv_obj_set_width(body, lv_pct(100));
+        lv_label_set_long_mode(body, LV_LABEL_LONG_DOT);
+        return;
+    }
+
+    /* 宽卡片：左上只留图标和标题，预报靠右，把空出来的右半边用上 */
+    lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_left(tile, 10, 0);
+    lv_obj_set_style_pad_right(tile, 12, 0);
+    lv_obj_set_style_pad_top(tile, 8, 0);
+    lv_obj_set_style_pad_bottom(tile, 8, 0);
+    lv_obj_set_style_pad_column(tile, 10, 0);
+
+    lv_obj_t *side = lv_obj_create(tile);
+    lv_obj_remove_style_all(side);
+    lv_obj_set_size(side, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(side, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(side, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(side, 6, 0);
+    lv_obj_clear_flag(side, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    widget_icon_pod(side, MATERIAL_SYMBOLS_BRIGHTNESS_6, UI_CAPSULE_PWM, 28);
+    lv_obj_t *ht = lv_label_create(side);
+    nl_ov_set_font(ht);
+    lv_label_set_text(ht, pv.head[0] ? pv.head : fallback);
+    lv_obj_set_style_text_color(ht, UI_TEXT, 0);
+    lv_label_set_long_mode(ht, LV_LABEL_LONG_DOT);
+
+    lv_obj_t *col = lv_obj_create(tile);
+    lv_obj_remove_style_all(col);
+    lv_obj_set_width(col, lv_pct(70));
+    lv_obj_set_height(col, lv_pct(100));
+    lv_obj_set_flex_grow(col, 1);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(col, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(col, 4, 0);
+    lv_obj_clear_flag(col, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    int rows = pv.n > 3 ? 3 : pv.n;
+    if (rows <= 0) {
+        lv_obj_t *empty = lv_label_create(col);
+        nl_ov_set_font(empty);
+        lv_label_set_text(empty, "加载中");
+        lv_obj_set_style_text_color(empty, UI_TEXT_MUTED, 0);
+        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_RIGHT, 0);
+        return;
+    }
+    for (int i = 0; i < rows; i++) {
+        const char *src = pv.title[i][0] ? pv.title[i] : "—";
+        const char *sep = std::strstr(src, " · ");
+        char day[24];
+        const char *rest = src;
+        if (sep && (size_t)(sep - src) < sizeof(day)) {
+            size_t n = (size_t)(sep - src);
+            std::memcpy(day, src, n);
+            day[n] = '\0';
+            rest = sep + 3;
+        } else {
+            day[0] = '\0';
+        }
+
+        lv_obj_t *row = lv_obj_create(col);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_width(row, lv_pct(100));
+        lv_obj_set_height(row, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+        if (day[0]) {
+            lv_obj_t *dl = lv_label_create(row);
+            nl_ov_set_font(dl);
+            lv_label_set_text(dl, day);
+            lv_obj_set_style_text_color(dl, i == 0 ? UI_TEXT_SUB : UI_TEXT_MUTED, 0);
+        }
+        lv_obj_t *rr = lv_label_create(row);
+        nl_ov_set_font(rr);
+        lv_label_set_text(rr, rest);
+        lv_obj_set_style_text_color(rr, i == 0 ? UI_TEXT : UI_TEXT_DIM, 0);
+        lv_label_set_long_mode(rr, LV_LABEL_LONG_DOT);
+        lv_obj_set_flex_grow(rr, 1);
+        lv_obj_set_style_text_align(rr, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_set_width(rr, day[0] ? lv_pct(70) : lv_pct(100));
+    }
 }
 
 static void home_remember_current_id(void)
@@ -1837,7 +1991,8 @@ bool nl_ov_layout_current_page_has_skill(const char *skill_id)
         const nl_section_t *sec = &home->sections[si];
         for (int wi = 0; wi < sec->widget_count; wi++) {
             const nl_widget_t *w = &sec->widgets[wi];
-            if (w->type == NL_WIDGET_SKILL_TILE && w->skill_id[0] &&
+            if ((w->type == NL_WIDGET_SKILL_TILE || w->type == NL_WIDGET_SKILL_WIDGET) &&
+                w->skill_id[0] &&
                 strncmp(w->skill_id, skill_id, NL_WIDGET_SKILL_ID_MAX) == 0) {
                 return true;
             }
@@ -2220,6 +2375,10 @@ void nl_ov_fill_home(void)
                     continue;
                 }
                 fill_skill_tile(w, cell_w, cell_h);
+                continue;
+            }
+            if (w->type == NL_WIDGET_SKILL_WIDGET) {
+                fill_skill_widget(w, cell_w, cell_h);
                 continue;
             }
             if (!nodelio_controls_enabled()) {

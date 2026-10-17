@@ -707,11 +707,18 @@ void Application::InitializeProtocol() {
         Schedule([this, &board]() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            /* 歌已经在播时不要被通道关闭打回 Idle，否则唤醒词重开声卡把流掐掉 */
+            if (GetDeviceState() != kDeviceStateNotifying) {
+                SetDeviceState(kDeviceStateIdle);
+            }
+#else
             SetDeviceState(kDeviceStateIdle);
+#endif
             board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
             /* 听歌被语音打断：续播并保持亮屏，勿走退下息屏 */
-            if (nodelio_media_resume_after_voice()) {
+            if (nodelio_media_is_playing() || nodelio_media_resume_after_voice()) {
                 board.NoteUserActivity();
             } else {
                 board.RequestGoodbyeSleep();
@@ -1814,6 +1821,12 @@ void Application::PlaySound(const std::string_view& sound) { audio_service_.Play
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
 bool Application::IsHttpAudioBusy() const { return notify_player_.IsBusy(); }
+
+void Application::YieldVoiceForMedia() {
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        protocol_->CloseAudioChannel();
+    }
+}
 
 bool Application::PlayHttpAudio(std::string audio_url, std::string device_key) {
     if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy()) {

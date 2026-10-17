@@ -52,6 +52,22 @@ void Backlight::SetBrightness(uint8_t brightness, bool permanent) {
         return;
     }
 
+    /* 息屏不要 5ms 一档往下爬：爬的过程升压电容一直被充，最后一档才关。 */
+    if (brightness == 0) {
+        if (permanent) {
+            Settings settings("display", true);
+            settings.SetInt("brightness", brightness);
+        }
+        if (transition_timer_ != nullptr) {
+            esp_timer_stop(transition_timer_);
+        }
+        target_brightness_ = 0;
+        brightness_ = 0;
+        SetBrightnessImpl(0);
+        ESP_LOGI(TAG, "Set brightness to 0");
+        return;
+    }
+
     if (permanent) {
         Settings settings("display", true);
         settings.SetInt("brightness", brightness);
@@ -81,48 +97,60 @@ void Backlight::OnTransitionTimer() {
     }
 }
 
-PwmBacklight::PwmBacklight(gpio_num_t pin, bool output_invert, uint32_t freq_hz) : Backlight() {
-    output_invert_ = output_invert;
-    const ledc_timer_config_t backlight_timer = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .duty_resolution = LEDC_TIMER_10_BIT,
-        .timer_num = LEDC_TIMER_0,
-        .freq_hz = freq_hz, //背光pwm频率需要高一点，防止电感啸叫
-        .clk_cfg = LEDC_AUTO_CLK,
-        .deconfigure = false
-    };
-    ESP_ERROR_CHECK(ledc_timer_config(&backlight_timer));
-
-    // Setup LEDC peripheral for PWM backlight control
+void PwmBacklight::BindChannel(uint32_t duty) {
     const ledc_channel_config_t backlight_channel = {
-        .gpio_num = pin,
+        .gpio_num = pin_,
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .channel = LEDC_CHANNEL_0,
         .intr_type = LEDC_INTR_DISABLE,
         .timer_sel = LEDC_TIMER_0,
-        .duty = 0,
+        .duty = duty,
         .hpoint = 0,
         .flags = {
-            .output_invert = output_invert,
+            .output_invert = output_invert_,
         }
     };
     ESP_ERROR_CHECK(ledc_channel_config(&backlight_channel));
 }
 
+PwmBacklight::PwmBacklight(gpio_num_t pin, bool output_invert, uint32_t freq_hz, int off_level) : Backlight() {
+    pin_ = pin;
+    output_invert_ = output_invert;
+    off_level_ = (off_level < 0) ? (output_invert ? 1 : 0) : off_level;
+    const ledc_timer_config_t backlight_timer = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = LEDC_TIMER_10_BIT,
+        .timer_num = LEDC_TIMER_0,
+        .freq_hz = freq_hz,
+        .clk_cfg = LEDC_AUTO_CLK,
+        .deconfigure = false
+    };
+    ESP_ERROR_CHECK(ledc_timer_config(&backlight_timer));
+    BindChannel(0);
+}
+
 PwmBacklight::~PwmBacklight() {
     /* 与亮灭极性一致：高亮板 idle=0；invert 板灭时脚为高 */
-    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, output_invert_ ? 1 : 0);
+    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, off_level_);
 }
 
 void PwmBacklight::SetBrightnessImpl(uint8_t brightness) {
-    /* duty0 仍跑 PWM 时，部分升压背光（SY7200）会微亮/啸叫。
-     * 对齐 NodeLio sila_86：亮度为 0 时 ledc_stop 把 CTRL 钉在灭电平。 */
+    /* RY3730 / SY7200：duty 0 仍有窄脉冲时 EN 不会关机，输出电容一直被充。
+     * 亮度为 0 时停 PWM，再把脚改成 GPIO 钉在灭电平。 */
     if (brightness == 0) {
-        ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, output_invert_ ? 1 : 0);
+        ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, off_level_);
+        gpio_set_direction(pin_, GPIO_MODE_OUTPUT);
+        gpio_set_level(pin_, off_level_);
+        held_off_ = true;
         return;
     }
     // LEDC resolution set to 10bits, thus: 100% = 1023
     uint32_t duty_cycle = (1023 * brightness) / 100;
+    if (held_off_) {
+        BindChannel(duty_cycle);
+        held_off_ = false;
+        return;
+    }
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty_cycle);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
 }

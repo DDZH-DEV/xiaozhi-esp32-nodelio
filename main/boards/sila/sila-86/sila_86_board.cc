@@ -85,8 +85,9 @@ private:
 #endif
         power_save_timer_ = new PowerSaveTimer(-1, idle_s, -1);
         power_save_timer_->OnEnterSleepMode([this]() {
-            GetDisplay()->SetPowerSaveMode(true);
+            /* 先拉灭背光，再停 LVGL。反过来会先看到横条，背光还亮着。 */
             GetBacklight()->SetBrightness(0);
+            GetDisplay()->SetPowerSaveMode(true);
             /* 原理图无 AMP_EN：空闲关输出减滋滋；正在播媒体则勿掐功放 */
 #if CONFIG_NODELIO_PANEL
             const bool keep_audio = nodelio_media_is_playing();
@@ -344,7 +345,8 @@ public:
     }
 
     virtual Backlight* GetBacklight() override {
-        static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
+        static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT,
+                                      DISPLAY_BACKLIGHT_FREQ_HZ, DISPLAY_BACKLIGHT_OFF_LEVEL);
         return &backlight;
     }
 

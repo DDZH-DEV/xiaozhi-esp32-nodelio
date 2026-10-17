@@ -31,6 +31,8 @@ typedef enum {
     NL_WIDGET_SPACER,
     /** 画布挂已装应用；点按 → Envelope invoke，禁止 panel/command */
     NL_WIDGET_SKILL_TILE,
+    /** 内容组件：格内嵌摘要；尺寸由包固定 */
+    NL_WIDGET_SKILL_WIDGET,
 } nl_widget_type_t;
 
 #define NL_WIDGET_SKILL_ID_MAX 64
@@ -70,9 +72,11 @@ typedef struct {
     char bg_color[16]; /* 可选 "#RRGGBB"；空则按 type 默认色 */
     char pinyin_on[48];  /* 服务端按 title 生成；本地口令 */
     char pinyin_off[48];
-    /* skill_tile：安装 instance_id（常 market::app）；default_invoke 为 JSON 体，缺省 "{}" */
+    /* skill_tile / skill_widget：安装 instance_id；default_invoke 缺省 "{}" */
     char skill_id[NL_WIDGET_SKILL_ID_MAX];
     char default_invoke[NL_WIDGET_INVOKE_MAX];
+    /** skill_widget 亮屏刷新秒；0 表示用默认 600 */
+    uint16_t refresh_sec;
 } nl_widget_t;
 
 typedef struct {

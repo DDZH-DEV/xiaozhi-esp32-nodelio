@@ -6,19 +6,23 @@
 #include "nl_url_util.h"
 #include "nodelio_http.h"
 #include "panel_ui.h"
+#include "content_envelope.h"
 #include "skill_runtime.h"
+#include <esp_timer.h>
 #include "wifi_provision.h"
 
 #include <cJSON.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <material_symbols.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 LV_FONT_DECLARE(font_material_symbols_20_4);
 
@@ -28,7 +32,7 @@ LV_FONT_DECLARE(font_material_symbols_20_4);
 #define HOME_INVOKE_BODY_MAX 192
 
 struct nl_home_skill {
-    char id[48];
+    char id[72];
     char name[40];
     char body[HOME_INVOKE_BODY_MAX];
     bool enabled;
@@ -119,7 +123,7 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
 
     struct invoke_arg {
         nodelio_nvs_config_t cfg;
-        char id[48];
+        char id[72];
         char body[HOME_INVOKE_BODY_MAX];
     };
     auto *arg = static_cast<invoke_arg *>(malloc(sizeof(invoke_arg)));
@@ -211,6 +215,254 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
         free(tcb);
         free(arg);
         nl_ov_toast("无法打开");
+    }
+}
+
+#define WIDGET_CACHE_N 8
+
+struct widget_cache_slot {
+    char id[NL_WIDGET_SKILL_ID_MAX];
+    nl_widget_preview preview;
+    int64_t ms;
+    bool fetching;
+};
+
+static widget_cache_slot s_wcache[WIDGET_CACHE_N];
+/* 首页多个组件同时 invoke 会撞上服务端 400ms 限流，并和公网 TLS 抢射频。 */
+static SemaphoreHandle_t s_widget_http_mu = nullptr;
+
+static widget_cache_slot *widget_cache_slot_for(const char *skill_id, bool create)
+{
+    widget_cache_slot *free_slot = nullptr;
+    for (int i = 0; i < WIDGET_CACHE_N; i++) {
+        if (s_wcache[i].id[0] && skill_id && strcmp(s_wcache[i].id, skill_id) == 0) {
+            return &s_wcache[i];
+        }
+        if (!free_slot && !s_wcache[i].id[0]) {
+            free_slot = &s_wcache[i];
+        }
+    }
+    if (!create || !free_slot || !skill_id || !skill_id[0]) {
+        return create ? free_slot : nullptr;
+    }
+    snprintf(free_slot->id, sizeof(free_slot->id), "%s", skill_id);
+    memset(&free_slot->preview, 0, sizeof(free_slot->preview));
+    free_slot->ms = 0;
+    free_slot->fetching = false;
+    return free_slot;
+}
+
+const char *nl_ov_skill_widget_line(const char *skill_id)
+{
+    widget_cache_slot *s = widget_cache_slot_for(skill_id, false);
+    if (!s || !s->preview.ready || s->preview.n <= 0 || !s->preview.title[0][0]) {
+        return "";
+    }
+    return s->preview.title[0];
+}
+
+bool nl_ov_skill_widget_preview(const char *skill_id, nl_widget_preview *out)
+{
+    if (!out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    widget_cache_slot *s = widget_cache_slot_for(skill_id, false);
+    if (!s || !s->preview.ready) {
+        return false;
+    }
+    *out = s->preview;
+    return true;
+}
+
+void nl_ov_skill_widget_prefetch(const char *skill_id, const char *body, int refresh_sec)
+{
+    if (!skill_id || !skill_id[0] || !s_cfg.server_url[0] || !s_cfg.device_id[0]) {
+        return;
+    }
+    if (!s_widget_http_mu) {
+        s_widget_http_mu = xSemaphoreCreateMutex();
+    }
+    if (refresh_sec < 120) {
+        refresh_sec = 600;
+    }
+    widget_cache_slot *slot = widget_cache_slot_for(skill_id, true);
+    if (!slot || slot->fetching) {
+        return;
+    }
+    const int64_t now = esp_timer_get_time() / 1000;
+    /* 失败只挡 20s。每日一句 refresh 为一天，失败若按成功缓存就会一直空白。 */
+    const int64_t hold_ms = (slot->preview.ready && slot->preview.ok) ? (int64_t)refresh_sec * 1000 : 20000;
+    if (slot->preview.ready && slot->ms > 0 && (now - slot->ms) < hold_ms) {
+        return;
+    }
+    slot->fetching = true;
+
+    struct invoke_arg {
+        nodelio_nvs_config_t cfg;
+        char id[NL_WIDGET_SKILL_ID_MAX];
+        char body[HOME_INVOKE_BODY_MAX];
+    };
+    auto *arg = static_cast<invoke_arg *>(malloc(sizeof(invoke_arg)));
+    if (!arg) {
+        slot->fetching = false;
+        return;
+    }
+    arg->cfg = s_cfg;
+    snprintf(arg->id, sizeof(arg->id), "%s", skill_id);
+    snprintf(arg->body, sizeof(arg->body), "%s", (body && body[0]) ? body : "{}");
+
+    constexpr uint32_t kStackBytes = 16384;
+    StackType_t *stack =
+        static_cast<StackType_t *>(heap_caps_malloc(kStackBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!stack) {
+        stack = static_cast<StackType_t *>(malloc(kStackBytes));
+    }
+    auto *tcb =
+        static_cast<StaticTask_t *>(heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (!stack || !tcb) {
+        free(stack);
+        free(tcb);
+        free(arg);
+        slot->fetching = false;
+        return;
+    }
+    struct job_t {
+        invoke_arg *arg;
+        StackType_t *stack;
+        StaticTask_t *tcb;
+    };
+    auto *job = static_cast<job_t *>(malloc(sizeof(job_t)));
+    if (!job) {
+        free(stack);
+        free(tcb);
+        free(arg);
+        slot->fetching = false;
+        return;
+    }
+    job->arg = arg;
+    job->stack = stack;
+    job->tcb = tcb;
+    if (xTaskCreateStatic(
+            [](void *p) {
+                auto *job = static_cast<job_t *>(p);
+                auto *a = job->arg;
+                nl_widget_preview pv{};
+                snprintf(pv.head, sizeof(pv.head), "加载失败");
+                pv.n = 1;
+                snprintf(pv.title[0], sizeof(pv.title[0]), "加载失败");
+                char base[160];
+                nl_url_strip_base(a->cfg.server_url, base, sizeof(base));
+                char url[400];
+                snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/%s/invoke", base, a->cfg.device_id, a->id);
+                const int cap = nodelio_caps_max_content_bytes() + 512;
+                char *resp = static_cast<char *>(heap_caps_malloc((size_t)cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                if (!resp) {
+                    resp = static_cast<char *>(malloc((size_t)cap));
+                }
+                if (resp) {
+                    resp[0] = '\0';
+                    int status = 0;
+                    esp_err_t err = ESP_FAIL;
+                    /* 串行：后一个组件等前一个结束再发，避开 400ms 限流。
+                     * 429 / 连不上 / 读超时（status 仍为 0）再试，间隔拉开。 */
+                    const bool locked = s_widget_http_mu &&
+                                        xSemaphoreTake(s_widget_http_mu, pdMS_TO_TICKS(40000)) == pdTRUE;
+                    for (int attempt = 0; attempt < 4; attempt++) {
+                        resp[0] = '\0';
+                        status = 0;
+                        err = nodelio_http_post_json_ms(url, a->cfg.device_key, a->body, &status, resp, cap - 1,
+                                                        8000);
+                        if (status != 429 && status != 0) {
+                            break;
+                        }
+                        if (attempt + 1 >= 4) {
+                            break;
+                        }
+                        vTaskDelay(pdMS_TO_TICKS(500 * (attempt + 1)));
+                    }
+                    if (locked) {
+                        xSemaphoreGive(s_widget_http_mu);
+                    }
+                    (void)err;
+                    if (resp[0]) {
+                        nl_content_envelope_t *env = static_cast<nl_content_envelope_t *>(
+                            heap_caps_malloc(sizeof(*env), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                        if (!env) {
+                            env = static_cast<nl_content_envelope_t *>(malloc(sizeof(*env)));
+                        }
+                        if (env && nodelio_envelope_parse(resp, env)) {
+                            const bool status_ok = strcmp(env->status, "ok") == 0;
+                            const bool is_list = strcmp(env->card_type, "list") == 0 ||
+                                                 strcmp(env->card_type, "news_list") == 0;
+                            if (env->display_title[0]) {
+                                strlcpy(pv.head, env->display_title, sizeof(pv.head));
+                            }
+                            if (is_list && env->track_n > 0) {
+                                pv.list = true;
+                                pv.ok = status_ok;
+                                pv.n = env->track_n > 4 ? 4 : env->track_n;
+                                for (int i = 0; i < pv.n; i++) {
+                                    strlcpy(pv.title[i],
+                                            env->tracks[i].title[0] ? env->tracks[i].title : "—",
+                                            sizeof(pv.title[i]));
+                                    if (env->tracks[i].artist[0]) {
+                                        strlcpy(pv.sub[i], env->tracks[i].artist, sizeof(pv.sub[i]));
+                                    }
+                                }
+                            } else if (env->spoken[0]) {
+                                pv.ok = status_ok;
+                                pv.n = 1;
+                                strlcpy(pv.title[0], env->spoken, sizeof(pv.title[0]));
+                            } else if (!status_ok && env->error_message[0]) {
+                                pv.n = 1;
+                                snprintf(pv.head, sizeof(pv.head), "加载失败");
+                                strlcpy(pv.title[0], env->error_message, sizeof(pv.title[0]));
+                            } else if (env->track_n > 0 && env->tracks[0].title[0]) {
+                                pv.ok = status_ok;
+                                pv.n = 1;
+                                strlcpy(pv.title[0], env->tracks[0].title, sizeof(pv.title[0]));
+                            } else {
+                                pv.n = 1;
+                                snprintf(pv.title[0], sizeof(pv.title[0]), "暂无内容");
+                            }
+                            pv.ready = true;
+                        }
+                        free(env);
+                    }
+                    free(resp);
+                }
+                pv.ready = true;
+                std::string id_s(a->id);
+                Application::GetInstance().Schedule([id_s, pv]() {
+                    DisplayLockGuard lock(nl_ov_disp());
+                    widget_cache_slot *s = widget_cache_slot_for(id_s.c_str(), true);
+                    if (s) {
+                        s->preview = pv;
+                        s->ms = esp_timer_get_time() / 1000;
+                        s->fetching = false;
+                    }
+                    if (lock && s_active_tab == NL_TAB_HOME && s_home) {
+                        nl_ov_fill_home();
+                    }
+                });
+                free(a);
+                StackType_t *st = job->stack;
+                StaticTask_t *tb = job->tcb;
+                free(job);
+                Application::GetInstance().Schedule([st, tb]() {
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    free(st);
+                    free(tb);
+                });
+                vTaskDelete(nullptr);
+            },
+            "nl_sk_wdg", kStackBytes / sizeof(StackType_t), job, 3, stack, tcb) == nullptr) {
+        free(job);
+        free(stack);
+        free(tcb);
+        free(arg);
+        slot->fetching = false;
     }
 }
 
@@ -443,9 +695,10 @@ void nl_ov_home_skills_ensure_fetched(void)
                 nl_url_strip_base(cfg->server_url, base, sizeof(base));
                 char url[320];
                 snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills", base, cfg->device_id);
-                char *buf = static_cast<char *>(heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                constexpr int kListBuf = 24576;
+                char *buf = static_cast<char *>(heap_caps_malloc(kListBuf, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
                 if (!buf) {
-                    buf = static_cast<char *>(malloc(4096));
+                    buf = static_cast<char *>(malloc(kListBuf));
                 }
                 if (!buf) {
                     free(items);
@@ -462,7 +715,7 @@ void nl_ov_home_skills_ensure_fetched(void)
                     finish(true);
                     return;
                 }
-                esp_err_t err = nodelio_http_get(url, cfg->device_key, nullptr, &status, buf, 4095);
+                esp_err_t err = nodelio_http_get(url, cfg->device_key, nullptr, &status, buf, kListBuf - 1);
                 if (err != ESP_OK || (status != 200 && status != 201)) {
                     ESP_LOGW(TAG, "fetch pins status=%d err=%d", status, err);
                     free(buf);

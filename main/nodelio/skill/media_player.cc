@@ -52,6 +52,8 @@ static volatile bool s_suppress_ended = false;
 static esp_timer_handle_t s_pause_close_timer;
 /** 语音打断后应在退下时续播（与用户手动暂停区分）。 */
 static volatile bool s_resume_after_voice = false;
+/** 说话未结束时把 PLAY 退回队列的次数，成功开播后清零。 */
+static int s_defer_n = 0;
 
 static void pause_close_cb(void *arg)
 {
@@ -193,17 +195,78 @@ static void release_previous_http(void)
             ESP_LOGI(TAG, "release prev done i=%d state=%s", i, DeviceStateMachine::GetStateName(st));
             return;
         }
-        if (st == kDeviceStateSpeaking && i == 30) {
-            ESP_LOGW(TAG, "release prev abort speaking");
-            app.Schedule([]() {
-                Application::GetInstance().AbortSpeaking(kAbortReasonWakeWordDetected);
-            });
-        }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     s_suppress_ended = false;
     ESP_LOGW(TAG, "wait previous audio timeout state=%s busy=%d",
              DeviceStateMachine::GetStateName(app.GetDeviceState()), (int)app.IsHttpAudioBusy());
+}
+
+static bool speech_busy(void)
+{
+    auto &app = Application::GetInstance();
+    if (app.GetDeviceState() == kDeviceStateSpeaking) {
+        return true;
+    }
+    return !app.GetAudioService().IsPlaybackIdle();
+}
+
+/**
+ * 语音里点歌：先等「即将播放」这句说完再开流。
+ * 退下续播：通道已关但尾句还在解码器里时同样要等，否则重试会把曲目清掉。
+ * 队列里已有下一条指令则放弃本次，交给后续 PLAY/STOP。
+ */
+static bool wait_out_voice_cue(void)
+{
+    auto &app = Application::GetInstance();
+    DeviceState st = app.GetDeviceState();
+    const bool in_session = st == kDeviceStateListening || st == kDeviceStateSpeaking ||
+                            st == kDeviceStateConnecting;
+    if (!in_session) {
+        for (int i = 0; i < 200 && speech_busy(); ++i) {
+            if (uxQueueMessagesWaiting(s_q) > 0) {
+                return false;
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        return true;
+    }
+
+    if (st != kDeviceStateSpeaking) {
+        for (int i = 0; i < 10; ++i) {
+            if (uxQueueMessagesWaiting(s_q) > 0) {
+                return false;
+            }
+            vTaskDelay(pdMS_TO_TICKS(200));
+            st = app.GetDeviceState();
+            if (st == kDeviceStateSpeaking ||
+                (st != kDeviceStateListening && st != kDeviceStateConnecting)) {
+                break;
+            }
+        }
+    }
+
+    int quiet = 0;
+    for (int i = 0; i < 200; ++i) {
+        if (uxQueueMessagesWaiting(s_q) > 0) {
+            return false;
+        }
+        if (speech_busy()) {
+            quiet = 0;
+        } else {
+            st = app.GetDeviceState();
+            if (st != kDeviceStateListening && st != kDeviceStateConnecting &&
+                st != kDeviceStateSpeaking) {
+                return true;
+            }
+            quiet++;
+            if (quiet >= 3) {
+                return true;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+    return true;
 }
 
 static void media_worker(void *arg)
@@ -251,6 +314,11 @@ static void media_worker(void *arg)
         ESP_LOGI(TAG, "worker play title=%s state=%s busy=%d tail=%s", msg.title,
                  DeviceStateMachine::GetStateName(Application::GetInstance().GetDeviceState()),
                  (int)Application::GetInstance().IsHttpAudioBusy(), url_tail(msg.url));
+
+        if (!wait_out_voice_cue()) {
+            ESP_LOGI(TAG, "play superseded title=%s", msg.title);
+            continue;
+        }
 
         /* 重试请求：延迟 2 秒后再启动，避免立即重试 */
         if (s_retry_count > 0) {
@@ -304,21 +372,29 @@ static void media_worker(void *arg)
                 }
                 return;
             }
-            if (st == kDeviceStateSpeaking) {
-                ESP_LOGW(TAG, "try_start speaking left=%d title=%s", left, title.c_str());
-                app.AbortSpeaking(kAbortReasonWakeWordDetected);
-                if (left > 0) {
-                    app.Schedule([try_start, left]() { (*try_start)(left - 1); });
-                } else {
-                    ESP_LOGW(TAG, "play give up - speaking timeout title=%s", title.c_str());
-                    s_playing = false;
-                    s_now_url[0] = '\0';
-                    s_started_url[0] = '\0';
-                    nodelio_panel_ui_media_now_playing("", false);
+            if (st == kDeviceStateSpeaking || !app.GetAudioService().IsPlaybackIdle()) {
+                /* 每次回到 worker 都会重新等一句；超过次数就开播，避免播放队列一直不空时卡死 */
+                if (s_defer_n < 8) {
+                    s_defer_n++;
+                    ESP_LOGI(TAG, "defer play until speech ends n=%d title=%s", s_defer_n, title.c_str());
+                    media_msg_t again{};
+                    again.op = MEDIA_OP_PLAY;
+                    snprintf(again.url, sizeof(again.url), "%s", url.c_str());
+                    snprintf(again.title, sizeof(again.title), "%s", title.c_str());
+                    snprintf(again.device_key, sizeof(again.device_key), "%s", device_key.c_str());
+                    if (xQueueSend(s_q, &again, 0) != pdTRUE) {
+                        ESP_LOGW(TAG, "defer play queue full title=%s", title.c_str());
+                    }
+                    return;
                 }
-                return;
+                ESP_LOGW(TAG, "speech still busy, start anyway title=%s", title.c_str());
+            }
+            s_defer_n = 0;
+            if (app.GetDeviceState() == kDeviceStateSpeaking) {
+                app.SetDeviceState(kDeviceStateIdle);
             }
             if (st == kDeviceStateListening || st == kDeviceStateConnecting) {
+                app.YieldVoiceForMedia();
                 app.SetDeviceState(kDeviceStateIdle);
             }
             if (app.GetDeviceState() != kDeviceStateIdle) {

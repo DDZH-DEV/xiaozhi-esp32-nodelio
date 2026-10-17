@@ -111,6 +111,9 @@ static nl_widget_type_t parse_widget_type(const char *t)
     if (strcmp(t, "skill_tile") == 0) {
         return NL_WIDGET_SKILL_TILE;
     }
+    if (strcmp(t, "skill_widget") == 0) {
+        return NL_WIDGET_SKILL_WIDGET;
+    }
     return NL_WIDGET_UNKNOWN;
 }
 
@@ -396,7 +399,8 @@ static void parse_layout_object(const cJSON *root, int outer_version, nodelio_pa
                 copy_str(tbuf, sizeof(tbuf), w, "type");
                 wid->type = parse_widget_type(tbuf);
                 parse_bind(cJSON_GetObjectItemCaseSensitive(w, "bind"), &wid->bind);
-                if (wid->type == NL_WIDGET_SKILL_TILE && wid->skill_id[0] == '\0' &&
+                if ((wid->type == NL_WIDGET_SKILL_TILE || wid->type == NL_WIDGET_SKILL_WIDGET) &&
+                    wid->skill_id[0] == '\0' &&
                     wid->bind.device_id[0] != '\0') {
                     /* 兼容误写 bind.deviceId；勿 snprintf 同源重叠（-Werror=restrict） */
                     char tmp[NL_WIDGET_SKILL_ID_MAX];
@@ -408,6 +412,7 @@ static void parse_layout_object(const cJSON *root, int outer_version, nodelio_pa
                 int def_w = (wid->type == NL_WIDGET_SLIDER_TILE) ? 2 : 1;
                 wid->gw = (int8_t)json_int(w, "w", def_w);
                 wid->gh = (int8_t)json_int(w, "h", 1);
+                wid->refresh_sec = (uint16_t)json_int(w, "refreshSec", 0);
                 if (wid->gw < 1) {
                     wid->gw = (int8_t)def_w;
                 }

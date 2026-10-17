@@ -437,8 +437,17 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
 esp_err_t nodelio_http_post_json(const char *url, const char *device_key, const char *body, int *out_status,
                                  char *resp, int resp_cap)
 {
+    return nodelio_http_post_json_ms(url, device_key, body, out_status, resp, resp_cap, NOD_HTTP_IO_MS);
+}
+
+esp_err_t nodelio_http_post_json_ms(const char *url, const char *device_key, const char *body, int *out_status,
+                                    char *resp, int resp_cap, int io_ms)
+{
+    if (io_ms <= 0) {
+        io_ms = NOD_HTTP_IO_MS;
+    }
     return http_exchange("POST", url, device_key, body ? body : "{}", nullptr, out_status, resp, resp_cap, nullptr,
-                         NOD_HTTP_IO_MS);
+                         io_ms);
 }
 
 esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const void *data, size_t len,

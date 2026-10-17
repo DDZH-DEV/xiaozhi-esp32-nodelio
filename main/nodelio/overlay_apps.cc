@@ -23,10 +23,12 @@
 LV_FONT_DECLARE(font_material_symbols_20_4);
 
 #define TAG "nl_apps"
-#define APP_MAX 8
+#define APP_MAX 16
+/* 8 个样例应用带 inputSchema 时整包 >7KB；旧 4KB 截断后 cJSON 失败 →「暂无已安装」。 */
+#define APP_LIST_BUF 24576
 
 struct nl_app_item {
-    char id[48];
+    char id[72];
     char name[40];
     char desc[72];
     bool enabled;
@@ -119,11 +121,11 @@ static void render_list(void)
                         return;
                     }
                     *cfgp = s_cfg;
-                    char sid[48];
+                    char sid[72];
                     snprintf(sid, sizeof(sid), "%s", s_items[idx].id);
                     struct invoke_arg {
                         nodelio_nvs_config_t *cfg;
-                        char id[48];
+                        char id[72];
                     };
                     auto *arg = static_cast<invoke_arg *>(malloc(sizeof(invoke_arg)));
                     if (!arg) {
@@ -365,9 +367,9 @@ void nl_ov_apps_refresh(void)
                 nl_url_strip_base(cfg->server_url, base, sizeof(base));
                 char url[320];
                 snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills", base, cfg->device_id);
-                char *buf = static_cast<char *>(heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                char *buf = static_cast<char *>(heap_caps_malloc(APP_LIST_BUF, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
                 if (!buf) {
-                    buf = static_cast<char *>(malloc(4096));
+                    buf = static_cast<char *>(malloc(APP_LIST_BUF));
                 }
                 if (!buf) {
                     snprintf(snap->err, sizeof(snap->err), "内存不足");
@@ -399,7 +401,7 @@ void nl_ov_apps_refresh(void)
                     }
                     buf[0] = '\0';
                     status = 0;
-                    err = nodelio_http_get(url, cfg->device_key, nullptr, &status, buf, 4095);
+                    err = nodelio_http_get(url, cfg->device_key, nullptr, &status, buf, APP_LIST_BUF - 1);
                     if (err == ESP_OK && (status == 200 || status == 201)) {
                         break;
                     }
@@ -410,26 +412,57 @@ void nl_ov_apps_refresh(void)
                     ESP_LOGW(TAG, "list skills status=%d err=%d", status, err);
                 } else {
                     cJSON *root = cJSON_Parse(buf);
-                    const cJSON *skills = root ? cJSON_GetObjectItemCaseSensitive(root, "skills") : nullptr;
-                    if (cJSON_IsArray(skills)) {
-                        const cJSON *it = nullptr;
-                        cJSON_ArrayForEach(it, skills) {
-                            if (snap->n >= APP_MAX) {
-                                break;
+                    if (!root) {
+                        snprintf(snap->err, sizeof(snap->err), "列表过大");
+                        ESP_LOGW(TAG, "list skills JSON parse fail len=%u", (unsigned)strlen(buf));
+                    } else {
+                        const cJSON *skills = cJSON_GetObjectItemCaseSensitive(root, "skills");
+                        if (cJSON_IsArray(skills)) {
+                            const cJSON *it = nullptr;
+                            cJSON_ArrayForEach(it, skills) {
+                                if (snap->n >= APP_MAX) {
+                                    break;
+                                }
+                                nl_app_item *row = &snap->items[snap->n];
+                                copy_field(row->id, sizeof(row->id), it, "skillId");
+                                if (!row->id[0]) {
+                                    copy_field(row->id, sizeof(row->id), it, "instanceId");
+                                }
+                                if (!row->id[0]) {
+                                    continue;
+                                }
+                                copy_field(row->name, sizeof(row->name), it, "name");
+                                copy_field(row->desc, sizeof(row->desc), it, "description");
+                                const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
+                                row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
+                                snap->n++;
                             }
-                            nl_app_item *row = &snap->items[snap->n];
-                            copy_field(row->id, sizeof(row->id), it, "skillId");
-                            if (!row->id[0]) {
-                                continue;
-                            }
-                            copy_field(row->name, sizeof(row->name), it, "name");
-                            copy_field(row->desc, sizeof(row->desc), it, "description");
-                            const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
-                            row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
-                            snap->n++;
                         }
-                    }
-                    if (root) {
+                        /* skills 截断/异常时回退瘦身 apps[] */
+                        if (snap->n == 0) {
+                            const cJSON *apps = cJSON_GetObjectItemCaseSensitive(root, "apps");
+                            if (cJSON_IsArray(apps)) {
+                                const cJSON *it = nullptr;
+                                cJSON_ArrayForEach(it, apps) {
+                                    if (snap->n >= APP_MAX) {
+                                        break;
+                                    }
+                                    nl_app_item *row = &snap->items[snap->n];
+                                    copy_field(row->id, sizeof(row->id), it, "instance_id");
+                                    if (!row->id[0]) {
+                                        copy_field(row->id, sizeof(row->id), it, "app_id");
+                                    }
+                                    if (!row->id[0]) {
+                                        continue;
+                                    }
+                                    copy_field(row->name, sizeof(row->name), it, "name");
+                                    copy_field(row->desc, sizeof(row->desc), it, "summary");
+                                    const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
+                                    row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
+                                    snap->n++;
+                                }
+                            }
+                        }
                         cJSON_Delete(root);
                     }
                 }

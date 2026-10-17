@@ -545,7 +545,7 @@ static std::string list_skills_json(const nodelio_nvs_config_t *cfg)
     char url[256];
     snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills", base, cfg->device_id);
 
-    constexpr int kCap = 4096;
+    constexpr int kCap = 24576;
     char *resp = (char *)heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!resp) {
         resp = (char *)malloc(kCap);

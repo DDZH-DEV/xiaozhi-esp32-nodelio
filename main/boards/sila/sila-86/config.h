@@ -58,9 +58,11 @@
 #define DISPLAY_OFFSET_X         0
 #define DISPLAY_OFFSET_Y         0
 
-/* NodeLio: SY7200 high=bright — do NOT invert (xz 1.5.6 true made duty0 brighter) */
+/* huang.bin：IO13、PWM 取反、25 kHz。RY3730 EN 低电平关断，与 PWM invert 不是同一电平。 */
 #define DISPLAY_BACKLIGHT_PIN              GPIO_NUM_13
-#define DISPLAY_BACKLIGHT_OUTPUT_INVERT    false
+#define DISPLAY_BACKLIGHT_OUTPUT_INVERT    true
+#define DISPLAY_BACKLIGHT_FREQ_HZ          25000
+#define DISPLAY_BACKLIGHT_OFF_LEVEL        0
 
 #define RGB_BOUNCE_BUFFER_SIZE   (DISPLAY_WIDTH * 20)
 

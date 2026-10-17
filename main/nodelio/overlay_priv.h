@@ -164,8 +164,25 @@ void nl_ov_home_skills_append_launcher(lv_obj_t *parent);
 void nl_ov_home_skills_append_strip(lv_obj_t *parent);
 int nl_ov_home_skill_pinned_count(void);
 int nl_ov_home_skill_strip_h(void);
-/** 当前用户屏 layout 是否已有该 skillId 的 skill_tile（钉选条去重用） */
+/** 当前用户屏 layout 是否已有该 skillId 的 skill_tile 或 skill_widget（钉选条去重用） */
 bool nl_ov_layout_current_page_has_skill(const char *skill_id);
+/** 内容组件摘要缓存；无则空串 */
+const char *nl_ov_skill_widget_line(const char *skill_id);
+
+struct nl_widget_preview {
+    bool ready;
+    bool ok;
+    bool list;
+    char head[64];
+    int n;
+    char title[4][160];
+    char sub[4][64];
+};
+
+/** 桌面组件上次 invoke 的摘要。ready=false 表示还没有结果。 */
+bool nl_ov_skill_widget_preview(const char *skill_id, nl_widget_preview *out);
+/** 过期则后台 invoke，结果写入摘要并刷新首页（不弹卡） */
+void nl_ov_skill_widget_prefetch(const char *skill_id, const char *body_json, int refresh_sec);
 /** 当前用户屏序号（0-based；无则 -1）；截图文案用 */
 int nl_ov_home_user_page_index(void);
 int nl_ov_home_user_page_count(void);

@@ -131,6 +131,8 @@ public:
     /** 本机 HTTP 音频（Ogg/Opus）；须在主任务或经 Schedule。与语音会话互斥。
      *  设备非 Idle 或上一首 HTTP 任务未退出时返回 false，调用方需稍后重试。 */
     bool PlayHttpAudio(std::string audio_url, std::string device_key = {});
+    /** 点歌前关掉仍开着的语音通道，避免后续 TTS 抢解码器。 */
+    void YieldVoiceForMedia();
     void StopHttpAudio();
     bool IsHttpAudioBusy() const;
 #endif

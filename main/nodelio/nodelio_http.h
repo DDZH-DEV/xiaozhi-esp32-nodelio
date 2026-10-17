@@ -14,6 +14,10 @@ extern "C" {
 esp_err_t nodelio_http_post_json(const char *url, const char *device_key, const char *body, int *out_status,
                                  char *resp, int resp_cap);
 
+/** 同 post_json，io_ms 为读写超时。技能组件回源用，避免 2.5s 内 0 字节被当成坏状态行。 */
+esp_err_t nodelio_http_post_json_ms(const char *url, const char *device_key, const char *body, int *out_status,
+                                    char *resp, int resp_cap, int io_ms);
+
 esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const void *data, size_t len,
                                   int *out_status);
 
