@@ -47,7 +47,13 @@ void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *jso
         return;
     }
 
-    const bool play = auto_play_first && env->auto_play && nodelio_caps_has_media();
+    /* E5：error Envelope 也上屏，并 toast，禁止当成功静默 */
+    if (strcmp(env->status, "ok") != 0) {
+        nodelio_panel_ui_toast_defer(env->error_message[0] ? env->error_message : "技能失败");
+    }
+
+    const bool play = auto_play_first && env->auto_play && nodelio_caps_has_media() &&
+                      strcmp(env->status, "ok") == 0;
     nodelio_skill_result_show(cfg, env, play);
 
     if (spoken_out && spoken_len) {

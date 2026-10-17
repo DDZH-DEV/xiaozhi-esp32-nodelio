@@ -42,6 +42,9 @@ void nodelio_panel_ui_notify_net(bool on);
 /** 顶层短提示（任意任务可调；内部切 LVGL 锁）. */
 void nodelio_panel_ui_toast(const char *text);
 
+/** MQTT kind=skills：invalidate 已装清单后再拉一次（无市场轮询）. */
+void nodelio_panel_ui_skills_changed(void);
+
 /** 本地口令提示音（主任务播 OGG）；0=听令 1=成功 2=失败 */
 void nodelio_panel_ui_play_cue(int cue);
 

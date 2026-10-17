@@ -152,6 +152,15 @@ extern "C" void nodelio_panel_ui_notify_net(bool on)
 extern "C" void nodelio_panel_ui_toast(const char *text) { nl_ov_toast(text); }
 extern "C" void nodelio_panel_ui_toast_defer(const char *text) { nl_ov_toast(text); }
 
+extern "C" void nodelio_panel_ui_skills_changed(void)
+{
+    Application::GetInstance().Schedule([]() {
+        nl_ov_home_skills_invalidate();
+        nl_ov_home_skills_ensure_fetched();
+        nl_ov_apps_refresh();
+    });
+}
+
 extern "C" void nodelio_panel_ui_play_cue(int cue)
 {
     Application::GetInstance().Schedule([cue]() {

@@ -69,6 +69,10 @@ static void handle_notify_payload(const char *data, int len)
     if (cJSON_IsString(kind) && kind->valuestring && strcmp(kind->valuestring, "layout") == 0) {
         schedule_kick(true);
     } else if (cJSON_IsString(kind) && kind->valuestring &&
+               strcmp(kind->valuestring, "skills") == 0) {
+        /* 只拉已装清单，不拉 layout/snapshot，不拉市场 */
+        nodelio_panel_ui_skills_changed();
+    } else if (cJSON_IsString(kind) && kind->valuestring &&
                strcmp(kind->valuestring, "countdown") == 0) {
         /* 轻量推送：不拉 HTTP，直接改本地剩余秒 */
         const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "deviceId");

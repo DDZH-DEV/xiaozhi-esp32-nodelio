@@ -187,7 +187,10 @@ static void render_list(void)
                                     esp_err_t err =
                                         nodelio_http_post_json(url, a->cfg->device_key, "{\"keyword\":\"\"}",
                                                                &status, resp, cap - 1);
-                                    if (err == ESP_OK && (status == 200 || status == 201) && resp[0]) {
+                                    /* E5：4xx/5xx 若体仍是 Envelope（error）也要上屏，不假成功 */
+                                    if (err == ESP_OK && resp[0] &&
+                                        (status == 200 || status == 201 ||
+                                         (status >= 400 && strstr(resp, "\"schema_version\"") != nullptr))) {
                                         nodelio_skill_deliver_json(a->cfg, resp, false, nullptr, 0);
                                     } else {
                                         nodelio_panel_ui_toast_defer("打开失败");

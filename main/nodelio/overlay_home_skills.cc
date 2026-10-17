@@ -171,7 +171,9 @@ static void invoke_home_skill_async(const char *skill_id, const char *body)
                     int status = 0;
                     esp_err_t err =
                         nodelio_http_post_json(url, a->cfg.device_key, a->body, &status, resp, cap - 1);
-                    if (err == ESP_OK && (status == 200 || status == 201) && resp[0]) {
+                    if (err == ESP_OK && resp[0] &&
+                        (status == 200 || status == 201 ||
+                         (status >= 400 && strstr(resp, "\"schema_version\"") != nullptr))) {
                         nodelio_skill_deliver_json(&a->cfg, resp, false, nullptr, 0);
                     } else {
                         nodelio_panel_ui_toast_defer("打开失败");
