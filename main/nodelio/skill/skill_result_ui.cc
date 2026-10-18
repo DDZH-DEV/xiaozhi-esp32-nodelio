@@ -96,6 +96,8 @@ static StackType_t *s_reshuffle_stack = nullptr;
 static StaticTask_t s_reshuffle_tcb;
 static QueueHandle_t s_news_q = nullptr;
 static lv_obj_t *s_news_body_lbl = nullptr;
+/** 详情正文驻 PSRAM，供 lv_label_set_text_static，避免长文二次占 LVGL 池失败后仍显示摘要 */
+static char *s_news_body_heap = nullptr;
 static StackType_t *s_news_stack = nullptr;
 static StaticTask_t s_news_tcb;
 
@@ -845,6 +847,10 @@ static void free_skill_widgets(void)
     s_minimized = false;
     s_news_detail = -1;
     s_news_gen += 1;
+    if (s_news_body_heap) {
+        heap_caps_free(s_news_body_heap);
+        s_news_body_heap = nullptr;
+    }
     if (scrim) {
         lv_obj_delete(scrim);
     }
@@ -1634,6 +1640,10 @@ void nodelio_skill_result_hide(void)
 {
     s_news_gen += 1;
     s_news_detail = -1;
+    if (s_news_body_heap) {
+        heap_caps_free(s_news_body_heap);
+        s_news_body_heap = nullptr;
+    }
     clear_ttl();
     DisplayLockGuard lock(nl_ov_disp());
     if (!lock) {

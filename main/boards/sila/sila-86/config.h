@@ -58,9 +58,9 @@
 #define DISPLAY_OFFSET_X         0
 #define DISPLAY_OFFSET_Y         0
 
-/* huang.bin：IO13、PWM 取反、25 kHz。RY3730 EN 低电平关断，与 PWM invert 不是同一电平。 */
+/* IO13、25 kHz。本板背光高电平更亮，PWM 不取反；亮度 0 仍把脚钉在低电平关断。 */
 #define DISPLAY_BACKLIGHT_PIN              GPIO_NUM_13
-#define DISPLAY_BACKLIGHT_OUTPUT_INVERT    true
+#define DISPLAY_BACKLIGHT_OUTPUT_INVERT    false
 #define DISPLAY_BACKLIGHT_FREQ_HZ          25000
 #define DISPLAY_BACKLIGHT_OFF_LEVEL        0
 

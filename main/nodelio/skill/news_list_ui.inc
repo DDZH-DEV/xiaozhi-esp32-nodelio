@@ -88,6 +88,55 @@ static int64_t s_chunk_sent_us = 0;
 /** true=仅摘要/标题，勿让模型声称「全文已读完」 */
 static bool s_speak_from_summary = false;
 
+/** 单飞缓存：语音 read 与 UI worker 共用一次 HTTP，避免 net-lock 竞态把摘要盖上正文 */
+static SemaphoreHandle_t s_pull_mu = nullptr;
+static char s_cache_id[NL_ENV_STR];
+static char *s_cache_body = nullptr;
+static bool s_cache_from_summary = false;
+
+static void *news_cjson_malloc(size_t sz)
+{
+    void *p = heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return p ? p : malloc(sz);
+}
+
+static void news_cjson_free(void *p)
+{
+    free(p);
+}
+
+static void news_ensure_cjson_psram(void)
+{
+    static bool once;
+    if (once) {
+        return;
+    }
+    once = true;
+    cJSON_Hooks hooks = {
+        .malloc_fn = news_cjson_malloc,
+        .free_fn = news_cjson_free,
+    };
+    cJSON_InitHooks(&hooks);
+}
+
+static void news_cache_clear(void)
+{
+    if (s_cache_body) {
+        heap_caps_free(s_cache_body);
+        s_cache_body = nullptr;
+    }
+    s_cache_id[0] = '\0';
+    s_cache_from_summary = false;
+}
+
+static void news_body_heap_clear(void)
+{
+    if (s_news_body_heap) {
+        heap_caps_free(s_news_body_heap);
+        s_news_body_heap = nullptr;
+    }
+}
+
 static void news_speak_clear(void)
 {
     if (s_speak_body) {
@@ -197,8 +246,25 @@ static bool news_format_chunk(char *out, size_t out_len, bool with_title)
     return out[0] != '\0';
 }
 
+static char *news_dup_psram(const char *s)
+{
+    if (!s || !s[0]) {
+        return nullptr;
+    }
+    const size_t n = strlen(s);
+    char *copy = static_cast<char *>(heap_caps_malloc(n + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!copy) {
+        copy = static_cast<char *>(malloc(n + 1));
+    }
+    if (!copy) {
+        return nullptr;
+    }
+    memcpy(copy, s, n + 1);
+    return copy;
+}
+
 /**
- * 拉单篇正文。
+ * 拉单篇正文（单飞：同 id 并发只打一次 HTTP）。
  * @param out_heap 成功时为可 free 的正文拷贝（PSRAM）；失败为 nullptr 且可用 *out_view 看回退串
  * @param out_view 始终指向可用展示文本（heap 或 summary/title 静态区）
  * @param from_summary 未拿到 article body、仅用摘要/标题
@@ -217,78 +283,159 @@ static bool news_pull_article_text(int idx, char **out_heap, const char **out_vi
     if (idx < 0 || idx >= s_env.news_n || !s_env.news[idx].id[0]) {
         return false;
     }
+    const char *id = s_env.news[idx].id;
     const char *fallback =
         s_env.news[idx].summary[0] ? s_env.news[idx].summary : s_env.news[idx].title;
     if (out_view) {
         *out_view = fallback;
     }
+
+    if (!s_pull_mu) {
+        s_pull_mu = xSemaphoreCreateMutex();
+    }
+    if (s_pull_mu) {
+        xSemaphoreTake(s_pull_mu, portMAX_DELAY);
+    }
+
+    bool ok = false;
+    if (s_cache_body && strcmp(s_cache_id, id) == 0) {
+        char *copy = news_dup_psram(s_cache_body);
+        if (copy) {
+            if (out_heap) {
+                *out_heap = copy;
+            }
+            if (out_view) {
+                *out_view = copy;
+            }
+            if (from_summary) {
+                *from_summary = s_cache_from_summary;
+            }
+            ok = true;
+        } else {
+            if (out_view) {
+                *out_view = s_cache_body;
+            }
+            if (from_summary) {
+                *from_summary = s_cache_from_summary;
+            }
+            ok = true;
+        }
+        if (s_pull_mu) {
+            xSemaphoreGive(s_pull_mu);
+        }
+        return ok;
+    }
+
     char abs_url[512];
     abs_url[0] = '\0';
     if (s_skill_cfg.device_id[0]) {
         char path[320];
-        snprintf(path, sizeof(path), "/api/devices/%s/panel/news/article?id=%s", s_skill_cfg.device_id,
-                 s_env.news[idx].id);
+        snprintf(path, sizeof(path), "/api/devices/%s/panel/news/article?id=%s", s_skill_cfg.device_id, id);
         news_abs_url(path, abs_url, sizeof(abs_url));
     }
     if (!abs_url[0]) {
+        if (s_pull_mu) {
+            xSemaphoreGive(s_pull_mu);
+        }
         return fallback && fallback[0];
     }
+
     char *buf = static_cast<char *>(heap_caps_malloc(NEWS_ARTICLE_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!buf) {
         buf = static_cast<char *>(malloc(NEWS_ARTICLE_CAP));
     }
     if (!buf) {
+        if (s_pull_mu) {
+            xSemaphoreGive(s_pull_mu);
+        }
         return fallback && fallback[0];
     }
+
+    news_ensure_cjson_psram();
     int status = 0;
     esp_err_t err = nodelio_http_get_ms(abs_url, s_skill_cfg.device_key, nullptr, &status, buf,
                                         NEWS_ARTICLE_CAP - 1, NEWS_HTTP_IO_MS);
-    bool ok = false;
     if (err == ESP_OK && status == 200) {
         cJSON *root = cJSON_Parse(buf);
         cJSON *body = root ? cJSON_GetObjectItem(root, "body") : nullptr;
         if (cJSON_IsString(body) && body->valuestring && body->valuestring[0]) {
-            const size_t n = strlen(body->valuestring);
-            char *copy = static_cast<char *>(heap_caps_malloc(n + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-            if (!copy) {
-                copy = static_cast<char *>(malloc(n + 1));
-            }
+            char *copy = news_dup_psram(body->valuestring);
             if (copy) {
-                memcpy(copy, body->valuestring, n + 1);
+                const cJSON *is_sum = cJSON_GetObjectItem(root, "is_summary");
+                const bool only_sum =
+                    cJSON_IsTrue(is_sum) || (fallback && strcmp(copy, fallback) == 0);
+                news_cache_clear();
+                snprintf(s_cache_id, sizeof(s_cache_id), "%s", id);
+                s_cache_body = news_dup_psram(copy);
+                s_cache_from_summary = only_sum;
                 if (out_heap) {
                     *out_heap = copy;
+                } else {
+                    heap_caps_free(copy);
+                    copy = nullptr;
                 }
                 if (out_view) {
-                    *out_view = copy;
+                    *out_view = out_heap && *out_heap ? *out_heap : (s_cache_body ? s_cache_body : fallback);
                 }
                 if (from_summary) {
-                    /* 与摘要相同仍可能是服务端用 summary 回填；正文明显更长才算全文 */
-                    *from_summary = (fallback && strcmp(copy, fallback) == 0);
+                    *from_summary = only_sum;
                 }
                 ok = true;
             }
+        } else {
+            ESP_LOGW("nl_news", "article json no body id=%s status=%d", id, status);
         }
         if (root) {
             cJSON_Delete(root);
         }
+    } else {
+        ESP_LOGW("nl_news", "article http id=%s err=%d status=%d", id, (int)err, status);
     }
     heap_caps_free(buf);
+
     if (!ok) {
         ok = fallback && fallback[0];
+        if (ok && from_summary) {
+            *from_summary = true;
+        }
+    }
+    if (s_pull_mu) {
+        xSemaphoreGive(s_pull_mu);
     }
     return ok;
 }
 
-static void news_apply_body_label(int idx, uint32_t gen, const char *text)
+static void news_apply_body_label(int idx, uint32_t gen, const char *text, bool from_summary)
 {
     if (!text || gen != s_news_gen || !nodelio_panel_ui_screen_on()) {
         return;
     }
-    DisplayLockGuard lock(nl_ov_disp());
-    if (lock && gen == s_news_gen && s_news_detail == idx && s_news_body_lbl &&
-        lv_obj_is_valid(s_news_body_lbl)) {
-        lv_label_set_text(s_news_body_lbl, text);
+    char *owned = nullptr;
+    if (from_summary) {
+        const size_t n = strlen(text) + 32;
+        owned = static_cast<char *>(heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!owned) {
+            owned = static_cast<char *>(malloc(n));
+        }
+        if (owned) {
+            snprintf(owned, n, "（仅摘要）\n%s", text);
+        }
+    } else {
+        owned = news_dup_psram(text);
     }
+    if (!owned) {
+        return;
+    }
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock || gen != s_news_gen || s_news_detail != idx || !s_news_body_lbl ||
+        !lv_obj_is_valid(s_news_body_lbl)) {
+        heap_caps_free(owned);
+        return;
+    }
+    news_body_heap_clear();
+    s_news_body_heap = owned;
+    lv_label_set_text_static(s_news_body_lbl, s_news_body_heap);
+    lv_obj_set_style_text_color(s_news_body_lbl, from_summary ? UI_TEXT_DIM : UI_TEXT, 0);
 }
 
 /** 语音朗读：拉正文进缓存并吐出一段。UI 预加载勿走此路径（会打乱 off）。 */
@@ -315,7 +462,7 @@ static bool news_load_spoken(int idx, uint32_t gen, char *out, size_t out_len, b
         }
         return out && out[0];
     }
-    news_apply_body_label(idx, gen, view);
+    news_apply_body_label(idx, gen, view, from_summary);
     news_speak_set(id, title, view, from_summary);
     if (heap) {
         heap_caps_free(heap);
@@ -341,7 +488,7 @@ static void news_fetch_article(const news_job_t *job)
         }
         return;
     }
-    news_apply_body_label(job->slot, job->gen, view);
+    news_apply_body_label(job->slot, job->gen, view, from_summary);
     if (heap) {
         heap_caps_free(heap);
     }
@@ -467,6 +614,8 @@ static void fill_news(void)
     set_hdr_mid_icon(MATERIAL_SYMBOLS_KEYBOARD_ARROW_DOWN);
     s_news_gen += 1;
     news_speak_clear();
+    /* 不在此清 article 缓存：fill 可能与 HTTP 单飞并发；错 id 由 pull 内比对替换 */
+    news_body_heap_clear();
     s_news_body_lbl = nullptr;
     lv_obj_clean(s_card_list);
     lv_obj_add_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE);
@@ -533,10 +682,11 @@ static void fill_news(void)
 
         s_news_body_lbl = lv_label_create(s_card_list);
         nl_ov_set_font(s_news_body_lbl);
-        lv_label_set_text(s_news_body_lbl, n->summary[0] ? n->summary : "正在加载详情…");
+        /* 勿先贴 RSS 摘要（带「…」），否则长文加载失败时用户会以为详情只有概述 */
+        lv_label_set_text(s_news_body_lbl, "正在加载详情…");
         lv_obj_set_width(s_news_body_lbl, lv_pct(100));
         lv_label_set_long_mode(s_news_body_lbl, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_color(s_news_body_lbl, UI_TEXT, 0);
+        lv_obj_set_style_text_color(s_news_body_lbl, UI_TEXT_DIM, 0);
         news_enqueue_article(s_news_detail);
         return;
     }

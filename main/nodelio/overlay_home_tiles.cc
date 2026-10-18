@@ -349,9 +349,16 @@ static uint32_t kind_fill_off(tile_kind_t kind)
 static const char *kind_symbol(const nl_widget_t *w, tile_kind_t kind, bool on)
 {
     (void)on;
+    /* catalog id 命中当前字库才用；未知或尚未编进字体的字形回退 skin/kind */
+    if (w && w->icon[0]) {
+        const char *named = material_symbols_get_utf8(w->icon);
+        if (named != NULL) {
+            return named;
+        }
+    }
     if (w && w->skin[0]) {
         if (strcmp(w->skin, "fan") == 0) {
-            return MATERIAL_SYMBOLS_REFRESH;
+            return MATERIAL_SYMBOLS_MODE_FAN;
         }
         if (strcmp(w->skin, "dimmer") == 0) {
             return MATERIAL_SYMBOLS_BRIGHTNESS_6;
@@ -365,8 +372,11 @@ static const char *kind_symbol(const nl_widget_t *w, tile_kind_t kind, bool on)
         if (strcmp(w->skin, "dual_line") == 0) {
             return MATERIAL_SYMBOLS_REPEAT;
         }
-        if (strcmp(w->skin, "gauge") == 0 || strcmp(w->skin, "tank") == 0) {
+        if (strcmp(w->skin, "gauge") == 0) {
             return MATERIAL_SYMBOLS_BRIGHTNESS_6;
+        }
+        if (strcmp(w->skin, "tank") == 0) {
+            return MATERIAL_SYMBOLS_WATER_DROP;
         }
     }
     switch (kind) {
@@ -1778,8 +1788,15 @@ static void fill_skill_tile(nl_widget_t *w, int cell_w, int cell_h)
     lv_obj_set_style_bg_opa(capsule, LV_OPA_COVER, 0);
     lv_obj_clear_flag(capsule, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
+    const char *skill_glyph = MATERIAL_SYMBOLS_EXPLORE;
+    if (w->icon[0]) {
+        const char *named = material_symbols_get_utf8(w->icon);
+        if (named != NULL) {
+            skill_glyph = named;
+        }
+    }
     lv_obj_t *icon_lbl = lv_label_create(capsule);
-    lv_label_set_text(icon_lbl, MATERIAL_SYMBOLS_EXPLORE);
+    lv_label_set_text(icon_lbl, skill_glyph);
     lv_obj_set_style_text_font(icon_lbl, nl_ov_tile_icon_font(is_row), 0);
     lv_obj_set_style_text_color(icon_lbl, UI_ON_TILE, 0);
     lv_obj_center(icon_lbl);
@@ -2195,6 +2212,14 @@ static void fill_skill_widget(nl_widget_t *w, int cell_w, int cell_h)
     const char *invoke = w->default_invoke[0] ? w->default_invoke : "{}";
     nl_ov_skill_widget_prefetch(w->skill_id, invoke, w->refresh_sec > 0 ? w->refresh_sec : 600);
 
+    const char *widget_glyph = MATERIAL_SYMBOLS_CHAT_BUBBLE;
+    if (w->icon[0]) {
+        const char *named = material_symbols_get_utf8(w->icon);
+        if (named != NULL) {
+            widget_glyph = named;
+        }
+    }
+
     /* 一行高（每日一句）：正文必须占满格子，标题单独一行会被裁掉 */
     if (one_row || !pv.list) {
         lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW);
@@ -2202,7 +2227,7 @@ static void fill_skill_widget(nl_widget_t *w, int cell_w, int cell_h)
         lv_obj_set_style_pad_left(tile, 8, 0);
         lv_obj_set_style_pad_right(tile, 8, 0);
         lv_obj_set_style_pad_column(tile, 8, 0);
-        widget_icon_pod(tile, MATERIAL_SYMBOLS_CHAT_BUBBLE, UI_CAPSULE_SCENE, one_row ? 28 : 32);
+        widget_icon_pod(tile, widget_glyph, UI_CAPSULE_SCENE, one_row ? 28 : 32);
         lv_obj_t *body = lv_label_create(tile);
         nl_ov_set_font(body);
         const char *text = (have && pv.n > 0 && pv.title[0][0]) ? pv.title[0] : "加载中";
@@ -2230,7 +2255,7 @@ static void fill_skill_widget(nl_widget_t *w, int cell_w, int cell_h)
     lv_obj_set_flex_align(side, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(side, 6, 0);
     lv_obj_clear_flag(side, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-    widget_icon_pod(side, MATERIAL_SYMBOLS_BRIGHTNESS_6, UI_CAPSULE_PWM, 28);
+    widget_icon_pod(side, widget_glyph, UI_CAPSULE_PWM, 28);
     lv_obj_t *ht = lv_label_create(side);
     nl_ov_set_font(ht);
     lv_label_set_text(ht, pv.head[0] ? pv.head : fallback);

@@ -75,6 +75,7 @@ typedef struct {
     int8_t gw;
     int8_t gh;
     char bg_color[16]; /* 可选 "#RRGGBB"；空则按 type 默认色 */
+    char icon[24];     /* 可选 tile-icon-catalog id；空或字库未收录则按 skin/kind */
     char pinyin_on[48];  /* 服务端按 title 生成；本地口令 */
     char pinyin_off[48];
     /* skill_tile / skill_widget：安装 instance_id；default_invoke 缺省 "{}" */

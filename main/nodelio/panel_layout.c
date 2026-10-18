@@ -389,6 +389,7 @@ static void parse_layout_object(const cJSON *root, int outer_version, nodelio_pa
                 copy_str(wid->title, sizeof(wid->title), w, "title");
                 copy_str(wid->bg_color, sizeof(wid->bg_color), w, "bgColor");
                 copy_str(wid->skin, sizeof(wid->skin), w, "skin");
+                copy_str(wid->icon, sizeof(wid->icon), w, "icon");
                 copy_str(wid->pinyin_on, sizeof(wid->pinyin_on), w, "pinyinOn");
                 copy_str(wid->pinyin_off, sizeof(wid->pinyin_off), w, "pinyinOff");
                 copy_str(wid->skill_id, sizeof(wid->skill_id), w, "skillId");

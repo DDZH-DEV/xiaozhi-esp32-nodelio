@@ -50,13 +50,13 @@ static bool http_net_ready(void)
 
 struct HttpNetGuard {
     bool ok = false;
-    HttpNetGuard()
+    explicit HttpNetGuard(uint32_t lock_ms = 2000)
     {
         if (!http_net_ready()) {
             return;
         }
-        if (!nodelio_wifi_net_acquire(2000)) {
-            ESP_LOGW(TAG, "skip: net lock busy");
+        if (!nodelio_wifi_net_acquire(lock_ms)) {
+            ESP_LOGW(TAG, "skip: net lock busy (waited %ums)", (unsigned)lock_ms);
             return;
         }
         if (!http_net_ready()) {
@@ -360,7 +360,12 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
         return ESP_ERR_INVALID_ARG;
     }
     SkillInvokePace invoke_pace(url);
-    HttpNetGuard net;
+    /* 长 IO（新闻正文等）会占锁十余秒；短等 2s 会导致并发请求误回退摘要 */
+    uint32_t lock_ms = 2000;
+    if (io_ms > 2000) {
+        lock_ms = (uint32_t)io_ms;
+    }
+    HttpNetGuard net(lock_ms);
     if (!net) {
         return ESP_ERR_INVALID_STATE;
     }

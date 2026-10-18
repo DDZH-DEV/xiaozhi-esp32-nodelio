@@ -295,6 +295,12 @@ void WifiBoard::OnWifiConnectTimeout(void* arg) {
     auto* board = static_cast<WifiBoard*>(arg);
 
 #if defined(CONFIG_NODELIO_PANEL)
+    /* 屏上「扫描」会停 Station。这段时间不要把 60s 超时当成连失败去开 SoftAP。 */
+    if (nodelio_wifi_suppress_softap()) {
+        ESP_LOGI(TAG, "connect timeout deferred — screen WiFi scan");
+        esp_timer_start_once(board->connect_timer_, CONNECT_TIMEOUT_SEC * 1000000ULL);
+        return;
+    }
     /*
      * 常见：L2 已关联但 DHCP 慢/丢包。日志会有 "connected with …" 却无 Got IP，
      * 60s 超时若直接 StopStation，永远不会 NetworkConnected → 不会 nodelio_bridge_start。
@@ -326,6 +332,10 @@ void WifiBoard::OnWifiConnectTimeout(void* arg) {
 
 void WifiBoard::StartWifiConfigMode() {
 #if defined(CONFIG_NODELIO_PANEL)
+    if (nodelio_wifi_suppress_softap()) {
+        ESP_LOGW(TAG, "skip SoftAP — screen WiFi scan");
+        return;
+    }
     /* 屏坏/无触摸：SoftAP 门户配 WiFi + 服务器；屏上「连接」页仍可用作备用 */
     nodelio_wifi_set_suppress_softap(false);
 #endif

@@ -636,19 +636,16 @@ static void wifi_scan_task(void *arg)
 {
     (void)arg;
     auto &wifi = WifiManager::GetInstance();
-    bool restore_station = false;
 
     /*
-     * SoftAP / Station 都会在 SCAN_DONE 里 esp_wifi_scan_get_ap_records，
-     * 把结果抢走 → overlay 常见 scan got 0。屏上扫描前先关掉它们。
+     * SoftAP / Station 都会在 SCAN_DONE 里先读走 AP 列表。
+     * 扫描全程 suppress，避免 60s 连网超时把 SoftAP 又拉起来。
      */
+    nodelio_wifi_set_suppress_softap(true);
     if (wifi.IsConfigMode()) {
-        /* 兜底：若仍残留 SoftAP，先关掉再扫 */
-        nodelio_wifi_set_suppress_softap(true);
         wifi.StopConfigAp();
         vTaskDelay(pdMS_TO_TICKS(400));
     } else {
-        restore_station = true;
         wifi.StopStation();
         vTaskDelay(pdMS_TO_TICKS(300));
     }
@@ -660,10 +657,10 @@ static void wifi_scan_task(void *arg)
         ESP_LOGW(TAG, "wifi scan: %s", esp_err_to_name(err));
     }
 
-    if (restore_station) {
-        nodelio_wifi_release_scan_netif();
-        wifi.StartStation();
-    }
+    /* 扫完只拉回 Station。不要在这里 StartConfigAp，否则又弹配网并抢走列表。 */
+    nodelio_wifi_release_scan_netif();
+    wifi.StartStation();
+    nodelio_wifi_set_suppress_softap(false);
 
     {
         DisplayLockGuard lock(nl_ov_disp());
