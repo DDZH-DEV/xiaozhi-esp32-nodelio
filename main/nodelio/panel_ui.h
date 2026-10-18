@@ -139,8 +139,57 @@ bool nodelio_panel_ui_device_online(const char *device_id);
 /** 离线口令「重启」：主任务延时后 Application::Reboot。 */
 void nodelio_panel_ui_local_reboot(void);
 
+/** 离线口令「进入配网」：进 SoftAP 门户（WiFi + 服务器）。 */
+void nodelio_panel_ui_local_wifi_config(void);
+
 /** 离线口令「退下」：收束会话并 RequestGoodbyeSleep（不依赖云）。 */
 void nodelio_panel_ui_local_goodbye(void);
+
+/** 语音/MCP 导航目标（屏坏可语音切页） */
+enum {
+    NL_UI_HOME = 0,
+    NL_UI_APPS = 1,
+    NL_UI_SETTINGS = 2,
+    NL_UI_CONNECT = 3,
+    NL_UI_DISP = 4,
+    NL_UI_POWER = 5,
+    NL_UI_VOICE = 6,
+    NL_UI_MEDIA = 7,
+    NL_UI_CTRL = 8,
+    NL_UI_SYS = 9,
+    NL_UI_RESET = 10, /* 恢复出厂确认页（须触确认，语音只打开不执行） */
+};
+
+/** 打开 overlay 并切到指定页（设置子页/连接页含在内）。 */
+void nodelio_panel_ui_goto(int page);
+
+/**
+ * 首页用户屏翻页（与左/右滑同一路径）。delta=+1 下一屏，-1 上一屏。
+ * 不在首页时先回到首页再翻。只有一屏 → ESP_ERR_NOT_FOUND；到头 → ESP_ERR_INVALID_STATE。
+ */
+esp_err_t nodelio_panel_ui_home_page(int delta);
+
+/**
+ * 竖向滚当前可见页（设置/内页/连接/应用/启动台）。dir=+1 往下，-1 往上。
+ * 无可滚区 → ESP_ERR_NOT_FOUND；到顶/底 → ESP_ERR_INVALID_STATE。
+ */
+esp_err_t nodelio_panel_ui_scroll(int dir);
+
+/**
+ * 按应用名或 app_id 打开已装应用（invoke）。
+ * 命中返回 true；未装/未知返回 false。
+ */
+bool nodelio_panel_ui_open_app(const char *name_or_id);
+
+/**
+ * 统一改设置（语音/MCP/UI 同路径）。key/value 见 PLAN-VOICE-SETTINGS。
+ * 校验失败写中文到 err（可空），不静默夹到非法值；brightness 仅 0–4→5。
+ * 落盘：nvs_cache_put + Schedule(nvs_save)；勿在 PSRAM 任务直接写 flash。
+ */
+esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *value, char *err, size_t err_len);
+
+/** 读当前偏好为短字符串；未知 key → ESP_ERR_NOT_FOUND。 */
+esp_err_t nodelio_panel_ui_get_pref(const char *key, char *buf, size_t len);
 
 #ifdef __cplusplus
 }

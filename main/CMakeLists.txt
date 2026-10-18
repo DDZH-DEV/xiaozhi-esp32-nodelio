@@ -946,6 +946,7 @@ if(CONFIG_BOARD_TYPE_SILA_86 AND CONFIG_NODELIO_PANEL)
         "nodelio/board_info.c"
         "nodelio/wifi_shim.c"
         "nodelio/wifi_power.cc"
+        "nodelio/softap_portal.cc"
         "nodelio/ui_widgets.cc"
         "nodelio/nl_url_util.c"
         "nodelio/nodelio_overlay.cc"

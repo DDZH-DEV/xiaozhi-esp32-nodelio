@@ -904,9 +904,16 @@ void AudioService::CheckAndUpdateAudioPowerState() {
     auto output_elapsed =
         std::chrono::duration_cast<std::chrono::milliseconds>(now - last_output_time_).count();
     if (input_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->input_enabled()) {
-        // ADC continuous start/stop must run in the same task. Wake the audio
-        // input task instead of closing the codec from the esp_timer task.
-        xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_INPUT_STOP_REQUEST);
+        const EventBits_t bits = xEventGroupGetBits(event_group_);
+        const bool input_wanted =
+            (bits & (AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING |
+                     AS_EVENT_LOCAL_COMMAND_RUNNING | AS_EVENT_AUDIO_TESTING_RUNNING)) != 0;
+        /* 唤醒词还开着就不要因超时关麦，否则播歌久了唤不醒。 */
+        if (!input_wanted) {
+            // ADC continuous start/stop must run in the same task. Wake the audio
+            // input task instead of closing the codec from the esp_timer task.
+            xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_INPUT_STOP_REQUEST);
+        }
     }
     if (output_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->output_enabled()) {
         // Keep TX clock when duplex RX is active; otherwise RX may stall on some boards.

@@ -150,11 +150,13 @@ void nodelio_skill_result_raise(void)
 static void set_drawer_for_skill(bool skill_on)
 {
     s_skill_ui_active = skill_on;
-    if (!s_ai_drawer) {
-        return;
-    }
     if (skill_on) {
-        lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
+        if (s_ai_drawer) {
+            lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (s_ai_mini_fab) {
+            lv_obj_add_flag(s_ai_mini_fab, LV_OBJ_FLAG_HIDDEN);
+        }
         return;
     }
     nl_ov_restore_ai_drawer_if_session();
@@ -1570,21 +1572,61 @@ static void fill_list(void)
     apply_card_chrome();
 }
 
+static bool skill_ui_is_up(void)
+{
+    if (s_have_env) {
+        return true;
+    }
+    if (nodelio_media_is_playing() || nodelio_media_is_paused()) {
+        return true;
+    }
+    if (s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
+        return true;
+    }
+    if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
+        return true;
+    }
+    if (s_mini_fab && !lv_obj_has_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN)) {
+        return true;
+    }
+    if (s_scrim && !lv_obj_has_flag(s_scrim, LV_OBJ_FLAG_HIDDEN)) {
+        return true;
+    }
+    return false;
+}
+
+void nodelio_skill_close_all(void)
+{
+    nodelio_media_stop();
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        return;
+    }
+    dismiss_library_and_player();
+}
+
 bool nodelio_skill_try_dismiss_phrase(const char *text)
 {
     if (!text || !text[0]) {
         return false;
     }
-    const bool news = strstr(text, "新闻") != nullptr;
     const bool close = strstr(text, "关闭") || strstr(text, "关掉") || strstr(text, "关上") ||
                        strstr(text, "退出") || strstr(text, "收起");
-    if (!news || !close) {
+    if (!close) {
         return false;
     }
-    if (!s_have_env || strcmp(s_env.card_type, "news_list") != 0) {
+    /* 控家对象留给离线控家口令 */
+    if (strstr(text, "灯") || strstr(text, "继电器") || strstr(text, "插座") ||
+        strstr(text, "窗帘") || strstr(text, "卷帘") || strstr(text, "情景") ||
+        strstr(text, "控家") || strstr(text, "小智") || strstr(text, "省电")) {
         return false;
     }
-    nodelio_skill_result_hide();
+    if (!skill_ui_is_up()) {
+        return false;
+    }
+    /* 弹窗/播放条已在屏上：关闭电台/关掉/收起…一律停播并退下 */
+    ESP_LOGI(TAG, "voice dismiss skill ui: %s", text);
+    nodelio_skill_close_all();
     return true;
 }
 

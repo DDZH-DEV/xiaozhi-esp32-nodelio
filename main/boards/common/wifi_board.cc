@@ -149,10 +149,16 @@ void WifiBoard::StartNetwork() {
 
     // Initialize WiFi manager
     WifiManagerConfig config;
+#if defined(CONFIG_NODELIO_PANEL)
+    config.ssid_prefix = "NodeLio";
+    config.show_ota_config = false;
+    config.show_sleep_config = false;
+#else
     config.ssid_prefix = "Xiaozhi";
-    config.language = Lang::CODE;
     config.show_ota_config = true;
     config.show_sleep_config = true;
+#endif
+    config.language = Lang::CODE;
 
     // Set a DHCP hostname so the router shows a friendly name instead of "espressif".
     // Uses the same "<prefix>-<last 2 MAC bytes>" scheme as the config AP SSID.
@@ -222,16 +228,14 @@ void WifiBoard::TryWifiConnect() {
         WifiManager::GetInstance().SetPowerSaveLevel(WifiPowerSaveLevel::PERFORMANCE);
 #endif
     } else {
+        // No SSID：进 SoftAP 门户（NodeLio 页含 WiFi + 服务器/绑定码）
 #if defined(CONFIG_NODELIO_PANEL)
-        /* 无凭证：屏上配网（不写 SoftAP）；保存后进 SsidManager，下次仍走上面 StartStation */
-        ESP_LOGI(TAG, "No SSID — NodeLio screen provision");
+        ESP_LOGI(TAG, "No SSID — NodeLio SoftAP provision");
         vTaskDelay(pdMS_TO_TICKS(800));
-        StartWifiConfigMode();
 #else
-        // No SSID configured, enter SoftAP / BluFi config mode
         vTaskDelay(pdMS_TO_TICKS(1500));
-        StartWifiConfigMode();
 #endif
+        StartWifiConfigMode();
     }
 }
 
@@ -322,22 +326,8 @@ void WifiBoard::OnWifiConnectTimeout(void* arg) {
 
 void WifiBoard::StartWifiConfigMode() {
 #if defined(CONFIG_NODELIO_PANEL)
-    /* 面板产品：关掉小智 SoftAP/BluFi 门户，改开屏上「连接」；凭证仍写入 SsidManager */
-    nodelio_wifi_set_suppress_softap(true);
-    in_config_mode_ = false;
-    if (WifiManager::GetInstance().IsConfigMode()) {
-        WifiManager::GetInstance().StopConfigAp();
-    }
-    Application::GetInstance().SetDeviceState(kDeviceStateWifiConfiguring);
-    Application::GetInstance().Schedule([]() {
-        nodelio_overlay_show(true);
-        auto* d = Board::GetInstance().GetDisplay();
-        if (d) {
-            d->ShowNotification("请在设置里扫描并连接 WiFi", 4000);
-        }
-    });
-    ESP_LOGI(TAG, "NodeLio screen WiFi provision (SoftAP skipped)");
-    return;
+    /* 屏坏/无触摸：SoftAP 门户配 WiFi + 服务器；屏上「连接」页仍可用作备用 */
+    nodelio_wifi_set_suppress_softap(false);
 #endif
 
     in_config_mode_ = true;
@@ -350,12 +340,26 @@ void WifiBoard::StartWifiConfigMode() {
 
     // Show config prompt after a short delay
     Application::GetInstance().Schedule([&wifi_manager]() {
+#if defined(CONFIG_NODELIO_PANEL)
+        std::string hint = "请连接热点 ";
+        hint += wifi_manager.GetApSsid();
+        hint += "，浏览器打开 ";
+        hint += wifi_manager.GetApWebUrl();
+        hint += " 配置 WiFi 与服务器";
+        Application::GetInstance().Alert("配网模式", hint.c_str(), "gear", Lang::Sounds::OGG_WIFICONFIG);
+        nodelio_overlay_show(true);
+        auto *d = Board::GetInstance().GetDisplay();
+        if (d) {
+            d->ShowNotification(hint.c_str(), 8000);
+        }
+#else
         std::string hint = Lang::Strings::CONNECT_TO_HOTSPOT;
         hint += wifi_manager.GetApSsid();
         hint += Lang::Strings::ACCESS_VIA_BROWSER;
         hint += wifi_manager.GetApWebUrl();
 
         Application::GetInstance().Alert(Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(), "gear", Lang::Sounds::OGG_WIFICONFIG);
+#endif
     });
 #elif CONFIG_USE_ESP_BLUFI_WIFI_PROVISIONING
     auto &blufi = Blufi::GetInstance();

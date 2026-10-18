@@ -6,7 +6,11 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <esp_wifi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <sys/socket.h>
@@ -285,6 +289,69 @@ static bool decode_chunked(const char *in, size_t in_len, std::string *out)
     return false;
 }
 
+/**
+ * 服务端按「请求到达」做 400ms 限流。开机 TCP 握手可能要几百毫秒，
+ * 若在 connect 之前记时间，下一发会以为已经隔够，到服务器仍落在窗口内。
+ * 锁持有到 send 完成，时间戳记在发出之后。
+ */
+static portMUX_TYPE s_pace_init_mux = portMUX_INITIALIZER_UNLOCKED;
+static StaticSemaphore_t s_pace_buf;
+static SemaphoreHandle_t s_pace_mu;
+static int64_t s_pace_sent_us;
+
+static SemaphoreHandle_t skill_pace_mu(void)
+{
+    if (s_pace_mu) {
+        return s_pace_mu;
+    }
+    portENTER_CRITICAL(&s_pace_init_mux);
+    if (!s_pace_mu) {
+        s_pace_mu = xSemaphoreCreateMutexStatic(&s_pace_buf);
+    }
+    portEXIT_CRITICAL(&s_pace_init_mux);
+    return s_pace_mu;
+}
+
+struct SkillInvokePace {
+    SemaphoreHandle_t mu = nullptr;
+
+    explicit SkillInvokePace(const char *url)
+    {
+        if (!url || !strstr(url, "/panel/skills/") || !strstr(url, "/invoke")) {
+            return;
+        }
+        mu = skill_pace_mu();
+        if (!mu || xSemaphoreTake(mu, pdMS_TO_TICKS(8000)) != pdTRUE) {
+            mu = nullptr;
+            return;
+        }
+        const int64_t now = esp_timer_get_time();
+        const int64_t wait_us = 450000 - (now - s_pace_sent_us);
+        if (s_pace_sent_us != 0 && wait_us > 0 && wait_us < 3000000) {
+            vTaskDelay(pdMS_TO_TICKS((wait_us + 999) / 1000));
+        }
+    }
+
+    void mark_sent(void)
+    {
+        if (!mu) {
+            return;
+        }
+        s_pace_sent_us = esp_timer_get_time();
+        xSemaphoreGive(mu);
+        mu = nullptr;
+    }
+
+    ~SkillInvokePace()
+    {
+        if (!mu) {
+            return;
+        }
+        s_pace_sent_us = esp_timer_get_time();
+        xSemaphoreGive(mu);
+    }
+};
+
 static esp_err_t http_exchange(const char *method, const char *url, const char *device_key, const char *body,
                                const char *if_none_match, int *out_status, char *resp, int resp_cap, size_t *out_n,
                                int io_ms)
@@ -292,6 +359,7 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
     if (!url || !url[0]) {
         return ESP_ERR_INVALID_ARG;
     }
+    SkillInvokePace invoke_pace(url);
     HttpNetGuard net;
     if (!net) {
         return ESP_ERR_INVALID_STATE;
@@ -353,6 +421,8 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
         close(fd);
         return ESP_FAIL;
     }
+    /* 服务端限流看的是到达时刻，约等于这一下 send 完成 */
+    invoke_pace.mark_sent();
 
     std::vector<char> buf;
     buf.reserve(4096);

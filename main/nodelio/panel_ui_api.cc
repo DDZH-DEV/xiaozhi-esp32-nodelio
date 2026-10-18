@@ -19,6 +19,7 @@
 #include "system_info.h"
 #include "ui_theme.h"
 #include "ui_widgets.h"
+#include "wifi_board.h"
 #include "wifi_manager.h"
 #include "wifi_provision.h"
 #include <material_symbols.h>
@@ -228,6 +229,15 @@ extern "C" void nodelio_panel_ui_local_reboot(void)
     });
 }
 
+extern "C" void nodelio_panel_ui_local_wifi_config(void)
+{
+    nl_ov_toast("进入配网热点…");
+    Application::GetInstance().Schedule([]() {
+        ESP_LOGW(TAG, "offline cmd: enter SoftAP provision");
+        static_cast<WifiBoard &>(Board::GetInstance()).EnterWifiConfigMode();
+    });
+}
+
 extern "C" void nodelio_panel_ui_local_goodbye(void)
 {
     /* 触发抽屉 farewell 收束（与云端「退下」同路径） */
@@ -256,6 +266,189 @@ extern "C" void nodelio_panel_ui_local_goodbye(void)
             ESP_LOGI(TAG, "offline cmd: goodbye → sleep");
         }
     });
+}
+
+extern "C" esp_err_t nodelio_panel_ui_home_page(int delta)
+{
+    Board::GetInstance().NoteUserActivity();
+    esp_err_t e = nl_ov_home_page_peek(delta);
+    const char *toast = nullptr;
+    if (e == ESP_ERR_NOT_FOUND) {
+        toast = "只有一屏";
+    } else if (e == ESP_ERR_INVALID_STATE) {
+        toast = delta < 0 ? "已经是第一屏" : "已经是最后一屏";
+    } else if (e != ESP_OK) {
+        return e;
+    } else {
+        toast = delta < 0 ? "上一屏" : "下一屏";
+    }
+    Application::GetInstance().Schedule([delta, e, toast]() {
+        if (!nodelio_overlay_visible()) {
+            if (nl_ov_ai_session_active()) {
+                nodelio_overlay_show_chat();
+            } else {
+                nodelio_overlay_show(false);
+            }
+        }
+        DisplayLockGuard lock(nl_ov_disp());
+        if (!lock) {
+            return;
+        }
+        if (e == ESP_OK) {
+            if (s_active_tab != NL_TAB_HOME) {
+                nl_ov_show_page(NL_TAB_HOME);
+            }
+            nl_ov_home_page_apply(delta);
+        }
+        if (toast && toast[0]) {
+            nl_ov_toast(toast);
+        }
+    });
+    return e;
+}
+
+extern "C" esp_err_t nodelio_panel_ui_scroll(int dir)
+{
+    Board::GetInstance().NoteUserActivity();
+    esp_err_t e = nl_ov_voice_scroll_peek(dir);
+    const char *toast = nullptr;
+    if (e == ESP_ERR_NOT_FOUND) {
+        toast = "当前页不能滚动";
+    } else if (e == ESP_ERR_INVALID_STATE) {
+        toast = dir < 0 ? "已经到顶了" : "已经到底了";
+    } else if (e != ESP_OK) {
+        return e;
+    } else {
+        toast = dir < 0 ? "往上翻" : "往下翻";
+    }
+    Application::GetInstance().Schedule([dir, e, toast]() {
+        if (!nodelio_overlay_visible()) {
+            if (nl_ov_ai_session_active()) {
+                nodelio_overlay_show_chat();
+            } else {
+                nodelio_overlay_show(false);
+            }
+        }
+        DisplayLockGuard lock(nl_ov_disp());
+        if (!lock) {
+            return;
+        }
+        if (e == ESP_OK) {
+            nl_ov_voice_scroll_apply(dir);
+        }
+        if (toast && toast[0]) {
+            nl_ov_toast(toast);
+        }
+    });
+    return e;
+}
+
+extern "C" void nodelio_panel_ui_goto(int page)
+{
+    Board::GetInstance().NoteUserActivity();
+    Application::GetInstance().Schedule([page]() {
+        /* 已显示则只切页；勿 overlay_show(false)（会清 s_want_chat、像退下） */
+        if (!nodelio_overlay_visible()) {
+            if (nl_ov_ai_session_active()) {
+                nodelio_overlay_show_chat();
+            } else {
+                nodelio_overlay_show(false);
+            }
+        }
+        DisplayLockGuard lock(nl_ov_disp());
+        if (!lock) {
+            return;
+        }
+        switch (page) {
+        case NL_UI_HOME:
+            nl_ov_show_page(NL_TAB_HOME);
+            nl_ov_toast("首页");
+            break;
+        case NL_UI_APPS:
+            nl_ov_show_page(NL_TAB_APPS);
+            nl_ov_toast("应用");
+            break;
+        case NL_UI_SETTINGS:
+            nl_ov_show_page(NL_TAB_SET);
+            nl_ov_toast("设置");
+            break;
+        case NL_UI_CONNECT:
+            nl_ov_show_page(NL_TAB_SET);
+            nl_ov_open_connect();
+            nl_ov_toast("网络与连接");
+            break;
+        case NL_UI_DISP:
+            nl_ov_show_page(NL_TAB_SET);
+            nl_ov_open_settings_detail(SET_PAGE_DISP);
+            nl_ov_toast("显示与声音");
+            break;
+        case NL_UI_POWER:
+            nl_ov_show_page(NL_TAB_SET);
+            nl_ov_open_settings_detail(SET_PAGE_POWER);
+            nl_ov_toast("省电");
+            break;
+        case NL_UI_VOICE:
+            nl_ov_show_page(NL_TAB_SET);
+            nl_ov_open_settings_detail(SET_PAGE_VOICE);
+            nl_ov_toast("语音助手");
+            break;
+        case NL_UI_MEDIA:
+            nl_ov_show_page(NL_TAB_SET);
+            nl_ov_open_settings_detail(SET_PAGE_MEDIA);
+            nl_ov_toast("播放器");
+            break;
+        case NL_UI_CTRL:
+            nl_ov_show_page(NL_TAB_SET);
+            nl_ov_open_settings_detail(SET_PAGE_CTRL);
+            nl_ov_toast("控家");
+            break;
+        case NL_UI_SYS:
+            nl_ov_show_page(NL_TAB_SET);
+            nl_ov_open_settings_detail(SET_PAGE_SYS);
+            nl_ov_toast("设备信息");
+            break;
+        case NL_UI_RESET:
+            nl_ov_show_page(NL_TAB_SET);
+            nl_ov_open_settings_detail(SET_PAGE_RESET);
+            nl_ov_toast("请在屏幕确认恢复出厂");
+            break;
+        default:
+            ESP_LOGW(TAG, "goto unknown page=%d", page);
+            break;
+        }
+        /* 设置子页在 layer_top，须把对话胶囊再置顶，否则像「退下」 */
+        nl_ov_restore_ai_drawer_if_session();
+    });
+}
+
+extern "C" bool nodelio_panel_ui_open_app(const char *name_or_id)
+{
+    if (!name_or_id || !name_or_id[0]) {
+        return false;
+    }
+    Board::GetInstance().NoteUserActivity();
+    char *q = strdup(name_or_id);
+    if (!q) {
+        return false;
+    }
+    Application::GetInstance().Schedule([q]() {
+        if (!nodelio_overlay_visible()) {
+            if (nl_ov_ai_session_active()) {
+                nodelio_overlay_show_chat();
+            } else {
+                nodelio_overlay_show(false);
+            }
+        }
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            if (!nl_ov_apps_open_by_query(q)) {
+                nl_ov_toast("未找到应用");
+            }
+            nl_ov_restore_ai_drawer_if_session();
+        }
+        free(q);
+    });
+    return true;
 }
 
 extern "C" void nodelio_panel_ui_snapshot_begin(void)

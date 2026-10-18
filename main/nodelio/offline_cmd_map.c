@@ -187,7 +187,11 @@ bool nodelio_offline_cmd_is_local(int command_id)
     return command_id == NL_OC_REBOOT || command_id == NL_OC_GOODBYE ||
            command_id == NL_OC_MEDIA_PREV || command_id == NL_OC_MEDIA_NEXT ||
            command_id == NL_OC_MEDIA_PAUSE || command_id == NL_OC_MEDIA_RESUME ||
-           command_id == NL_OC_CTRL_OFF;
+           command_id == NL_OC_CTRL_OFF || command_id == NL_OC_WIFI_CONFIG ||
+           (command_id >= NL_OC_GOTO_HOME && command_id <= NL_OC_GOTO_SYS) ||
+           (command_id >= NL_OC_POWER_SAVE_ON && command_id <= NL_OC_GOTO_RESET) ||
+           command_id == NL_OC_PAGE_NEXT || command_id == NL_OC_PAGE_PREV ||
+           command_id == NL_OC_SCROLL_DOWN || command_id == NL_OC_SCROLL_UP;
 }
 
 const char *nodelio_offline_cmd_zh(int command_id)
@@ -219,6 +223,54 @@ const char *nodelio_offline_cmd_zh(int command_id)
         return "继续播放";
     case NL_OC_CTRL_OFF:
         return "控家未启用 · 设置→控家 或装应用";
+    case NL_OC_WIFI_CONFIG:
+        return "进入配网";
+    case NL_OC_GOTO_HOME:
+        return "打开首页";
+    case NL_OC_GOTO_APPS:
+        return "打开应用";
+    case NL_OC_GOTO_SETTINGS:
+        return "打开设置";
+    case NL_OC_GOTO_CONNECT:
+        return "打开连接";
+    case NL_OC_GOTO_DISP:
+        return "显示与声音";
+    case NL_OC_GOTO_POWER:
+        return "打开省电";
+    case NL_OC_GOTO_VOICE:
+        return "语音助手";
+    case NL_OC_GOTO_MEDIA:
+        return "播放器设置";
+    case NL_OC_GOTO_CTRL:
+        return "控家设置";
+    case NL_OC_GOTO_SYS:
+        return "设备信息";
+    case NL_OC_POWER_SAVE_ON:
+        return "开启省电";
+    case NL_OC_POWER_SAVE_OFF:
+        return "关闭省电";
+    case NL_OC_CONTROLS_ON:
+        return "打开控家";
+    case NL_OC_CONTROLS_OFF:
+        return "关闭控家";
+    case NL_OC_XIAOZHI_ON:
+        return "打开小智";
+    case NL_OC_XIAOZHI_OFF:
+        return "关闭小智";
+    case NL_OC_LAYOUT_SYNC:
+        return "刷新布局";
+    case NL_OC_FW_CHECK:
+        return "检查更新";
+    case NL_OC_GOTO_RESET:
+        return "恢复出厂";
+    case NL_OC_PAGE_NEXT:
+        return "下一屏";
+    case NL_OC_PAGE_PREV:
+        return "上一屏";
+    case NL_OC_SCROLL_DOWN:
+        return "往下翻";
+    case NL_OC_SCROLL_UP:
+        return "往上翻";
     default:
         return "未知口令";
     }
@@ -231,6 +283,94 @@ esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int comm
     if (command_id == NL_OC_REBOOT) {
         nodelio_panel_ui_set_voice_hint("正在重启…");
         nodelio_panel_ui_local_reboot();
+        return ESP_OK;
+    }
+    if (command_id == NL_OC_WIFI_CONFIG) {
+        nodelio_panel_ui_set_voice_hint("进入配网热点");
+        nodelio_panel_ui_local_wifi_config();
+        return ESP_OK;
+    }
+    if (command_id >= NL_OC_GOTO_HOME && command_id <= NL_OC_GOTO_SYS) {
+        static const int k_map[] = {
+            NL_UI_HOME, NL_UI_APPS, NL_UI_SETTINGS, NL_UI_CONNECT, NL_UI_DISP,
+            NL_UI_POWER, NL_UI_VOICE, NL_UI_MEDIA, NL_UI_CTRL, NL_UI_SYS,
+        };
+        int idx = command_id - NL_OC_GOTO_HOME;
+        if (idx >= 0 && idx < (int)(sizeof(k_map) / sizeof(k_map[0]))) {
+            const char *zh = nodelio_offline_cmd_zh(command_id);
+            nodelio_panel_ui_set_voice_hint(zh ? zh : "已切换");
+            nodelio_panel_ui_goto(k_map[idx]);
+            return ESP_OK;
+        }
+    }
+    if (command_id == NL_OC_POWER_SAVE_ON || command_id == NL_OC_POWER_SAVE_OFF) {
+        const char *val = (command_id == NL_OC_POWER_SAVE_ON) ? "on" : "off";
+        char err[64];
+        esp_err_t e = nodelio_panel_ui_set_pref("power_save", val, err, sizeof(err));
+        nodelio_panel_ui_set_voice_hint(e == ESP_OK ? nodelio_offline_cmd_zh(command_id)
+                                                    : (err[0] ? err : "设置失败"));
+        return e;
+    }
+    if (command_id == NL_OC_CONTROLS_ON || command_id == NL_OC_CONTROLS_OFF) {
+        const char *val = (command_id == NL_OC_CONTROLS_ON) ? "on" : "off";
+        char err[64];
+        esp_err_t e = nodelio_panel_ui_set_pref("controls", val, err, sizeof(err));
+        nodelio_panel_ui_set_voice_hint(e == ESP_OK ? nodelio_offline_cmd_zh(command_id)
+                                                    : (err[0] ? err : "设置失败"));
+        return e;
+    }
+    if (command_id == NL_OC_XIAOZHI_ON || command_id == NL_OC_XIAOZHI_OFF) {
+        const char *val = (command_id == NL_OC_XIAOZHI_ON) ? "on" : "off";
+        char err[64];
+        esp_err_t e = nodelio_panel_ui_set_pref("xiaozhi", val, err, sizeof(err));
+        nodelio_panel_ui_set_voice_hint(e == ESP_OK ? nodelio_offline_cmd_zh(command_id)
+                                                    : (err[0] ? err : "设置失败"));
+        return e;
+    }
+    if (command_id == NL_OC_LAYOUT_SYNC) {
+        esp_err_t e = nodelio_panel_ui_set_pref("layout_sync", "", NULL, 0);
+        nodelio_panel_ui_set_voice_hint("刷新布局");
+        return e;
+    }
+    if (command_id == NL_OC_FW_CHECK) {
+        char err[64];
+        esp_err_t e = nodelio_panel_ui_set_pref("fw_check", "", err, sizeof(err));
+        nodelio_panel_ui_set_voice_hint(e == ESP_OK ? "检查更新" : (err[0] ? err : "检查失败"));
+        return e;
+    }
+    if (command_id == NL_OC_GOTO_RESET) {
+        nodelio_panel_ui_set_voice_hint("请在屏幕确认恢复出厂");
+        nodelio_panel_ui_goto(NL_UI_RESET);
+        return ESP_OK;
+    }
+    if (command_id == NL_OC_PAGE_NEXT || command_id == NL_OC_PAGE_PREV) {
+        int delta = (command_id == NL_OC_PAGE_NEXT) ? 1 : -1;
+        esp_err_t e = nodelio_panel_ui_home_page(delta);
+        const char *hint = (delta > 0) ? "下一屏" : "上一屏";
+        if (e == ESP_ERR_NOT_FOUND) {
+            hint = "只有一屏";
+        } else if (e == ESP_ERR_INVALID_STATE) {
+            hint = (delta < 0) ? "已经是第一屏" : "已经是最后一屏";
+        } else if (e != ESP_OK) {
+            nodelio_panel_ui_set_voice_hint("翻页失败");
+            return e;
+        }
+        nodelio_panel_ui_set_voice_hint(hint);
+        return ESP_OK;
+    }
+    if (command_id == NL_OC_SCROLL_DOWN || command_id == NL_OC_SCROLL_UP) {
+        int dir = (command_id == NL_OC_SCROLL_DOWN) ? 1 : -1;
+        esp_err_t e = nodelio_panel_ui_scroll(dir);
+        const char *hint = (dir > 0) ? "往下翻" : "往上翻";
+        if (e == ESP_ERR_NOT_FOUND) {
+            hint = "当前页不能滚动";
+        } else if (e == ESP_ERR_INVALID_STATE) {
+            hint = (dir < 0) ? "已经到顶了" : "已经到底了";
+        } else if (e != ESP_OK) {
+            nodelio_panel_ui_set_voice_hint("滚动失败");
+            return e;
+        }
+        nodelio_panel_ui_set_voice_hint(hint);
         return ESP_OK;
     }
     if (command_id == NL_OC_GOODBYE) {
@@ -437,8 +577,95 @@ static int phrase_to_cmd_id(const char *phrase)
     if (!phrase || !phrase[0]) {
         return 0;
     }
-    if (strstr(phrase, "重启") || strstr(phrase, "重新启动")) {
+    if (strstr(phrase, "重启") || strstr(phrase, "重新启动") || strstr(phrase, "重新开机")) {
         return NL_OC_REBOOT;
+    }
+    /* SoftAP 配网（≠ 屏上「网络与连接」表单） */
+    if (strstr(phrase, "进入配网") || strstr(phrase, "打开热点") || strstr(phrase, "配网模式") ||
+        strstr(phrase, "WiFi配置") || strstr(phrase, "wifi配置") || strstr(phrase, "WIFI配置") ||
+        (strstr(phrase, "配网") && !strstr(phrase, "网络设置"))) {
+        return NL_OC_WIFI_CONFIG;
+    }
+    /* 竖滚：须在「往后翻/往前翻」换屏之前，避免「往」字串误匹配 */
+    if (strstr(phrase, "往下翻") || strstr(phrase, "向下翻") || strstr(phrase, "向下滑") ||
+        strstr(phrase, "往下滑") || strstr(phrase, "再往下")) {
+        return NL_OC_SCROLL_DOWN;
+    }
+    if (strstr(phrase, "往上翻") || strstr(phrase, "向上翻") || strstr(phrase, "向上滑") ||
+        strstr(phrase, "往上滑") || strstr(phrase, "再往上")) {
+        return NL_OC_SCROLL_UP;
+    }
+    /* 须在「下一首/上一首」之前；「屏」与「首」不同字 */
+    if (strstr(phrase, "下一屏") || strstr(phrase, "往后翻") || strstr(phrase, "向后翻")) {
+        return NL_OC_PAGE_NEXT;
+    }
+    if (strstr(phrase, "上一屏") || strstr(phrase, "往前翻") || strstr(phrase, "向前翻")) {
+        return NL_OC_PAGE_PREV;
+    }
+    /* UI 导航：须在裸「打开」控家口令之前 */
+    if (strstr(phrase, "回到首页") || strstr(phrase, "打开首页") || strstr(phrase, "返回首页") ||
+        (strstr(phrase, "首页") && !strstr(phrase, "回家"))) {
+        return NL_OC_GOTO_HOME;
+    }
+    if (strstr(phrase, "打开应用") || strstr(phrase, "应用列表") || strstr(phrase, "技能列表") ||
+        strstr(phrase, "应用页")) {
+        return NL_OC_GOTO_APPS;
+    }
+    if (strstr(phrase, "打开设置") || strstr(phrase, "进入设置") || strstr(phrase, "设置页")) {
+        return NL_OC_GOTO_SETTINGS;
+    }
+    if (strstr(phrase, "打开连接") || strstr(phrase, "网络与连接") || strstr(phrase, "网络设置") ||
+        strstr(phrase, "服务器设置") || strstr(phrase, "绑定设置")) {
+        return NL_OC_GOTO_CONNECT;
+    }
+    if (strstr(phrase, "显示与声音") || strstr(phrase, "亮度设置") || strstr(phrase, "音量设置") ||
+        strstr(phrase, "打开亮度") || strstr(phrase, "调节亮度") || strstr(phrase, "调节音量")) {
+        return NL_OC_GOTO_DISP;
+    }
+    /* 开关用「开启/关闭」；页用「打开/进入」——勿与 GOTO 混淆 */
+    if (strstr(phrase, "开启省电") || strstr(phrase, "打开省电开关")) {
+        return NL_OC_POWER_SAVE_ON;
+    }
+    if (strstr(phrase, "关闭省电") || strstr(phrase, "关掉省电")) {
+        return NL_OC_POWER_SAVE_OFF;
+    }
+    if (strstr(phrase, "打开省电") || strstr(phrase, "省电设置") || strstr(phrase, "省电页") ||
+        strstr(phrase, "进入省电")) {
+        return NL_OC_GOTO_POWER;
+    }
+    if (strstr(phrase, "打开小智") || strstr(phrase, "开启小智") || strstr(phrase, "启用小智")) {
+        return NL_OC_XIAOZHI_ON;
+    }
+    if (strstr(phrase, "关闭小智") || strstr(phrase, "关掉小智")) {
+        return NL_OC_XIAOZHI_OFF;
+    }
+    if (strstr(phrase, "刷新布局") || strstr(phrase, "同步布局") || strstr(phrase, "更新布局")) {
+        return NL_OC_LAYOUT_SYNC;
+    }
+    if (strstr(phrase, "检查更新") || strstr(phrase, "检查固件") || strstr(phrase, "固件更新")) {
+        return NL_OC_FW_CHECK;
+    }
+    if (strstr(phrase, "恢复出厂") || strstr(phrase, "出厂重置") || strstr(phrase, "恢复出厂设置")) {
+        return NL_OC_GOTO_RESET;
+    }
+    if (strstr(phrase, "语音助手") || strstr(phrase, "语音设置") || strstr(phrase, "打开语音")) {
+        return NL_OC_GOTO_VOICE;
+    }
+    if (strstr(phrase, "播放器设置") || strstr(phrase, "播放器页")) {
+        return NL_OC_GOTO_MEDIA;
+    }
+    if (strstr(phrase, "打开控家") || strstr(phrase, "开启控家")) {
+        return NL_OC_CONTROLS_ON;
+    }
+    if (strstr(phrase, "关闭控家") || strstr(phrase, "关掉控家")) {
+        return NL_OC_CONTROLS_OFF;
+    }
+    if (strstr(phrase, "控家设置") || strstr(phrase, "打开控家设置") ||
+        strstr(phrase, "进入控家")) {
+        return NL_OC_GOTO_CTRL;
+    }
+    if (strstr(phrase, "设备信息") || strstr(phrase, "系统信息") || strstr(phrase, "关于本机")) {
+        return NL_OC_GOTO_SYS;
     }
     if (strstr(phrase, "退下") || strstr(phrase, "再见") || strstr(phrase, "拜拜") ||
         strstr(phrase, "息屏") || strstr(phrase, "睡觉")) {
@@ -481,6 +708,86 @@ static int phrase_to_cmd_id(const char *phrase)
     return 0;
 }
 
+/** 抽取到的应用名是否像口令（拒「失败了，你再试一下」这类整句） */
+static bool app_query_plausible(const char *q)
+{
+    if (!q || !q[0]) {
+        return false;
+    }
+    if (strstr(q, "失败") || strstr(q, "再试") || strstr(q, "试试") || strstr(q, "一下") ||
+        strstr(q, "看看") || strstr(q, "等会") || strstr(q, "一会儿") || strstr(q, "怎么") ||
+        strstr(q, "为什么") || strstr(q, "卡住") || strstr(q, "不行")) {
+        return false;
+    }
+    if (strstr(q, "，") || strstr(q, "。") || strstr(q, "？") || strstr(q, "！") ||
+        strstr(q, ",") || strstr(q, ".") || strstr(q, "?") || strstr(q, "!") ||
+        strchr(q, ' ') || strchr(q, '\t')) {
+        return false;
+    }
+    /* 应用名通常很短；过长当整句抱怨 */
+    size_t n = strlen(q);
+    if (n > 24) {
+        return false;
+    }
+    return true;
+}
+
+/** 「打开曲库/天气…」→ 应用 invoke；控家口令不抢 */
+static bool try_open_named_app(const char *phrase)
+{
+    if (!phrase || !phrase[0]) {
+        return false;
+    }
+    if (!strstr(phrase, "打开") && !strstr(phrase, "开启")) {
+        return false;
+    }
+    /* 「好像打开失败了，你再试一下」等：勿当开应用 */
+    if (strstr(phrase, "打开失败") || strstr(phrase, "开启失败") || strstr(phrase, "打不开") ||
+        strstr(phrase, "没打开") || strstr(phrase, "没有打开") || strstr(phrase, "未打开") ||
+        strstr(phrase, "再试") || strstr(phrase, "重试") || strstr(phrase, "又开")) {
+        return false;
+    }
+    /* 控家对象留给 control / MultiNet 动态词 */
+    if (strstr(phrase, "灯") || strstr(phrase, "帘") || strstr(phrase, "继电器") ||
+        strstr(phrase, "插座") || strstr(phrase, "开关") || strstr(phrase, "情景")) {
+        return false;
+    }
+    const char *p = strstr(phrase, "打开一下");
+    if (p) {
+        p += 12; /* UTF-8: 打开一下 = 4*3 */
+    } else if ((p = strstr(phrase, "打开")) != NULL) {
+        p += 6;
+    } else if ((p = strstr(phrase, "开启")) != NULL) {
+        p += 6;
+    } else {
+        return false;
+    }
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    /* 跳过「的」（UTF-8 三字节），勿写 *p == '的'（multi-char） */
+    if ((unsigned char)p[0] == 0xE7 && (unsigned char)p[1] == 0x9A &&
+        (unsigned char)p[2] == 0x84) {
+        p += 3;
+    }
+    if (!p[0]) {
+        return false;
+    }
+    /* 纯导航词已由 GOTO 处理 */
+    if (strncmp(p, "首页", 6) == 0 || strncmp(p, "设置", 6) == 0 || strncmp(p, "应用", 6) == 0 ||
+        strncmp(p, "连接", 6) == 0 || strncmp(p, "热点", 6) == 0 || strncmp(p, "配网", 6) == 0 ||
+        strncmp(p, "省电", 6) == 0 || strncmp(p, "亮度", 6) == 0 || strncmp(p, "音量", 6) == 0 ||
+        strncmp(p, "控家", 6) == 0 || strncmp(p, "语音", 6) == 0 || strncmp(p, "小智", 6) == 0) {
+        return false;
+    }
+    if (!app_query_plausible(p)) {
+        ESP_LOGI(TAG, "skip open-app (not a name): '%s'", p);
+        return false;
+    }
+    ESP_LOGI(TAG, "open app query='%s'", p);
+    return nodelio_panel_ui_open_app(p);
+}
+
 esp_err_t nodelio_offline_try_phrase(const nodelio_nvs_config_t *cfg, const char *phrase,
                                      const nodelio_panel_layout_t *layout)
 {
@@ -490,4 +797,29 @@ esp_err_t nodelio_offline_try_phrase(const nodelio_nvs_config_t *cfg, const char
         return ESP_ERR_INVALID_ARG;
     }
     return nodelio_offline_cmd_dispatch(cfg, cmd, layout);
+}
+
+bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session)
+{
+    if (end_session) {
+        *end_session = false;
+    }
+    int cmd = phrase_to_cmd_id(phrase);
+    if (cmd == NL_OC_REBOOT || cmd == NL_OC_WIFI_CONFIG ||
+        (cmd >= NL_OC_GOTO_HOME && cmd <= NL_OC_GOTO_SYS) ||
+        (cmd >= NL_OC_POWER_SAVE_ON && cmd <= NL_OC_GOTO_RESET) ||
+        cmd == NL_OC_PAGE_NEXT || cmd == NL_OC_PAGE_PREV ||
+        cmd == NL_OC_SCROLL_DOWN || cmd == NL_OC_SCROLL_UP) {
+        ESP_LOGI(TAG, "system phrase → %s", nodelio_offline_cmd_zh(cmd));
+        if (end_session && (cmd == NL_OC_REBOOT || cmd == NL_OC_WIFI_CONFIG)) {
+            *end_session = true;
+        }
+        /* 开启/关闭省电等 set_pref：end_session 保持 false，会话不退下 */
+        return nodelio_offline_cmd_dispatch(NULL, cmd, NULL) == ESP_OK;
+    }
+    /* 「打开曲库」等：phrase_to_cmd_id 会落到 LIGHT_ON，这里再抢一次应用 */
+    if (try_open_named_app(phrase)) {
+        return true;
+    }
+    return false;
 }

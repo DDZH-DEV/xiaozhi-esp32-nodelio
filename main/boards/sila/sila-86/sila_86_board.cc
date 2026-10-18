@@ -87,6 +87,14 @@ private:
         power_save_timer_->OnEnterSleepMode([this]() {
             /* 先拉灭背光，再停 LVGL。反过来会先看到横条，背光还亮着。 */
             GetBacklight()->SetBrightness(0);
+#if CONFIG_NODELIO_PANEL
+            /* 播歌时不要停 LVGL / 关面板：停掉后触摸只靠定时器读 I2C，
+             * 和功放/Codec 抢总线会读不到点，屏和播放都关不掉。
+             * 背光已灭；LVGL 仍在，点一下走 NoteActivity 亮回来。 */
+            if (nodelio_media_is_playing()) {
+                return;
+            }
+#endif
             GetDisplay()->SetPowerSaveMode(true);
             /* 原理图无 AMP_EN：空闲关输出减滋滋；正在播媒体则勿掐功放 */
 #if CONFIG_NODELIO_PANEL
@@ -319,7 +327,7 @@ public:
         InitializeI2c();
         InitializeRGB();
         InitializeTouch();
-        /* 无物理 BOOT 键（GPIO0=RGB DB0）；配网靠无 WiFi 凭据时自动进 SoftAP */
+        /* 无物理 BOOT 键（GPIO0=RGB DB0）；配网：无 WiFi/未绑定→SoftAP，或语音「进入配网」 */
         GetBacklight()->RestoreBrightness();
     }
 

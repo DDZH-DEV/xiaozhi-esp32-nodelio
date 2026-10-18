@@ -9,6 +9,7 @@
 #include <esp_log.h>
 #include <esp_pthread.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
 #include <freertos/task.h>
 #include <algorithm>
 #include <cstring>
@@ -509,7 +510,8 @@ void McpServer::ReplyError(int id, const std::string& message,
 
 void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_only_tools,
                              const ResponseSender& response_sender) {
-    const int max_payload_size = 8000;
+    /* 说话时 MQTT 写 8KB 易超时断线；单页压到 ~4.5KB，多页 nextCursor */
+    const int max_payload_size = 4500;
     std::string json = "{\"tools\":[";
 
     bool found_cursor = cursor.empty();
@@ -627,9 +629,16 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
         ReplyResult(id, *result, response_sender);
     };
 
-    /* NodeLio/技能工具含阻塞 HTTP：勿占 Application::Run（说话态会拖死主循环 / 易 IWDT） */
-    const bool offload = tool_name.rfind("self.nodelio.", 0) == 0 ||
-                         tool_name.rfind("self.skill.", 0) == 0;
+    /* NodeLio/技能：阻塞 HTTP 勿占 Application::Run。纯本机动作可直接 Schedule。 */
+    const bool local_only = tool_name == "self.nodelio.reboot" ||
+                            tool_name == "self.nodelio.enter_wifi_config" ||
+                            tool_name == "self.nodelio.goto_page" ||
+                            tool_name == "self.nodelio.open_app" ||
+                            tool_name == "self.nodelio.list_controls" ||
+                            tool_name == "self.nodelio.set_pref" ||
+                            tool_name == "self.skill.transport";
+    const bool offload = !local_only && (tool_name.rfind("self.nodelio.", 0) == 0 ||
+                                         tool_name.rfind("self.skill.", 0) == 0);
     if (!offload) {
         Application::GetInstance().Schedule(std::move(run));
         return;
@@ -643,19 +652,23 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
         ReplyError(id, "Out of memory", response_sender);
         return;
     }
-    /* IDF xTaskCreate 栈单位为 bytes；HTTP + cJSON，Envelope 已改堆分配 */
-    constexpr uint32_t kStackBytes = 16384;
-    if (xTaskCreate(
+    /* 栈放 PSRAM：语音期内部 SRAM 紧。WithCaps 负责分配/回收，勿事后 free TCB。
+     * 本任务内禁止 nodelio_nvs_load / 任何关 cache 的 flash 读（用 nvs_cache_get）。 */
+    constexpr uint32_t kStackWords = 16384 / sizeof(StackType_t);
+    if (xTaskCreateWithCaps(
             [](void* arg) {
                 auto* j = static_cast<Job*>(arg);
                 j->fn();
                 delete j;
-                vTaskDelete(nullptr);
+                vTaskDeleteWithCaps(nullptr);
             },
-            "mcp_http", kStackBytes, job, 3, nullptr) != pdPASS) {
-        ESP_LOGE(TAG, "tools/call: mcp_http create fail (stack=%u free=%u)", (unsigned)kStackBytes,
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+            "mcp_http", kStackWords, job, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        ESP_LOGE(TAG, "tools/call: mcp_http create fail (stack_words=%u dram_free=%u spiram_free=%u)",
+                 (unsigned)kStackWords, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        /* 最后手段：主任务跑（可能短暂卡说话）；总比工具全废好 */
+        auto fn = std::move(job->fn);
         delete job;
-        ReplyError(id, "Failed to start tool worker", response_sender);
+        Application::GetInstance().Schedule(std::move(fn));
     }
 }

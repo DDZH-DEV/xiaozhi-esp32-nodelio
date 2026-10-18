@@ -11,6 +11,7 @@
 #include "panel_ui.h"
 #include "register.h"
 #include "sdkconfig.h"
+#include "wifi_board.h"
 #include "wifi_provision.h"
 
 #include <esp_heap_caps.h>
@@ -263,7 +264,7 @@ static esp_err_t start_client(void)
     }
 
     if (cfg.server_url[0] == '\0' || cfg.owner[0] == '\0') {
-        ESP_LOGW(TAG, "未绑定：点右下角「家」→ 设置里填服务器与绑定码");
+        ESP_LOGW(TAG, "未绑定：进 SoftAP 配服务器（亦可屏上设置 / 语音「进入配网」）");
         (void)nodelio_overlay_init();
         /* 未绑定也须开息屏计时，禁止常亮 */
         Board::GetInstance().SetIdleSleepSeconds((int)nodelio_idle_sleep_seconds());
@@ -271,6 +272,12 @@ static esp_err_t start_client(void)
         Board::GetInstance().SetPowerSaveEnabled(nodelio_power_save_enabled());
         s_started = true;
         s_starting = false;
+        Application::GetInstance().Schedule([]() {
+            auto &board = static_cast<WifiBoard &>(Board::GetInstance());
+            if (!board.IsInWifiConfigMode()) {
+                board.EnterWifiConfigMode();
+            }
+        });
         return ESP_ERR_INVALID_STATE;
     }
 

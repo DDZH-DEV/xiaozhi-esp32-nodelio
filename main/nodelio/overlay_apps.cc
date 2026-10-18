@@ -13,6 +13,7 @@
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
 #include <freertos/task.h>
 #include <material_symbols.h>
 
@@ -136,36 +137,12 @@ static void render_list(void)
                     arg->cfg = cfgp;
                     snprintf(arg->id, sizeof(arg->id), "%s", sid);
                     nl_ov_toast("正在打开…");
-                    struct open_job {
-                        invoke_arg *arg;
-                        StackType_t *stack;
-                        StaticTask_t *tcb;
-                    };
-                    constexpr uint32_t kStackBytes = 16384;
-                    auto *job = static_cast<open_job *>(malloc(sizeof(open_job)));
-                    StackType_t *stack = static_cast<StackType_t *>(
-                        heap_caps_malloc(kStackBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-                    if (!stack) {
-                        stack = static_cast<StackType_t *>(malloc(kStackBytes));
-                    }
-                    auto *tcb = static_cast<StaticTask_t *>(
-                        heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-                    if (!job || !stack || !tcb) {
-                        free(job);
-                        free(stack);
-                        free(tcb);
-                        free(arg->cfg);
-                        free(arg);
-                        nl_ov_toast("无法打开");
-                        return;
-                    }
-                    job->arg = arg;
-                    job->stack = stack;
-                    job->tcb = tcb;
-                    if (xTaskCreateStatic(
+                    /* PSRAM 栈由 WithCaps 分配并在删除时回收。禁止 xTaskCreateStatic 后再 free TCB：
+                     * idle 的 prvDeleteTCB 会撞上已释放内存（ucStaticallyAllocated assert）。 */
+                    constexpr uint32_t kStackWords = 16384 / sizeof(StackType_t);
+                    if (xTaskCreateWithCaps(
                             [](void *p) {
-                                auto *job = static_cast<open_job *>(p);
-                                auto *a = job->arg;
+                                auto *a = static_cast<invoke_arg *>(p);
                                 const bool music_app = strcmp(a->id, "music.search") == 0 ||
                                                        strcmp(a->id, "music_search") == 0;
                                 if (!music_app && nodelio_media_preempt_for_heavy_app()) {
@@ -202,21 +179,10 @@ static void render_list(void)
                                 }
                                 free(a->cfg);
                                 free(a);
-                                StackType_t *st = job->stack;
-                                StaticTask_t *tb = job->tcb;
-                                free(job);
-                                /* 勿立刻 free 栈：Schedule 可能早于 vTaskDelete 收尾 → IllegalInstruction */
-                                Application::GetInstance().Schedule([st, tb]() {
-                                    vTaskDelay(pdMS_TO_TICKS(200));
-                                    free(st);
-                                    free(tb);
-                                });
-                                vTaskDelete(nullptr);
+                                vTaskDeleteWithCaps(nullptr);
                             },
-                            "nl_app_open", kStackBytes / sizeof(StackType_t), job, 3, stack, tcb) == nullptr) {
-                        free(job);
-                        free(stack);
-                        free(tcb);
+                            "nl_app_open", kStackWords, arg, 3, nullptr,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
                         free(arg->cfg);
                         free(arg);
                         nl_ov_toast("无法打开");
@@ -316,51 +282,17 @@ void nl_ov_apps_refresh(void)
         return;
     }
     *cfgp = s_cfg;
-    /* IDF 栈深按 StackType_t 字数；12288 实测会占 ~48KB。PSRAM 静态 16KB 即可。 */
-    constexpr uint32_t kListStackBytes = 16384;
-    struct list_job {
-        nodelio_nvs_config_t *cfg;
-        StackType_t *stack;
-        StaticTask_t *tcb;
-    };
-    auto *job = static_cast<list_job *>(malloc(sizeof(list_job)));
-    StackType_t *stack = static_cast<StackType_t *>(
-        heap_caps_malloc(kListStackBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!stack) {
-        stack = static_cast<StackType_t *>(malloc(kListStackBytes));
-    }
-    auto *tcb = static_cast<StaticTask_t *>(
-        heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    if (!job || !stack || !tcb) {
-        free(job);
-        free(stack);
-        free(tcb);
-        free(cfgp);
-        s_loading = false;
-        set_hint("无法加载");
-        return;
-    }
-    job->cfg = cfgp;
-    job->stack = stack;
-    job->tcb = tcb;
-    if (xTaskCreateStatic(
+    /* 栈深按字；16KB 放 PSRAM。删除必须 WithCaps，勿事后 free TCB。 */
+    constexpr uint32_t kListStackWords = 16384 / sizeof(StackType_t);
+    if (xTaskCreateWithCaps(
             [](void *p) {
-                auto *job = static_cast<list_job *>(p);
-                auto *cfg = job->cfg;
+                auto *cfg = static_cast<nodelio_nvs_config_t *>(p);
                 auto *snap = static_cast<nl_app_snap *>(calloc(1, sizeof(nl_app_snap)));
                 if (!snap) {
                     nodelio_panel_ui_toast_defer("内存不足");
                     free(cfg);
-                    StackType_t *st = job->stack;
-                    StaticTask_t *tb = job->tcb;
-                    free(job);
-                    Application::GetInstance().Schedule([st, tb]() {
-                        vTaskDelay(pdMS_TO_TICKS(200));
-                        free(st);
-                        free(tb);
-                        s_loading = false;
-                    });
-                    vTaskDelete(nullptr);
+                    Application::GetInstance().Schedule([]() { s_loading = false; });
+                    vTaskDeleteWithCaps(nullptr);
                     return;
                 }
                 char base[160];
@@ -375,15 +307,7 @@ void nl_ov_apps_refresh(void)
                     snprintf(snap->err, sizeof(snap->err), "内存不足");
                     apply_snap(snap);
                     free(cfg);
-                    StackType_t *st = job->stack;
-                    StaticTask_t *tb = job->tcb;
-                    free(job);
-                    Application::GetInstance().Schedule([st, tb]() {
-                        vTaskDelay(pdMS_TO_TICKS(200));
-                        free(st);
-                        free(tb);
-                    });
-                    vTaskDelete(nullptr);
+                    vTaskDeleteWithCaps(nullptr);
                     return;
                 }
                 buf[0] = '\0';
@@ -469,24 +393,27 @@ void nl_ov_apps_refresh(void)
                 free(buf);
                 free(cfg);
                 apply_snap(snap);
-                StackType_t *st = job->stack;
-                StaticTask_t *tb = job->tcb;
-                free(job);
-                Application::GetInstance().Schedule([st, tb]() {
-                    vTaskDelay(pdMS_TO_TICKS(200));
-                    free(st);
-                    free(tb);
-                });
-                vTaskDelete(nullptr);
+                vTaskDeleteWithCaps(nullptr);
             },
-            "nl_apps", kListStackBytes / sizeof(StackType_t), job, 3, stack, tcb) == nullptr) {
-        free(job);
-        free(stack);
-        free(tcb);
+            "nl_apps", kListStackWords, cfgp, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         free(cfgp);
         s_loading = false;
         set_hint("无法加载");
     }
+}
+
+lv_obj_t *nl_ov_apps_scroll_obj(void)
+{
+    if (!s_page || !s_list) {
+        return nullptr;
+    }
+    if (lv_obj_has_flag(s_page, LV_OBJ_FLAG_HIDDEN)) {
+        return nullptr;
+    }
+    if (!lv_obj_has_flag(s_list, LV_OBJ_FLAG_SCROLLABLE)) {
+        return nullptr;
+    }
+    return s_list;
 }
 
 void nl_ov_apps_set_visible(bool on)
@@ -499,6 +426,55 @@ void nl_ov_apps_set_visible(bool on)
     } else {
         lv_obj_add_flag(s_page, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+bool nl_ov_apps_open_by_query(const char *query)
+{
+    if (!query || !query[0]) {
+        return false;
+    }
+    /* 先扫已缓存列表（应用页拉过一次就有） */
+    int hit = -1;
+    for (int i = 0; i < s_item_n; i++) {
+        if (!s_items[i].enabled) {
+            continue;
+        }
+        if (strstr(s_items[i].name, query) || strstr(s_items[i].id, query) ||
+            strstr(query, s_items[i].name) || strstr(query, s_items[i].id)) {
+            hit = i;
+            break;
+        }
+    }
+    /* 样例市场别名（列表未刷时也能开） */
+    const char *alias_id = nullptr;
+    if (hit < 0) {
+        if (strstr(query, "曲库") || strstr(query, "音乐") || strstr(query, "music")) {
+            alias_id = "music.search";
+        } else if (strstr(query, "新闻") || strstr(query, "news")) {
+            alias_id = "news.latest";
+        } else if (strstr(query, "天气") || strstr(query, "weather")) {
+            alias_id = "weather.today";
+        } else if (strstr(query, "电台") || strstr(query, "radio")) {
+            alias_id = "radio.stations";
+        } else if (strstr(query, "播客") || strstr(query, "podcast")) {
+            alias_id = "podcast.latest";
+        } else if (strstr(query, "空气") || strstr(query, "air")) {
+            alias_id = "air.now";
+        } else if (strstr(query, "一句") || strstr(query, "名言") || strstr(query, "quote")) {
+            alias_id = "quote.daily";
+        }
+    }
+    const char *sid = nullptr;
+    if (hit >= 0) {
+        sid = s_items[hit].id;
+    } else if (alias_id) {
+        sid = alias_id;
+    }
+    if (!sid || !sid[0]) {
+        return false;
+    }
+    nl_ov_invoke_skill_async(sid, "{}");
+    return true;
 }
 
 void nl_ov_build_apps(void)

@@ -114,6 +114,9 @@ static nl_widget_type_t parse_widget_type(const char *t)
     if (strcmp(t, "skill_widget") == 0) {
         return NL_WIDGET_SKILL_WIDGET;
     }
+    if (strcmp(t, "photo_frame") == 0) {
+        return NL_WIDGET_PHOTO_FRAME;
+    }
     return NL_WIDGET_UNKNOWN;
 }
 
@@ -409,15 +412,41 @@ static void parse_layout_object(const cJSON *root, int outer_version, nodelio_pa
                 }
                 wid->col = (int8_t)json_int(w, "col", -1);
                 wid->row = (int8_t)json_int(w, "row", -1);
-                int def_w = (wid->type == NL_WIDGET_SLIDER_TILE) ? 2 : 1;
+                int def_w = (wid->type == NL_WIDGET_SLIDER_TILE || wid->type == NL_WIDGET_PHOTO_FRAME) ? 2 : 1;
+                int def_h = (wid->type == NL_WIDGET_PHOTO_FRAME) ? 2 : 1;
                 wid->gw = (int8_t)json_int(w, "w", def_w);
-                wid->gh = (int8_t)json_int(w, "h", 1);
+                wid->gh = (int8_t)json_int(w, "h", def_h);
                 wid->refresh_sec = (uint16_t)json_int(w, "refreshSec", 0);
+                if (wid->type == NL_WIDGET_PHOTO_FRAME) {
+                    const cJSON *imgs = cJSON_GetObjectItemCaseSensitive(w, "images");
+                    if (cJSON_IsArray(imgs)) {
+                        const cJSON *it = NULL;
+                        cJSON_ArrayForEach(it, imgs) {
+                            if (wid->photo_n >= NL_PHOTO_MAX || !cJSON_IsObject(it)) {
+                                continue;
+                            }
+                            const cJSON *pid = cJSON_GetObjectItemCaseSensitive(it, "id");
+                            if (!cJSON_IsString(pid) || !pid->valuestring || !pid->valuestring[0]) {
+                                continue;
+                            }
+                            snprintf(wid->photo_ids[wid->photo_n], NL_PHOTO_ID_MAX, "%s", pid->valuestring);
+                            wid->photo_n++;
+                        }
+                    }
+                    char fitbuf[16];
+                    copy_str(fitbuf, sizeof(fitbuf), w, "fit");
+                    wid->photo_fit_contain = (strcmp(fitbuf, "contain") == 0) ? 1 : 0;
+                    int iv = json_int(w, "intervalSec", 8);
+                    if (iv < 3) {
+                        iv = 8;
+                    }
+                    wid->photo_interval_sec = (uint16_t)iv;
+                }
                 if (wid->gw < 1) {
                     wid->gw = (int8_t)def_w;
                 }
                 if (wid->gh < 1) {
-                    wid->gh = 1;
+                    wid->gh = (int8_t)def_h;
                 }
             }
         }

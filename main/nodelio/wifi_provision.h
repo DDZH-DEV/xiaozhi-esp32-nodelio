@@ -11,8 +11,7 @@ extern "C" {
 
 /**
  * 初始化 WiFi 并尽量连 NVS 凭据。
- * 无凭据 / 关联失败：不进 SoftAP，返回非 OK，由调用方仍启动 UI；
- * SoftAP 门户仅设置页主动触发（清 WiFi 后重启）。
+ * 无凭据 / 超时：进 SoftAP 门户（WiFi + 服务器/绑定码）；屏上「连接」页仍可用。
  */
 esp_err_t nodelio_wifi_start(nodelio_nvs_config_t *cfg);
 
@@ -20,7 +19,7 @@ esp_err_t nodelio_wifi_start(nodelio_nvs_config_t *cfg);
 bool nodelio_wifi_is_connected(void);
 bool nodelio_wifi_has_ip(void);
 
-/** 息屏超省电：停重连、disconnect + wifi_stop（AFE 本地唤醒仍可用）. */
+/** 息屏超省电：卸 Station 事件后 soft-stop 射频（禁止断网期自动重连；AFE 本地唤醒仍可用）. */
 void nodelio_wifi_sleep(void);
 
 /** 亮屏后恢复 STA；非阻塞启动，可用 wait_connected 等待. */
@@ -49,8 +48,8 @@ typedef struct {
 } nodelio_wifi_ap_t;
 
 /**
- * NodeLio 面板：用屏上「连接」页配网，不写 SoftAP 门户。
- * CONFIG_NODELIO_PANEL 下默认 true；有 SSID 后仍走小智 StartStation，流程不变。
+ * 屏上扫描前可临时 suppress，避免 SoftAP SCAN_DONE 抢结果。
+ * 默认 false（允许 SoftAP 门户）。
  */
 void nodelio_wifi_set_suppress_softap(bool suppress);
 bool nodelio_wifi_suppress_softap(void);

@@ -14,7 +14,7 @@ static const char *TAG = "nl_wifi";
 /* WiFi owned by Xiaozhi WifiBoard; NodeLio queries link + blocking scan. */
 
 #if CONFIG_NODELIO_PANEL
-static bool s_suppress_softap = true; /* 默认屏上配网，不开 SoftAP */
+static bool s_suppress_softap = false; /* SoftAP 门户配网（屏坏可用）；屏上扫描时可临时 suppress */
 #else
 static bool s_suppress_softap = false;
 #endif

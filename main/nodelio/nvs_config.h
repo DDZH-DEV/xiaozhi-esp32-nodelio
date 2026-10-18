@@ -54,7 +54,7 @@ typedef struct {
 #define NODELIO_MEDIA_PAUSE_MAX 120
 
 esp_err_t nodelio_nvs_init(void);
-/** Flash 读写：禁止在 LVGL 任务（PSRAM 栈）中调用。 */
+/** Flash 读写：禁止在 PSRAM 栈任务调用（LVGL / mcp_http / nl_* invoke）。用 cache_get。 */
 esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out);
 esp_err_t nodelio_nvs_save(const nodelio_nvs_config_t *in);
 esp_err_t nodelio_nvs_clear(void);

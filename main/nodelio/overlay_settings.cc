@@ -76,6 +76,19 @@ static void load_audio_prefs(void)
     }
 }
 
+static lv_obj_t *s_idle_slp_lbl;
+static lv_obj_t *s_wifi_slp_lbl;
+static lv_obj_t *s_bye_slp_lbl;
+static lv_obj_t *s_listen_idle_lbl;
+static lv_obj_t *s_media_pause_lbl;
+
+static void pref_err(char *err, size_t err_len, const char *msg)
+{
+    if (err && err_len > 0 && msg) {
+        std::snprintf(err, err_len, "%s", msg);
+    }
+}
+
 static void apply_brightness(uint8_t pct)
 {
     if (pct < 5) {
@@ -128,11 +141,369 @@ static void persist_ui_prefs(void)
     });
 }
 
-static lv_obj_t *s_idle_slp_lbl;
-static lv_obj_t *s_wifi_slp_lbl;
-static lv_obj_t *s_bye_slp_lbl;
-static lv_obj_t *s_listen_idle_lbl;
-static lv_obj_t *s_media_pause_lbl;
+static void refresh_bri_vol_labels(void)
+{
+    if (!s_bri_val_lbl && !s_vol_val_lbl) {
+        return;
+    }
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        return;
+    }
+    char buf[12];
+    if (s_bri_val_lbl) {
+        std::snprintf(buf, sizeof(buf), "%d%%", s_brightness);
+        lv_label_set_text(s_bri_val_lbl, buf);
+    }
+    if (s_vol_val_lbl) {
+        std::snprintf(buf, sizeof(buf), "%d%%", s_volume);
+        lv_label_set_text(s_vol_val_lbl, buf);
+    }
+}
+
+static bool parse_pct_0_100(const char *value, int *out, char *err, size_t err_len)
+{
+    if (!value || !value[0] || !out) {
+        pref_err(err, err_len, "value 不能为空");
+        return false;
+    }
+    char *end = nullptr;
+    long v = std::strtol(value, &end, 10);
+    if (end == value || (end && *end != '\0')) {
+        pref_err(err, err_len, "value 须为 0–100 整数");
+        return false;
+    }
+    if (v < 0 || v > 100) {
+        pref_err(err, err_len, "value 须为 0–100");
+        return false;
+    }
+    *out = (int)v;
+    return true;
+}
+
+static bool parse_on_off(const char *value, bool *out, char *err, size_t err_len)
+{
+    if (!value || !value[0] || !out) {
+        pref_err(err, err_len, "value 不能为空");
+        return false;
+    }
+    if (strcasecmp(value, "on") == 0 || strcmp(value, "1") == 0 || strcmp(value, "开") == 0) {
+        *out = true;
+        return true;
+    }
+    if (strcasecmp(value, "off") == 0 || strcmp(value, "0") == 0 || strcmp(value, "关") == 0) {
+        *out = false;
+        return true;
+    }
+    pref_err(err, err_len, "value 须为 on/off");
+    return false;
+}
+
+static bool parse_int_range(const char *value, int min_v, int max_v, int *out, char *err,
+                            size_t err_len)
+{
+    if (!value || !value[0] || !out) {
+        pref_err(err, err_len, "value 不能为空");
+        return false;
+    }
+    char *end = nullptr;
+    long v = std::strtol(value, &end, 10);
+    if (end == value || (end && *end != '\0')) {
+        pref_err(err, err_len, "value 须为整数秒");
+        return false;
+    }
+    if (v < min_v || v > max_v) {
+        char msg[48];
+        std::snprintf(msg, sizeof(msg), "须为 %d–%d 秒", min_v, max_v);
+        pref_err(err, err_len, msg);
+        return false;
+    }
+    *out = (int)v;
+    return true;
+}
+
+static void persist_cfg_async(void)
+{
+    nodelio_nvs_cache_put(&s_cfg);
+    nodelio_nvs_config_t snap = s_cfg;
+    Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
+}
+
+static void apply_sleep_board(void)
+{
+    Board::GetInstance().SetIdleSleepSeconds(
+        s_cfg.idle_sleep_s ? (int)s_cfg.idle_sleep_s : NODELIO_IDLE_SLEEP_DEFAULT);
+    Board::GetInstance().SetIdleWifiSeconds(
+        s_cfg.idle_wifi_s ? (int)s_cfg.idle_wifi_s : NODELIO_IDLE_WIFI_DEFAULT);
+    Board::GetInstance().NoteUserActivity();
+}
+
+/** 云端常猜错 idle_*：映射常见别名到规范 key（返回静态串，勿 free） */
+static const char *normalize_pref_key(const char *key)
+{
+    if (!key || !key[0]) {
+        return key;
+    }
+    if (strcasecmp(key, "idle_wifi_s") == 0 || strcasecmp(key, "idle_wifi") == 0 ||
+        strcasecmp(key, "wifi_idle_s") == 0 || strcasecmp(key, "wifi_sleep_s") == 0 ||
+        strcasecmp(key, "idle_disconnect_s") == 0 || strcasecmp(key, "disconnect_s") == 0 ||
+        strcasecmp(key, "idle_net_s") == 0 || strcasecmp(key, "net_idle_s") == 0) {
+        return "idle_wifi_s";
+    }
+    if (strcasecmp(key, "idle_sleep_s") == 0 || strcasecmp(key, "idle_sleep") == 0 ||
+        strcasecmp(key, "screen_idle_s") == 0 || strcasecmp(key, "sleep_s") == 0) {
+        return "idle_sleep_s";
+    }
+    if (strcasecmp(key, "bye_sleep_s") == 0 || strcasecmp(key, "bye_sleep") == 0 ||
+        strcasecmp(key, "goodbye_sleep_s") == 0 || strcasecmp(key, "goodbye_s") == 0) {
+        return "bye_sleep_s";
+    }
+    return key;
+}
+
+extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *value, char *err,
+                                               size_t err_len)
+{
+    if (err && err_len > 0) {
+        err[0] = '\0';
+    }
+    if (!key || !key[0]) {
+        pref_err(err, err_len, "key 不能为空");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!value) {
+        pref_err(err, err_len, "value 不能为空");
+        return ESP_ERR_INVALID_ARG;
+    }
+    key = normalize_pref_key(key);
+
+    if (strcasecmp(key, "brightness") == 0) {
+        int v = 0;
+        if (!parse_pct_0_100(value, &v, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        /* 下限钳 5：0–4 → 5，其余不静默夹 */
+        uint8_t pct = (uint8_t)((v < 5) ? 5 : v);
+        apply_brightness(pct);
+        persist_ui_prefs();
+        refresh_bri_vol_labels();
+        char toast[32];
+        std::snprintf(toast, sizeof(toast), "亮度 %d%%", (int)s_brightness);
+        nl_ov_toast(toast);
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "volume") == 0) {
+        int v = 0;
+        if (!parse_pct_0_100(value, &v, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        apply_volume((uint8_t)v);
+        persist_ui_prefs();
+        refresh_bri_vol_labels();
+        char toast[32];
+        std::snprintf(toast, sizeof(toast), "音量 %d%%", (int)s_volume);
+        nl_ov_toast(toast);
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "power_save") == 0) {
+        bool on = false;
+        if (!parse_on_off(value, &on, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.power_save_en = on ? 1 : 0;
+        persist_cfg_async();
+        Board::GetInstance().SetPowerSaveEnabled(on);
+        if (on) {
+            Board::GetInstance().NoteUserActivity();
+        }
+        nl_ov_toast(on ? "已开启省电" : "已关闭省电 · 常亮联网");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "idle_sleep_s") == 0) {
+        int v = 0;
+        if (!parse_int_range(value, NODELIO_IDLE_SLEEP_MIN, NODELIO_IDLE_SLEEP_MAX, &v, err,
+                             err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.idle_sleep_s = (uint16_t)v;
+        persist_cfg_async();
+        apply_sleep_board();
+        nl_ov_toast("息屏时间已保存");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "idle_wifi_s") == 0) {
+        int v = 0;
+        if (!parse_int_range(value, NODELIO_IDLE_WIFI_MIN, NODELIO_IDLE_WIFI_MAX, &v, err,
+                             err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.idle_wifi_s = (uint16_t)v;
+        persist_cfg_async();
+        apply_sleep_board();
+        nl_ov_toast("断网时间已保存");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "bye_sleep_s") == 0) {
+        int v = 0;
+        if (!parse_int_range(value, NODELIO_BYE_SLEEP_MIN, NODELIO_BYE_SLEEP_MAX, &v, err,
+                             err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.goodbye_sleep_s = (uint16_t)v;
+        persist_cfg_async();
+        nl_ov_toast("退下后息屏时间已保存");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "controls") == 0) {
+        bool on = false;
+        if (!parse_on_off(value, &on, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.controls_en = on ? 1 : 0;
+        persist_cfg_async();
+        /* 勿在 LVGL 回调内嵌套 Lock；统一延后刷首页 */
+        Application::GetInstance().Schedule([]() {
+            DisplayLockGuard lock(nl_ov_disp());
+            if (lock) {
+                nl_ov_fill_home();
+            }
+        });
+        nodelio_offline_cmd_rebuild_from_layout(s_layout);
+        nl_ov_toast(on ? "已开启控家" : "已关闭控家 · 首页启动台");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "xiaozhi") == 0) {
+        bool on = false;
+        if (!parse_on_off(value, &on, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.xiaozhi_en = on ? 1 : 0;
+        persist_cfg_async();
+        auto &app = Application::GetInstance();
+        if (on) {
+            app.MarkTransportSuspended(false);
+            app.ResumeTransport();
+            nl_ov_toast("已启用小智云");
+        } else {
+            /* 只标 suspended + 落盘：本轮会话可说完；下一唤醒走本地口令 */
+            app.MarkTransportSuspended(true);
+            nl_ov_toast("已关闭小智：下一轮仅本地口令");
+        }
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "listen_idle_s") == 0) {
+        int v = 0;
+        if (!parse_int_range(value, NODELIO_LISTEN_IDLE_MIN, NODELIO_LISTEN_IDLE_MAX, &v, err,
+                             err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.listen_idle_s = (uint16_t)v;
+        persist_cfg_async();
+        nl_ov_toast("无对话退下时间已保存");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "media_sleep") == 0) {
+        bool on = false;
+        if (!parse_on_off(value, &on, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.media_sleep_en = on ? 1 : 0;
+        persist_cfg_async();
+        nl_ov_toast(on ? "播放中可息屏，音乐继续" : "播放中保持亮屏");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "media_pause_s") == 0) {
+        int v = 0;
+        if (!parse_int_range(value, NODELIO_MEDIA_PAUSE_MIN, NODELIO_MEDIA_PAUSE_MAX, &v, err,
+                             err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.media_pause_s = (uint16_t)v;
+        persist_cfg_async();
+        nl_ov_toast("暂停关闭时间已保存");
+        return ESP_OK;
+    }
+    /* 动作键：value 可空，只触发 */
+    if (strcasecmp(key, "layout_sync") == 0) {
+        nl_ov_toast("正在刷新布局…");
+        nodelio_layout_request_sync();
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "fw_check") == 0) {
+        auto &app = Application::GetInstance();
+        if (app.GetDeviceState() != kDeviceStateIdle) {
+            pref_err(err, err_len, "请先结束对话再检查更新");
+            return ESP_ERR_INVALID_STATE;
+        }
+        app.RequestManualFirmwareCheck();
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "factory_reset") == 0) {
+        /* 语音不执行重置，只打开确认页 */
+        nodelio_panel_ui_goto(NL_UI_RESET);
+        return ESP_OK;
+    }
+
+    pref_err(err, err_len,
+             "未知 key。空闲断网=idle_wifi_s；息屏=idle_sleep_s；退下=bye_sleep_s");
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+extern "C" esp_err_t nodelio_panel_ui_get_pref(const char *key, char *buf, size_t len)
+{
+    if (!key || !key[0] || !buf || len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    buf[0] = '\0';
+    key = normalize_pref_key(key);
+    if (strcasecmp(key, "brightness") == 0) {
+        std::snprintf(buf, len, "%d", (int)s_brightness);
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "volume") == 0) {
+        std::snprintf(buf, len, "%d", (int)s_volume);
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "power_save") == 0) {
+        std::snprintf(buf, len, "%s", s_cfg.power_save_en ? "on" : "off");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "idle_sleep_s") == 0) {
+        std::snprintf(buf, len, "%d", (int)s_cfg.idle_sleep_s);
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "idle_wifi_s") == 0) {
+        std::snprintf(buf, len, "%d", (int)s_cfg.idle_wifi_s);
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "bye_sleep_s") == 0) {
+        std::snprintf(buf, len, "%d", (int)s_cfg.goodbye_sleep_s);
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "controls") == 0) {
+        std::snprintf(buf, len, "%s", s_cfg.controls_en ? "on" : "off");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "xiaozhi") == 0) {
+        std::snprintf(buf, len, "%s", s_cfg.xiaozhi_en ? "on" : "off");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "listen_idle_s") == 0) {
+        std::snprintf(buf, len, "%d",
+                      (int)(s_cfg.listen_idle_s ? s_cfg.listen_idle_s : NODELIO_LISTEN_IDLE_DEFAULT));
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "media_sleep") == 0) {
+        std::snprintf(buf, len, "%s", s_cfg.media_sleep_en ? "on" : "off");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "media_pause_s") == 0) {
+        std::snprintf(buf, len, "%d",
+                      (int)(s_cfg.media_pause_s ? s_cfg.media_pause_s : NODELIO_MEDIA_PAUSE_DEFAULT));
+        return ESP_OK;
+    }
+    return ESP_ERR_NOT_FOUND;
+}
 
 static void on_idle_sleep_changed(lv_event_t *e)
 {
@@ -181,48 +552,21 @@ static void on_listen_idle_changed(lv_event_t *e)
 static void on_listen_idle_release(lv_event_t *e)
 {
     lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
-    int v = (int)lv_slider_get_value(sl);
-    if (v < NODELIO_LISTEN_IDLE_MIN) {
-        v = NODELIO_LISTEN_IDLE_MIN;
-    }
-    if (v > NODELIO_LISTEN_IDLE_MAX) {
-        v = NODELIO_LISTEN_IDLE_MAX;
-    }
-    s_cfg.listen_idle_s = (uint16_t)v;
-    nodelio_nvs_cache_put(&s_cfg);
-    nodelio_nvs_config_t snap = s_cfg;
-    Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
-    nl_ov_toast("无对话退下时间已保存");
+    char num[12];
+    std::snprintf(num, sizeof(num), "%d", (int)lv_slider_get_value(sl));
+    (void)nodelio_panel_ui_set_pref("listen_idle_s", num, nullptr, 0);
 }
 
 static void on_sleep_release(lv_event_t *e)
 {
     lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
-    int idle = s_cfg.idle_sleep_s ? (int)s_cfg.idle_sleep_s : NODELIO_IDLE_SLEEP_DEFAULT;
-    int wifi = s_cfg.idle_wifi_s ? (int)s_cfg.idle_wifi_s : NODELIO_IDLE_WIFI_DEFAULT;
-    int bye = s_cfg.goodbye_sleep_s ? (int)s_cfg.goodbye_sleep_s : NODELIO_BYE_SLEEP_DEFAULT;
     /* user_data：1=idle 屏 2=bye 3=idle 断网 */
     intptr_t which = (intptr_t)lv_event_get_user_data(e);
     int v = (int)lv_slider_get_value(sl);
-    if (which == 1) {
-        idle = v;
-    } else if (which == 3) {
-        wifi = v;
-    } else {
-        bye = v;
-    }
-    s_cfg.idle_sleep_s = (uint16_t)idle;
-    s_cfg.idle_wifi_s = (uint16_t)wifi;
-    s_cfg.goodbye_sleep_s = (uint16_t)bye;
-    nodelio_nvs_cache_put(&s_cfg);
-    Board::GetInstance().SetIdleSleepSeconds(idle);
-    Board::GetInstance().SetIdleWifiSeconds(wifi);
-    Board::GetInstance().NoteUserActivity();
-    nodelio_nvs_config_t snap = s_cfg;
-    Application::GetInstance().Schedule([snap]() {
-        (void)nodelio_nvs_save(&snap);
-    });
-    nl_ov_toast(which == 3 ? "断网时间已保存" : "息屏时间已保存");
+    char num[12];
+    std::snprintf(num, sizeof(num), "%d", v);
+    const char *key = (which == 3) ? "idle_wifi_s" : (which == 2) ? "bye_sleep_s" : "idle_sleep_s";
+    (void)nodelio_panel_ui_set_pref(key, num, nullptr, 0);
 }
 
 static lv_obj_t *audio_ctrl_band(lv_obj_t *parent, const char *title, const char *val, lv_obj_t **out_val)
@@ -394,6 +738,7 @@ void nl_ov_close_settings_detail(void)
     }
     lv_obj_delete(s_settings_detail);
     s_settings_detail = nullptr;
+    s_settings_detail_body = nullptr;
     s_bri_val_lbl = nullptr;
     s_vol_val_lbl = nullptr;
     s_idle_slp_lbl = nullptr;
@@ -431,7 +776,7 @@ static lv_obj_t *settings_card(lv_obj_t *parent, const char *title)
     return card;
 }
 
-static void open_settings_detail(set_page_id_t page)
+void nl_ov_open_settings_detail(set_page_id_t page)
 {
     nl_ov_close_settings_detail();
     if (!s_root) {
@@ -470,6 +815,7 @@ static void open_settings_detail(set_page_id_t page)
                           [](lv_event_t *) { nl_ov_close_settings_detail(); });
 
     lv_obj_t *body = lv_obj_create(s_settings_detail);
+    s_settings_detail_body = body;
     lv_obj_remove_style_all(body);
     lv_obj_set_width(body, lv_pct(100));
     lv_obj_set_flex_grow(body, 1);
@@ -618,17 +964,8 @@ static void open_settings_detail(set_page_id_t page)
         lv_obj_add_event_cb(
             ps_sw,
             [](lv_event_t *e) {
-                lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
-                bool on = lv_obj_has_state(obj, LV_STATE_CHECKED);
-                s_cfg.power_save_en = on ? 1 : 0;
-                nodelio_nvs_cache_put(&s_cfg);
-                Board::GetInstance().SetPowerSaveEnabled(on);
-                if (on) {
-                    Board::GetInstance().NoteUserActivity();
-                }
-                nodelio_nvs_config_t snap = s_cfg;
-                Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
-                nl_ov_toast(on ? "已开启：按下方时间息屏/断网" : "已关闭：保持亮屏与 WiFi");
+                bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+                (void)nodelio_panel_ui_set_pref("power_save", on ? "on" : "off", nullptr, 0);
             },
             LV_EVENT_VALUE_CHANGED, nullptr);
         lv_obj_t *ps_hint = lv_label_create(ps_card);
@@ -712,13 +1049,7 @@ static void open_settings_detail(set_page_id_t page)
             sw,
             [](lv_event_t *e) {
                 bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
-                s_cfg.controls_en = on ? 1 : 0;
-                nodelio_nvs_cache_put(&s_cfg);
-                nodelio_nvs_config_t snap = s_cfg;
-                Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
-                nl_ov_fill_home();
-                nodelio_offline_cmd_rebuild_from_layout(s_layout);
-                nl_ov_toast(on ? "已开启控家" : "已关闭控家，首页改为启动台");
+                (void)nodelio_panel_ui_set_pref("controls", on ? "on" : "off", nullptr, 0);
             },
             LV_EVENT_VALUE_CHANGED, nullptr);
 
@@ -763,13 +1094,8 @@ static void open_settings_detail(set_page_id_t page)
         lv_obj_add_event_cb(
             ms_sw,
             [](lv_event_t *e) {
-                lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
-                bool on = lv_obj_has_state(obj, LV_STATE_CHECKED);
-                s_cfg.media_sleep_en = on ? 1 : 0;
-                nodelio_nvs_cache_put(&s_cfg);
-                nodelio_nvs_config_t snap = s_cfg;
-                Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
-                nl_ov_toast(on ? "播放中可息屏，音乐继续" : "播放中保持亮屏");
+                bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+                (void)nodelio_panel_ui_set_pref("media_sleep", on ? "on" : "off", nullptr, 0);
             },
             LV_EVENT_VALUE_CHANGED, nullptr);
         lv_obj_t *ms_hint = lv_label_create(ms_card);
@@ -804,19 +1130,10 @@ static void open_settings_detail(set_page_id_t page)
         lv_obj_add_event_cb(
             pause_sl,
             [](lv_event_t *e) {
-                lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
-                int v = (int)lv_slider_get_value(sl);
-                if (v < NODELIO_MEDIA_PAUSE_MIN) {
-                    v = NODELIO_MEDIA_PAUSE_MIN;
-                }
-                if (v > NODELIO_MEDIA_PAUSE_MAX) {
-                    v = NODELIO_MEDIA_PAUSE_MAX;
-                }
-                s_cfg.media_pause_s = (uint16_t)v;
-                nodelio_nvs_cache_put(&s_cfg);
-                nodelio_nvs_config_t snap = s_cfg;
-                Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
-                nl_ov_toast("暂停关闭时间已保存");
+                char num[12];
+                std::snprintf(num, sizeof(num), "%d",
+                              (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e)));
+                (void)nodelio_panel_ui_set_pref("media_pause_s", num, nullptr, 0);
             },
             LV_EVENT_RELEASED, nullptr);
         lv_obj_t *pause_hint = lv_label_create(pause_band);
@@ -860,30 +1177,8 @@ static void open_settings_detail(set_page_id_t page)
         lv_obj_add_event_cb(
             sw,
             [](lv_event_t *e) {
-                lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
-                bool on = lv_obj_has_state(obj, LV_STATE_CHECKED);
-                s_cfg.xiaozhi_en = on ? 1 : 0;
-                nodelio_nvs_cache_put(&s_cfg);
-                nodelio_nvs_config_t snap = s_cfg;
-                auto &app = Application::GetInstance();
-                app.Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
-                if (on) {
-                    app.MarkTransportSuspended(false);
-                    app.ResumeTransport();
-                    nl_ov_toast("已启用小智云");
-                } else {
-                    app.Schedule([]() {
-                        auto &a = Application::GetInstance();
-                        if (a.GetDeviceState() == kDeviceStateListening ||
-                            a.GetDeviceState() == kDeviceStateSpeaking ||
-                            a.GetDeviceState() == kDeviceStateConnecting) {
-                            a.SetDeviceState(kDeviceStateIdle);
-                        }
-                        a.SuspendTransport();
-                        a.MarkTransportSuspended(true);
-                    });
-                    nl_ov_toast("已关闭：唤醒走本地口令");
-                }
+                bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+                (void)nodelio_panel_ui_set_pref("xiaozhi", on ? "on" : "off", nullptr, 0);
             },
             LV_EVENT_VALUE_CHANGED, nullptr);
 
@@ -974,9 +1269,9 @@ void nl_ov_fill_settings(void)
     std::snprintf(bri_sub, sizeof(bri_sub), "亮度 %d%% · 音量 %d%%", s_brightness, s_volume);
 
     settings_tile(s_settings, "显", "显示与声音", bri_sub, UI_C_ACCENT, nullptr,
-                  [](lv_event_t *) { open_settings_detail(SET_PAGE_DISP); });
+                  [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_DISP); });
     settings_tile(s_settings, "家", "控家", nodelio_controls_enabled() ? "已开启" : "已关闭 · 启动台",
-                  UI_C_ACCENT, nullptr, [](lv_event_t *) { open_settings_detail(SET_PAGE_CTRL); });
+                  UI_C_ACCENT, nullptr, [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_CTRL); });
     {
         char pwr_sub[48];
         if (nodelio_power_save_enabled()) {
@@ -986,7 +1281,7 @@ void nl_ov_fill_settings(void)
             std::snprintf(pwr_sub, sizeof(pwr_sub), "已关闭 · 常亮联网");
         }
         settings_tile(s_settings, "电", "省电", pwr_sub, UI_C_WARN, nullptr,
-                      [](lv_event_t *) { open_settings_detail(SET_PAGE_POWER); });
+                      [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_POWER); });
     }
     {
         char media_sub[48];
@@ -994,13 +1289,12 @@ void nl_ov_fill_settings(void)
                       nodelio_media_sleep_enabled() ? "播放可息屏" : "播放常亮",
                       (int)nodelio_media_pause_seconds());
         settings_tile(s_settings, "播", "播放器", media_sub, UI_C_INFO, nullptr,
-                      [](lv_event_t *) { open_settings_detail(SET_PAGE_MEDIA); });
+                      [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_MEDIA); });
     }
     settings_tile(s_settings, "连", "网络与连接", "扫描 WiFi / 服务器 / 绑定", UI_C_WARN, nullptr,
                   [](lv_event_t *) { nl_ov_open_connect(); });
     settings_tile(s_settings, "刷", "刷新布局", "重新拉取首页控件", UI_C_INFO, nullptr, [](lv_event_t *) {
-        nl_ov_toast("正在刷新…");
-        nodelio_layout_request_sync();
+        (void)nodelio_panel_ui_set_pref("layout_sync", "", nullptr, 0);
     });
     {
         char voice_sub[48];
@@ -1008,12 +1302,18 @@ void nl_ov_fill_settings(void)
                       nodelio_xiaozhi_enabled() ? "小智云已开" : "仅本地口令",
                       (int)nodelio_listen_idle_seconds());
         settings_tile(s_settings, "智", "语音助手", voice_sub, UI_C_ACCENT, nullptr,
-                      [](lv_event_t *) { open_settings_detail(SET_PAGE_VOICE); });
+                      [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_VOICE); });
     }
     settings_tile(s_settings, "更", "检查固件更新", "手工查小智云版本，有新版再升级", UI_C_INFO, nullptr,
-                  [](lv_event_t *) { Application::GetInstance().RequestManualFirmwareCheck(); });
+                  [](lv_event_t *) {
+                      char err[64];
+                      if (nodelio_panel_ui_set_pref("fw_check", "", err, sizeof(err)) != ESP_OK &&
+                          err[0]) {
+                          nl_ov_toast(err);
+                      }
+                  });
     settings_tile(s_settings, "机", "设备信息", "唤醒词「你好小智」· 状态", UI_C_PURPLE, nullptr,
-                  [](lv_event_t *) { open_settings_detail(SET_PAGE_SYS); });
+                  [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_SYS); });
     settings_tile(s_settings, "复", "恢复出厂", "清空凭证并重启", UI_C_DANGER, nullptr,
-                  [](lv_event_t *) { open_settings_detail(SET_PAGE_RESET); });
+                  [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_RESET); });
 }

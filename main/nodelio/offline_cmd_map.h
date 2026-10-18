@@ -27,6 +27,35 @@ enum {
     NL_OC_MEDIA_RESUME = 12,
     /* 控家模块关闭时的降级口令：只提示，不发 panel/command */
     NL_OC_CTRL_OFF = 13,
+    /* 本机：进 SoftAP 配网（屏坏可说「进入配网」） */
+    NL_OC_WIFI_CONFIG = 14,
+    /* 本机 UI 导航（屏坏可语音切页） */
+    NL_OC_GOTO_HOME = 15,
+    NL_OC_GOTO_APPS = 16,
+    NL_OC_GOTO_SETTINGS = 17,
+    NL_OC_GOTO_CONNECT = 18,
+    NL_OC_GOTO_DISP = 19,
+    NL_OC_GOTO_POWER = 20,
+    NL_OC_GOTO_VOICE = 21,
+    NL_OC_GOTO_MEDIA = 22,
+    NL_OC_GOTO_CTRL = 23,
+    NL_OC_GOTO_SYS = 24,
+    /* 本机设置开关（≠ 打开省电/控家设置页） */
+    NL_OC_POWER_SAVE_ON = 25,
+    NL_OC_POWER_SAVE_OFF = 26,
+    NL_OC_CONTROLS_ON = 27,
+    NL_OC_CONTROLS_OFF = 28,
+    NL_OC_XIAOZHI_ON = 29,
+    NL_OC_XIAOZHI_OFF = 30,
+    NL_OC_LAYOUT_SYNC = 31,
+    NL_OC_FW_CHECK = 32,
+    NL_OC_GOTO_RESET = 33, /* 仅打开确认页，不执行重置 */
+    /* 首页多屏：与左滑/右滑同一路径 */
+    NL_OC_PAGE_NEXT = 34,
+    NL_OC_PAGE_PREV = 35,
+    /* 当前可见页竖向滚（设置/内页/连接/应用/启动台） */
+    NL_OC_SCROLL_DOWN = 36,
+    NL_OC_SCROLL_UP = 37,
 };
 
 /** 重启/退下等纯本机口令（不依赖 WiFi / layout）。 */
@@ -46,6 +75,14 @@ esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int comm
  */
 esp_err_t nodelio_offline_try_phrase(const nodelio_nvs_config_t *cfg, const char *phrase,
                                      const nodelio_panel_layout_t *layout);
+
+/**
+ * 仅匹配本机系统口令并立即执行（不依赖 cfg / layout）：
+ * 重启 / 进入配网 / UI 导航 / 打开某应用。
+ * 供小智 STT 旁路与 MCP 使用；未命中返回 false。
+ * end_session：非空时写出是否应结束语音会话（仅重启/配网为 true；切页/开应用为 false）。
+ */
+bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session);
 
 #ifdef __cplusplus
 }

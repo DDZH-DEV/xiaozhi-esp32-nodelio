@@ -71,6 +71,7 @@ lv_obj_t *s_ai_drawer;           /* 底部居中 AI 悬浮胶囊 */
 lv_obj_t *s_ai_drawer_status;    /* 状态小标题（如 "小智在听…" / "小智回答"） */
 lv_obj_t *s_ai_drawer_body;      /* 正文滚动容器 */
 lv_obj_t *s_ai_drawer_text;      /* 对话正文：最近 5 句 */
+lv_obj_t *s_ai_mini_fab;         /* 最小化圆钮（仅图标） */
 lv_timer_t *s_ai_hide_timer;     /* 会话闲置自动收起定时器 */
 char s_ai_show_text[NL_CHAT_SHOW_CAP]; /* 抽屉展示缓冲 */
 lv_obj_t *s_settings;
@@ -90,6 +91,7 @@ nodelio_panel_ui_screen_cb_t s_screen_cb;
 nodelio_panel_ui_net_cb_t s_net_cb;
 
 lv_obj_t *s_settings_detail;
+lv_obj_t *s_settings_detail_body;
 lv_obj_t *s_bri_val_lbl;
 lv_obj_t *s_vol_val_lbl;
 uint8_t s_brightness = 80;
@@ -398,12 +400,16 @@ void nl_ov_restore_ai_drawer_if_session(void)
         nl_ov_ai_farewell_closing()) {
         return;
     }
-    lv_obj_clear_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(s_ai_drawer);
     if (s_ai_hide_timer) {
         lv_timer_del(s_ai_hide_timer);
         s_ai_hide_timer = nullptr;
     }
+    if (nl_ov_ai_is_minimized()) {
+        nl_ov_ai_raise_mini_fab();
+        return;
+    }
+    lv_obj_clear_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_ai_drawer);
 }
 
 void nl_ov_close_forms(void)
@@ -419,6 +425,89 @@ void nl_ov_close_forms(void)
     }
     nl_ov_restore_ai_drawer_if_session();
 }
+static bool nl_ov_obj_shown(lv_obj_t *o)
+{
+    return o && !lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+
+static bool nl_ov_obj_scrollable(lv_obj_t *o)
+{
+    return o && lv_obj_has_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+/** 优先最上层浮层：设置内页 → 连接 → 应用列表 → 设置首页 → 首页启动台 */
+static lv_obj_t *nl_ov_find_voice_scroll_target(void)
+{
+    /* 浮层盖住下层时不穿透滚下层 */
+    if (nl_ov_obj_shown(s_settings_detail)) {
+        return nl_ov_obj_scrollable(s_settings_detail_body) ? s_settings_detail_body : nullptr;
+    }
+    if (nl_ov_obj_shown(s_connect)) {
+        return nl_ov_obj_scrollable(s_connect_scroll) ? s_connect_scroll : nullptr;
+    }
+    lv_obj_t *apps = nl_ov_apps_scroll_obj();
+    if (apps) {
+        return apps;
+    }
+    if (s_active_tab == NL_TAB_SET && nl_ov_obj_shown(s_settings) &&
+        nl_ov_obj_scrollable(s_settings)) {
+        return s_settings;
+    }
+    if (s_active_tab == NL_TAB_HOME && nl_ov_obj_shown(s_home) && nl_ov_obj_scrollable(s_home)) {
+        return s_home;
+    }
+    return nullptr;
+}
+
+esp_err_t nl_ov_voice_scroll_peek(int dir)
+{
+    if (dir == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    lv_obj_t *t = nl_ov_find_voice_scroll_target();
+    if (!t) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (dir < 0) {
+        return lv_obj_get_scroll_top(t) > 0 ? ESP_OK : ESP_ERR_INVALID_STATE;
+    }
+    return lv_obj_get_scroll_bottom(t) > 0 ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+void nl_ov_voice_scroll_apply(int dir)
+{
+    if (dir == 0) {
+        return;
+    }
+    lv_obj_t *t = nl_ov_find_voice_scroll_target();
+    if (!t) {
+        return;
+    }
+    lv_coord_t room = (dir < 0) ? lv_obj_get_scroll_top(t) : lv_obj_get_scroll_bottom(t);
+    if (room <= 0) {
+        return;
+    }
+    lv_coord_t step = lv_obj_get_content_height(t);
+    if (step < 120) {
+        step = 200;
+    } else {
+        step = (step * 3) / 4;
+    }
+    if (step > room) {
+        step = room;
+    }
+    lv_coord_t y = lv_obj_get_scroll_y(t);
+    if (dir < 0) {
+        y -= step;
+        if (y < 0) {
+            y = 0;
+        }
+    } else {
+        y += step;
+    }
+    lv_obj_scroll_to_y(t, y, LV_ANIM_ON);
+}
+
 void nl_ov_show_page(int tab)
 {
     s_active_tab = tab;

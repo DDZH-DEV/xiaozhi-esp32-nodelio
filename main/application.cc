@@ -19,6 +19,7 @@
 #include "nodelio_overlay.h"
 #include "nvs_config.h"
 #include "offline_cmd.h"
+#include "offline_cmd_map.h"
 #include "panel_ui.h"
 #include "skill_result_ui.h"
 #include "wifi_provision.h"
@@ -812,12 +813,26 @@ void Application::InitializeProtocol() {
                     glyphs.clear();
                 }
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
-                Schedule([display, message = std::string(text->valuestring),
+                Schedule([this, display, message = std::string(text->valuestring),
                           glyphs = std::move(glyphs), bpp]() {
                     display->AddTextGlyphs(glyphs, bpp);
                     display->SetChatMessage("user", message.c_str());
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-                    nodelio_skill_try_dismiss_phrase(message.c_str());
+                    /* 本机口令旁路：切页/开应用保持会话；仅重启/配网结束语音 */
+                    bool end_session = false;
+                    if (nodelio_offline_try_system_phrase(message.c_str(), &end_session)) {
+                        if (end_session) {
+                            AbortSpeaking(kAbortReasonNone);
+                            if (protocol_ && protocol_->IsAudioChannelOpened()) {
+                                protocol_->CloseAudioChannel();
+                            }
+                        }
+                        return;
+                    }
+                    /* 关闭电台/播客/曲库…：本地先收弹窗；云端可再确认，勿只靠 goto_page */
+                    if (nodelio_skill_try_dismiss_phrase(message.c_str())) {
+                        return;
+                    }
 #endif
                 });
             }
@@ -1392,10 +1407,8 @@ void Application::HandleStateChangedEvent() {
             break;
         case kDeviceStateNotifying:
             display->SetStatus(Lang::Strings::SPEAKING);
-            // Keep voice processing enabled during media playback so microphone works for wake word detection
-            // audio_service_.EnableVoiceProcessing(false);
-            /* Keep wake word detection enabled during media playback so user can interrupt */
-            // audio_service_.EnableWakeWordDetection(false);
+            /* 播歌时麦克风继续跑唤醒词。认出唤醒词后才 pause_for_voice，不会一开监听就停歌。 */
+            audio_service_.EnableWakeWordDetection(true);
             break;
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableVoiceProcessing(false);
@@ -1488,7 +1501,18 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
 }
 
 void Application::StopNotification() {
+    DeviceState st = GetDeviceState();
     notify_player_.Stop();
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 关技能弹窗会 media_stop→这里。聆听/说话中并非 HTTP 播歌时，
+     * 若 ResetDecoder 并 EnableVoiceProcessing(true)，随后 Speaking→Listening
+     * 见处理器已在跑就跳过 SendStartListening：麦开着但云端不再出字，聆听态唤醒词也不开。 */
+    if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
+        st == kDeviceStateConnecting) {
+        ESP_LOGW(TAG, "skip StopNotification during voice (state=%d)", (int)st);
+        return;
+    }
+#endif
     audio_service_.ResetDecoder();
     auto& board = Board::GetInstance();
     board.GetDisplay()->SetChatMessage("assistant", "");

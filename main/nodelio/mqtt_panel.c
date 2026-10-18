@@ -146,6 +146,9 @@ esp_err_t nodelio_mqtt_panel_start(const nodelio_nvs_config_t *cfg)
         .credentials.authentication.password = s_cfg.mqtt_pass[0] ? s_cfg.mqtt_pass : NULL,
         .session.keepalive = 60,
         .network.disable_auto_reconnect = false,
+        /* 默认 6144 走片内 RAM。开机与小智 MQTT 叠在一起时最大空闲块不够，任务创建失败。
+         * 明文 mqtt://，4KB 够用。 */
+        .task.stack_size = 4096,
     };
     s_client = esp_mqtt_client_init(&mqtt_cfg);
     if (!s_client) {

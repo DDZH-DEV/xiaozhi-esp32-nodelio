@@ -19,6 +19,7 @@
 #include "ui_widgets.h"
 #include "wifi_manager.h"
 #include "wifi_provision.h"
+#include "jpg/jpeg_to_image.h"
 #include <material_symbols.h>
 
 LV_FONT_DECLARE(font_material_symbols_20_4);
@@ -35,6 +36,8 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <freertos/idf_additions.h>
+#include <freertos/idf_additions.h>
 #include <freertos/task.h>
 #include <lvgl.h>
 #include <time.h>
@@ -50,6 +53,20 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #define TAG "nl_home"
 
 static lv_timer_t *s_cd_timer;
+/** fill_home 世代：异步相册图回写时丢弃过期结果 */
+static uint32_t s_home_gen;
+
+#define NL_PHOTO_RT_MAX 8
+typedef struct {
+    char widget_id[NL_LAYOUT_STR];
+    uint8_t idx;
+    uint8_t paused;
+    uint16_t interval_sec;
+    int64_t next_ms;
+} photo_rt_t;
+static photo_rt_t s_photo_rt[NL_PHOTO_RT_MAX];
+static int s_photo_rt_n;
+static lv_timer_t *s_photo_timer;
 
 static void format_countdown(int sec, char *buf, size_t buflen)
 {
@@ -795,7 +812,8 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
     if (!tile || !w) {
         return;
     }
-    if (w->type == NL_WIDGET_SKILL_TILE || w->type == NL_WIDGET_SKILL_WIDGET) {
+    if (w->type == NL_WIDGET_SKILL_TILE || w->type == NL_WIDGET_SKILL_WIDGET ||
+        w->type == NL_WIDGET_PHOTO_FRAME) {
         return;
     }
     tile_kind_t kind = tile_kind_of(w);
@@ -1053,8 +1071,6 @@ static void place_grid_obj(lv_obj_t *obj, const nl_widget_t *w, int cell_w, int 
 struct shot_job {
     std::string *jpeg;
     nodelio_nvs_config_t cfg;
-    StackType_t *stack;
-    StaticTask_t *tcb;
 };
 
 static void capture_and_upload_screenshot(void)
@@ -1086,29 +1102,17 @@ static void capture_and_upload_screenshot(void)
         return;
     }
 
-    constexpr uint32_t kStackBytes = 12288;
     auto *job = static_cast<shot_job *>(malloc(sizeof(shot_job)));
-    StackType_t *stack = static_cast<StackType_t *>(
-        heap_caps_malloc(kStackBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!stack) {
-        stack = static_cast<StackType_t *>(malloc(kStackBytes));
-    }
-    auto *tcb = static_cast<StaticTask_t *>(
-        heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    if (!job || !stack || !tcb) {
-        free(job);
-        free(stack);
-        free(tcb);
+    if (!job) {
         delete jpeg;
         nl_ov_toast("无法上传");
         return;
     }
     job->jpeg = jpeg;
     job->cfg = s_cfg;
-    job->stack = stack;
-    job->tcb = tcb;
     nl_ov_toast("正在上传截图…");
-    if (xTaskCreateStatic(
+    constexpr uint32_t kStackWords = 12288 / sizeof(StackType_t);
+    if (xTaskCreateWithCaps(
             [](void *p) {
                 auto *job = static_cast<shot_job *>(p);
                 char base[160];
@@ -1137,21 +1141,12 @@ static void capture_and_upload_screenshot(void)
                     nodelio_panel_ui_toast_defer("截图上传失败");
                 }
                 delete job->jpeg;
-                StackType_t *st = job->stack;
-                StaticTask_t *tb = job->tcb;
                 free(job);
-                Application::GetInstance().Schedule([st, tb]() {
-                    vTaskDelay(pdMS_TO_TICKS(200));
-                    free(st);
-                    free(tb);
-                });
-                vTaskDelete(nullptr);
+                vTaskDeleteWithCaps(nullptr);
             },
-            "nl_shot", kStackBytes / sizeof(StackType_t), job, 3, stack, tcb) == nullptr) {
+            "nl_shot", kStackWords, job, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        delete job->jpeg;
         free(job);
-        free(stack);
-        free(tcb);
-        delete jpeg;
         nl_ov_toast("无法上传");
     }
 }
@@ -1624,8 +1619,11 @@ static bool widget_is_home_content(const nl_widget_t *w)
     if (!w) {
         return false;
     }
-    if (w->type == NL_WIDGET_SKILL_TILE) {
+    if (w->type == NL_WIDGET_SKILL_TILE || w->type == NL_WIDGET_SKILL_WIDGET) {
         return w->skill_id[0] != '\0';
+    }
+    if (w->type == NL_WIDGET_PHOTO_FRAME) {
+        return true;
     }
     return widget_is_control_tile(w);
 }
@@ -1786,34 +1784,42 @@ static void fill_skill_tile(nl_widget_t *w, int cell_w, int cell_h)
     lv_obj_set_style_text_color(icon_lbl, UI_ON_TILE, 0);
     lv_obj_center(icon_lbl);
 
+    /* 1×1 只留图标；其余：上名称、下「应用」（不叠浮动角标） */
+    if (is_1x1) {
+        return;
+    }
     char short_t[48];
     short_label(title, short_t, sizeof(short_t), title_max_runes(w));
-    lv_obj_t *lb = lv_label_create(tile);
+    lv_obj_t *txt = lv_obj_create(tile);
+    lv_obj_remove_style_all(txt);
+    lv_obj_set_height(txt, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(txt, 2, 0);
+    lv_obj_clear_flag(txt, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    if (is_row) {
+        lv_obj_set_flex_grow(txt, 1);
+        lv_obj_set_width(txt, LV_SIZE_CONTENT);
+        lv_obj_set_flex_align(txt, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    } else {
+        lv_obj_set_width(txt, lv_pct(96));
+        lv_obj_set_flex_align(txt, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    }
+
+    lv_obj_t *lb = lv_label_create(txt);
     lv_obj_set_user_data(lb, (void *)(intptr_t)TILE_CHILD_TITLE);
     lv_label_set_text(lb, short_t[0] ? short_t : title);
     nl_ov_set_font(lb);
     lv_obj_set_style_text_color(lb, UI_TEXT, 0);
-    if (is_1x1) {
-        lv_obj_add_flag(lb, LV_OBJ_FLAG_HIDDEN);
-    } else if (is_row) {
-        lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_LEFT, 0);
-        lv_obj_set_flex_grow(lb, 1);
-    } else {
-        lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_width(lb, lv_pct(96));
-    }
+    lv_obj_set_style_text_align(lb, is_row ? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(lb, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(lb, lv_pct(100));
 
-    /* 1×1 只留图标：标题与「应用」角标都会压在胶囊上 */
-    if (!is_1x1) {
-        lv_obj_t *badge = lv_label_create(tile);
-        nl_ov_set_font(badge);
-        lv_label_set_text(badge, "应用");
-        lv_obj_set_style_text_color(badge, UI_PURPLE, 0);
-        lv_obj_add_flag(badge, (lv_obj_flag_t)(LV_OBJ_FLAG_IGNORE_LAYOUT | LV_OBJ_FLAG_FLOATING));
-        lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(badge, is_row ? LV_ALIGN_RIGHT_MID : LV_ALIGN_TOP_RIGHT, is_row ? -4 : -4, is_row ? 0 : 4);
-    }
+    lv_obj_t *sub = lv_label_create(txt);
+    nl_ov_set_font(sub);
+    lv_label_set_text(sub, "应用");
+    lv_obj_set_style_text_color(sub, UI_PURPLE, 0);
+    lv_obj_set_style_text_align(sub, is_row ? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(sub, LV_LABEL_LONG_CLIP);
 }
 
 static void on_skill_widget_click(lv_event_t *e)
@@ -1844,6 +1850,330 @@ static lv_obj_t *widget_icon_pod(lv_obj_t *parent, const char *glyph, lv_color_t
     lv_obj_set_style_text_color(ic, UI_ON_TILE, 0);
     lv_obj_center(ic);
     return pod;
+}
+
+static void on_photo_img_deleted(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_DELETE) {
+        return;
+    }
+    auto *dsc = static_cast<lv_image_dsc_t *>(lv_event_get_user_data(e));
+    if (!dsc) {
+        return;
+    }
+    if (dsc->data) {
+        heap_caps_free(const_cast<uint8_t *>(dsc->data));
+        dsc->data = nullptr;
+    }
+    free(dsc);
+}
+
+static lv_obj_t *find_home_tile_by_widget_id(const char *widget_id)
+{
+    if (!s_home || !widget_id || !widget_id[0]) {
+        return nullptr;
+    }
+    const uint32_t n = lv_obj_get_child_count(s_home);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *ch = lv_obj_get_child(s_home, i);
+        if (!ch) {
+            continue;
+        }
+        auto *w = static_cast<const nl_widget_t *>(lv_obj_get_user_data(ch));
+        if (w && w->type == NL_WIDGET_PHOTO_FRAME && strcmp(w->id, widget_id) == 0) {
+            return ch;
+        }
+    }
+    return nullptr;
+}
+
+static void photo_apply_rgb(const char *widget_id, uint8_t *rgb, size_t rgb_len, size_t w, size_t h,
+                            size_t stride, bool fit_contain, uint32_t gen)
+{
+    if (gen != s_home_gen || !s_home || s_active_tab != NL_TAB_HOME) {
+        if (rgb) {
+            heap_caps_free(rgb);
+        }
+        return;
+    }
+    lv_obj_t *tile = find_home_tile_by_widget_id(widget_id);
+    if (!tile || !rgb || w == 0 || h == 0) {
+        if (rgb) {
+            heap_caps_free(rgb);
+        }
+        if (tile) {
+            lv_obj_t *hint = lv_obj_get_child(tile, 0);
+            if (hint && lv_obj_check_type(hint, &lv_label_class)) {
+                lv_label_set_text(hint, "加载失败");
+                lv_obj_set_style_text_color(hint, UI_TEXT_MUTED, 0);
+            }
+        }
+        return;
+    }
+    /* 清掉占位文案 */
+    while (lv_obj_get_child_count(tile) > 0) {
+        lv_obj_t *ch = lv_obj_get_child(tile, 0);
+        lv_obj_del(ch);
+    }
+    auto *dsc = static_cast<lv_image_dsc_t *>(calloc(1, sizeof(lv_image_dsc_t)));
+    if (!dsc) {
+        heap_caps_free(rgb);
+        lv_obj_t *lb = lv_label_create(tile);
+        nl_ov_set_font(lb);
+        lv_label_set_text(lb, "内存不足");
+        lv_obj_set_style_text_color(lb, UI_TEXT_MUTED, 0);
+        lv_obj_center(lb);
+        return;
+    }
+    dsc->data = rgb;
+    dsc->data_size = rgb_len;
+    dsc->header.magic = LV_IMAGE_HEADER_MAGIC;
+    dsc->header.cf = LV_COLOR_FORMAT_RGB565;
+    dsc->header.w = (uint32_t)w;
+    dsc->header.h = (uint32_t)h;
+    dsc->header.stride = (uint32_t)stride;
+
+    lv_obj_t *img = lv_image_create(tile);
+    lv_obj_set_size(img, lv_pct(100), lv_pct(100));
+    lv_obj_center(img);
+    lv_image_set_src(img, dsc);
+    lv_image_set_inner_align(img, fit_contain ? LV_IMAGE_ALIGN_CONTAIN : LV_IMAGE_ALIGN_COVER);
+    lv_obj_clear_flag(img, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(img, on_photo_img_deleted, LV_EVENT_DELETE, dsc);
+}
+
+static photo_rt_t *photo_rt_find(const char *widget_id)
+{
+    if (!widget_id || !widget_id[0]) {
+        return nullptr;
+    }
+    for (int i = 0; i < s_photo_rt_n; i++) {
+        if (strcmp(s_photo_rt[i].widget_id, widget_id) == 0) {
+            return &s_photo_rt[i];
+        }
+    }
+    return nullptr;
+}
+
+static void photo_show_loading(const char *widget_id, const char *text)
+{
+    lv_obj_t *tile = find_home_tile_by_widget_id(widget_id);
+    if (!tile) {
+        return;
+    }
+    while (lv_obj_get_child_count(tile) > 0) {
+        lv_obj_del(lv_obj_get_child(tile, 0));
+    }
+    lv_obj_t *lb = lv_label_create(tile);
+    nl_ov_set_font(lb);
+    lv_label_set_text(lb, text ? text : "加载中");
+    lv_obj_set_style_text_color(lb, UI_TEXT_MUTED, 0);
+    lv_obj_center(lb);
+}
+
+static void photo_fetch_async(const nl_widget_t *w, uint8_t idx)
+{
+    if (!w || w->photo_n == 0 || idx >= w->photo_n || !w->photo_ids[idx][0]) {
+        return;
+    }
+    if (nodelio_wifi_is_asleep() || !nodelio_wifi_has_ip()) {
+        return;
+    }
+    if (!s_cfg.server_url[0] || !s_cfg.device_id[0]) {
+        return;
+    }
+    struct photo_arg {
+        nodelio_nvs_config_t cfg;
+        char widget_id[NL_LAYOUT_STR];
+        char photo_id[NL_PHOTO_ID_MAX];
+        uint8_t fit_contain;
+        uint32_t gen;
+    };
+    auto *arg = static_cast<photo_arg *>(malloc(sizeof(photo_arg)));
+    if (!arg) {
+        return;
+    }
+    arg->cfg = s_cfg;
+    snprintf(arg->widget_id, sizeof(arg->widget_id), "%s", w->id);
+    snprintf(arg->photo_id, sizeof(arg->photo_id), "%s", w->photo_ids[idx]);
+    arg->fit_contain = w->photo_fit_contain;
+    arg->gen = s_home_gen;
+
+    constexpr uint32_t kStackWords = 12288 / sizeof(StackType_t);
+    if (xTaskCreateWithCaps(
+            [](void *p) {
+                auto *a = static_cast<photo_arg *>(p);
+                char base[160];
+                nl_url_strip_base(a->cfg.server_url, base, sizeof(base));
+                char url[420];
+                snprintf(url, sizeof(url), "%s/api/devices/%s/panel/photos/%s", base, a->cfg.device_id,
+                         a->photo_id);
+                constexpr int kJpegCap = 90 * 1024;
+                uint8_t *jpeg = static_cast<uint8_t *>(
+                    heap_caps_malloc((size_t)kJpegCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                size_t jpeg_n = 0;
+                int status = 0;
+                esp_err_t err = ESP_FAIL;
+                if (jpeg && !nodelio_wifi_is_asleep() && nodelio_wifi_has_ip()) {
+                    err = nodelio_http_get_bin(url, a->cfg.device_key, &status, jpeg, kJpegCap, &jpeg_n);
+                }
+                uint8_t *rgb = nullptr;
+                size_t rgb_len = 0, iw = 0, ih = 0, stride = 0;
+                if (err == ESP_OK && status == 200 && jpeg_n > 0) {
+                    if (jpeg_to_image(jpeg, jpeg_n, &rgb, &rgb_len, &iw, &ih, &stride) != ESP_OK) {
+                        rgb = nullptr;
+                    }
+                }
+                if (jpeg) {
+                    heap_caps_free(jpeg);
+                }
+                std::string wid(a->widget_id);
+                const bool fit = a->fit_contain != 0;
+                const uint32_t gen = a->gen;
+                free(a);
+                Application::GetInstance().Schedule([wid, rgb, rgb_len, iw, ih, stride, fit, gen]() {
+                    DisplayLockGuard lock(nl_ov_disp());
+                    photo_apply_rgb(wid.c_str(), rgb, rgb_len, iw, ih, stride, fit, gen);
+                });
+                vTaskDeleteWithCaps(nullptr);
+            },
+            "nl_photo", kStackWords, arg, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        free(arg);
+    }
+}
+
+static const nl_widget_t *photo_widget_by_id(const char *widget_id)
+{
+    if (!s_layout || !widget_id) {
+        return nullptr;
+    }
+    for (int pi = 0; pi < s_layout->page_count; pi++) {
+        const nl_page_t *pg = &s_layout->pages[pi];
+        if (pg->system_page[0] != '\0') {
+            continue;
+        }
+        for (int si = 0; si < pg->section_count; si++) {
+            const nl_section_t *sec = &pg->sections[si];
+            for (int wi = 0; wi < sec->widget_count; wi++) {
+                const nl_widget_t *w = &sec->widgets[wi];
+                if (w->type == NL_WIDGET_PHOTO_FRAME && strcmp(w->id, widget_id) == 0) {
+                    return w;
+                }
+            }
+        }
+    }
+    return nullptr;
+}
+
+static void photo_advance(photo_rt_t *rt)
+{
+    if (!rt) {
+        return;
+    }
+    const nl_widget_t *w = photo_widget_by_id(rt->widget_id);
+    if (!w || w->photo_n < 2) {
+        return;
+    }
+    rt->idx = (uint8_t)((rt->idx + 1) % w->photo_n);
+    photo_show_loading(rt->widget_id, "加载中");
+    photo_fetch_async(w, rt->idx);
+    const int sec = rt->interval_sec >= 3 ? rt->interval_sec : 8;
+    rt->next_ms = esp_timer_get_time() / 1000 + (int64_t)sec * 1000;
+}
+
+static void on_photo_timer(lv_timer_t *t)
+{
+    (void)t;
+    if (s_active_tab != NL_TAB_HOME || !s_home) {
+        return;
+    }
+    if (nodelio_wifi_is_asleep()) {
+        return;
+    }
+    const int64_t now = esp_timer_get_time() / 1000;
+    for (int i = 0; i < s_photo_rt_n; i++) {
+        photo_rt_t *rt = &s_photo_rt[i];
+        if (rt->paused || rt->next_ms <= 0 || now < rt->next_ms) {
+            continue;
+        }
+        photo_advance(rt);
+    }
+}
+
+static void photo_timer_ensure(void)
+{
+    if (s_photo_timer) {
+        return;
+    }
+    s_photo_timer = lv_timer_create(on_photo_timer, 1000, nullptr);
+}
+
+static void on_photo_frame_click(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    auto *w = static_cast<nl_widget_t *>(lv_event_get_user_data(e));
+    if (!w || w->type != NL_WIDGET_PHOTO_FRAME || w->photo_n < 2) {
+        return;
+    }
+    photo_rt_t *rt = photo_rt_find(w->id);
+    if (!rt) {
+        return;
+    }
+    rt->paused = rt->paused ? 0 : 1;
+    if (!rt->paused) {
+        const int sec = rt->interval_sec >= 3 ? rt->interval_sec : 8;
+        rt->next_ms = esp_timer_get_time() / 1000 + (int64_t)sec * 1000;
+        nl_ov_toast("继续轮播");
+    } else {
+        nl_ov_toast("已暂停");
+    }
+}
+
+static void photo_rt_register(const nl_widget_t *w)
+{
+    if (!w || w->photo_n < 2 || s_photo_rt_n >= NL_PHOTO_RT_MAX) {
+        return;
+    }
+    photo_rt_t *rt = &s_photo_rt[s_photo_rt_n++];
+    memset(rt, 0, sizeof(*rt));
+    snprintf(rt->widget_id, sizeof(rt->widget_id), "%s", w->id);
+    rt->idx = 0;
+    rt->paused = 0;
+    rt->interval_sec = w->photo_interval_sec >= 3 ? w->photo_interval_sec : 8;
+    rt->next_ms = esp_timer_get_time() / 1000 + (int64_t)rt->interval_sec * 1000;
+    photo_timer_ensure();
+}
+
+static void fill_photo_frame(nl_widget_t *w, int cell_w, int cell_h)
+{
+    if (!w) {
+        return;
+    }
+    lv_obj_t *tile = make_tile_shell(w, TILE_SCENE, cell_w, cell_h);
+    lv_obj_set_style_bg_color(tile, UI_TILE_OFF, 0);
+    lv_obj_set_style_border_width(tile, 1, 0);
+    lv_obj_set_style_border_color(tile, UI_TILE_OFF_BORDER, 0);
+    lv_obj_set_style_border_opa(tile, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(tile, 0, 0);
+    lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *lb = lv_label_create(tile);
+    nl_ov_set_font(lb);
+    if (w->photo_n == 0 || !w->photo_ids[0][0]) {
+        lv_label_set_text(lb, "去 APP 添加");
+        lv_obj_set_style_text_color(lb, UI_TEXT_MUTED, 0);
+        return;
+    }
+    lv_label_set_text(lb, "加载中");
+    lv_obj_set_style_text_color(lb, UI_TEXT_MUTED, 0);
+    if (w->photo_n >= 2) {
+        lv_obj_add_event_cb(tile, on_photo_frame_click, LV_EVENT_CLICKED, w);
+        photo_rt_register(w);
+    }
+    photo_fetch_async(w, 0);
 }
 
 static void fill_skill_widget(nl_widget_t *w, int cell_w, int cell_h)
@@ -1906,6 +2236,31 @@ static void fill_skill_widget(nl_widget_t *w, int cell_w, int cell_h)
     lv_label_set_text(ht, pv.head[0] ? pv.head : fallback);
     lv_obj_set_style_text_color(ht, UI_TEXT, 0);
     lv_label_set_long_mode(ht, LV_LABEL_LONG_DOT);
+
+    /* 天气等 list 组件：首条 subtitle 常带「城市 · …」，提出地址显示在标题下 */
+    char loc[40] = {0};
+    if (have && pv.sub[0][0]) {
+        const char *sep = std::strstr(pv.sub[0], " · ");
+        if (sep && (size_t)(sep - pv.sub[0]) < sizeof(loc)) {
+            size_t n = (size_t)(sep - pv.sub[0]);
+            std::memcpy(loc, pv.sub[0], n);
+            loc[n] = '\0';
+        } else {
+            size_t n = std::strlen(pv.sub[0]);
+            if (n >= sizeof(loc)) {
+                n = sizeof(loc) - 1;
+            }
+            std::memcpy(loc, pv.sub[0], n);
+            loc[n] = '\0';
+        }
+    }
+    if (loc[0]) {
+        lv_obj_t *loc_lb = lv_label_create(side);
+        nl_ov_set_font(loc_lb);
+        lv_label_set_text(loc_lb, loc);
+        lv_obj_set_style_text_color(loc_lb, UI_TEXT_MUTED, 0);
+        lv_label_set_long_mode(loc_lb, LV_LABEL_LONG_DOT);
+    }
 
     lv_obj_t *col = lv_obj_create(tile);
     lv_obj_remove_style_all(col);
@@ -2014,9 +2369,9 @@ int nl_ov_home_user_page_count(void)
     return s_home_user_n;
 }
 
-static void home_switch_by(int delta)
+static void home_apply_delta(int delta)
 {
-    if (s_home_user_n <= 1 || delta == 0) {
+    if (s_home_user_n <= 1 || delta == 0 || !s_home) {
         return;
     }
     int next = s_home_user_cur + delta;
@@ -2025,14 +2380,42 @@ static void home_switch_by(int delta)
     }
     s_home_user_cur = next;
     home_remember_current_id();
+    nl_ov_fill_home();
+}
+
+static void home_switch_by(int delta)
+{
+    if (s_home_user_n <= 1 || delta == 0) {
+        return;
+    }
     /* 勿在 GESTURE 回调里直接 clean s_home */
-    Application::GetInstance().Schedule([]() {
+    Application::GetInstance().Schedule([delta]() {
         DisplayLockGuard lock(nl_ov_disp());
-        if (!lock || !s_home) {
+        if (!lock) {
             return;
         }
-        nl_ov_fill_home();
+        home_apply_delta(delta);
     });
+}
+
+esp_err_t nl_ov_home_page_peek(int delta)
+{
+    if (delta == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_home_user_n <= 1) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    int next = s_home_user_cur + delta;
+    if (next < 0 || next >= s_home_user_n) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return ESP_OK;
+}
+
+void nl_ov_home_page_apply(int delta)
+{
+    home_apply_delta(delta);
 }
 
 static void on_home_gesture(lv_event_t *e)
@@ -2204,6 +2587,8 @@ void nl_ov_fill_home(void)
     if (!s_home) {
         return;
     }
+    s_home_gen++;
+    s_photo_rt_n = 0;
     /* C3：钉选清单仅开机/invalidate 后拉一次，无定时轮询市场 */
     nl_ov_home_skills_ensure_fetched();
 
@@ -2314,8 +2699,9 @@ void nl_ov_fill_home(void)
         return;
     }
 
-    /* 控家关闭且无画布应用 → 启动台；有 skill_tile 仍显示网格 */
-    if (!nodelio_controls_enabled() && count_all_user_skill_tiles() == 0) {
+    /* 控家关闭且无画布应用/相册 → 启动台；有 skill_tile 或相册仍显示网格 */
+    if (!nodelio_controls_enabled() && count_all_user_skill_tiles() == 0 &&
+        count_all_user_content_tiles() == 0) {
         fill_home_launcher();
         return;
     }
@@ -2379,6 +2765,10 @@ void nl_ov_fill_home(void)
             }
             if (w->type == NL_WIDGET_SKILL_WIDGET) {
                 fill_skill_widget(w, cell_w, cell_h);
+                continue;
+            }
+            if (w->type == NL_WIDGET_PHOTO_FRAME) {
+                fill_photo_frame(w, cell_w, cell_h);
                 continue;
             }
             if (!nodelio_controls_enabled()) {

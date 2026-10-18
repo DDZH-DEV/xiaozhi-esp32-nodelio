@@ -150,3 +150,12 @@ SILA-86 背光以板级 `config` 为准；勿盲目照抄旧叉 invert。
 - 播放中可息屏（不停播）；播放中禁止断网；息屏勿关功放。
 - 设置页「播放器」：是否允许播放中息屏、暂停多久关播放器（NVS）。
 
+### 语音导航 / 关技能弹窗
+
+口令与 MCP 表：`NodeLio/ESP32-IDF/docs/xiaozhi-mcp.md`。
+
+- 首页多屏：左右滑 / 「上一屏·下一屏」。有控家网格的首页不竖滚。
+- 竖滚：设置、内页、连接、应用列表、启动台（「往上翻·往下翻」）。
+- `goto_page home` **不关** `lv_layer_top()` 上的技能弹窗；关电台/新闻用 `self.skill.close`。
+- **禁止**在聆听/说话/连接中走 `StopNotification()` 收尾（`ResetDecoder` + `EnableVoiceProcessing(true)`）。否则下一轮跳过 `SendStartListening`，云端不再出字。只在 `Notifying` 停 HTTP 播歌。
+

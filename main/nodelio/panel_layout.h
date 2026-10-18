@@ -33,7 +33,12 @@ typedef enum {
     NL_WIDGET_SKILL_TILE,
     /** 内容组件：格内嵌摘要；尺寸由包固定 */
     NL_WIDGET_SKILL_WIDGET,
+    /** 首页相册；images[] 只含 id。旧固件不认识则保持 UNKNOWN */
+    NL_WIDGET_PHOTO_FRAME,
 } nl_widget_type_t;
+
+#define NL_PHOTO_MAX 8
+#define NL_PHOTO_ID_MAX 40
 
 #define NL_WIDGET_SKILL_ID_MAX 64
 #define NL_WIDGET_INVOKE_MAX 128
@@ -77,6 +82,11 @@ typedef struct {
     char default_invoke[NL_WIDGET_INVOKE_MAX];
     /** skill_widget 亮屏刷新秒；0 表示用默认 600 */
     uint16_t refresh_sec;
+    /** photo_frame：最多 8 个图片 id；fit_contain=1 为留边 */
+    char photo_ids[NL_PHOTO_MAX][NL_PHOTO_ID_MAX];
+    uint8_t photo_n;
+    uint8_t photo_fit_contain;
+    uint16_t photo_interval_sec;
 } nl_widget_t;
 
 typedef struct {

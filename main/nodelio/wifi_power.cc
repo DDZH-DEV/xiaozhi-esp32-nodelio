@@ -43,18 +43,18 @@ void nodelio_wifi_sleep(void)
     if (s_asleep) {
         return;
     }
-    /* 先挡新 HTTP，再等在途请求结束，最后 wifi_stop（否则 getaddrinfo → Invalid mbox） */
+    /* 先挡新 HTTP，再等在途请求结束，最后停射频（否则 getaddrinfo → Invalid mbox） */
     s_asleep = true;
     const bool held = nodelio_wifi_net_acquire(5000);
     if (!held) {
-        ESP_LOGW(TAG, "net op busy — force wifi_stop");
+        ESP_LOGW(TAG, "net op busy — force wifi soft-stop");
     }
     /*
-     * Soft sleep：只 wifi_stop，保留 WifiManager STA netif / DHCP 客户端。
+     * Soft sleep：先卸 WifiStation 事件再 wifi_stop，保留 STA netif。
+     * 禁止裸 esp_wifi_stop：STA_DISCONNECTED 会 esp_wifi_connect 与 stop 竞态崩溃。
      * 勿 StopStation()（毁 netif），勿 dhcpc_stop（唤醒后可续租）。
-     * 清 IP 仅避免 has_ip 在射频停掉后仍为 true。
      */
-    (void)esp_wifi_stop();
+    WifiManager::GetInstance().SoftStopStationRadio();
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (netif) {
         esp_netif_ip_info_t zero = {};
@@ -73,21 +73,16 @@ void nodelio_wifi_wake(void)
     }
     s_asleep = false;
 
-    WifiManager::GetInstance().SetPowerSaveLevel(WifiPowerSaveLevel::PERFORMANCE);
-    (void)esp_wifi_set_ps(WIFI_PS_NONE);
-
+    /* 先起射频再 set_ps：wifi_stop 后 ESP_ERROR_CHECK(set_ps) 会 abort */
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (netif) {
-        esp_err_t err = esp_wifi_start();
-        if (err == ESP_OK || err == ESP_ERR_WIFI_CONN) {
-            ESP_LOGI(TAG, "WiFi wake");
-            return;
-        }
-        ESP_LOGW(TAG, "soft wake wifi_start %s — StartStation", esp_err_to_name(err));
+        WifiManager::GetInstance().SoftStartStationRadio();
+    } else {
+        ESP_LOGW(TAG, "soft wake no netif — StartStation");
+        WifiManager::GetInstance().StartStation();
     }
-
-    WifiManager::GetInstance().StartStation();
     WifiManager::GetInstance().SetPowerSaveLevel(WifiPowerSaveLevel::PERFORMANCE);
+    (void)esp_wifi_set_ps(WIFI_PS_NONE);
     ESP_LOGI(TAG, "WiFi wake");
 }
 

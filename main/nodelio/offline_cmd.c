@@ -115,11 +115,29 @@ bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel_or_pin, 
     }
     /* 裸「打开/关闭」无辨识度，且会撞车；本机系统口令保留 */
     if (strcmp(pinyin, "da kai") == 0 || strcmp(pinyin, "guan bi") == 0 ||
-        strcmp(pinyin, "chong qi") == 0 || strcmp(pinyin, "tui xia") == 0 ||
-        strcmp(pinyin, "zai jian") == 0 || strcmp(pinyin, "bai bai") == 0 ||
-        strcmp(pinyin, "xi ping") == 0 || strcmp(pinyin, "shang yi shou") == 0 ||
-        strcmp(pinyin, "xia yi shou") == 0 || strcmp(pinyin, "zan ting") == 0 ||
-        strcmp(pinyin, "ji xu bo fang") == 0) {
+        strcmp(pinyin, "chong qi") == 0 || strcmp(pinyin, "chong xin qi dong") == 0 ||
+        strcmp(pinyin, "tui xia") == 0 || strcmp(pinyin, "zai jian") == 0 ||
+        strcmp(pinyin, "bai bai") == 0 || strcmp(pinyin, "xi ping") == 0 ||
+        strcmp(pinyin, "jin ru pei wang") == 0 || strcmp(pinyin, "da kai re dian") == 0 ||
+        strcmp(pinyin, "pei wang mo shi") == 0 || strcmp(pinyin, "pei wang") == 0 ||
+        strcmp(pinyin, "da kai shou ye") == 0 || strcmp(pinyin, "hui dao shou ye") == 0 ||
+        strcmp(pinyin, "da kai ying yong") == 0 || strcmp(pinyin, "da kai she zhi") == 0 ||
+        strcmp(pinyin, "da kai lian jie") == 0 || strcmp(pinyin, "wang luo she zhi") == 0 ||
+        strcmp(pinyin, "xian shi yu sheng yin") == 0 || strcmp(pinyin, "da kai sheng dian") == 0 ||
+        strcmp(pinyin, "kai sheng dian") == 0 || strcmp(pinyin, "guan sheng dian") == 0 ||
+        strcmp(pinyin, "kai qi sheng dian") == 0 || strcmp(pinyin, "guan bi sheng dian") == 0 ||
+        strcmp(pinyin, "da kai kong jia") == 0 || strcmp(pinyin, "guan bi kong jia") == 0 ||
+        strcmp(pinyin, "da kai xiao zhi") == 0 || strcmp(pinyin, "guan bi xiao zhi") == 0 ||
+        strcmp(pinyin, "kai qi xiao zhi") == 0 || strcmp(pinyin, "shua xin bu ju") == 0 ||
+        strcmp(pinyin, "jian cha geng xin") == 0 || strcmp(pinyin, "hui fu chu chang") == 0 ||
+        strcmp(pinyin, "yu yin zhu shou") == 0 || strcmp(pinyin, "bo fang qi she zhi") == 0 ||
+        strcmp(pinyin, "kong jia she zhi") == 0 || strcmp(pinyin, "she bei xin xi") == 0 ||
+        strcmp(pinyin, "shang yi shou") == 0 || strcmp(pinyin, "xia yi shou") == 0 ||
+        strcmp(pinyin, "shang yi ping") == 0 || strcmp(pinyin, "xia yi ping") == 0 ||
+        strcmp(pinyin, "wang qian fan") == 0 || strcmp(pinyin, "wang hou fan") == 0 ||
+        strcmp(pinyin, "wang shang fan") == 0 || strcmp(pinyin, "wang xia fan") == 0 ||
+        strcmp(pinyin, "xiang shang hua") == 0 || strcmp(pinyin, "xiang xia hua") == 0 ||
+        strcmp(pinyin, "zan ting") == 0 || strcmp(pinyin, "ji xu bo fang") == 0) {
         return false;
     }
     for (int i = 0; i < s_dyn_cmd_count; i++) {
@@ -211,12 +229,49 @@ static void install_commands(void)
         const char *py;
     } k_local[] = {
         {NL_OC_REBOOT, "chong qi"},
+        {NL_OC_REBOOT, "chong xin qi dong"},
+        {NL_OC_WIFI_CONFIG, "jin ru pei wang"},
+        {NL_OC_WIFI_CONFIG, "da kai re dian"},
+        {NL_OC_WIFI_CONFIG, "pei wang mo shi"},
+        {NL_OC_WIFI_CONFIG, "pei wang"},
+        {NL_OC_GOTO_HOME, "da kai shou ye"},
+        {NL_OC_GOTO_HOME, "hui dao shou ye"},
+        {NL_OC_GOTO_APPS, "da kai ying yong"},
+        {NL_OC_GOTO_SETTINGS, "da kai she zhi"},
+        {NL_OC_GOTO_CONNECT, "da kai lian jie"},
+        {NL_OC_GOTO_CONNECT, "wang luo she zhi"},
+        {NL_OC_GOTO_DISP, "xian shi yu sheng yin"},
+        {NL_OC_GOTO_POWER, "da kai sheng dian"},
+        {NL_OC_POWER_SAVE_ON, "kai sheng dian"},
+        {NL_OC_POWER_SAVE_ON, "kai qi sheng dian"},
+        {NL_OC_POWER_SAVE_OFF, "guan sheng dian"},
+        {NL_OC_POWER_SAVE_OFF, "guan bi sheng dian"},
+        {NL_OC_GOTO_VOICE, "yu yin zhu shou"},
+        {NL_OC_GOTO_MEDIA, "bo fang qi she zhi"},
+        {NL_OC_GOTO_CTRL, "kong jia she zhi"},
+        {NL_OC_CONTROLS_ON, "da kai kong jia"},
+        {NL_OC_CONTROLS_OFF, "guan bi kong jia"},
+        {NL_OC_XIAOZHI_ON, "da kai xiao zhi"},
+        {NL_OC_XIAOZHI_ON, "kai qi xiao zhi"},
+        {NL_OC_XIAOZHI_OFF, "guan bi xiao zhi"},
+        {NL_OC_LAYOUT_SYNC, "shua xin bu ju"},
+        {NL_OC_FW_CHECK, "jian cha geng xin"},
+        {NL_OC_GOTO_RESET, "hui fu chu chang"},
+        {NL_OC_GOTO_SYS, "she bei xin xi"},
         {NL_OC_GOODBYE, "tui xia"},
         {NL_OC_GOODBYE, "zai jian"},
         {NL_OC_GOODBYE, "bai bai"},
         {NL_OC_GOODBYE, "xi ping"},
         {NL_OC_MEDIA_PREV, "shang yi shou"},
         {NL_OC_MEDIA_NEXT, "xia yi shou"},
+        {NL_OC_PAGE_PREV, "shang yi ping"},
+        {NL_OC_PAGE_PREV, "wang qian fan"},
+        {NL_OC_PAGE_NEXT, "xia yi ping"},
+        {NL_OC_PAGE_NEXT, "wang hou fan"},
+        {NL_OC_SCROLL_UP, "wang shang fan"},
+        {NL_OC_SCROLL_UP, "xiang shang hua"},
+        {NL_OC_SCROLL_DOWN, "wang xia fan"},
+        {NL_OC_SCROLL_DOWN, "xiang xia hua"},
         {NL_OC_MEDIA_PAUSE, "zan ting"},
         {NL_OC_MEDIA_RESUME, "ji xu bo fang"},
     };
@@ -349,7 +404,11 @@ static void cmd_worker(void *arg)
         if (nodelio_offline_cmd_is_local(cid)) {
             esp_err_t err = nodelio_offline_cmd_dispatch(NULL, cid, NULL);
             const char *zh = nodelio_offline_cmd_zh(cid);
-            if (err == ESP_OK) {
+            if (cid == NL_OC_PAGE_NEXT || cid == NL_OC_PAGE_PREV ||
+                cid == NL_OC_SCROLL_DOWN || cid == NL_OC_SCROLL_UP) {
+                /* dispatch 已写入边界文案 */
+                finish_listen(NULL, err == ESP_OK);
+            } else if (err == ESP_OK) {
                 finish_listen(zh ? zh : "已执行", true);
             } else {
                 finish_listen("执行失败", false);
@@ -442,23 +501,17 @@ esp_err_t nodelio_offline_cmd_begin_listen(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* 未注册/未初始化：明确提示，勿进入空口令窗（读 RAM 镜像，避免误在非内部栈调 flash） */
+    /* 未绑定/未注册仍可听本机系统口令（重启 / 进入配网）；控家口令需绑定+布局 */
     nodelio_nvs_config_t cfg;
     nodelio_nvs_cache_get(&cfg);
-    if (cfg.server_url[0] == '\0' || cfg.owner[0] == '\0') {
-        nodelio_panel_ui_set_voice_hint("未绑定");
-        nodelio_panel_ui_toast("未绑定：设置里填服务器与绑定码");
-        ESP_LOGW(TAG, "begin_listen blocked: not provisioned");
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (cfg.device_id[0] == '\0' || cfg.device_key[0] == '\0') {
-        nodelio_panel_ui_set_voice_hint("未注册");
-        nodelio_panel_ui_toast("尚未注册成功，请联网后重试");
-        ESP_LOGW(TAG, "begin_listen blocked: not registered");
-        return ESP_ERR_INVALID_STATE;
-    }
-    /* 无布局仍可听「重启/退下」；控家口令需布局 */
+    const bool provisioned = cfg.server_url[0] != '\0' && cfg.owner[0] != '\0';
+    const bool registered = cfg.device_id[0] != '\0' && cfg.device_key[0] != '\0';
     const bool have_layout = nodelio_panel_ui_get_layout() != NULL;
+    if (!provisioned) {
+        ESP_LOGW(TAG, "begin_listen: not provisioned — system cmds only");
+    } else if (!registered) {
+        ESP_LOGW(TAG, "begin_listen: not registered — system cmds only");
+    }
 
     esp_err_t err = ensure_multinet();
     if (err != ESP_OK) {
@@ -480,19 +533,22 @@ esp_err_t nodelio_offline_cmd_begin_listen(void)
     s_session = true;
     s_listening = true;
     nodelio_panel_ui_note_activity();
-    if (s_dyn_cmd_count > 0) {
-        nodelio_panel_ui_set_voice_hint("请说设备名或重启/退下");
+    if (!provisioned || !registered) {
+        nodelio_panel_ui_set_voice_hint("可说重启、配网、打开首页/设置");
+        nodelio_panel_ui_toast(provisioned ? "未注册：重启/配网/切页" : "未绑定：重启/配网/切页");
+    } else if (s_dyn_cmd_count > 0) {
+        nodelio_panel_ui_set_voice_hint("可说设备名、切页、重启");
         nodelio_panel_ui_toast("本地口令");
     } else if (have_layout) {
-        nodelio_panel_ui_set_voice_hint("可说重启或退下");
-        nodelio_panel_ui_toast("本地口令（重启/退下）");
+        nodelio_panel_ui_set_voice_hint("可说打开首页/设置/应用");
+        nodelio_panel_ui_toast("本地口令（切页/重启/配网）");
     } else {
-        nodelio_panel_ui_set_voice_hint("可说重启或退下");
-        nodelio_panel_ui_toast("无布局：仅重启/退下");
+        nodelio_panel_ui_set_voice_hint("可说打开首页/设置/应用");
+        nodelio_panel_ui_toast("无布局：切页/重启/配网");
     }
     nodelio_panel_ui_play_cue(0); /* 与小智进听同款 POPUP */
-    ESP_LOGI(TAG, "local command window %dms dyn=%d layout=%d", LISTEN_MS, s_dyn_cmd_count,
-             have_layout ? 1 : 0);
+    ESP_LOGI(TAG, "local command window %dms dyn=%d layout=%d prov=%d reg=%d", LISTEN_MS,
+             s_dyn_cmd_count, have_layout ? 1 : 0, provisioned ? 1 : 0, registered ? 1 : 0);
     return ESP_OK;
 }
 

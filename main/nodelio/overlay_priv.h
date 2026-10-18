@@ -77,6 +77,7 @@ extern lv_obj_t *s_ai_drawer;
 extern lv_obj_t *s_ai_drawer_status;
 extern lv_obj_t *s_ai_drawer_body;
 extern lv_obj_t *s_ai_drawer_text;
+extern lv_obj_t *s_ai_mini_fab; /* 最小化：右下角仅图标 */
 extern lv_timer_t *s_ai_hide_timer;
 extern char s_ai_show_text[NL_CHAT_SHOW_CAP];
 extern lv_obj_t *s_settings;
@@ -101,6 +102,7 @@ extern nodelio_panel_ui_screen_cb_t s_screen_cb;
 extern nodelio_panel_ui_net_cb_t s_net_cb;
 
 extern lv_obj_t *s_settings_detail;
+extern lv_obj_t *s_settings_detail_body; /* 内页可滚区；显示与声音页可能关滚动 */
 extern lv_obj_t *s_bri_val_lbl;
 extern lv_obj_t *s_vol_val_lbl;
 extern uint8_t s_brightness;
@@ -186,6 +188,17 @@ void nl_ov_skill_widget_prefetch(const char *skill_id, const char *body_json, in
 /** 当前用户屏序号（0-based；无则 -1）；截图文案用 */
 int nl_ov_home_user_page_index(void);
 int nl_ov_home_user_page_count(void);
+/** 仅判断能否翻用户屏：+1 下一屏，-1 上一屏。不改 UI。 */
+esp_err_t nl_ov_home_page_peek(int delta);
+/** 须已持有 DisplayLock。越界或只有一屏则不动。 */
+void nl_ov_home_page_apply(int delta);
+/**
+ * 竖向滚当前可见页：dir=+1 往下，-1 往上。
+ * 无目标 → NOT_FOUND；到顶/底 → INVALID_STATE。
+ */
+esp_err_t nl_ov_voice_scroll_peek(int dir);
+/** 须已持有 DisplayLock。 */
+void nl_ov_voice_scroll_apply(int dir);
 /** 异步 invoke 已装技能（画布 skill_tile / 钉选共用）；LVGL 回调内调用，禁止同步 HTTP */
 void nl_ov_invoke_skill_async(const char *skill_id, const char *body_json);
 nl_dev_cache_t *nl_ov_find_dev(const char *device_id);
@@ -208,8 +221,13 @@ void nl_ov_fill_settings(void);
 void nl_ov_build_apps(void);
 void nl_ov_apps_set_visible(bool on);
 void nl_ov_apps_refresh(void);
+/** 应用列表可滚对象；页隐藏或不可滚时返回 NULL */
+lv_obj_t *nl_ov_apps_scroll_obj(void);
 void nl_ov_close_settings_detail(void);
+void nl_ov_open_settings_detail(set_page_id_t page);
 void nl_ov_stop_sys_monitor(void);
+/** 按应用名/app_id 子串打开已装应用（语音）；未命中返回 false */
+bool nl_ov_apps_open_by_query(const char *query);
 
 /* —— ai drawer —— */
 void nl_ov_create_ai_drawer(lv_obj_t *parent);
@@ -218,6 +236,9 @@ void nl_ov_restore_ai_drawer_if_session(void);
 bool nl_ov_ai_session_active(void);
 /** 告别后抑制再弹（… / listening / restore），直到用户再说话或重新建链 */
 bool nl_ov_ai_farewell_closing(void);
+/** 用户已最小化：会话继续，只显示右下角圆钮 */
+bool nl_ov_ai_is_minimized(void);
+void nl_ov_ai_raise_mini_fab(void);
 void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, const char *msg_text);
 /** 弹出/切相位：有记录则保留最近几句，无记录才用唤醒提示（禁止每轮清空） */
 void nl_ov_show_ai_drawer_session(chat_phase_t phase);

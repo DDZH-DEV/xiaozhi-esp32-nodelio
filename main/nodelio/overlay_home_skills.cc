@@ -15,6 +15,7 @@
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <material_symbols.h>
@@ -134,38 +135,12 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
     arg->cfg = s_cfg;
     snprintf(arg->id, sizeof(arg->id), "%s", skill_id);
     snprintf(arg->body, sizeof(arg->body), "%s", (body && body[0]) ? body : "{}");
-
-    struct open_job {
-        invoke_arg *arg;
-        StackType_t *stack;
-        StaticTask_t *tcb;
-    };
-    constexpr uint32_t kStackBytes = 16384;
-    auto *job = static_cast<open_job *>(malloc(sizeof(open_job)));
-    StackType_t *stack =
-        static_cast<StackType_t *>(heap_caps_malloc(kStackBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!stack) {
-        stack = static_cast<StackType_t *>(malloc(kStackBytes));
-    }
-    auto *tcb =
-        static_cast<StaticTask_t *>(heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    if (!job || !stack || !tcb) {
-        free(job);
-        free(stack);
-        free(tcb);
-        free(arg);
-        nl_ov_toast("无法打开");
-        return;
-    }
-    job->arg = arg;
-    job->stack = stack;
-    job->tcb = tcb;
     nl_ov_toast("正在打开…");
 
-    if (xTaskCreateStatic(
+    constexpr uint32_t kStackWords = 16384 / sizeof(StackType_t);
+    if (xTaskCreateWithCaps(
             [](void *p) {
-                auto *job = static_cast<open_job *>(p);
-                auto *a = job->arg;
+                auto *a = static_cast<invoke_arg *>(p);
                 const bool music_app =
                     strcmp(a->id, "music.search") == 0 || strcmp(a->id, "music_search") == 0;
                 if (!music_app && nodelio_media_preempt_for_heavy_app()) {
@@ -199,20 +174,9 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
                     free(resp);
                 }
                 free(a);
-                StackType_t *st = job->stack;
-                StaticTask_t *tb = job->tcb;
-                free(job);
-                Application::GetInstance().Schedule([st, tb]() {
-                    vTaskDelay(pdMS_TO_TICKS(200));
-                    free(st);
-                    free(tb);
-                });
-                vTaskDelete(nullptr);
+                vTaskDeleteWithCaps(nullptr);
             },
-            "nl_home_sk", kStackBytes / sizeof(StackType_t), job, 3, stack, tcb) == nullptr) {
-        free(job);
-        free(stack);
-        free(tcb);
+            "nl_home_sk", kStackWords, arg, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         free(arg);
         nl_ov_toast("无法打开");
     }
@@ -230,6 +194,8 @@ struct widget_cache_slot {
 static widget_cache_slot s_wcache[WIDGET_CACHE_N];
 /* 首页多个组件同时 invoke 会撞上服务端 400ms 限流，并和公网 TLS 抢射频。 */
 static SemaphoreHandle_t s_widget_http_mu = nullptr;
+/* 上一发 invoke 结束时刻。服务端按到达时间限 400ms，这里从结束再隔 500ms。 */
+static int64_t s_widget_invoke_done_us = 0;
 
 static widget_cache_slot *widget_cache_slot_for(const char *skill_id, bool create)
 {
@@ -312,41 +278,10 @@ void nl_ov_skill_widget_prefetch(const char *skill_id, const char *body, int ref
     snprintf(arg->id, sizeof(arg->id), "%s", skill_id);
     snprintf(arg->body, sizeof(arg->body), "%s", (body && body[0]) ? body : "{}");
 
-    constexpr uint32_t kStackBytes = 16384;
-    StackType_t *stack =
-        static_cast<StackType_t *>(heap_caps_malloc(kStackBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!stack) {
-        stack = static_cast<StackType_t *>(malloc(kStackBytes));
-    }
-    auto *tcb =
-        static_cast<StaticTask_t *>(heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    if (!stack || !tcb) {
-        free(stack);
-        free(tcb);
-        free(arg);
-        slot->fetching = false;
-        return;
-    }
-    struct job_t {
-        invoke_arg *arg;
-        StackType_t *stack;
-        StaticTask_t *tcb;
-    };
-    auto *job = static_cast<job_t *>(malloc(sizeof(job_t)));
-    if (!job) {
-        free(stack);
-        free(tcb);
-        free(arg);
-        slot->fetching = false;
-        return;
-    }
-    job->arg = arg;
-    job->stack = stack;
-    job->tcb = tcb;
-    if (xTaskCreateStatic(
+    constexpr uint32_t kStackWords = 16384 / sizeof(StackType_t);
+    if (xTaskCreateWithCaps(
             [](void *p) {
-                auto *job = static_cast<job_t *>(p);
-                auto *a = job->arg;
+                auto *a = static_cast<invoke_arg *>(p);
                 nl_widget_preview pv{};
                 snprintf(pv.head, sizeof(pv.head), "加载失败");
                 pv.n = 1;
@@ -368,6 +303,12 @@ void nl_ov_skill_widget_prefetch(const char *skill_id, const char *body, int ref
                      * 429 / 连不上 / 读超时（status 仍为 0）再试，间隔拉开。 */
                     const bool locked = s_widget_http_mu &&
                                         xSemaphoreTake(s_widget_http_mu, pdMS_TO_TICKS(40000)) == pdTRUE;
+                    if (locked && s_widget_invoke_done_us != 0) {
+                        const int64_t wait_us = 500000 - (esp_timer_get_time() - s_widget_invoke_done_us);
+                        if (wait_us > 0 && wait_us < 3000000) {
+                            vTaskDelay(pdMS_TO_TICKS((wait_us + 999) / 1000));
+                        }
+                    }
                     for (int attempt = 0; attempt < 4; attempt++) {
                         resp[0] = '\0';
                         status = 0;
@@ -382,6 +323,7 @@ void nl_ov_skill_widget_prefetch(const char *skill_id, const char *body, int ref
                         vTaskDelay(pdMS_TO_TICKS(500 * (attempt + 1)));
                     }
                     if (locked) {
+                        s_widget_invoke_done_us = esp_timer_get_time();
                         xSemaphoreGive(s_widget_http_mu);
                     }
                     (void)err;
@@ -447,20 +389,9 @@ void nl_ov_skill_widget_prefetch(const char *skill_id, const char *body, int ref
                     }
                 });
                 free(a);
-                StackType_t *st = job->stack;
-                StaticTask_t *tb = job->tcb;
-                free(job);
-                Application::GetInstance().Schedule([st, tb]() {
-                    vTaskDelay(pdMS_TO_TICKS(200));
-                    free(st);
-                    free(tb);
-                });
-                vTaskDelete(nullptr);
+                vTaskDeleteWithCaps(nullptr);
             },
-            "nl_sk_wdg", kStackBytes / sizeof(StackType_t), job, 3, stack, tcb) == nullptr) {
-        free(job);
-        free(stack);
-        free(tcb);
+            "nl_sk_wdg", kStackWords, arg, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         free(arg);
         slot->fetching = false;
     }
@@ -542,21 +473,13 @@ static lv_obj_t *make_pin_card(lv_obj_t *parent, int idx, bool compact)
     lv_label_set_long_mode(tit, LV_LABEL_LONG_DOT);
     lv_obj_set_width(tit, lv_pct(100));
 
+    /* 上行名称、下行「应用」；勿再叠右上浮动角标（会压住标题） */
     lv_obj_t *sub = lv_label_create(col);
     nl_ov_set_font(sub);
-    lv_label_set_text(sub, it->enabled ? "应用 · 点按打开" : "能力不足");
-    lv_obj_set_style_text_color(sub, UI_TEXT_MUTED, 0);
+    lv_label_set_text(sub, it->enabled ? "应用" : "能力不足");
+    lv_obj_set_style_text_color(sub, it->enabled ? UI_PURPLE : UI_TEXT_MUTED, 0);
     lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
     lv_obj_set_width(sub, lv_pct(100));
-
-    /* 右上微标：区分控家通道 */
-    lv_obj_t *badge = lv_label_create(card);
-    nl_ov_set_font(badge);
-    lv_label_set_text(badge, "应用");
-    lv_obj_set_style_text_color(badge, UI_PURPLE, 0);
-    lv_obj_add_flag(badge, (lv_obj_flag_t)(LV_OBJ_FLAG_IGNORE_LAYOUT | LV_OBJ_FLAG_FLOATING));
-    lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, -4, 4);
 
     return card;
 }
@@ -641,48 +564,15 @@ void nl_ov_home_skills_ensure_fetched(void)
         return;
     }
     *cfgp = s_cfg;
-    constexpr uint32_t kStackBytes = 16384;
-    struct pins_job {
-        nodelio_nvs_config_t *cfg;
-        StackType_t *stack;
-        StaticTask_t *tcb;
-    };
-    auto *job = static_cast<pins_job *>(malloc(sizeof(pins_job)));
-    StackType_t *stack = static_cast<StackType_t *>(
-        heap_caps_malloc(kStackBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!stack) {
-        stack = static_cast<StackType_t *>(malloc(kStackBytes));
-    }
-    auto *tcb = static_cast<StaticTask_t *>(
-        heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    if (!job || !stack || !tcb) {
-        free(job);
-        free(stack);
-        free(tcb);
-        free(cfgp);
-        s_fetching = false;
-        return;
-    }
-    job->cfg = cfgp;
-    job->stack = stack;
-    job->tcb = tcb;
-    if (xTaskCreateStatic(
+    constexpr uint32_t kStackWords = 16384 / sizeof(StackType_t);
+    if (xTaskCreateWithCaps(
             [](void *p) {
-                auto *job = static_cast<pins_job *>(p);
-                auto *cfg = job->cfg;
-                auto finish = [job](bool clear_fetching) {
-                    StackType_t *st = job->stack;
-                    StaticTask_t *tb = job->tcb;
-                    free(job);
-                    Application::GetInstance().Schedule([st, tb, clear_fetching]() {
-                        vTaskDelay(pdMS_TO_TICKS(200));
-                        free(st);
-                        free(tb);
-                        if (clear_fetching) {
-                            s_fetching = false;
-                        }
-                    });
-                    vTaskDelete(nullptr);
+                auto *cfg = static_cast<nodelio_nvs_config_t *>(p);
+                auto finish = [](bool clear_fetching) {
+                    if (clear_fetching) {
+                        Application::GetInstance().Schedule([]() { s_fetching = false; });
+                    }
+                    vTaskDeleteWithCaps(nullptr);
                 };
                 auto *items = static_cast<nl_home_skill *>(calloc(HOME_SKILL_MAX, sizeof(nl_home_skill)));
                 int n = 0;
@@ -757,10 +647,7 @@ void nl_ov_home_skills_ensure_fetched(void)
                 apply_pins_and_refill(items, n);
                 finish(false);
             },
-            "nl_home_pins", kStackBytes / sizeof(StackType_t), job, 3, stack, tcb) == nullptr) {
-        free(job);
-        free(stack);
-        free(tcb);
+            "nl_home_pins", kStackWords, cfgp, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         free(cfgp);
         s_fetching = false;
     }

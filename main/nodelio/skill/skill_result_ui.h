@@ -16,6 +16,9 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content
 
 void nodelio_skill_result_hide(void);
 
+/** 停播并收起技能卡/播放条/悬浮球（语音「关闭电台」或 MCP close）。 */
+void nodelio_skill_close_all(void);
+
 /** 技能卡可见时抬到 layer_top 最前（防小智抽屉抢 z-order）。 */
 void nodelio_skill_result_raise(void);
 
@@ -37,7 +40,10 @@ bool nodelio_skill_media_play_any(char *title_out, size_t title_out_len);
  *  next/skip/mark_read 会把当前篇标为已读。close 关掉新闻卡。 */
 bool nodelio_skill_news_action(const char *op, char *out, size_t out_len);
 
-/** 用户原话含「关掉/关闭新闻」时收起新闻卡。已处理返回 true。 */
+/**
+ * 用户原话要关技能弹窗时：停播并收起（新闻/电台/播客/曲库/天气等）。
+ * 已处理返回 true。
+ */
 bool nodelio_skill_try_dismiss_phrase(const char *text);
 
 #ifdef __cplusplus
