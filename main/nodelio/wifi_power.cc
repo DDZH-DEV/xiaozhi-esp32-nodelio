@@ -2,6 +2,7 @@
 
 #include "wifi_manager.h"
 
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_netif.h>
 #include <esp_wifi.h>
@@ -9,6 +10,17 @@
 #include <freertos/semphr.h>
 
 #define TAG "nl_wifi"
+
+void nodelio_log_heap(const char *where)
+{
+    const char *w = where && where[0] ? where : "?";
+    ESP_LOGI(TAG,
+             "heap[%s] dram free=%u largest=%u | psram free=%u largest=%u",
+             w, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+}
 
 static bool s_asleep;
 static SemaphoreHandle_t s_net_mu;

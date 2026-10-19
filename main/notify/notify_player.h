@@ -59,6 +59,7 @@ private:
     bool stream_started_ = false;
     bool playback_drained_ = false;
     bool completion_reported_ = false;
+    int dram_epoch_ = 0;
 
     static void WorkerEntry(void* arg);
     void WorkerTask();

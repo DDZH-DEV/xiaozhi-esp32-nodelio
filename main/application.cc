@@ -14,6 +14,7 @@
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
 #include "media_player.h"
+#include "nl_time.h"
 #include "nodelio_bridge.h"
 #include "nodelio_mcp.h"
 #include "nodelio_overlay.h"
@@ -27,11 +28,14 @@
 
 #include <atomic>
 #include <driver/gpio.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <arpa/inet.h>
 #include <cJSON.h>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <vector>
 
 #define TAG "Application"
 
@@ -137,8 +141,12 @@ void Application::Initialize() {
         Application::GetInstance().Schedule([]() {
             auto& app = Application::GetInstance();
             app.GetAudioService().EnableLocalCommandMode(false);
-            if (app.GetDeviceState() == kDeviceStateConnecting) {
+            const DeviceState st = app.GetDeviceState();
+            if (st == kDeviceStateConnecting) {
                 app.SetDeviceState(kDeviceStateIdle);
+            } else if (st == kDeviceStateIdle || st == kDeviceStateNotifying) {
+                /* 进本地口令时关过唤醒词；若已在 idle/播歌，须自己再打开 */
+                app.GetAudioService().EnableWakeWordDetection(true);
             }
         });
     });
@@ -209,8 +217,42 @@ void Application::Initialize() {
         }
     });
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* Assets 构造已 Init 分区。WiFi 前 Apply：加载 srmodels。
+     * MultiNet 仅关小智时预建（占片内 DRAM）；开小智时留给墙板 MQTT + 云端 TLS。 */
+    {
+        auto& assets = Assets::GetInstance();
+        const int64_t t0 = esp_timer_get_time();
+        nodelio_log_heap("boot assets begin");
+        ESP_LOGI(TAG, "boot: assets apply begin part=%d", assets.partition_valid() ? 1 : 0);
+        const bool applied = assets.partition_valid() && assets.Apply();
+        ESP_LOGI(TAG, "boot: assets apply %s %ld ms", applied ? "ok" : "fail",
+                 (long)((esp_timer_get_time() - t0) / 1000));
+        nodelio_log_heap("boot assets done");
+        if (applied && nodelio_local_cmd_enabled() && !nodelio_xiaozhi_enabled()) {
+            /* 仅本地口令且已开启：WiFi 前预建。开小智时不预建，省片内 DRAM。 */
+            const int64_t t1 = esp_timer_get_time();
+            const esp_err_t mn = nodelio_offline_cmd_prewarm();
+            ESP_LOGI(TAG, "boot: multinet prewarm %s %ld ms", esp_err_to_name(mn),
+                     (long)((esp_timer_get_time() - t1) / 1000));
+            nodelio_log_heap("boot multinet done");
+        } else if (applied) {
+            ESP_LOGI(TAG, "boot: skip multinet (local_cmd=%d xiaozhi=%d)",
+                     nodelio_local_cmd_enabled() ? 1 : 0, nodelio_xiaozhi_enabled() ? 1 : 0);
+        }
+    }
+#endif
+
     // Start network asynchronously
+    ESP_LOGI(TAG, "boot: start network");
+    nodelio_log_heap("boot start network");
     board.StartNetwork();
+
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 墙板开机跳过小智 OTA（其 server_time 曾是唯一时间源），改由 SNTP 补；
+     * 须在 StartNetwork 之后：此时 netif/事件循环已就绪，GOT_IP 处理器能挂上。 */
+    (void)nodelio_time_begin();
+#endif
 
     // Update the status bar immediately to show the network state
     display->UpdateStatusBar(true);
@@ -231,12 +273,22 @@ void Application::Run() {
         auto bits = xEventGroupWaitBits(event_group_, ALL_EVENTS, pdTRUE, pdFALSE, portMAX_DELAY);
 
         if (bits & MAIN_EVENT_ERROR) {
-            if (GetDeviceState() == kDeviceStateNotifying) {
-                StopNotification();
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            /* 息屏播歌时 MQTT TLS 抢 DRAM 失败会报「发送失败」；勿因此掐 HTTP 流。 */
+            if (nodelio_media_is_playing() || notify_player_.IsBusy()) {
+                ESP_LOGW(TAG, "network error during media, keep playing: %s",
+                         last_error_message_.c_str());
+                last_error_message_.clear();
+            } else
+#endif
+            {
+                if (GetDeviceState() == kDeviceStateNotifying) {
+                    StopNotification();
+                }
+                SetDeviceState(kDeviceStateIdle);
+                Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "cancel",
+                      Lang::Sounds::OGG_EXCLAMATION);
             }
-            SetDeviceState(kDeviceStateIdle);
-            Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "cancel",
-                  Lang::Sounds::OGG_EXCLAMATION);
         }
 
         if (bits & MAIN_EVENT_NETWORK_CONNECTED) {
@@ -421,7 +473,14 @@ void Application::HandleNetworkDisconnectedEvent() {
     // Close current conversation when network disconnected
     auto state = GetDeviceState();
     if (state == kDeviceStateNotifying) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        /* 真断网后 HTTP 会自己超时；MQTT 抖动勿立刻掐歌 */
+        if (!(nodelio_media_is_playing() || notify_player_.IsBusy())) {
+            StopNotification();
+        }
+#else
         StopNotification();
+#endif
     }
     if (state == kDeviceStateConnecting || state == kDeviceStateListening ||
         state == kDeviceStateSpeaking) {
@@ -440,7 +499,12 @@ void Application::HandleActivationDoneEvent() {
     SystemInfo::PrintHeapStats();
     SetDeviceState(kDeviceStateIdle);
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 墙板跳过开机 OTA，server_time 不再来自 CheckVersion；SNTP 异步补上，见 nl_time.c */
+    has_server_time_ = nodelio_time_valid();
+#else
     has_server_time_ = ota_->HasServerTime();
+#endif
 
     // Protocol start may have already raised MAIN_EVENT_ERROR. Do not replace
     // that alert with the "ready" UI/sound — the main loop can process both
@@ -472,19 +536,40 @@ void Application::HandleActivationDoneEvent() {
 }
 
 void Application::ActivationTask() {
+    ESP_LOGI(TAG, "boot: activation begin");
+    nodelio_log_heap("activation begin");
     // Create OTA object for activation process
     ota_ = std::make_unique<Ota>();
 
     // Check for new assets version
     CheckAssetsVersion();
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /*
+     * 墙板开机不做小智 OTA 版本检查：该请求走 https://api.tenclass.net（TLS + 证书链
+     * 校验），实测 DNS+TCP+TLS 4.98s、响应 4.49s，整段串在 Activating 里既拖慢进
+     * idle，又挡住息屏计时。而墙板本来就不自动刷固件，mqtt/websocket 配置与服务器
+     * 时间都已落 NVS。固件更新改为设置页「检查更新」手工触发
+     * （Application::RequestManualFirmwareCheck，同样会刷新 NVS 里的服务器配置）。
+     *
+     * 但 MarkCurrentVersionValid 不能一起跳过：CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+     * 时，刚 OTA 上来的镜像处于 PENDING_VERIFY，不确认就会在下次重启回滚。
+     */
+    ota_->MarkCurrentVersionValid();
+    ESP_LOGI(TAG, "skip xiaozhi OTA check on boot (manual check in settings)");
+#else
     // Check for new firmware version
     CheckNewVersion();
+#endif
 
     // Initialize the protocol
+    ESP_LOGI(TAG, "boot: protocol start");
+    nodelio_log_heap("protocol start");
     InitializeProtocol();
 
     // Signal completion to main loop
+    ESP_LOGI(TAG, "boot: activation done");
+    nodelio_log_heap("activation done");
     xEventGroupSetBits(event_group_, MAIN_EVENT_ACTIVATION_DONE);
 }
 
@@ -671,6 +756,29 @@ void Application::InitializeProtocol() {
 
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /*
+     * 墙板跳过开机 CheckVersion，ota_->HasMqttConfig()/HasWebsocketConfig() 恒为 false，
+     * 继续用它们选协议会一律落到「默认 MQTT」。这两个配置本来就落在 NVS（mqtt/websocket
+     * 命名空间），直接读 NVS 判断，语义与 CheckVersion 解析后写入的一致。
+     */
+    const bool has_mqtt_cfg = [] {
+        Settings s("mqtt", false);
+        return !s.GetString("endpoint").empty();
+    }();
+    const bool has_ws_cfg = [] {
+        Settings s("websocket", false);
+        return !s.GetString("url").empty();
+    }();
+    if (has_mqtt_cfg) {
+        protocol_ = std::make_unique<MqttProtocol>();
+    } else if (has_ws_cfg) {
+        protocol_ = std::make_unique<WebsocketProtocol>();
+    } else {
+        ESP_LOGW(TAG, "No protocol in NVS, using MQTT (manual fw check fills it)");
+        protocol_ = std::make_unique<MqttProtocol>();
+    }
+#else
     if (ota_->HasMqttConfig()) {
         protocol_ = std::make_unique<MqttProtocol>();
     } else if (ota_->HasWebsocketConfig()) {
@@ -679,6 +787,7 @@ void Application::InitializeProtocol() {
         ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
         protocol_ = std::make_unique<MqttProtocol>();
     }
+#endif
 
     protocol_->OnConnected([this]() { DismissAlert(); });
 
@@ -716,14 +825,22 @@ void Application::InitializeProtocol() {
 #else
             SetDeviceState(kDeviceStateIdle);
 #endif
-            board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            /* 听歌中 goodbye 勿 MAX_MODEM，否则 wifi:m f null + HTTP 超时。 */
+            if (nodelio_media_is_playing() || notify_player_.IsBusy() ||
+                GetDeviceState() == kDeviceStateNotifying) {
+                board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+            } else {
+                board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+            }
             /* 听歌被语音打断：续播并保持亮屏，勿走退下息屏 */
             if (nodelio_media_is_playing() || nodelio_media_resume_after_voice()) {
                 board.NoteUserActivity();
             } else {
                 board.RequestGoodbyeSleep();
             }
+#else
+            board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 #endif
         });
     });
@@ -896,6 +1013,12 @@ void Application::InitializeProtocol() {
         ESP_LOGI(TAG, "Xiaozhi disabled — skip cloud MQTT start (local cmd only)");
         protocol_->MarkTransportSuspended(true);
     } else {
+        /* 先等局域网 bridge（layout + 面板 MQTT），再连小智云，避免抢片内 DRAM 建 mqtt_task */
+        (void)nodelio_bridge_start();
+        ESP_LOGI(TAG, "boot: wait NodeLio bridge before Xiaozhi MQTT");
+        nodelio_log_heap("before bridge wait");
+        (void)nodelio_bridge_wait_ready(12000);
+        nodelio_log_heap("after bridge wait");
         protocol_->Start();
     }
 #else
@@ -991,6 +1114,10 @@ void Application::HandleToggleChatEvent() {
 
     if (state == kDeviceStateIdle) {
         ListeningMode mode = GetDefaultListeningMode();
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        /* 点「进入对话」：进聆听后再响提示音（须在 ResetDecoder 之后，见 StartListeningAudio） */
+        play_popup_on_listening_ = true;
+#endif
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             // Schedule to let the state change be processed first (UI update)
@@ -1222,7 +1349,16 @@ void Application::HandleWakeWordDetectedEvent() {
 
 void Application::BeginWakeWordInvoke(const std::string& wake_word) {
     // Must run in the main task with the device in idle state
-    audio_service_.EncodeWakeWord();
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 关小智只走本地口令：勿异步 Opus 编码。编码任务与 Multinet create 抢内部 DRAM
+     * 会在 fst_command_append_token 空指针 StoreProhibited（日志里 encode 完成晚于 begin_listen）。 */
+    const bool skip_wake_encode = !nodelio_xiaozhi_enabled();
+#else
+    const bool skip_wake_encode = false;
+#endif
+    if (!skip_wake_encode) {
+        audio_service_.EncodeWakeWord();
+    }
 
     // Always pass through the connecting state, even if the audio channel is
     // already opened. ContinueWakeWordInvoke() rejects any other state, so
@@ -1276,6 +1412,9 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     EnsureNetReadyAfterScreenSleep();
     /* 无 IP：跳过 MQTT（必 DNS 失败），立刻本地口令，给用户时间说话 */
     if (!nodelio_wifi_has_ip()) {
+        /* 已 EncodeWakeWord：等编码结束并释放包，再 create Multinet */
+        while (audio_service_.PopWakeWordPacket()) {
+        }
         if (nodelio_offline_cmd_begin_listen() == ESP_OK) {
             audio_service_.EnableLocalCommandMode(true);
             auto display = Board::GetInstance().GetDisplay();
@@ -1289,10 +1428,36 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     }
 #endif
 
-    if (!protocol_->IsAudioChannelOpened()) {
-        if (!protocol_->OpenAudioChannel()) {
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-            /* K4：小智不可达 → 本地 MultiNet 口令窗（复用 AFE，不另起一套） */
+    /* 先等唤醒 Opus 编完并暂存：编码任务占用内部 DRAM，此时测堆会误判 skip mqtt
+     *（日志常见：skip 于 encode 完成之前，随后 begin_listen 又因 local_cmd off 空转）。 */
+    std::vector<std::unique_ptr<AudioStreamPacket>> wake_pkts;
+#if CONFIG_SEND_WAKE_WORD_DATA
+    while (auto packet = audio_service_.PopWakeWordPacket()) {
+        wake_pkts.push_back(std::move(packet));
+    }
+#else
+    while (audio_service_.PopWakeWordPacket()) {
+    }
+#endif
+#endif
+
+    if (!protocol_->IsAudioChannelOpened()) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        /* 内部堆不够时 TLS 的 esp-aes 会失败，并把已有 MQTT 拆掉。优先本地口令。 */
+        const size_t internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        bool skip_mqtt = internal_largest < 32 * 1024;
+        if (skip_mqtt) {
+            ESP_LOGW(TAG, "low DRAM after wake encode: largest=%u", (unsigned)internal_largest);
+            /* 本地口令关着：仍试云端，避免两路都关导致唤醒空转回 idle */
+            if (!nodelio_local_cmd_enabled()) {
+                ESP_LOGW(TAG, "local_cmd off — still try mqtt hello");
+                skip_mqtt = false;
+            }
+        }
+        if (skip_mqtt || !protocol_->OpenAudioChannel()) {
+            wake_pkts.clear();
+            /* K4：小智不可达 → 本地 MultiNet（包已排空） */
             if (nodelio_offline_cmd_begin_listen() == ESP_OK) {
                 audio_service_.EnableLocalCommandMode(true);
                 auto display = Board::GetInstance().GetDisplay();
@@ -1301,27 +1466,31 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
                 }
                 return; /* 保持 Connecting，结束回调回 Idle */
             }
-#endif
-            // Return to idle so the device is not stuck in the connecting
-            // state (not every failure path reports a network error), and
-            // wake word detection is re-enabled by the idle state handler.
             SetDeviceState(kDeviceStateIdle);
             return;
         }
+#else
+        if (!protocol_->OpenAudioChannel()) {
+            SetDeviceState(kDeviceStateIdle);
+            return;
+        }
+#endif
     }
 
     ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
 #if CONFIG_SEND_WAKE_WORD_DATA
-    // Encode and send the wake word data to the server
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    for (auto& packet : wake_pkts) {
+        protocol_->SendAudio(std::move(packet));
+    }
+#else
     while (auto packet = audio_service_.PopWakeWordPacket()) {
         protocol_->SendAudio(std::move(packet));
     }
-    // Set the chat state to wake word detected
+#endif
     protocol_->SendWakeWordDetected(wake_word);
     SetListeningMode(GetDefaultListeningMode());
 #else
-    // Set flag to play popup sound after state changes to listening
-    // (PlaySound here would be cleared by ResetDecoder in EnableVoiceProcessing)
     play_popup_on_listening_ = true;
     SetListeningMode(GetDefaultListeningMode());
 #endif
@@ -1497,7 +1666,14 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
     if (!started) {
         ESP_LOGE(TAG, "Failed to start notification playback");
         StopNotification();
+        return;
     }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 拉流时挂起小智 MQTT：禁 TLS 重连抢内部堆（mbedtls_ssl_setup / esp-aes OOM）。
+     * 唤醒进云前 EnsureNetReady / ResumeTransport 会再拉起。 */
+    MarkTransportSuspended(true);
+    SuspendTransport();
+#endif
 }
 
 void Application::StopNotification() {
@@ -1520,6 +1696,11 @@ void Application::StopNotification() {
     if (GetDeviceState() == kDeviceStateNotifying) {
         SetDeviceState(kDeviceStateIdle);
     }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 播歌结束或被语音打断：恢复小智 MQTT（打断后立刻要建链）。 */
+    MarkTransportSuspended(false);
+    ResumeTransport();
+#endif
     // Re-enable voice processing and wake word detection after stopping notification
     audio_service_.EnableVoiceProcessing(true);
     audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());

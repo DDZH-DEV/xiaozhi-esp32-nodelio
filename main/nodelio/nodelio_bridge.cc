@@ -334,20 +334,30 @@ static esp_err_t start_client(void)
         cloud = true;
     }
     /* register 后再拉 layout+snapshot（一次），再开 MQTT，避免并行竞态与 notify 连打 */
+    nodelio_log_heap("before layout");
     err = nodelio_layout_start_poll(&cfg);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "layout poll: %s", esp_err_to_name(err));
     }
-    err = nodelio_mqtt_panel_start(&cfg);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "mqtt panel: %s", esp_err_to_name(err));
+    nodelio_log_heap("before panel mqtt");
+    err = ESP_FAIL;
+    for (int i = 0; i < 3; i++) {
+        err = nodelio_mqtt_panel_start(&cfg);
+        if (err == ESP_OK) {
+            break;
+        }
+        ESP_LOGW(TAG, "mqtt panel try %d/3: %s", i + 1, esp_err_to_name(err));
+        nodelio_log_heap("panel mqtt fail");
+        vTaskDelay(pdMS_TO_TICKS(400));
     }
 
     s_started = true;
     s_starting = false;
     bool wifi_ok = nodelio_wifi_is_connected();
     nodelio_panel_ui_set_status(wifi_ok, cloud || nodelio_mqtt_panel_connected(), "v0");
-    ESP_LOGI(TAG, "NodeLio panel up device_id=%s server=%s reg_ok=1", cfg.device_id, cfg.server_url);
+    nodelio_log_heap("panel up");
+    ESP_LOGI(TAG, "NodeLio panel up device_id=%s server=%s reg_ok=1 mqtt=%s", cfg.device_id,
+             cfg.server_url, nodelio_mqtt_panel_connected() ? "up" : "down");
     return ESP_OK;
 }
 
@@ -364,6 +374,23 @@ static void start_task(void *arg)
     vTaskDelete(nullptr);
 }
 
+bool nodelio_bridge_wait_ready(uint32_t timeout_ms)
+{
+    const uint32_t step = 100;
+    uint32_t waited = 0;
+    while (waited < timeout_ms) {
+        if (s_started && !s_starting) {
+            ESP_LOGI(TAG, "bridge ready after %ums", (unsigned)waited);
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(step));
+        waited += step;
+    }
+    ESP_LOGW(TAG, "bridge wait timeout %ums started=%d starting=%d", (unsigned)timeout_ms,
+             s_started ? 1 : 0, s_starting ? 1 : 0);
+    return s_started && !s_starting;
+}
+
 esp_err_t nodelio_bridge_start(void)
 {
     if (s_started || s_starting) {
@@ -371,6 +398,7 @@ esp_err_t nodelio_bridge_start(void)
     }
     ESP_ERROR_CHECK_WITHOUT_ABORT(nodelio_nvs_init());
     s_starting = true;
+    nodelio_log_heap("bridge start");
     /* 勿在 Application 主任务里阻塞 HTTP：否则息屏 Suspend 进不了主循环 → sync 超时 UAF */
     if (xTaskCreate(start_task, "nl_start", 8192, nullptr, 5, nullptr) != pdPASS) {
         s_starting = false;

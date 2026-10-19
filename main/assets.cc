@@ -108,6 +108,13 @@ bool Assets::LoadSrmodelsFromIndex(Assets* assets, cJSON* root) {
     }
 
     cJSON* srmodels = cJSON_GetObjectItem(root, "srmodels");
+    if (assets->models_list_ != nullptr) {
+        /* 开机已在 WiFi 前加载；再 Apply 会 deinit，把已创建的 MultiNet 句柄打悬空 */
+        if (need_delete_root) {
+            cJSON_Delete(root);
+        }
+        return true;
+    }
     if (cJSON_IsString(srmodels)) {
         std::string srmodels_file = srmodels->valuestring;
         if (assets->GetAssetData(srmodels_file, ptr, size)) {

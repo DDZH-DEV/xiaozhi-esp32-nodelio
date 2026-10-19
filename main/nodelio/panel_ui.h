@@ -16,6 +16,9 @@ esp_err_t nodelio_panel_ui_start(const nodelio_nvs_config_t *cfg);
 /** 用 layout 重建首页控件；须在 LVGL 锁内或由本函数加锁. */
 esp_err_t nodelio_panel_ui_apply_layout(const nodelio_panel_layout_t *layout);
 
+/** 在 HTTP/cJSON 之前占住界面布局缓冲（约 660KB）。已分配则直接成功。 */
+esp_err_t nodelio_panel_ui_reserve_layout(void);
+
 /** 更新状态栏：wifi / cloud / 文案. */
 void nodelio_panel_ui_set_status(bool wifi_ok, bool cloud_ok, const char *msg);
 

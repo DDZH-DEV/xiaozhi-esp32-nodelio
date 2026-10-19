@@ -1495,8 +1495,10 @@ static void fill_list(void)
             lv_obj_set_style_border_opa(row, LV_OPA_60, 0);
             lv_obj_set_style_pad_hor(row, 6, 0);
             lv_obj_set_style_pad_column(row, 4, 0);
+            lv_obj_set_style_clip_corner(row, true, 0);
             lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
             lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
             if (can_play && s_env.tracks[i].playback_url[0]) {
                 lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
                 lv_obj_add_event_cb(row, on_play_row, LV_EVENT_CLICKED, (void *)(intptr_t)i);
@@ -1535,7 +1537,9 @@ static void fill_list(void)
             lv_obj_set_style_min_width(txt, 0, 0);
             lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_style_pad_row(txt, 1, 0);
+            lv_obj_set_style_clip_corner(txt, true, 0);
             lv_obj_clear_flag(txt, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_clear_flag(txt, LV_OBJ_FLAG_SCROLLABLE);
 
             lv_obj_t *t = lv_label_create(txt);
             nl_ov_set_font(t);
@@ -1543,10 +1547,9 @@ static void fill_list(void)
             lv_obj_set_style_text_color(t, UI_TEXT, 0);
             lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
             lv_obj_set_width(t, lv_pct(100));
-            {
-                const lv_font_t *font = lv_obj_get_style_text_font(t, LV_PART_MAIN);
-                lv_obj_set_height(t, font ? lv_font_get_line_height(font) : 16);
-            }
+            const lv_font_t *row_font = lv_obj_get_style_text_font(t, LV_PART_MAIN);
+            const int32_t line_h = row_font ? lv_font_get_line_height(row_font) : 16;
+            lv_obj_set_height(t, line_h);
 
             lv_obj_t *a = lv_label_create(txt);
             nl_ov_set_font(a);
@@ -1558,8 +1561,10 @@ static void fill_list(void)
                 lv_label_set_text(a, " ");
             }
             lv_obj_set_style_text_color(a, UI_TEXT_MUTED, 0);
+            /* 与标题同样锁单行高度，否则 LONG_DOT 仍会折到第三行 */
             lv_label_set_long_mode(a, LV_LABEL_LONG_DOT);
             lv_obj_set_width(a, lv_pct(100));
+            lv_obj_set_height(a, line_h);
 
             if (can_play && s_env.tracks[i].playback_url[0]) {
                 const char *icon = (i == s_play_idx) ? MATERIAL_SYMBOLS_PAUSE : MATERIAL_SYMBOLS_PLAY_ARROW;

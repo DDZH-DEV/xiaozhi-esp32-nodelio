@@ -10,7 +10,10 @@
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 
+#include "application.h"
 #include "board.h"
+#include "esp_aac_dec.h"
+#include "offline_cmd.h"
 #include "esp_ae_rate_cvt.h"
 #include "esp_audio_simple_dec.h"
 #include "esp_audio_simple_dec_default.h"
@@ -20,14 +23,16 @@
 
 namespace {
 constexpr int kHttpTimeoutMs = 15000;
-/* 1KB 读 + 播放队列仅 2 格时，WiFi 稍卡就会 underrun；加大读块并提高任务优先级。 */
+/* 播放队列只有 2 格。麦任务在 Core0、优先级 6，AFE feed 会把同核的解码饿死，240ms 很快见底。 */
 constexpr size_t kHttpReadBufferSize = 4096;
 /* AAC/M4A 解码栈偏大；任务栈在 PSRAM */
 constexpr uint32_t kNotifyTaskStackSize = 24576;
-constexpr UBaseType_t kNotifyTaskPriority = 5;
-/* MP3 经 EnqueuePlaybackPcm，队列深只有 2。先攒起播、再按片送，避免几十毫秒就见底。 */
-constexpr uint32_t kMp3PrimeMs = 800;
-constexpr uint32_t kMp3BatchMs = 240;
+constexpr UBaseType_t kNotifyTaskPriority = 7;
+/* 认出格式后再多读一些压缩数据，避免开播后第一下 Read 就空队列。 */
+constexpr size_t kPrefetchBytes = 24 * 1024;
+/* 2 格 × 本批时长。800ms 盖不住一次 >1.6s 的 WiFi 停顿。 */
+constexpr uint32_t kMp3PrimeMs = 1500;
+constexpr uint32_t kMp3BatchMs = 1600;
 const char* TAG = "NotifyPlayer";
 constexpr int kMaxRedirects = 4;
 
@@ -155,6 +160,8 @@ bool IsSupportedUrl(const std::string& url) {
 void EnsureM4aDecoderRegistered() {
     static bool once = false;
     if (!once) {
+        /* m4a 只是容器；喜马拉雅等轨是 AAC，须先注册底层解码器 */
+        (void)esp_aac_dec_register();
         (void)esp_m4a_dec_register();
         once = true;
     }
@@ -208,8 +215,10 @@ bool NotifyPlayer::Start(std::string audio_url, std::vector<NotifySubtitle> subt
             heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     }
     if (task_stack_ != nullptr && task_tcb_ != nullptr) {
-        task_handle_ = xTaskCreateStatic(WorkerEntry, "notify_http", kNotifyTaskStackSize, this,
-                                          kNotifyTaskPriority, task_stack_, task_tcb_);
+        /* Core1：与钉在 Core0 的 audio_input/AFE 分开，避免 feed 抢解码导致 underrun。 */
+        task_handle_ = xTaskCreateStaticPinnedToCore(
+            WorkerEntry, "notify_http", kNotifyTaskStackSize, this, kNotifyTaskPriority, task_stack_,
+            task_tcb_, 1);
     } else {
         task_handle_ = nullptr;
     }
@@ -322,6 +331,8 @@ void NotifyPlayer::WorkerEntry(void* arg) {
 }
 
 void NotifyPlayer::WorkerTask() {
+    dram_epoch_ = nodelio_offline_cmd_dram_epoch();
+    const bool yielded = nodelio_offline_cmd_yield_slot();
     std::string audio_url;
     std::string device_key;
     uint32_t playback_id = 0;
@@ -400,6 +411,14 @@ void NotifyPlayer::WorkerTask() {
             if (kind == StreamKind::kUnknown && LooksM4aHint(url, ctype)) {
                 kind = StreamKind::kM4a;
             }
+            while (!IsCancelled(playback_id) && kind != StreamKind::kUnknown &&
+                   prefetch.size() < kPrefetchBytes) {
+                auto size = http->Read(buffer.data(), buffer.size());
+                if (!size || *size == 0) {
+                    break;
+                }
+                prefetch.insert(prefetch.end(), buffer.data(), buffer.data() + *size);
+            }
             if (kind == StreamKind::kOgg) {
                 success = PlayOgg(http.get(), playback_id, prefetch.data(), prefetch.size());
             } else if (kind == StreamKind::kMp3) {
@@ -414,6 +433,14 @@ void NotifyPlayer::WorkerTask() {
         }
         http->Close();
         http.reset();
+    }
+
+    if (yielded) {
+        nodelio_offline_cmd_finish_playback_dram(dram_epoch_);
+        const int epoch = dram_epoch_;
+        Application::GetInstance().Schedule([epoch]() {
+            nodelio_offline_cmd_restore_after_media(epoch);
+        });
     }
 
     FinishedCallback callback;
@@ -441,6 +468,7 @@ void NotifyPlayer::WorkerTask() {
 }
 
 bool NotifyPlayer::PlayOgg(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n) {
+    nodelio_offline_cmd_shield_up();
     auto demuxer = std::make_unique<OggDemuxer>();
     uint32_t media_position_ms = 0;
     bool packet_error = false;
@@ -513,6 +541,7 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
         ESP_LOGE(TAG, "MP3 decoder open failed");
         return false;
     }
+    nodelio_offline_cmd_shield_up();
 
     const int out_rate = Board::GetInstance().GetAudioCodec()->output_sample_rate();
     const size_t prime_samples =
@@ -528,6 +557,9 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
     int resampler_src = 0;
     uint32_t media_position_ms = 0;
     std::vector<int16_t> stage;
+    stage.reserve(prime_samples);
+    std::vector<int16_t> mono_buf;
+    std::vector<int16_t> resampled_buf;
     uint32_t stage_start_ms = 0;
     bool stage_open = false;
     bool primed = false;
@@ -539,8 +571,14 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
             esp_ae_rate_cvt_close(resampler);
             resampler = nullptr;
         }
-        esp_mp3_dec_close(decoder);
-        decoder = nullptr;
+        if (http != nullptr) {
+            http->Close();
+        }
+        if (decoder != nullptr) {
+            esp_mp3_dec_close(decoder);
+            decoder = nullptr;
+        }
+        nodelio_offline_cmd_finish_playback_dram(dram_epoch_);
     };
 
     auto flush_stage = [&](bool force) -> bool {
@@ -590,25 +628,27 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
         if (sample_n == 0 || channels <= 0 || sample_rate <= 0) {
             return true;
         }
-        std::vector<int16_t> mono;
-        if (channels == 1) {
-            mono.assign(samples, samples + sample_n);
-        } else {
+        const int16_t* play = samples;
+        size_t play_n = sample_n;
+        if (channels != 1) {
             const size_t frames = sample_n / static_cast<size_t>(channels);
-            mono.resize(frames);
+            if (mono_buf.size() < frames) {
+                mono_buf.resize(frames);
+            }
             for (size_t i = 0; i < frames; ++i) {
                 int32_t sum = 0;
                 for (int c = 0; c < channels; ++c) {
                     sum += samples[i * static_cast<size_t>(channels) + c];
                 }
-                mono[i] = static_cast<int16_t>(sum / channels);
+                mono_buf[i] = static_cast<int16_t>(sum / channels);
             }
+            play = mono_buf.data();
+            play_n = frames;
         }
-        if (mono.empty()) {
+        if (play_n == 0) {
             return true;
         }
 
-        std::vector<int16_t> play = std::move(mono);
         if (sample_rate != out_rate) {
             if (resampler == nullptr || resampler_src != sample_rate) {
                 if (resampler != nullptr) {
@@ -631,17 +671,19 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
                 ESP_LOGI(TAG, "MP3 %d Hz %d ch -> %d Hz", sample_rate, channels, out_rate);
             }
             uint32_t target = 0;
-            esp_ae_rate_cvt_get_max_out_sample_num(resampler, play.size(), &target);
-            std::vector<int16_t> resampled(target);
+            esp_ae_rate_cvt_get_max_out_sample_num(resampler, play_n, &target);
+            if (resampled_buf.size() < target) {
+                resampled_buf.resize(target);
+            }
             uint32_t actual = target;
-            if (esp_ae_rate_cvt_process(resampler, reinterpret_cast<esp_ae_sample_t>(play.data()),
-                                        play.size(), reinterpret_cast<esp_ae_sample_t>(resampled.data()),
+            if (esp_ae_rate_cvt_process(resampler, reinterpret_cast<esp_ae_sample_t>(const_cast<int16_t*>(play)),
+                                        play_n, reinterpret_cast<esp_ae_sample_t>(resampled_buf.data()),
                                         &actual) != ESP_AE_ERR_OK) {
                 ESP_LOGE(TAG, "MP3 resample failed");
                 return false;
             }
-            resampled.resize(actual);
-            play = std::move(resampled);
+            play = resampled_buf.data();
+            play_n = actual;
         } else if (!played && !primed) {
             ESP_LOGI(TAG, "MP3 %d Hz %d ch", sample_rate, channels);
         }
@@ -650,7 +692,7 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
             stage_start_ms = media_position_ms;
             stage_open = true;
         }
-        stage.insert(stage.end(), play.begin(), play.end());
+        stage.insert(stage.end(), play, play + play_n);
         media_position_ms += static_cast<uint32_t>(sample_n / static_cast<size_t>(channels) * 1000 /
                                                     static_cast<size_t>(sample_rate));
         return flush_stage(false);
@@ -760,6 +802,7 @@ bool NotifyPlayer::PlayM4a(Http* http, uint32_t playback_id, const uint8_t* firs
         ESP_LOGE(TAG, "M4A decoder open failed");
         return false;
     }
+    nodelio_offline_cmd_shield_up();
 
     const int out_rate = Board::GetInstance().GetAudioCodec()->output_sample_rate();
     const size_t prime_samples =
@@ -787,10 +830,14 @@ bool NotifyPlayer::PlayM4a(Http* http, uint32_t playback_id, const uint8_t* firs
             esp_ae_rate_cvt_close(resampler);
             resampler = nullptr;
         }
+        if (http != nullptr) {
+            http->Close();
+        }
         if (decoder != nullptr) {
             esp_audio_simple_dec_close(decoder);
             decoder = nullptr;
         }
+        nodelio_offline_cmd_finish_playback_dram(dram_epoch_);
     };
 
     auto flush_stage = [&](bool force) -> bool {

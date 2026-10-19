@@ -361,18 +361,18 @@ public:
     virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
         if (level == PowerSaveLevel::LOW_POWER) {
             /* 唤醒建链/聆听/说话期间禁止 WiFi MAX_MODEM，否则 UDP 语音断续。
-             * 音乐 Notifying 且允许播放息屏时勿 WakeUp，否则刚灭的屏会被点亮。 */
+             * HTTP 拉流同样不能 MAX_MODEM：m f null + underrun 会把内部堆打到几 KB，
+             * 唤醒时 esp-aes 分配失败并拆掉 MQTT。息屏不在这里 WakeUp。 */
             DeviceState st = Application::GetInstance().GetDeviceState();
 #if CONFIG_NODELIO_PANEL
-            const bool media_screen_ok =
-                st == kDeviceStateNotifying && nodelio_media_is_playing() &&
-                nodelio_media_sleep_enabled();
-#else
-            const bool media_screen_ok = false;
+            /* 不要求仍是 Notifying：换曲间隙 / goodbye 迟到 Schedule 也可能打 LOW_POWER。 */
+            if (nodelio_media_is_playing() || Application::GetInstance().IsHttpAudioBusy()) {
+                WifiBoard::SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+                return;
+            }
 #endif
-            if (!media_screen_ok &&
-                (st == kDeviceStateConnecting || st == kDeviceStateListening ||
-                 st == kDeviceStateSpeaking || st == kDeviceStateNotifying)) {
+            if (st == kDeviceStateConnecting || st == kDeviceStateListening ||
+                st == kDeviceStateSpeaking || st == kDeviceStateNotifying) {
                 ESP_LOGW(TAG, "ignore LOW_POWER during voice (state=%d)", (int)st);
                 if (power_save_timer_) {
                     power_save_timer_->WakeUp();

@@ -13,6 +13,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -26,6 +27,11 @@ static int s_applied_version = -1;
 static volatile bool s_sync_kick;
 static volatile bool s_snapshot_kick;
 static bool s_layout_task_started;
+static StackType_t *s_layout_stack;
+static StaticTask_t s_layout_tcb;
+/** 解析用的唯一一块布局缓冲。界面副本由 reserve 另占，避免开机三块 660KB 同时存在。 */
+static nodelio_panel_layout_t *s_scratch;
+static SemaphoreHandle_t s_layout_mu;
 static bool s_boot_cloud_done; /* 开机云端 layout+snapshot 已成功过一次 */
 static int64_t s_last_snapshot_ms; /* MQTT 自动 snapshot 限频 */
 
@@ -769,6 +775,36 @@ static esp_err_t snapshot_fetch_limited(bool force)
     return err;
 }
 
+static void layout_lock(void)
+{
+    if (!s_layout_mu) {
+        s_layout_mu = xSemaphoreCreateMutex();
+    }
+    if (s_layout_mu) {
+        xSemaphoreTake(s_layout_mu, portMAX_DELAY);
+    }
+}
+
+static void layout_unlock(void)
+{
+    if (s_layout_mu) {
+        xSemaphoreGive(s_layout_mu);
+    }
+}
+
+/** 先占界面缓冲，再占这一块解析缓冲，两块都从尚未被 cJSON 切碎的 PSRAM 大块切出。 */
+static nodelio_panel_layout_t *layout_scratch(void)
+{
+    (void)nodelio_panel_ui_reserve_layout();
+    if (!s_scratch) {
+        s_scratch = heap_caps_malloc(sizeof(*s_scratch), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_scratch) {
+            s_scratch = malloc(sizeof(*s_scratch));
+        }
+    }
+    return s_scratch;
+}
+
 static void layout_do_sync(nodelio_panel_layout_t *layout, bool toast_result)
 {
     if (!nodelio_wifi_is_connected()) {
@@ -815,17 +851,15 @@ static void layout_boot_cloud_once(void)
     if (!nodelio_wifi_is_connected() || !s_cfg.device_id[0] || !s_cfg.device_key[0]) {
         return;
     }
-    nodelio_panel_layout_t *layout =
-        heap_caps_malloc(sizeof(*layout), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!layout) {
-        layout = malloc(sizeof(*layout));
-    }
+    layout_lock();
+    nodelio_panel_layout_t *layout = layout_scratch();
     if (!layout) {
         ESP_LOGE(TAG, "boot layout buf OOM");
+        layout_unlock();
         return;
     }
     layout_do_sync(layout, false);
-    free(layout);
+    layout_unlock();
     if (s_boot_cloud_done) {
         ESP_LOGI(TAG, "boot cloud layout done v%d", s_applied_version);
     }
@@ -835,31 +869,25 @@ static void layout_boot_cloud_once(void)
 static void layout_sync_task(void *arg)
 {
     (void)arg;
-    nodelio_panel_layout_t *layout =
-        heap_caps_malloc(sizeof(*layout), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!layout) {
-        layout = malloc(sizeof(*layout));
-    }
-    if (!layout) {
-        ESP_LOGE(TAG, "layout buf OOM");
-        vTaskDelete(NULL);
-        return;
-    }
-
     while (true) {
         int kick = layout_wait_kick();
         /* 语音会话让路：等空闲再拉，避免 HTTP 抢 UDP 造成断续 */
         while (nodelio_voice_session_active()) {
             vTaskDelay(pdMS_TO_TICKS(500));
         }
-        if (kick == 1) {
+        layout_lock();
+        nodelio_panel_layout_t *layout = layout_scratch();
+        if (kick == 1 && layout) {
             layout_do_sync(layout, true);
+        } else if (!layout) {
+            ESP_LOGE(TAG, "layout buf OOM");
         } else if (nodelio_wifi_is_connected()) {
             esp_err_t err = snapshot_fetch_limited(false); /* MQTT：限频 */
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "snapshot: %s", esp_err_to_name(err));
             }
         }
+        layout_unlock();
     }
 }
 
@@ -888,22 +916,28 @@ esp_err_t nodelio_layout_start_poll(const nodelio_nvs_config_t *cfg)
         char *cached = NULL;
         int cver = 0;
         if (nodelio_layout_cache_load(&cached, NULL, &cver) == ESP_OK && cached) {
-            nodelio_panel_layout_t *tmp =
-                heap_caps_malloc(sizeof(*tmp), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (!tmp) {
-                tmp = malloc(sizeof(*tmp));
+            /* 直接写入界面缓冲，不再另开一块 660KB。 */
+            if (nodelio_panel_ui_reserve_layout() == ESP_OK) {
+                nodelio_panel_layout_t *dst = (nodelio_panel_layout_t *)nodelio_panel_ui_get_layout();
+                if (dst && nodelio_layout_parse(cached, dst) == ESP_OK) {
+                    s_applied_version = dst->layout_version;
+                    nodelio_layout_render(dst);
+                    ESP_LOGI(TAG, "boot from cache v%d", s_applied_version);
+                }
             }
-            if (tmp && nodelio_layout_parse(cached, tmp) == ESP_OK) {
-                s_applied_version = tmp->layout_version;
-                nodelio_layout_render(tmp);
-                ESP_LOGI(TAG, "boot from cache v%d", s_applied_version);
-            }
-            free(tmp);
             free(cached);
         }
 
-        BaseType_t ok = xTaskCreate(layout_sync_task, "nl_layout", 6144, NULL, 3, NULL);
-        if (ok != pdPASS) {
+        /* 本地口令 + AFE 之后内部最大块常只剩 ~5KB，xTaskCreate 的 6KB 栈会 NO_MEM，首页云布局不再拉。 */
+        if (!s_layout_stack) {
+            s_layout_stack = heap_caps_malloc(6144 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        }
+        if (!s_layout_stack) {
+            return ESP_ERR_NO_MEM;
+        }
+        TaskHandle_t th = xTaskCreateStatic(layout_sync_task, "nl_layout", 6144, NULL, 3, s_layout_stack,
+                                             &s_layout_tcb);
+        if (!th) {
             return ESP_ERR_NO_MEM;
         }
         s_layout_task_started = true;

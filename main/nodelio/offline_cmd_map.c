@@ -191,7 +191,8 @@ bool nodelio_offline_cmd_is_local(int command_id)
            (command_id >= NL_OC_GOTO_HOME && command_id <= NL_OC_GOTO_SYS) ||
            (command_id >= NL_OC_POWER_SAVE_ON && command_id <= NL_OC_GOTO_RESET) ||
            command_id == NL_OC_PAGE_NEXT || command_id == NL_OC_PAGE_PREV ||
-           command_id == NL_OC_SCROLL_DOWN || command_id == NL_OC_SCROLL_UP;
+           command_id == NL_OC_SCROLL_DOWN || command_id == NL_OC_SCROLL_UP ||
+           (command_id >= NL_OC_APP_MUSIC && command_id <= NL_OC_APP_QUOTE);
 }
 
 const char *nodelio_offline_cmd_zh(int command_id)
@@ -271,6 +272,20 @@ const char *nodelio_offline_cmd_zh(int command_id)
         return "往下翻";
     case NL_OC_SCROLL_UP:
         return "往上翻";
+    case NL_OC_APP_MUSIC:
+        return "打开曲库";
+    case NL_OC_APP_NEWS:
+        return "打开新闻";
+    case NL_OC_APP_WEATHER:
+        return "打开天气";
+    case NL_OC_APP_RADIO:
+        return "打开电台";
+    case NL_OC_APP_PODCAST:
+        return "打开播客";
+    case NL_OC_APP_AIR:
+        return "打开空气";
+    case NL_OC_APP_QUOTE:
+        return "打开每日一句";
     default:
         return "未知口令";
     }
@@ -357,6 +372,33 @@ esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int comm
         }
         nodelio_panel_ui_set_voice_hint(hint);
         return ESP_OK;
+    }
+    if (command_id >= NL_OC_APP_MUSIC && command_id <= NL_OC_APP_QUOTE) {
+        const char *q = "曲库";
+        switch (command_id) {
+        case NL_OC_APP_NEWS:
+            q = "新闻";
+            break;
+        case NL_OC_APP_WEATHER:
+            q = "天气";
+            break;
+        case NL_OC_APP_RADIO:
+            q = "电台";
+            break;
+        case NL_OC_APP_PODCAST:
+            q = "播客";
+            break;
+        case NL_OC_APP_AIR:
+            q = "空气";
+            break;
+        case NL_OC_APP_QUOTE:
+            q = "每日一句";
+            break;
+        default:
+            break;
+        }
+        nodelio_panel_ui_set_voice_hint(nodelio_offline_cmd_zh(command_id));
+        return nodelio_panel_ui_open_app(q) ? ESP_OK : ESP_FAIL;
     }
     if (command_id == NL_OC_SCROLL_DOWN || command_id == NL_OC_SCROLL_UP) {
         int dir = (command_id == NL_OC_SCROLL_DOWN) ? 1 : -1;

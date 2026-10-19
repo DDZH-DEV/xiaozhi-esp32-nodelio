@@ -25,6 +25,10 @@ void nodelio_offline_cmd_set_done_cb(nodelio_offline_cmd_done_cb_t cb)
 {
     (void)cb;
 }
+esp_err_t nodelio_offline_cmd_prewarm(void)
+{
+    return ESP_ERR_NOT_SUPPORTED;
+}
 esp_err_t nodelio_offline_cmd_begin_listen(void)
 {
     return ESP_ERR_NOT_SUPPORTED;
@@ -40,6 +44,11 @@ void nodelio_offline_cmd_feed(const int16_t *data, int samples)
     (void)samples;
 }
 void nodelio_offline_cmd_stop(void) {}
+int nodelio_offline_cmd_dram_epoch(void) { return 0; }
+bool nodelio_offline_cmd_yield_slot(void) { return false; }
+void nodelio_offline_cmd_shield_up(void) {}
+void nodelio_offline_cmd_finish_playback_dram(int epoch) { (void)epoch; }
+void nodelio_offline_cmd_restore_after_media(int epoch) { (void)epoch; }
 void nodelio_offline_cmd_reset_dynamic(void) {}
 bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel_or_pin, bool is_pin,
                                     const char *action, const char *name, const char *pinyin)
@@ -72,6 +81,9 @@ static StackType_t *s_cmd_stack;
 static StaticTask_t s_cmd_tcb;
 static int64_t s_deadline_us;
 static int s_mn_div;
+/** detect 与 destroy 跨任务：播歌 stop 不能拆正在跑的 MultiNet。 */
+static portMUX_TYPE s_mn_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile int s_in_detect;
 
 #define CMD_STACK_WORDS 6144
 /** 口令窗：须长于「唤醒后等网失败再进本地」的体感；5s 来不及说完 */
@@ -137,7 +149,11 @@ bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel_or_pin, 
         strcmp(pinyin, "wang qian fan") == 0 || strcmp(pinyin, "wang hou fan") == 0 ||
         strcmp(pinyin, "wang shang fan") == 0 || strcmp(pinyin, "wang xia fan") == 0 ||
         strcmp(pinyin, "xiang shang hua") == 0 || strcmp(pinyin, "xiang xia hua") == 0 ||
-        strcmp(pinyin, "zan ting") == 0 || strcmp(pinyin, "ji xu bo fang") == 0) {
+        strcmp(pinyin, "zan ting") == 0 || strcmp(pinyin, "ji xu bo fang") == 0 ||
+        strcmp(pinyin, "da kai qu ku") == 0 || strcmp(pinyin, "da kai yin yue") == 0 ||
+        strcmp(pinyin, "da kai xin wen") == 0 || strcmp(pinyin, "da kai tian qi") == 0 ||
+        strcmp(pinyin, "da kai dian tai") == 0 || strcmp(pinyin, "da kai bo ke") == 0 ||
+        strcmp(pinyin, "da kai kong qi") == 0 || strcmp(pinyin, "da kai mei ri yi ju") == 0) {
         return false;
     }
     for (int i = 0; i < s_dyn_cmd_count; i++) {
@@ -274,6 +290,14 @@ static void install_commands(void)
         {NL_OC_SCROLL_DOWN, "xiang xia hua"},
         {NL_OC_MEDIA_PAUSE, "zan ting"},
         {NL_OC_MEDIA_RESUME, "ji xu bo fang"},
+        {NL_OC_APP_MUSIC, "da kai qu ku"},
+        {NL_OC_APP_MUSIC, "da kai yin yue"},
+        {NL_OC_APP_NEWS, "da kai xin wen"},
+        {NL_OC_APP_WEATHER, "da kai tian qi"},
+        {NL_OC_APP_RADIO, "da kai dian tai"},
+        {NL_OC_APP_PODCAST, "da kai bo ke"},
+        {NL_OC_APP_AIR, "da kai kong qi"},
+        {NL_OC_APP_QUOTE, "da kai mei ri yi ju"},
     };
     static const struct {
         int id;
@@ -325,11 +349,131 @@ static void install_commands(void)
 /* 由 application.cc 提供：复用 assets 已 load 的 srmodels，勿再找已删除的 model 分区 */
 extern srmodel_list_t *nodelio_get_srmodels(void);
 
+/* MultiNet 的 FST 必须在开机那块连续内部 RAM 上创建。播歌一旦把它 free 回堆，
+ * 下载/解码里的小块会嵌进去，之后 largest 只剩 8KB，唤醒再也建不起来。
+ * stop 后立刻用 s_slot 占住；开流前 yield；解码器打开后用 s_shield 占住剩余大块；
+ * 关流后马上重新占住，再回主任务创建模型。 */
+static esp_err_t ensure_multinet(void);
+
+static void *s_slot;
+static size_t s_slot_size;
+static void *s_shield;
+static int s_shield_epoch;
+static int s_dram_epoch;
+static int s_yield_epoch = -1;
+
+static void reserve_slot(void)
+{
+    if (s_slot || (s_mn && s_mn_data)) {
+        return;
+    }
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (largest < 48 * 1024) {
+        ESP_LOGW(TAG, "dram slot miss largest=%u", (unsigned)largest);
+        return;
+    }
+    size_t n = largest;
+    if (n > 49 * 1024) {
+        n -= 1024;
+    }
+    s_slot = heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    s_slot_size = s_slot ? n : 0;
+    if (!s_slot) {
+        ESP_LOGW(TAG, "dram slot malloc %u failed", (unsigned)n);
+        return;
+    }
+    ESP_LOGI(TAG, "dram slot held %u", (unsigned)s_slot_size);
+}
+
+static void free_slot(void)
+{
+    if (!s_slot) {
+        return;
+    }
+    heap_caps_free(s_slot);
+    s_slot = NULL;
+    s_slot_size = 0;
+}
+
+static void free_shield_if(int epoch)
+{
+    if (!s_shield || s_shield_epoch != epoch) {
+        return;
+    }
+    heap_caps_free(s_shield);
+    s_shield = NULL;
+}
+
+int nodelio_offline_cmd_dram_epoch(void)
+{
+    return s_dram_epoch;
+}
+
+bool nodelio_offline_cmd_yield_slot(void)
+{
+    if (!s_slot) {
+        return false;
+    }
+    ESP_LOGI(TAG, "dram slot yield %u", (unsigned)s_slot_size);
+    s_yield_epoch = s_dram_epoch;
+    free_slot();
+    return true;
+}
+
+void nodelio_offline_cmd_shield_up(void)
+{
+    if (s_yield_epoch != s_dram_epoch || s_shield || s_slot || (s_mn && s_mn_data)) {
+        return;
+    }
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (largest < 20 * 1024) {
+        return;
+    }
+    const size_t n = largest - 8 * 1024;
+    s_shield = heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s_shield) {
+        return;
+    }
+    s_shield_epoch = s_dram_epoch;
+    ESP_LOGI(TAG, "dram shield %u leave=8192", (unsigned)n);
+}
+
+void nodelio_offline_cmd_finish_playback_dram(int epoch)
+{
+    free_shield_if(epoch);
+    /* 换曲时 stop() 已经把 epoch 加一，这里仍要把刚释放的连续块占住，
+     * 否则下一首的 yield 拿到的是一块已经被切碎的堆。 */
+    if (s_mn && s_mn_data) {
+        return;
+    }
+    reserve_slot();
+}
+
+void nodelio_offline_cmd_restore_after_media(int epoch)
+{
+    if (epoch != s_dram_epoch) {
+        return;
+    }
+    free_shield_if(epoch);
+    if (epoch != s_dram_epoch) {
+        return;
+    }
+    if (s_mn && s_mn_data) {
+        return;
+    }
+    if (!nodelio_local_cmd_enabled() || nodelio_xiaozhi_enabled()) {
+        return;
+    }
+    const esp_err_t err = ensure_multinet();
+    ESP_LOGI(TAG, "restore multinet after media: %s", esp_err_to_name(err));
+}
+
 static esp_err_t ensure_multinet(void)
 {
     if (s_mn && s_mn_data) {
         return ESP_OK;
     }
+    free_slot();
     if (!s_models) {
         s_models = nodelio_get_srmodels();
         s_owns_models = false;
@@ -340,6 +484,7 @@ static esp_err_t ensure_multinet(void)
         }
         if (!s_models) {
             ESP_LOGE(TAG, "no srmodels (assets 未加载 / 无 model 分区)");
+            reserve_slot();
             return ESP_ERR_NOT_FOUND;
         }
     }
@@ -349,16 +494,33 @@ static esp_err_t ensure_multinet(void)
     }
     if (!mn_name) {
         ESP_LOGW(TAG, "no MultiNet in srmodels — 需 CONFIG_SR_MN_CN_MULTINET6_QUANT 并重烧 assets");
+        reserve_slot();
         return ESP_ERR_NOT_FOUND;
     }
     s_mn = esp_mn_handle_from_name(mn_name);
     if (!s_mn) {
+        reserve_slot();
         return ESP_FAIL;
     }
+    /* build_fsts 里 fst_copy_fst 分配失败不检查，直接 StoreProhibited。
+     * 实测 AFE 之后内部最大连续块只有 8KB，create 必崩。不够就拒建。 */
+    const size_t k_mn_dram = 48 * 1024;
+    const size_t dram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    const size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    if (dram_largest < k_mn_dram || psram_largest < 160 * 1024) {
+        ESP_LOGW(TAG, "multinet skipped: dram largest=%u need=%u; psram largest=%u",
+                 (unsigned)dram_largest, (unsigned)k_mn_dram, (unsigned)psram_largest);
+        s_mn = NULL;
+        reserve_slot();
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "multinet create dram free=%u largest=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)dram_largest);
     s_mn_data = s_mn->create(mn_name, LISTEN_MS);
     if (!s_mn_data) {
         ESP_LOGE(TAG, "multinet create failed (DRAM?)");
         s_mn = NULL;
+        reserve_slot();
         return ESP_ERR_NO_MEM;
     }
     if (s_mn->switch_loader_mode) {
@@ -389,6 +551,44 @@ static void finish_listen(const char *hint, bool ok)
     }
 }
 
+static bool cmd_ends_session(int cid)
+{
+    /* 切歌会马上拆 MultiNet 给解码器。窗口若续开，AFE 会在 destroy 途中再进 detect。 */
+    return cid == NL_OC_GOODBYE || cid == NL_OC_REBOOT || cid == NL_OC_WIFI_CONFIG ||
+           cid == NL_OC_XIAOZHI_ON || cid == NL_OC_XIAOZHI_OFF || cid == NL_OC_MEDIA_PREV ||
+           cid == NL_OC_MEDIA_NEXT || cid == NL_OC_MEDIA_PAUSE || cid == NL_OC_MEDIA_RESUME;
+}
+
+/** 一条口令执行完后继续听，直到超时或退下/重启/配网。 */
+static void continue_listen(const char *hint, bool ok)
+{
+    if (!s_session) {
+        return;
+    }
+    if (hint && hint[0]) {
+        nodelio_panel_ui_set_voice_hint(hint);
+    }
+    nodelio_panel_ui_play_cue(ok ? 1 : 2);
+    nodelio_panel_ui_note_activity();
+    if (s_mn && s_mn_data) {
+        s_mn->clean(s_mn_data);
+    }
+    s_mn_div = 0;
+    s_deadline_us = esp_timer_get_time() + (int64_t)LISTEN_MS * 1000;
+    s_session = true;
+    s_listening = true;
+    ESP_LOGI(TAG, "local cmd stay open +%dms", LISTEN_MS);
+}
+
+static void after_cmd(int cid, const char *hint, bool ok)
+{
+    if (cmd_ends_session(cid)) {
+        finish_listen(hint, ok);
+        return;
+    }
+    continue_listen(hint, ok);
+}
+
 static void cmd_worker(void *arg)
 {
     (void)arg;
@@ -407,11 +607,11 @@ static void cmd_worker(void *arg)
             if (cid == NL_OC_PAGE_NEXT || cid == NL_OC_PAGE_PREV ||
                 cid == NL_OC_SCROLL_DOWN || cid == NL_OC_SCROLL_UP) {
                 /* dispatch 已写入边界文案 */
-                finish_listen(NULL, err == ESP_OK);
+                after_cmd(cid, NULL, err == ESP_OK);
             } else if (err == ESP_OK) {
-                finish_listen(zh ? zh : "已执行", true);
+                after_cmd(cid, zh ? zh : "已执行", true);
             } else {
-                finish_listen("执行失败", false);
+                after_cmd(cid, "执行失败", false);
             }
             continue;
         }
@@ -443,11 +643,11 @@ static void cmd_worker(void *arg)
                     char t[64];
                     snprintf(t, sizeof(t), "已%s：%s", strcmp(dyn->action, "ON") == 0 ? "开启" : "关闭", dyn->name);
                     nodelio_panel_ui_toast(t);
-                    finish_listen(t, true);
+                    after_cmd(cid, t, true);
                 } else if (err == ESP_ERR_INVALID_STATE || http == 503) {
-                    finish_listen("设备离线", false);
+                    after_cmd(cid, "设备离线", false);
                 } else {
-                    finish_listen("执行失败", false);
+                    after_cmd(cid, "执行失败", false);
                 }
                 continue;
             }
@@ -459,11 +659,11 @@ static void cmd_worker(void *arg)
             char t[48];
             snprintf(t, sizeof(t), "已%s", zh ? zh : "执行");
             nodelio_panel_ui_toast(t);
-            finish_listen(t, true);
+            after_cmd(cid, t, true);
         } else if (err == ESP_ERR_INVALID_STATE) {
-            finish_listen("设备离线", false);
+            after_cmd(cid, "设备离线", false);
         } else {
-            finish_listen("执行失败", false);
+            after_cmd(cid, "执行失败", false);
         }
     }
 }
@@ -495,9 +695,30 @@ static esp_err_t ensure_cmd_worker(void)
     return ESP_OK;
 }
 
+esp_err_t nodelio_offline_cmd_prewarm(void)
+{
+    if (!nodelio_local_cmd_enabled()) {
+        ESP_LOGI(TAG, "prewarm skipped (local_cmd off)");
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_LOGI(TAG, "prewarm begin");
+    esp_err_t err = ensure_multinet();
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "MultiNet prewarmed");
+    } else {
+        ESP_LOGW(TAG, "MultiNet prewarm failed: %s", esp_err_to_name(err));
+    }
+    return err;
+}
+
 esp_err_t nodelio_offline_cmd_begin_listen(void)
 {
     if (s_session) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!nodelio_local_cmd_enabled()) {
+        nodelio_panel_ui_toast("本地口令未启用（设置 → 语音助手）");
+        ESP_LOGW(TAG, "begin_listen blocked: local_cmd off");
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -537,7 +758,7 @@ esp_err_t nodelio_offline_cmd_begin_listen(void)
         nodelio_panel_ui_set_voice_hint("可说重启、配网、打开首页/设置");
         nodelio_panel_ui_toast(provisioned ? "未注册：重启/配网/切页" : "未绑定：重启/配网/切页");
     } else if (s_dyn_cmd_count > 0) {
-        nodelio_panel_ui_set_voice_hint("可说设备名、切页、重启");
+        nodelio_panel_ui_set_voice_hint("可连续说，退下或停顿后结束");
         nodelio_panel_ui_toast("本地口令");
     } else if (have_layout) {
         nodelio_panel_ui_set_voice_hint("可说打开首页/设置/应用");
@@ -564,10 +785,13 @@ bool nodelio_offline_cmd_listening(void)
 
 void nodelio_offline_cmd_feed(const int16_t *data, int samples)
 {
-    if (!s_listening || !s_mn || !s_mn_data || !data || samples <= 0) {
+    if (!data || samples <= 0) {
         return;
     }
     if (esp_timer_get_time() > s_deadline_us) {
+        if (!s_listening) {
+            return;
+        }
         ESP_LOGI(TAG, "mn timeout");
         finish_listen("没听清，再说唤醒词", false);
         return;
@@ -576,13 +800,44 @@ void nodelio_offline_cmd_feed(const int16_t *data, int samples)
     if ((++s_mn_div & 1) != 0) {
         return;
     }
-    int chunk = s_mn->get_samp_chunksize(s_mn_data);
+
+    esp_mn_iface_t *mn = NULL;
+    model_iface_data_t *mn_data = NULL;
+    portENTER_CRITICAL(&s_mn_mux);
+    if (s_listening && s_mn && s_mn_data) {
+        s_in_detect = 1;
+        mn = s_mn;
+        mn_data = s_mn_data;
+    }
+    portEXIT_CRITICAL(&s_mn_mux);
+    if (!mn || !mn_data) {
+        return;
+    }
+
+    int chunk = mn->get_samp_chunksize(mn_data);
     if (chunk <= 0 || samples < chunk) {
+        portENTER_CRITICAL(&s_mn_mux);
+        s_in_detect = 0;
+        portEXIT_CRITICAL(&s_mn_mux);
         return;
     }
     /* 取末尾对齐 chunk（AFE fetch 通常正好一块） */
     const int16_t *p = data + (samples - chunk);
-    esp_mn_state_t st = s_mn->detect(s_mn_data, (int16_t *)p);
+    esp_mn_state_t st = mn->detect(mn_data, (int16_t *)p);
+    esp_mn_results_t *r = NULL;
+    if (st == ESP_MN_STATE_DETECTED) {
+        r = mn->get_results(mn_data);
+    }
+    portENTER_CRITICAL(&s_mn_mux);
+    s_in_detect = 0;
+    const bool dropped = !s_listening || s_mn_data != mn_data;
+    if (!dropped && st == ESP_MN_STATE_DETECTED) {
+        s_listening = false;
+    }
+    portEXIT_CRITICAL(&s_mn_mux);
+    if (dropped) {
+        return;
+    }
     if (st == ESP_MN_STATE_DETECTING) {
         return;
     }
@@ -594,8 +849,6 @@ void nodelio_offline_cmd_feed(const int16_t *data, int samples)
     if (st != ESP_MN_STATE_DETECTED) {
         return;
     }
-    esp_mn_results_t *r = s_mn->get_results(s_mn_data);
-    s_listening = false; /* 先停 feed，避免重入 */
     if (!r || r->num <= 0) {
         finish_listen("没听清", false);
         return;
@@ -615,17 +868,46 @@ void nodelio_offline_cmd_feed(const int16_t *data, int samples)
 
 void nodelio_offline_cmd_stop(void)
 {
+    portENTER_CRITICAL(&s_mn_mux);
+    const bool had_session = s_session || s_listening;
     s_session = false;
     s_listening = false;
-    if (s_mn && s_mn_data) {
-        s_mn->destroy(s_mn_data);
-        s_mn_data = NULL;
-        s_mn = NULL;
+    s_dram_epoch++;
+    portEXIT_CRITICAL(&s_mn_mux);
+    /* AFE 任务可能已拿着模型指针进了 detect，等它退出再 destroy。 */
+    for (int i = 0; i < 40; i++) {
+        portENTER_CRITICAL(&s_mn_mux);
+        const int busy = s_in_detect;
+        portEXIT_CRITICAL(&s_mn_mux);
+        if (!busy) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    esp_mn_iface_t *mn = NULL;
+    model_iface_data_t *mn_data = NULL;
+    portENTER_CRITICAL(&s_mn_mux);
+    mn = s_mn;
+    mn_data = s_mn_data;
+    s_mn = NULL;
+    s_mn_data = NULL;
+    portEXIT_CRITICAL(&s_mn_mux);
+    if (mn && mn_data) {
+        mn->destroy(mn_data);
+        /* 立刻占回刚释放的连续块，别让随后的队列/LVGL 小分配嵌进去。 */
+        reserve_slot();
     }
     if (s_owns_models && s_models) {
         esp_srmodel_deinit(s_models);
         s_models = NULL;
         s_owns_models = false;
+    }
+    /* 播歌会 stop 模型，但 EnableLocalCommandMode 若仍开着，AFE 永远走 feed 分支、
+     * 跳过唤醒词。必须回调关掉本地口令模式并恢复唤醒。 */
+    if (had_session || mn_data) {
+        if (s_done_cb) {
+            s_done_cb();
+        }
     }
     ESP_LOGI(TAG, "offline cmd stopped, internal free=%u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));

@@ -26,7 +26,15 @@
 
 #define TAG "Ota"
 
+/* OTA 检查/激活的 HTTP 读超时。明文 TCP 建连在 vendor 的 EspTcp 里无超时，
+ * https 建连由 esp_tls 以 10s 兜底；这里限住「等响应」这一段。 */
+static constexpr int kOtaHttpTimeoutMs = 15000;
+
 Ota::Ota() {
+    /* 墙板开机跳过 CheckVersion，current_version_ 只能在这里取，供「版本 x.y.z」提示用。 */
+    if (const esp_app_desc_t* app_desc = esp_app_get_description(); app_desc != nullptr) {
+        current_version_ = app_desc->version;
+    }
 #ifdef ESP_EFUSE_BLOCK_USR_DATA
     // USER_DATA may contain board metadata instead of a textual serial number.
     uint8_t serial_number[32] = {0};
@@ -67,6 +75,15 @@ std::unique_ptr<Http> Ota::SetupHttp() {
     auto network = board.GetNetwork();
     auto http = network->CreateHttp(0);
     auto user_agent = SystemInfo::GetUserAgent();
+    /*
+     * HttpClient 默认 30s 的「等响应头/等正文」超时。OTA 用的是 https，建连段由
+     * esp_tls 兜底（cfg.timeout_ms 未设时为 10s），但读响应没有额外上限；弱信号下
+     * 一次检查要 4.98s 建连 + 4.49s 响应，30s 会让一次卡顿拖住整段激活流程。
+     * 收紧到 15s：够 -77dBm 下完成 TLS + 小 JSON，又不至于长时间占着 Activating。
+     * 注意：明文 http 的 TCP 路径走 EspTcp::Connect，那里没有超时（vendor 组件，
+     * 本仓库不改），所以 OTA 一旦配成 http:// 仍可能长阻塞——保持 https。
+     */
+    http->SetTimeout(kOtaHttpTimeoutMs);
     http->SetHeader("Activation-Version", has_serial_number_ ? "2" : "1");
     http->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
     http->SetHeader("Client-Id", board.GetUuid());

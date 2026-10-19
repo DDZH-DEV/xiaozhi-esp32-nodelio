@@ -56,6 +56,14 @@ enum {
     /* 当前可见页竖向滚（设置/内页/连接/应用/启动台） */
     NL_OC_SCROLL_DOWN = 36,
     NL_OC_SCROLL_UP = 37,
+    /* 已装样例应用：本地 MultiNet 固定拼音，打开走 open_app 别名 */
+    NL_OC_APP_MUSIC = 38,
+    NL_OC_APP_NEWS = 39,
+    NL_OC_APP_WEATHER = 40,
+    NL_OC_APP_RADIO = 41,
+    NL_OC_APP_PODCAST = 42,
+    NL_OC_APP_AIR = 43,
+    NL_OC_APP_QUOTE = 44,
 };
 
 /** 重启/退下等纯本机口令（不依赖 WiFi / layout）。 */

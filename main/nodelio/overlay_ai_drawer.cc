@@ -54,6 +54,8 @@ static char s_speak_text_pending[NL_CHAT_CAP];
 static bool s_speak_text_dirty;
 /** 助手告别后：禁止 … / listening / restore 再闪抽屉，至下次用户开口或建链 */
 static bool s_ai_farewell_closing;
+/** 用户点关闭：本轮听/说的状态刷新不得再弹出，至下次建链或用户开口 */
+static bool s_ai_user_dismissed;
 /** 用户最小化：抽屉藏起，右下角仅图标；会话与文案仍更新 */
 static bool s_ai_minimized;
 static lv_obj_t *s_ai_mini_ic;
@@ -87,6 +89,11 @@ static bool text_is_farewell(const char *text)
 bool nl_ov_ai_farewell_closing(void)
 {
     return s_ai_farewell_closing;
+}
+
+bool nl_ov_ai_user_dismissed(void)
+{
+    return s_ai_user_dismissed;
 }
 
 bool nl_ov_ai_is_minimized(void)
@@ -406,6 +413,8 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
         minimize_ai_drawer();
     });
     make_hdr_btn(hdr_btns, MATERIAL_SYMBOLS_CLOSE, [](lv_event_t *) {
+        /* 先锁住：说话中关窗后，回复字幕/相位刷新不得把抽屉再拉出来 */
+        s_ai_user_dismissed = true;
         nl_ov_hide_ai_drawer();
         auto state = Application::GetInstance().GetDeviceState();
         if (state == kDeviceStateListening || state == kDeviceStateSpeaking) {
@@ -540,12 +549,25 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
     }
     if (phase == CHAT_CONNECT) {
         s_ai_farewell_closing = false;
+        s_ai_user_dismissed = false;
+    } else if (s_ai_user_dismissed && phase != CHAT_IDLE) {
+        /* 用户已关窗：本轮听/说只改文案，不再弹出 */
+        if (msg_text && msg_text[0] && s_ai_drawer_text) {
+            lv_label_set_text(s_ai_drawer_text, msg_text);
+        }
+        if (status_text && status_text[0] && s_ai_drawer_status) {
+            lv_label_set_text(s_ai_drawer_status, status_text);
+        }
+        s_chat_phase = phase;
+        lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
+        return;
     } else if (s_ai_farewell_closing && phase != CHAT_IDLE) {
         /* 告别收束中：listening/speaking 尾包勿再弹 */
         nl_ov_hide_ai_drawer();
         return;
     }
     if (phase == CHAT_IDLE) {
+        s_ai_user_dismissed = false;
         if (s_speak_text_dirty && s_ai_drawer_text && s_speak_text_pending[0]) {
             lv_label_set_text(s_ai_drawer_text, s_speak_text_pending);
             s_speak_text_dirty = false;
@@ -756,6 +778,9 @@ void nodelio_overlay_on_chat_locked(const char *role, const char *text)
 
     if (strcmp(role, "user") == 0) {
         s_ai_farewell_closing = false;
+        s_ai_user_dismissed = false; /* 用户又开口：允许再显示 */
+    } else if (s_ai_user_dismissed) {
+        return; /* 关掉之后的回复尾句不再弹出 */
     } else if (s_ai_farewell_closing) {
         /* 告别后的「…」等尾句只入账，不再弹 */
         return;

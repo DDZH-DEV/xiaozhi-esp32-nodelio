@@ -21,7 +21,7 @@
 #include "ui_widgets.h"
 #include "wifi_board.h"
 #include "wifi_manager.h"
-#include "wifi_provision.h"
+#include "wifi_provision.h" /* nodelio_log_heap */
 #include <material_symbols.h>
 
 LV_FONT_DECLARE(font_material_symbols_20_4);
@@ -58,22 +58,44 @@ extern "C" esp_err_t nodelio_panel_ui_start(const nodelio_nvs_config_t *cfg)
     return nodelio_overlay_init();
 }
 
+static esp_err_t alloc_layout_buf(void)
+{
+    if (s_layout) {
+        return ESP_OK;
+    }
+    s_layout = static_cast<nodelio_panel_layout_t *>(
+        heap_caps_malloc(sizeof(*s_layout), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!s_layout) {
+        ESP_LOGW(TAG, "layout alloc PSRAM fail size=%u, try DRAM", (unsigned)sizeof(*s_layout));
+        s_layout = static_cast<nodelio_panel_layout_t *>(malloc(sizeof(*s_layout)));
+    }
+    if (!s_layout) {
+        ESP_LOGE(TAG, "layout apply NO_MEM size=%u", (unsigned)sizeof(*s_layout));
+        nodelio_log_heap("apply_layout fail");
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+extern "C" esp_err_t nodelio_panel_ui_reserve_layout(void)
+{
+    return alloc_layout_buf();
+}
+
 extern "C" esp_err_t nodelio_panel_ui_apply_layout(const nodelio_panel_layout_t *layout)
 {
     if (!layout) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (!s_layout) {
-        s_layout = static_cast<nodelio_panel_layout_t *>(
-            heap_caps_malloc(sizeof(*s_layout), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-        if (!s_layout) {
-            s_layout = static_cast<nodelio_panel_layout_t *>(malloc(sizeof(*s_layout)));
-        }
-    }
-    if (!s_layout) {
+    nodelio_log_heap("apply_layout");
+    if (alloc_layout_buf() != ESP_OK) {
+        ESP_LOGE(TAG, "layout apply NO_MEM size=%u pages=%d", (unsigned)sizeof(*s_layout),
+                 layout->page_count);
         return ESP_ERR_NO_MEM;
     }
-    *s_layout = *layout;
+    if (layout != s_layout) {
+        *s_layout = *layout;
+    }
     s_have_layout = true;
     s_cloud_ok = true; /* 拉到 layout 说明 NodeLio 服务可达 */
     nodelio_offline_cmd_rebuild_from_layout(s_layout);
@@ -84,9 +106,14 @@ extern "C" esp_err_t nodelio_panel_ui_apply_layout(const nodelio_panel_layout_t 
             char msg[20];
             std::snprintf(msg, sizeof(msg), "v%d", layout->layout_version);
             nl_ov_refresh_status_icons(s_wifi_ok, true, msg);
+        } else {
+            ESP_LOGW(TAG, "layout cached but display lock fail — home may stay 初始化中");
         }
+    } else {
+        ESP_LOGW(TAG, "layout cached but UI not ready (ready=%d home=%p)", s_ready ? 1 : 0,
+                 (void *)s_home);
     }
-    ESP_LOGI(TAG, "layout v%d cached", layout->layout_version);
+    ESP_LOGI(TAG, "layout v%d cached pages=%d", layout->layout_version, layout->page_count);
     return ESP_OK;
 }
 

@@ -238,6 +238,7 @@ void nl_ov_restore_ai_drawer_if_session(void);
 bool nl_ov_ai_session_active(void);
 /** 告别后抑制再弹（… / listening / restore），直到用户再说话或重新建链 */
 bool nl_ov_ai_farewell_closing(void);
+bool nl_ov_ai_user_dismissed(void);
 /** 用户已最小化：会话继续，只显示右下角圆钮 */
 bool nl_ov_ai_is_minimized(void);
 void nl_ov_ai_raise_mini_fab(void);

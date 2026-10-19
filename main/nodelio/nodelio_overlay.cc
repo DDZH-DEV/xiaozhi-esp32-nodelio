@@ -234,13 +234,29 @@ static void refresh_clock_lbl(void)
     lv_label_set_text(s_clock_lbl, s_clock_last);
 }
 
+/** 按 RSSI 选格数；阈值与 WifiBoard::GetNetworkStateIcon 一致。未关联不读 AP info。 */
+static const char *wifi_status_glyph(bool wifi_ok)
+{
+    if (!wifi_ok || nodelio_wifi_is_asleep()) {
+        return MATERIAL_SYMBOLS_WIFI_OFF;
+    }
+    int rssi = WifiManager::GetInstance().GetRssi();
+    if (rssi >= -65 || rssi == 0) {
+        return MATERIAL_SYMBOLS_WIFI;
+    }
+    if (rssi >= -75) {
+        return MATERIAL_SYMBOLS_WIFI_2_BAR;
+    }
+    return MATERIAL_SYMBOLS_WIFI_1_BAR;
+}
+
 void nl_ov_refresh_status_icons(bool wifi_ok, bool cloud_ok, const char *msg)
 {
     s_wifi_ok = wifi_ok;
     s_cloud_ok = cloud_ok;
     if (s_wifi_lbl) {
-        lv_label_set_text(s_wifi_lbl, LV_SYMBOL_WIFI);
-        nl_ov_set_icon_font(s_wifi_lbl);
+        lv_obj_set_style_text_font(s_wifi_lbl, &font_material_symbols_20_4, 0);
+        lv_label_set_text(s_wifi_lbl, wifi_status_glyph(wifi_ok));
         lv_obj_set_style_text_color(s_wifi_lbl, wifi_ok ? UI_ACCENT : UI_TEXT_MUTED, 0);
     }
     if (s_cloud_lbl) {
@@ -397,7 +413,7 @@ bool nl_ov_ai_session_active(void)
 void nl_ov_restore_ai_drawer_if_session(void)
 {
     if (!s_ai_drawer || s_skill_ui_active || !nl_ov_ai_session_active() ||
-        nl_ov_ai_farewell_closing()) {
+        nl_ov_ai_farewell_closing() || nl_ov_ai_user_dismissed()) {
         return;
     }
     if (s_ai_hide_timer) {
@@ -649,8 +665,8 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_set_style_text_color(s_cloud_lbl, UI_TEXT_MUTED, 0);
 
     s_wifi_lbl = lv_label_create(bar);
-    lv_label_set_text(s_wifi_lbl, LV_SYMBOL_WIFI);
-    nl_ov_set_icon_font(s_wifi_lbl);
+    lv_obj_set_style_text_font(s_wifi_lbl, &font_material_symbols_20_4, 0);
+    lv_label_set_text(s_wifi_lbl, MATERIAL_SYMBOLS_WIFI_OFF);
     lv_obj_set_style_text_color(s_wifi_lbl, UI_TEXT_MUTED, 0);
     status_bar_relayout();
 

@@ -34,6 +34,7 @@ void nodelio_nvs_cache_get(nodelio_nvs_config_t *out)
     }
     memset(out, 0, sizeof(*out));
     out->xiaozhi_en = 1;
+    out->local_cmd_en = 0;
     out->power_save_en = 1;
     out->controls_en = 1;
     out->media_sleep_en = 1;
@@ -78,6 +79,9 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     }
     if (out->xiaozhi_en > 1) {
         out->xiaozhi_en = 1;
+    }
+    if (out->local_cmd_en > 1) {
+        out->local_cmd_en = 0;
     }
     if (out->power_save_en > 1) {
         out->power_save_en = 1;
@@ -129,6 +133,9 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     if (out->xiaozhi_en > 1) {
         out->xiaozhi_en = 1;
     }
+    if (out->local_cmd_en > 1) {
+        out->local_cmd_en = 0;
+    }
     if (out->power_save_en > 1) {
         out->power_save_en = 1;
     }
@@ -157,6 +164,7 @@ esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out)
     }
     memset(out, 0, sizeof(*out));
     out->xiaozhi_en = 1;
+    out->local_cmd_en = 0;
     out->power_save_en = 1;
     out->controls_en = 1;
     out->media_sleep_en = 1;
@@ -200,6 +208,12 @@ esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out)
             out->xiaozhi_en = v ? 1 : 0;
         } else {
             out->xiaozhi_en = 1;
+        }
+        v = 0;
+        if (nvs_get_u8(h, "lc_en", &v) == ESP_OK) {
+            out->local_cmd_en = v ? 1 : 0;
+        } else {
+            out->local_cmd_en = 0; /* 缺省不加载 MultiNet */
         }
         v = 1;
         if (nvs_get_u8(h, "ps_en", &v) == ESP_OK) {
@@ -277,6 +291,7 @@ esp_err_t nodelio_nvs_save(const nodelio_nvs_config_t *in)
     nvs_set_u8(h, "brightness", tmp.brightness);
     nvs_set_u8(h, "volume", tmp.volume);
     nvs_set_u8(h, "xz_en", tmp.xiaozhi_en ? 1 : 0);
+    nvs_set_u8(h, "lc_en", tmp.local_cmd_en ? 1 : 0);
     nvs_set_u8(h, "ps_en", tmp.power_save_en ? 1 : 0);
     nvs_set_u8(h, "ctrl_en", tmp.controls_en ? 1 : 0);
     nvs_set_u8(h, "md_slp", tmp.media_sleep_en ? 1 : 0);
@@ -313,6 +328,30 @@ esp_err_t nodelio_xiaozhi_set_enabled(bool on)
         }
     }
     cfg.xiaozhi_en = on ? 1 : 0;
+    ram_put(&cfg);
+    return nodelio_nvs_save(&cfg);
+}
+
+bool nodelio_local_cmd_enabled(void)
+{
+    if (!s_ram_ok) {
+        return false;
+    }
+    return s_ram.local_cmd_en != 0;
+}
+
+esp_err_t nodelio_local_cmd_set_enabled(bool on)
+{
+    nodelio_nvs_config_t cfg;
+    if (s_ram_ok) {
+        cfg = s_ram;
+    } else {
+        esp_err_t err = nodelio_nvs_load(&cfg);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    cfg.local_cmd_en = on ? 1 : 0;
     ram_put(&cfg);
     return nodelio_nvs_save(&cfg);
 }

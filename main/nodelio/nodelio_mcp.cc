@@ -884,7 +884,7 @@ void nodelio_mcp_register_tools(void)
     mcp.AddTool(
         "self.nodelio.set_pref",
         "改设置（不结束对话）。空闲断网→idle_wifi_s=秒(15-300)；息屏→idle_sleep_s；"
-        "退下息屏→bye_sleep_s；另 brightness/volume/power_save/controls/xiaozhi/"
+        "退下息屏→bye_sleep_s；另 brightness/volume/power_save/controls/xiaozhi/local_cmd/"
         "listen_idle_s/media_sleep|media_pause_s；动作 layout_sync|fw_check|factory_reset。",
         PropertyList({
             Property("key", kPropertyTypeString),
@@ -900,7 +900,12 @@ void nodelio_mcp_register_tools(void)
             }
             if (strcasecmp(key.c_str(), "xiaozhi") == 0 &&
                 (strcasecmp(value.c_str(), "off") == 0 || value == "0" || value == "关")) {
-                return std::string("已关闭小智云；本轮可说完，下一唤醒仅本地口令");
+                return std::string("已关闭小智云；本轮可说完");
+            }
+            if (strcasecmp(key.c_str(), "local_cmd") == 0) {
+                return std::string(strcasecmp(value.c_str(), "on") == 0 || value == "1" || value == "开"
+                                       ? "已启用本地口令"
+                                       : "已关闭本地口令");
             }
             if (strcasecmp(key.c_str(), "layout_sync") == 0) {
                 return std::string("已开始刷新布局");

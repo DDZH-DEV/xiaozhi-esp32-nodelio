@@ -949,6 +949,7 @@ if(CONFIG_BOARD_TYPE_SILA_86 AND CONFIG_NODELIO_PANEL)
         "nodelio/softap_portal.cc"
         "nodelio/ui_widgets.cc"
         "nodelio/nl_url_util.c"
+        "nodelio/nl_time.cc"
         "nodelio/nodelio_overlay.cc"
         "nodelio/overlay_home_tiles.cc"
         "nodelio/overlay_home_skills.cc"
@@ -1163,6 +1164,8 @@ list(APPEND MAIN_PRIV_REQUIRES_EXTRA
     spiffs
     esp_wifi
     nvs_flash
+    # nl_time.cc: esp_sntp.h / esp_netif_sntp.h（墙板跳过开机 OTA 后的时间源）
+    lwip
 )
 if(CONFIG_XIAOZHI_NETWORK_ETHERNET AND CONFIG_XIAOZHI_ETH_PHY_IP101)
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA espressif__ip101)

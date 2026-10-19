@@ -34,6 +34,9 @@ bool nodelio_wifi_is_asleep(void);
 bool nodelio_wifi_net_acquire(uint32_t timeout_ms);
 void nodelio_wifi_net_release(void);
 
+/** 打印片内 DRAM + PSRAM 空闲量与最大连续块（诊断「8MB PSRAM 够不够」用）。 */
+void nodelio_log_heap(const char *where);
+
 /** 等待 L2 关联；timeout_ms=0 立即返回当前态. */
 bool nodelio_wifi_wait_connected(uint32_t timeout_ms);
 /** 等待 DHCP；HTTP 前用. */

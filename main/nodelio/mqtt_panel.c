@@ -2,6 +2,7 @@
 
 #include "panel_layout.h"
 #include "panel_ui.h"
+#include "wifi_provision.h"
 
 #include <cJSON.h>
 #include <esp_log.h>
@@ -146,23 +147,27 @@ esp_err_t nodelio_mqtt_panel_start(const nodelio_nvs_config_t *cfg)
         .credentials.authentication.password = s_cfg.mqtt_pass[0] ? s_cfg.mqtt_pass : NULL,
         .session.keepalive = 60,
         .network.disable_auto_reconnect = false,
-        /* 默认 6144 走片内 RAM。开机与小智 MQTT 叠在一起时最大空闲块不够，任务创建失败。
-         * 明文 mqtt://，4KB 够用。 */
+        /* 明文 mqtt://；栈走 PSRAM（CONFIG_MQTT_TASK_STACK_ON_EXTERNAL_MEMORY）。 */
         .task.stack_size = 4096,
     };
+    nodelio_log_heap("mqtt_panel init");
     s_client = esp_mqtt_client_init(&mqtt_cfg);
     if (!s_client) {
+        ESP_LOGE(TAG, "esp_mqtt_client_init failed (NO_MEM?)");
+        nodelio_log_heap("mqtt_panel init fail");
         return ESP_ERR_NO_MEM;
     }
     esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID, mqtt_event, NULL);
     esp_err_t err = esp_mqtt_client_start(s_client);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "start failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "start failed: %s (often=create mqtt task OOM)", esp_err_to_name(err));
+        nodelio_log_heap("mqtt_panel start fail");
         esp_mqtt_client_destroy(s_client);
         s_client = NULL;
         return err;
     }
     ESP_LOGI(TAG, "started uri=%s topic=%s", uri, s_notify_topic);
+    nodelio_log_heap("mqtt_panel started");
     return ESP_OK;
 }
 

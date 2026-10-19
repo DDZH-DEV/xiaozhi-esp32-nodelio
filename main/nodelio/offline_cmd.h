@@ -16,7 +16,13 @@ typedef void (*nodelio_offline_cmd_done_cb_t)(void);
 void nodelio_offline_cmd_set_done_cb(nodelio_offline_cmd_done_cb_t cb);
 
 /**
- * 小智建链失败后进入本地口令窗（约 5s）。
+ * 空闲时预创建 MultiNet（避免唤醒瞬间与 Opus 编码抢内部 DRAM 崩 FST）。
+ * 已就绪则立即返回 ESP_OK。
+ */
+esp_err_t nodelio_offline_cmd_prewarm(void);
+
+/**
+ * 小智建链失败后进入本地口令窗（约 12s）。
  * 成功则需 EnableLocalCommandMode(true)，并由 AFE fetch 调用 feed。
  * 无 MultiNet / 已在听 → ESP_ERR_*。
  */
@@ -30,8 +36,29 @@ bool nodelio_offline_cmd_listening(void);
 /** AFE fetch 单声道 PCM（16k）；仅 listening 时处理。 */
 void nodelio_offline_cmd_feed(const int16_t *data, int samples);
 
-/** TLS/OTA 前：停听并尽量释放 MultiNet（不碰小智 AFE）。 */
+/** TLS/OTA/播歌前：停听并释放 MultiNet（不碰小智 AFE）。释放后立刻占住原 DRAM 块。 */
 void nodelio_offline_cmd_stop(void);
+
+/** 当前 DRAM 占位代号。播歌任务开始时记下，结束时带回来，避免和下一首抢。 */
+int nodelio_offline_cmd_dram_epoch(void);
+
+/** 播歌任务真正开流前：放开 stop() 占住的 DRAM，给解码器 / TLS。没有占位则返回 false。 */
+bool nodelio_offline_cmd_yield_slot(void);
+
+/**
+ * 解码器已打开后调用：把剩下的大块内部 RAM 占住，避免下载循环里的小分配把它切碎。
+ * MultiNet 仍在时不做任何事。
+ */
+void nodelio_offline_cmd_shield_up(void);
+
+/**
+ * HTTP 与解码器都已关闭后调用（可在 PSRAM 栈上）。
+ * 放开 shield，并尽量把 ≥48KB 的内部块重新占住。不创建模型。
+ */
+void nodelio_offline_cmd_finish_playback_dram(int epoch);
+
+/** 主任务：按 epoch 把占位还给 MultiNet。代号已变（下一首已 stop）则跳过。 */
+void nodelio_offline_cmd_restore_after_media(int epoch);
 
 #define NL_DYN_CMD_BASE 100
 

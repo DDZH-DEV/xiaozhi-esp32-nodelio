@@ -27,6 +27,7 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 
 #include <esp_app_desc.h>
 #include <esp_chip_info.h>
+#include <esp_system.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_system.h>
@@ -229,6 +230,51 @@ static void persist_cfg_async(void)
     Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
 }
 
+/** 小智 / 本地口令切换后内存占用不同，须重启才按新组合加载。
+ * 两个开关常连着拨：合并成一次延迟重启，避免关一个重启、再开另一个又重启。 */
+static esp_timer_handle_t s_voice_reboot_tmr;
+
+static void voice_reboot_cb(void *arg)
+{
+    (void)arg;
+    Application::GetInstance().Schedule([]() {
+        nodelio_nvs_config_t snap;
+        nodelio_nvs_cache_get(&snap);
+        (void)nodelio_nvs_save(&snap);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
+    });
+}
+
+static void persist_voice_and_reboot(void)
+{
+    nodelio_nvs_cache_put(&s_cfg);
+    nodelio_nvs_config_t snap = s_cfg;
+    Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
+
+    if (!s_voice_reboot_tmr) {
+        esp_timer_create_args_t args = {
+            .callback = voice_reboot_cb,
+            .arg = nullptr,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "nl_voice_rb",
+            .skip_unhandled_events = true,
+        };
+        if (esp_timer_create(&args, &s_voice_reboot_tmr) != ESP_OK) {
+            nl_ov_toast("语音助手已切换，正在重启…");
+            Application::GetInstance().Schedule([]() {
+                vTaskDelay(pdMS_TO_TICKS(400));
+                esp_restart();
+            });
+            return;
+        }
+    }
+    esp_timer_stop(s_voice_reboot_tmr);
+    /* 3s：够关小智再开本地口令，或反过来 */
+    (void)esp_timer_start_once(s_voice_reboot_tmr, 3000000ULL);
+    nl_ov_toast("语音已改，3 秒后重启（可继续切换）");
+}
+
 static void apply_sleep_board(void)
 {
     Board::GetInstance().SetIdleSleepSeconds(
@@ -377,18 +423,25 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         if (!parse_on_off(value, &on, err, err_len)) {
             return ESP_ERR_INVALID_ARG;
         }
-        s_cfg.xiaozhi_en = on ? 1 : 0;
-        persist_cfg_async();
-        auto &app = Application::GetInstance();
-        if (on) {
-            app.MarkTransportSuspended(false);
-            app.ResumeTransport();
-            nl_ov_toast("已启用小智云");
-        } else {
-            /* 只标 suspended + 落盘：本轮会话可说完；下一唤醒走本地口令 */
-            app.MarkTransportSuspended(true);
-            nl_ov_toast("已关闭小智：下一轮仅本地口令");
+        uint8_t next = on ? 1 : 0;
+        if (s_cfg.xiaozhi_en == next) {
+            return ESP_OK;
         }
+        s_cfg.xiaozhi_en = next;
+        persist_voice_and_reboot();
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "local_cmd") == 0) {
+        bool on = false;
+        if (!parse_on_off(value, &on, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        uint8_t next = on ? 1 : 0;
+        if (s_cfg.local_cmd_en == next) {
+            return ESP_OK;
+        }
+        s_cfg.local_cmd_en = next;
+        persist_voice_and_reboot();
         return ESP_OK;
     }
     if (strcasecmp(key, "listen_idle_s") == 0) {
@@ -486,6 +539,10 @@ extern "C" esp_err_t nodelio_panel_ui_get_pref(const char *key, char *buf, size_
     }
     if (strcasecmp(key, "xiaozhi") == 0) {
         std::snprintf(buf, len, "%s", s_cfg.xiaozhi_en ? "on" : "off");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "local_cmd") == 0) {
+        std::snprintf(buf, len, "%s", s_cfg.local_cmd_en ? "on" : "off");
         return ESP_OK;
     }
     if (strcasecmp(key, "listen_idle_s") == 0) {
@@ -884,6 +941,8 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         sys_kv_row(dev, "作者", "Dev-SL", nullptr);
         sys_kv_row(dev, "唤醒词", "你好小智", nullptr);
         sys_kv_row(dev, "小智云", s_cfg.xiaozhi_en ? "已启用" : "已关闭", nullptr);
+        sys_kv_row(dev, "本地口令", s_cfg.local_cmd_en ? "已启用" : "已关闭", nullptr);
+        sys_kv_row(dev, "本地口令", s_cfg.local_cmd_en ? "已启用" : "已关闭", nullptr);
         if (s_cfg.power_save_en) {
             std::snprintf(line, sizeof(line), "屏%ds · 网%ds · 退%d", (int)s_cfg.idle_sleep_s,
                           (int)s_cfg.idle_wifi_s, (int)s_cfg.goodbye_sleep_s);
@@ -1184,12 +1243,55 @@ void nl_ov_open_settings_detail(set_page_id_t page)
 
         lv_obj_t *hint = lv_label_create(card);
         lv_label_set_text(hint,
-                          "关闭后不再连接 api.tenclass.net，唤醒不等公网 MQTT；"
-                          "NodeLio 控家与本地口令仍可用。云端不可用时建议关闭。");
+                          "关闭后不再连接 api.tenclass.net，唤醒不等公网 MQTT。"
+                          "云端不可用时建议关闭，并打开下方「本地口令」。"
+                          "改开关后约 3 秒重启一次，可先拨完两个再等。");
         lv_obj_set_width(hint, lv_pct(100));
         lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
         nl_ov_set_font(hint);
         lv_obj_set_style_text_color(hint, UI_TEXT_TIP, 0);
+
+        lv_obj_t *row_lc = lv_obj_create(card);
+        lv_obj_remove_style_all(row_lc);
+        lv_obj_set_width(row_lc, lv_pct(100));
+        lv_obj_set_height(row_lc, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(row_lc, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row_lc, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(row_lc, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *lab_lc = lv_label_create(row_lc);
+        lv_label_set_text(lab_lc, "本地口令");
+        nl_ov_set_font(lab_lc);
+        lv_obj_set_style_text_color(lab_lc, UI_TEXT, 0);
+
+        lv_obj_t *sw_lc = lv_switch_create(row_lc);
+        lv_obj_set_size(sw_lc, 52, 30);
+        lv_obj_set_style_bg_color(sw_lc, lv_color_hex(UI_C_SLIDER_TRACK), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(sw_lc, UI_ACCENT,
+                                  (lv_style_selector_t)((uint32_t)LV_PART_INDICATOR |
+                                                       (uint32_t)LV_STATE_CHECKED));
+        if (s_cfg.local_cmd_en) {
+            lv_obj_add_state(sw_lc, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(sw_lc, LV_STATE_CHECKED);
+        }
+        lv_obj_add_event_cb(
+            sw_lc,
+            [](lv_event_t *e) {
+                bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+                (void)nodelio_panel_ui_set_pref("local_cmd", on ? "on" : "off", nullptr, 0);
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+
+        lv_obj_t *hint_lc = lv_label_create(card);
+        lv_label_set_text(hint_lc,
+                          "默认关闭。开启后才加载 MultiNet（占片内内存），"
+                          "可说「打开设置」「下一屏」等；关小智或云端失败时靠它控家。");
+        lv_obj_set_width(hint_lc, lv_pct(100));
+        lv_label_set_long_mode(hint_lc, LV_LABEL_LONG_WRAP);
+        nl_ov_set_font(hint_lc);
+        lv_obj_set_style_text_color(hint_lc, UI_TEXT_TIP, 0);
 
         char sec[16];
         uint16_t lis = s_cfg.listen_idle_s ? s_cfg.listen_idle_s : NODELIO_LISTEN_IDLE_DEFAULT;
@@ -1297,9 +1399,10 @@ void nl_ov_fill_settings(void)
         (void)nodelio_panel_ui_set_pref("layout_sync", "", nullptr, 0);
     });
     {
-        char voice_sub[48];
-        std::snprintf(voice_sub, sizeof(voice_sub), "%s · 无对话 %ds",
-                      nodelio_xiaozhi_enabled() ? "小智云已开" : "仅本地口令",
+        char voice_sub[64];
+        std::snprintf(voice_sub, sizeof(voice_sub), "%s%s · 无对话 %ds",
+                      nodelio_xiaozhi_enabled() ? "小智" : "无云",
+                      nodelio_local_cmd_enabled() ? "+本地" : "",
                       (int)nodelio_listen_idle_seconds());
         settings_tile(s_settings, "智", "语音助手", voice_sub, UI_C_ACCENT, nullptr,
                       [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_VOICE); });

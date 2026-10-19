@@ -37,9 +37,14 @@ static const char *TAG = "WifiBoard";
 static constexpr int CONNECT_TIMEOUT_SEC = 60;
 #if defined(CONFIG_NODELIO_PANEL)
 static int s_dhcp_retry = 0;
-/* L2 已关联却无 IP：先给原生 DHCP 8s，再 kick；避免 5s 狂踢打断即将完成的握手 */
-static constexpr int DHCP_ASSIST_FIRST_US = 8 * 1000000;
-static constexpr int DHCP_ASSIST_RETRY_US = 12 * 1000000;
+/*
+ * L2 已关联却无 IP：先给原生 DHCP 3s，再 kick。
+ * 实测（ChinaNet 网关）：原生 DHCP 8s 拿不到，kick 后 2s 即拿到，说明链路通、
+ * 只是 DHCP 报文丢了；lwIP 重传退避（4s/8s 起跳）会把窗口拖满，久等无益。
+ * 重试 4s 一轮，3 轮共约 15s，仍远小于 CONNECT_TIMEOUT_SEC。
+ */
+static constexpr int DHCP_ASSIST_FIRST_US = 3 * 1000000;
+static constexpr int DHCP_ASSIST_RETRY_US = 4 * 1000000;
 static constexpr int DHCP_ASSIST_MAX = 3;
 static esp_timer_handle_t s_dhcp_assist_timer = nullptr;
 static int s_dhcp_assist_n = 0;
@@ -224,8 +229,12 @@ void WifiBoard::TryWifiConnect() {
         esp_timer_start_once(connect_timer_, CONNECT_TIMEOUT_SEC * 1000000ULL);
         WifiManager::GetInstance().StartStation();
 #if defined(CONFIG_NODELIO_PANEL)
-        /* StartStation 后 station_active_ 变为 true，此时设 PERFORMANCE (PS_NONE) 立即生效 */
-        WifiManager::GetInstance().SetPowerSaveLevel(WifiPowerSaveLevel::PERFORMANCE);
+        /*
+         * 这里原有一句 SetPowerSaveLevel(PERFORMANCE)。它与 esp_wifi_connect() 落在同一
+         * 毫秒内改省电参数，实测首次连接 2.4s 后 reason 201（NO_AP_FOUND），紧接的重连
+         * 20ms 就 assoc 成功。PS_NONE 已由 WIFI_EVENT_STA_CONNECTED 处理器在关联后设置，
+         * 覆盖 DHCP 与后续全部联网窗口，此处删除以免在连接窗口内扰动射频。
+         */
 #endif
     } else {
         // No SSID：进 SoftAP 门户（NodeLio 页含 WiFi + 服务器/绑定码）

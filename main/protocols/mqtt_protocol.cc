@@ -228,7 +228,8 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
 }
 
 bool MqttProtocol::SendText(const std::string& text) {
-    if (publish_topic_.empty()) {
+    /* 播歌 SuspendTransport 会 mqtt_.reset()；已入队的 MCP 不能解引用空客户端。 */
+    if (publish_topic_.empty() || !mqtt_) {
         return false;
     }
     if (!mqtt_->Publish(publish_topic_, text)) {

@@ -292,19 +292,10 @@ static void on_save(lv_event_t *e)
         nl_ov_toast("请填写主机与绑定码");
         return;
     }
-    if (ssid && ssid[0] && (!pass || !pass[0])) {
-        const auto &list = SsidManager::GetInstance().GetSsidList();
-        bool known = false;
-        for (const auto &it : list) {
-            if (it.ssid == ssid) {
-                known = true;
-                break;
-            }
-        }
-        if (!known) {
-            nl_ov_toast("新网络请填密码");
-            return;
-        }
+    /* 已保存过的网络可以不填密码。SsidManager 首次会读 NVS，不能在 LVGL 任务上做。 */
+    if (ssid && ssid[0] && (!pass || !pass[0]) && std::strcmp(ssid, s_cfg.wifi_ssid) != 0) {
+        nl_ov_toast("新网络请填密码");
+        return;
     }
     if (!port || !port[0]) {
         port = "8899";
@@ -357,12 +348,6 @@ void nl_ov_open_connect(void)
     nl_url_parse_server(s_cfg.server_url, host, sizeof(host), port, sizeof(port), &s_https);
 
     std::string cur = WifiManager::GetInstance().GetSsid();
-    if (cur.empty()) {
-        const auto &list = SsidManager::GetInstance().GetSsidList();
-        if (!list.empty()) {
-            cur = list[0].ssid;
-        }
-    }
     if (cur.empty() && s_cfg.wifi_ssid[0]) {
         cur = s_cfg.wifi_ssid;
     }
