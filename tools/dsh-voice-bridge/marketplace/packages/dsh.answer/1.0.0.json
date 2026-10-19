@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "app_id": "dsh.answer",
+  "version": "1.0.0",
+  "name": "DSH 确认",
+  "description": "回答 DSH 任务挂起的审批或追问。协议 v1 没有『审批』交互原语，因此这里表达为一个独立的 invoke 动作：端从 dsh.status 的结果里拿到 notice_id，再调本应用提交 allow / deny。",
+  "publisher": {
+    "name": "NodeLio",
+    "contact": "https://github.com/DDZH-DEV/nodelio-protocol/issues"
+  },
+  "categories": ["tool"],
+  "min_protocol": 1,
+  "requires": ["content.text", "action.invoke", "net.http_via_server"],
+  "optional": ["content.list", "content.error"],
+  "surfaces": ["card", "voice_reply", "notification"],
+  "fallback": { "card_type": "plain_result" },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "session": {
+        "type": "string",
+        "title": "任务 ID",
+        "description": "待确认任务的外部会话 ID，由 dsh.status 返回。",
+        "minLength": 1,
+        "maxLength": 128,
+        "ui_hint": "text"
+      },
+      "notice_id": {
+        "type": "string",
+        "title": "待确认项 ID",
+        "description": "由 dsh.status 的待确认列表返回。",
+        "minLength": 1,
+        "maxLength": 128,
+        "ui_hint": "text"
+      },
+      "action": {
+        "type": "string",
+        "title": "决定",
+        "enum": ["allow", "deny"],
+        "default": "allow",
+        "ui_hint": "select"
+      }
+    },
+    "required": ["session", "notice_id"]
+  },
+  "invoke": {
+    "method": "POST",
+    "timeout_ms": 8000,
+    "url": "https://REPLACE-ME.example.com/nodelio/dsh/answer",
+    "result_types": ["plain_result", "error"],
+    "default_display": {
+      "card_type": "plain_result",
+      "preferred_surface": "card",
+      "density": "compact",
+      "max_items": 1
+    }
+  },
+  "expose_mcp": true,
+  "mcp": {
+    "name": "dsh.answer",
+    "description": "Approve or deny a pending DSH task interaction"
+  },
+  "ui": {
+    "entry_title": "DSH 确认",
+    "entry_icon": "check"
+  }
+}

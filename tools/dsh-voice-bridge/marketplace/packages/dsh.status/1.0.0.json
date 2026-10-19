@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "app_id": "dsh.status",
+  "version": "1.0.0",
+  "name": "DSH 进度",
+  "description": "查询某个工作区里 DSH 任务的当前状态：第几轮第几步、最后调用的工具、是否需要人工确认。返回一屏可读的列表 + 一句可直接播报的 spoken。",
+  "publisher": {
+    "name": "NodeLio",
+    "contact": "https://github.com/DDZH-DEV/nodelio-protocol/issues"
+  },
+  "categories": ["tool"],
+  "min_protocol": 1,
+  "requires": ["content.list", "action.invoke", "net.http_via_server"],
+  "optional": ["content.text", "content.error"],
+  "surfaces": ["card", "voice_reply"],
+  "fallback": { "card_type": "plain_result" },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "workspace": {
+        "type": "string",
+        "title": "工作区路径",
+        "description": "留空则列出全部工作区。",
+        "maxLength": 260,
+        "ui_hint": "text"
+      },
+      "session": {
+        "type": "string",
+        "title": "任务 ID 或标题片段",
+        "description": "留空则列出该工作区的全部任务。",
+        "maxLength": 128,
+        "ui_hint": "text"
+      }
+    },
+    "required": []
+  },
+  "invoke": {
+    "method": "GET",
+    "timeout_ms": 8000,
+    "url": "https://REPLACE-ME.example.com/nodelio/dsh/status",
+    "result_types": ["list", "plain_result", "error"],
+    "default_display": {
+      "card_type": "list",
+      "preferred_surface": "card",
+      "density": "compact",
+      "max_items": 8
+    }
+  },
+  "expose_mcp": true,
+  "mcp": {
+    "name": "dsh.status",
+    "description": "Query DSH task progress by workspace or session"
+  },
+  "ui": {
+    "entry_title": "DSH 进度",
+    "entry_icon": "activity"
+  }
+}

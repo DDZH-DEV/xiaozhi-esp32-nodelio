@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "request_id": "voice_req_9d55ab",
+  "app_id": "dsh.answer",
+  "status": "ok",
+  "content": [
+    {
+      "type": "text",
+      "id": "ack",
+      "text": "已允许：self.reboot 的审批请求。",
+      "markdown": false
+    }
+  ],
+  "display": {
+    "card_type": "plain_result",
+    "title": "DSH 确认",
+    "preferred_surface": "card",
+    "density": "compact",
+    "max_items": 1
+  },
+  "spoken": {
+    "text": "已允许。",
+    "language": "zh-CN"
+  }
+}

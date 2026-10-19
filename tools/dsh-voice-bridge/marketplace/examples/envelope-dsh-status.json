@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "request_id": "voice_req_8c21d0",
+  "app_id": "dsh.status",
+  "status": "ok",
+  "content": [
+    {
+      "type": "list_item",
+      "id": "step-turn2-52",
+      "title": "turn 2 / step 52",
+      "subtitle": "正在调用 pwsh · 已累计 95 次工具调用"
+    },
+    {
+      "type": "list_item",
+      "id": "model",
+      "title": "deepseek-v4.1-flash / high",
+      "subtitle": "权限 danger-full-access"
+    }
+  ],
+  "display": {
+    "card_type": "list",
+    "title": "DSH 进度",
+    "preferred_surface": "card",
+    "density": "compact",
+    "max_items": 8,
+    "ttl_sec": 10
+  },
+  "spoken": {
+    "text": "第 52 步，正在用 pwsh 干活。",
+    "language": "zh-CN"
+  }
+}

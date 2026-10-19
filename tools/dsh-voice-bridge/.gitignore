@@ -1,0 +1,4 @@
+# 校验器的依赖（ajv）仅本机安装，不入库
+node_modules/
+package.json
+package-lock.json

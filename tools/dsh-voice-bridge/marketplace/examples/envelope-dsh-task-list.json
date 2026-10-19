@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "request_id": "voice_req_7f3a1c",
+  "app_id": "dsh.task",
+  "status": "ok",
+  "content": [
+    {
+      "type": "list_item",
+      "id": "session-b2000c6b",
+      "title": "DeepSeek dsh工作台硬件对接方案",
+      "subtitle": "running · turn 2 / step 52 · pwsh"
+    },
+    {
+      "type": "list_item",
+      "id": "session-28e4c12e",
+      "title": "提交并推送 Git 更改",
+      "subtitle": "idle · turn 6 已完成 · 40 次工具"
+    },
+    {
+      "type": "list_item",
+      "id": "session-0b2b70b5",
+      "title": "Go build failed access denied",
+      "subtitle": "idle · turn 3 已完成"
+    }
+  ],
+  "display": {
+    "card_type": "list",
+    "title": "D:\\xz25",
+    "preferred_surface": "card",
+    "density": "compact",
+    "max_items": 8,
+    "ttl_sec": 30
+  },
+  "spoken": {
+    "text": "已派活。当前 3 个任务，1 个在跑，第 52 步正在用 pwsh。",
+    "language": "zh-CN"
+  }
+}

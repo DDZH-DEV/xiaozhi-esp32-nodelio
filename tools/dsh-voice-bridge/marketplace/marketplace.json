@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "market_id": "com.nodelio.dsh",
+  "name": "DSH 工作台",
+  "description": "把小智墙板接到本机 DSH 工作台：派活、查进度、确认审批。三个应用都走同步 invoke，长任务只投递不同步等待。",
+  "publisher": {
+    "name": "NodeLio",
+    "contact": "https://github.com/DDZH-DEV/nodelio-protocol/issues"
+  },
+  "updated_at": "2026-10-19T07:10:00Z",
+  "apps": [
+    {
+      "app_id": "dsh.task",
+      "name": "DSH 派活",
+      "version": "1.0.0",
+      "package_url": "https://REPLACE-ME.example.com/nodelio/dsh/packages/dsh.task/1.0.0.json",
+      "summary": "把一句口语指令投给 DSH，并列出当前任务",
+      "categories": ["tool"],
+      "min_protocol": 1,
+      "requires": ["content.list", "action.invoke", "net.http_via_server"],
+      "optional": ["content.text", "content.error", "content.action"],
+      "surfaces": ["card", "home_tile", "voice_reply"]
+    },
+    {
+      "app_id": "dsh.status",
+      "name": "DSH 进度",
+      "version": "1.0.0",
+      "package_url": "https://REPLACE-ME.example.com/nodelio/dsh/packages/dsh.status/1.0.0.json",
+      "summary": "查任务跑到第几步、卡在哪个工具",
+      "categories": ["tool"],
+      "min_protocol": 1,
+      "requires": ["content.list", "action.invoke", "net.http_via_server"],
+      "optional": ["content.text", "content.error"],
+      "surfaces": ["card", "voice_reply"]
+    },
+    {
+      "app_id": "dsh.answer",
+      "name": "DSH 确认",
+      "version": "1.0.0",
+      "package_url": "https://REPLACE-ME.example.com/nodelio/dsh/packages/dsh.answer/1.0.0.json",
+      "summary": "允许或拒绝任务挂起的审批",
+      "categories": ["tool"],
+      "min_protocol": 1,
+      "requires": ["content.text", "action.invoke", "net.http_via_server"],
+      "optional": ["content.list", "content.error"],
+      "surfaces": ["card", "voice_reply", "notification"]
+    }
+  ]
+}

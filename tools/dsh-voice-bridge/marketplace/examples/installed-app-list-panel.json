@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "device_id": "sila-86-panel-01",
+  "generated_at": "2026-10-19T07:10:00Z",
+  "apps": [
+    {
+      "instance_id": "inst_dsh_task_01",
+      "market_id": "com.nodelio.dsh",
+      "market_name": "DSH 工作台",
+      "app_id": "dsh.task",
+      "version": "1.0.0",
+      "name": "DSH 派活",
+      "summary": "把一句口语指令投给 DSH，并列出当前任务",
+      "categories": ["tool"],
+      "min_protocol": 1,
+      "enabled": true,
+      "requires": ["content.list", "action.invoke", "net.http_via_server"],
+      "optional": ["content.text", "content.error", "content.action"],
+      "surfaces": ["card", "home_tile", "voice_reply"],
+      "default_card_type": "list",
+      "fallback_card_type": "plain_result",
+      "preferred_surface": "card",
+      "density": "compact",
+      "max_items": 8,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "instruction": {
+            "type": "string",
+            "title": "要它做什么",
+            "minLength": 1,
+            "maxLength": 2000,
+            "ui_hint": "textarea"
+          },
+          "workspace": {
+            "type": "string",
+            "title": "工作区路径",
+            "maxLength": 260,
+            "ui_hint": "text"
+          }
+        },
+        "required": ["instruction"]
+      },
+      "config_present": true,
+      "deprecated": false,
+      "ui": { "entry_title": "DSH 派活", "entry_icon": "terminal" }
+    },
+    {
+      "instance_id": "inst_dsh_status_01",
+      "market_id": "com.nodelio.dsh",
+      "market_name": "DSH 工作台",
+      "app_id": "dsh.status",
+      "version": "1.0.0",
+      "name": "DSH 进度",
+      "summary": "查任务跑到第几步、卡在哪个工具",
+      "categories": ["tool"],
+      "min_protocol": 1,
+      "enabled": true,
+      "requires": ["content.list", "action.invoke", "net.http_via_server"],
+      "optional": ["content.text", "content.error"],
+      "surfaces": ["card", "voice_reply"],
+      "default_card_type": "list",
+      "fallback_card_type": "plain_result",
+      "preferred_surface": "card",
+      "density": "compact",
+      "max_items": 8,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "workspace": { "type": "string", "title": "工作区路径", "maxLength": 260 },
+          "session": { "type": "string", "title": "任务 ID 或标题片段", "maxLength": 128 }
+        },
+        "required": []
+      },
+      "config_present": true,
+      "deprecated": false,
+      "ui": { "entry_title": "DSH 进度", "entry_icon": "activity" }
+    },
+    {
+      "instance_id": "inst_dsh_answer_01",
+      "market_id": "com.nodelio.dsh",
+      "market_name": "DSH 工作台",
+      "app_id": "dsh.answer",
+      "version": "1.0.0",
+      "name": "DSH 确认",
+      "summary": "允许或拒绝任务挂起的审批",
+      "categories": ["tool"],
+      "min_protocol": 1,
+      "enabled": true,
+      "requires": ["content.text", "action.invoke", "net.http_via_server"],
+      "optional": ["content.list", "content.error"],
+      "surfaces": ["card", "voice_reply", "notification"],
+      "default_card_type": "plain_result",
+      "fallback_card_type": "plain_result",
+      "preferred_surface": "card",
+      "density": "compact",
+      "max_items": 1,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "session": { "type": "string", "title": "任务 ID", "minLength": 1, "maxLength": 128 },
+          "notice_id": { "type": "string", "title": "待确认项 ID", "minLength": 1, "maxLength": 128 },
+          "action": { "type": "string", "title": "决定", "enum": ["allow", "deny"], "default": "allow" }
+        },
+        "required": ["session", "notice_id"]
+      },
+      "config_present": true,
+      "deprecated": false,
+      "ui": { "entry_title": "DSH 确认", "entry_icon": "check" }
+    }
+  ]
+}

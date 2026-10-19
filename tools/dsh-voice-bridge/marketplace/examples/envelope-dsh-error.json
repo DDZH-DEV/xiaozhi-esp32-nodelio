@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "voice_req_bad01",
+  "app_id": "dsh.status",
+  "status": "error",
+  "error": {
+    "code": "upstream_timeout",
+    "message": "DSH 桥在 8000ms 内没有返回状态，可能是 Desktop 未运行。",
+    "retryable": true
+  },
+  "spoken": {
+    "text": "DSH 没响应，可能是工作台没开。",
+    "language": "zh-CN"
+  }
+}

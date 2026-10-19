@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "app_id": "dsh.task",
+  "version": "1.0.0",
+  "name": "DSH 派活",
+  "description": "把一句口语指令投递给 DSH 工作台执行，并返回当前工作区的任务清单。立即返回，不同步等待执行完成（协议 invoke.timeout_ms 上限 30000，长任务无法一次 invoke 内完成）。",
+  "publisher": {
+    "name": "NodeLio",
+    "contact": "https://github.com/DDZH-DEV/nodelio-protocol/issues"
+  },
+  "categories": ["tool"],
+  "min_protocol": 1,
+  "requires": ["content.list", "action.invoke", "net.http_via_server"],
+  "optional": ["content.text", "content.error", "content.action"],
+  "surfaces": ["card", "home_tile", "voice_reply"],
+  "fallback": { "card_type": "plain_result" },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "instruction": {
+        "type": "string",
+        "title": "要它做什么",
+        "description": "自然语言指令，原样作为一轮对话投给 DSH。",
+        "minLength": 1,
+        "maxLength": 2000,
+        "ui_hint": "textarea"
+      },
+      "workspace": {
+        "type": "string",
+        "title": "工作区路径",
+        "description": "留空则用 DSH 的默认工作区；填绝对路径则投进该工作区的空闲会话。",
+        "maxLength": 260,
+        "ui_hint": "text"
+      }
+    },
+    "required": ["instruction"]
+  },
+  "invoke": {
+    "method": "POST",
+    "timeout_ms": 15000,
+    "url": "https://REPLACE-ME.example.com/nodelio/dsh/task",
+    "result_types": ["list", "plain_result", "error"],
+    "default_display": {
+      "card_type": "list",
+      "preferred_surface": "card",
+      "density": "compact",
+      "max_items": 8
+    }
+  },
+  "expose_mcp": true,
+  "mcp": {
+    "name": "dsh.task",
+    "description": "Send an instruction to the DSH workbench and list its tasks"
+  },
+  "ui": {
+    "entry_title": "DSH 派活",
+    "entry_icon": "terminal"
+  }
+}
