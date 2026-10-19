@@ -25,8 +25,71 @@ constexpr UBaseType_t kNotifyTaskPriority = 5;
 constexpr uint32_t kMp3PrimeMs = 800;
 constexpr uint32_t kMp3BatchMs = 240;
 const char* TAG = "NotifyPlayer";
+constexpr int kMaxRedirects = 4;
 
 enum class StreamKind { kUnknown, kOgg, kMp3 };
+
+std::string TrimHeaderValue(std::string s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) {
+        s.erase(s.begin());
+    }
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r' || s.back() == '\n')) {
+        s.pop_back();
+    }
+    return s;
+}
+
+bool IsRedirectStatus(int status) {
+    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+}
+
+std::string UrlHost(const std::string& url) {
+    const auto scheme = url.find("://");
+    if (scheme == std::string::npos) {
+        return {};
+    }
+    const auto host_begin = scheme + 3;
+    auto host_end = url.find('/', host_begin);
+    if (host_end == std::string::npos) {
+        host_end = url.size();
+    }
+    auto colon = url.find(':', host_begin);
+    if (colon != std::string::npos && colon < host_end) {
+        host_end = colon;
+    }
+    return url.substr(host_begin, host_end - host_begin);
+}
+
+std::string ResolveLocation(const std::string& current, const std::string& raw) {
+    const std::string loc = TrimHeaderValue(raw);
+    if (loc.empty()) {
+        return {};
+    }
+    if (loc.rfind("https://", 0) == 0 || loc.rfind("http://", 0) == 0) {
+        return loc;
+    }
+    const auto scheme = current.find("://");
+    if (scheme == std::string::npos) {
+        return {};
+    }
+    if (loc.rfind("//", 0) == 0) {
+        return current.substr(0, scheme + 1) + loc;
+    }
+    const auto host_begin = scheme + 3;
+    const auto path = current.find('/', host_begin);
+    const std::string origin = path == std::string::npos ? current : current.substr(0, path);
+    if (loc[0] == '/') {
+        return origin + loc;
+    }
+    if (path == std::string::npos) {
+        return origin + "/" + loc;
+    }
+    const auto slash = current.rfind('/');
+    if (slash == std::string::npos || slash < host_begin) {
+        return origin + "/" + loc;
+    }
+    return current.substr(0, slash + 1) + loc;
+}
 
 bool IsMp3Frame(const uint8_t* p, size_t n) {
     if (n < 4 || p[0] != 0xFF || (p[1] & 0xE0) != 0xE0) {
@@ -235,49 +298,74 @@ void NotifyPlayer::WorkerTask() {
     auto http = Board::GetInstance().GetNetwork()->CreateHttp(0);
     if (http) {
         http->SetTimeout(kHttpTimeoutMs);
-        http->SetHeader("Accept", "audio/ogg, application/ogg, audio/mpeg, */*");
-        http->SetHeader("Accept-Encoding", "identity");
-        if (!device_key.empty()) {
-            http->SetHeader("X-Device-Key", device_key);
-        }
-        auto opened = http->Open("GET", audio_url);
-        if (opened) {
-            auto status = http->GetStatusCode();
-            if (status && *status >= 200 && *status < 300 && !IsCancelled(playback_id)) {
-                std::vector<uint8_t> prefetch;
-                prefetch.reserve(4096);
-                std::array<char, kHttpReadBufferSize> buffer;
-                StreamKind kind = StreamKind::kUnknown;
-                while (!IsCancelled(playback_id) && prefetch.size() < 4096 &&
-                       kind == StreamKind::kUnknown) {
-                    auto size = http->Read(buffer.data(), buffer.size());
-                    if (!size) {
-                        ESP_LOGE(TAG, "Notification HTTP read failed: %s",
-                                 size.error().ToString().c_str());
-                        break;
-                    }
-                    if (*size == 0) {
-                        break;
-                    }
-                    prefetch.insert(prefetch.end(), buffer.data(), buffer.data() + *size);
-                    kind = SniffAudio(prefetch.data(), prefetch.size());
-                }
-                if (kind == StreamKind::kOgg) {
-                    success = PlayOgg(http.get(), playback_id, prefetch.data(), prefetch.size());
-                } else if (kind == StreamKind::kMp3) {
-                    success = PlayMp3(http.get(), playback_id, prefetch.data(), prefetch.size());
-                } else if (!IsCancelled(playback_id)) {
-                    ESP_LOGE(TAG, "Unsupported audio stream");
-                }
-            } else if (!status) {
-                ESP_LOGE(TAG, "Notification HTTP status failed: %s",
-                         status.error().ToString().c_str());
-            } else {
-                ESP_LOGE(TAG, "Notification HTTP request returned status %d", *status);
+        const std::string origin_host = UrlHost(audio_url);
+        std::string url = audio_url;
+        bool opened_ok = false;
+        int status_code = 0;
+        for (int hop = 0; hop <= kMaxRedirects; ++hop) {
+            http->SetHeader("Accept", "audio/ogg, application/ogg, audio/mpeg, */*");
+            http->SetHeader("Accept-Encoding", "identity");
+            if (!device_key.empty() && UrlHost(url) == origin_host) {
+                http->SetHeader("X-Device-Key", device_key);
             }
-        } else {
-            ESP_LOGE(TAG, "Failed to open notification HTTP request: %s",
-                     opened.error().ToString().c_str());
+            auto opened = http->Open("GET", url);
+            if (!opened) {
+                ESP_LOGE(TAG, "Failed to open notification HTTP request: %s", opened.error().ToString().c_str());
+                break;
+            }
+            opened_ok = true;
+            auto status = http->GetStatusCode();
+            if (!status) {
+                ESP_LOGE(TAG, "Notification HTTP status failed: %s", status.error().ToString().c_str());
+                opened_ok = false;
+                break;
+            }
+            status_code = *status;
+            if (!IsRedirectStatus(status_code)) {
+                break;
+            }
+            const std::string next = ResolveLocation(url, http->GetResponseHeader("Location"));
+            http->Close();
+            opened_ok = false;
+            if (next.empty() || next == url) {
+                ESP_LOGE(TAG, "Notification HTTP redirect %d without next url", status_code);
+                break;
+            }
+            if (hop == kMaxRedirects) {
+                ESP_LOGE(TAG, "Notification HTTP redirect exceeded %d hops", kMaxRedirects);
+                break;
+            }
+            ESP_LOGI(TAG, "HTTP %d redirect hop=%d", status_code, hop + 1);
+            url = next;
+        }
+        if (opened_ok && status_code >= 200 && status_code < 300 && !IsCancelled(playback_id)) {
+            std::vector<uint8_t> prefetch;
+            prefetch.reserve(4096);
+            std::array<char, kHttpReadBufferSize> buffer;
+            StreamKind kind = StreamKind::kUnknown;
+            while (!IsCancelled(playback_id) && prefetch.size() < 4096 &&
+                   kind == StreamKind::kUnknown) {
+                auto size = http->Read(buffer.data(), buffer.size());
+                if (!size) {
+                    ESP_LOGE(TAG, "Notification HTTP read failed: %s",
+                             size.error().ToString().c_str());
+                    break;
+                }
+                if (*size == 0) {
+                    break;
+                }
+                prefetch.insert(prefetch.end(), buffer.data(), buffer.data() + *size);
+                kind = SniffAudio(prefetch.data(), prefetch.size());
+            }
+            if (kind == StreamKind::kOgg) {
+                success = PlayOgg(http.get(), playback_id, prefetch.data(), prefetch.size());
+            } else if (kind == StreamKind::kMp3) {
+                success = PlayMp3(http.get(), playback_id, prefetch.data(), prefetch.size());
+            } else if (!IsCancelled(playback_id)) {
+                ESP_LOGE(TAG, "Unsupported audio stream");
+            }
+        } else if (opened_ok) {
+            ESP_LOGE(TAG, "Notification HTTP request returned status %d", status_code);
         }
         http->Close();
         http.reset();

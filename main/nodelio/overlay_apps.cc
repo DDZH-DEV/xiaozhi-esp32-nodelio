@@ -2,6 +2,7 @@
 
 #include "application.h"
 #include "device_caps.h"
+#include "layout_cache.h"
 #include "media_player.h"
 #include "nl_url_util.h"
 #include "nodelio_http.h"
@@ -47,6 +48,7 @@ static lv_obj_t *s_hint;
 static nl_app_item s_items[APP_MAX];
 static int s_item_n;
 static bool s_loading;
+static bool s_have_list;
 
 static void copy_field(char *dst, size_t n, const cJSON *obj, const char *key)
 {
@@ -164,14 +166,19 @@ static void render_list(void)
                                 } else {
                                     resp[0] = '\0';
                                     int status = 0;
-                                    esp_err_t err =
-                                        nodelio_http_post_json(url, a->cfg->device_key, "{\"keyword\":\"\"}",
-                                                               &status, resp, cap - 1);
+                                    /* 天气/空气等要回源公网，默认 2.5s 读超时会 recv=0 → 假「打开失败」 */
+                                    esp_err_t err = nodelio_http_post_json_ms(
+                                        url, a->cfg->device_key, "{\"keyword\":\"\"}", &status, resp, cap - 1,
+                                        10000);
                                     /* E5：4xx/5xx 若体仍是 Envelope（error）也要上屏，不假成功 */
                                     if (err == ESP_OK && resp[0] &&
                                         (status == 200 || status == 201 ||
                                          (status >= 400 && strstr(resp, "\"schema_version\"") != nullptr))) {
                                         nodelio_skill_deliver_json(a->cfg, resp, false, nullptr, 0);
+                                    } else if (err != ESP_OK || status == 0 || !resp[0]) {
+                                        nodelio_panel_ui_toast_defer("服务器无响应");
+                                    } else if (status == 401 || status == 403) {
+                                        nodelio_panel_ui_toast_defer("未授权");
                                     } else {
                                         nodelio_panel_ui_toast_defer("打开失败");
                                     }
@@ -233,6 +240,81 @@ static void render_list(void)
     }
 }
 
+static bool items_from_json(const char *json)
+{
+    cJSON *root = cJSON_Parse(json);
+    if (!cJSON_IsArray(root)) {
+        cJSON_Delete(root);
+        return false;
+    }
+    int n = 0;
+    const cJSON *it = nullptr;
+    nl_app_item tmp[APP_MAX];
+    memset(tmp, 0, sizeof(tmp));
+    cJSON_ArrayForEach(it, root) {
+        if (n >= APP_MAX) {
+            break;
+        }
+        copy_field(tmp[n].id, sizeof(tmp[n].id), it, "id");
+        if (!tmp[n].id[0]) {
+            continue;
+        }
+        copy_field(tmp[n].name, sizeof(tmp[n].name), it, "name");
+        copy_field(tmp[n].desc, sizeof(tmp[n].desc), it, "desc");
+        const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "en");
+        tmp[n].enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
+        n++;
+    }
+    cJSON_Delete(root);
+    s_item_n = n;
+    if (n > 0) {
+        memcpy(s_items, tmp, sizeof(nl_app_item) * (size_t)n);
+    }
+    s_have_list = true;
+    return true;
+}
+
+static void persist_list(void)
+{
+    cJSON *arr = cJSON_CreateArray();
+    if (!arr) {
+        return;
+    }
+    for (int i = 0; i < s_item_n; i++) {
+        cJSON *o = cJSON_CreateObject();
+        if (!o) {
+            continue;
+        }
+        cJSON_AddStringToObject(o, "id", s_items[i].id);
+        cJSON_AddStringToObject(o, "name", s_items[i].name);
+        cJSON_AddStringToObject(o, "desc", s_items[i].desc);
+        cJSON_AddBoolToObject(o, "en", s_items[i].enabled);
+        cJSON_AddItemToArray(arr, o);
+    }
+    char *printed = cJSON_PrintUnformatted(arr);
+    cJSON_Delete(arr);
+    if (!printed) {
+        return;
+    }
+    (void)nodelio_apps_cache_save(printed, strlen(printed));
+    cJSON_free(printed);
+}
+
+static void load_disk_cache(void)
+{
+    if (s_have_list) {
+        return;
+    }
+    char *json = nullptr;
+    if (nodelio_apps_cache_load(&json) != ESP_OK || !json) {
+        return;
+    }
+    if (!items_from_json(json)) {
+        ESP_LOGW(TAG, "apps cache parse fail");
+    }
+    free(json);
+}
+
 static void apply_snap(nl_app_snap *snap)
 {
     Application::GetInstance().Schedule([snap]() {
@@ -243,9 +325,13 @@ static void apply_snap(nl_app_snap *snap)
             return;
         }
         if (snap->err[0]) {
-            s_item_n = 0;
-            set_hint(snap->err);
-            render_list();
+            if (!s_have_list) {
+                s_item_n = 0;
+                set_hint(snap->err);
+                render_list();
+            } else {
+                nl_ov_toast(snap->err);
+            }
             free(snap);
             return;
         }
@@ -254,12 +340,33 @@ static void apply_snap(nl_app_snap *snap)
             s_item_n = APP_MAX;
         }
         memcpy(s_items, snap->items, sizeof(nl_app_item) * (size_t)s_item_n);
+        s_have_list = true;
         set_hint(s_item_n > 0 ? "点按打开" : "暂无已安装应用");
         render_list();
+        persist_list();
         /* 钉选可能变化：首页下次 ensure 再拉 */
         nl_ov_home_skills_invalidate();
         free(snap);
     });
+}
+
+void nl_ov_apps_ensure(void)
+{
+    if (!s_page) {
+        return;
+    }
+    if (!s_have_list) {
+        load_disk_cache();
+    }
+    if (s_have_list) {
+        /* 已画过则只显示，不重拉、不重建（避免每次进页都滚回顶部） */
+        if (s_list && lv_obj_get_child_cnt(s_list) == 0) {
+            set_hint(s_item_n > 0 ? "点按打开" : "暂无已安装应用");
+            render_list();
+        }
+        return;
+    }
+    nl_ov_apps_refresh();
 }
 
 void nl_ov_apps_refresh(void)
@@ -493,6 +600,7 @@ void nl_ov_build_apps(void)
     lv_obj_set_flex_flow(s_page, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(s_page, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_page, LV_OBJ_FLAG_HIDDEN);
+    load_disk_cache();
 
     lv_obj_t *hdr = lv_obj_create(s_page);
     lv_obj_remove_style_all(hdr);

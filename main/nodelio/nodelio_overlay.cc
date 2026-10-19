@@ -539,7 +539,7 @@ void nl_ov_show_page(int tab)
         }
     }
     if (tab == NL_TAB_APPS) {
-        nl_ov_apps_refresh();
+        nl_ov_apps_ensure();
     }
     /* 切 Tab 不再藏小智；听/说中保持底部胶囊 */
     nl_ov_restore_ai_drawer_if_session();
@@ -788,15 +788,29 @@ void nodelio_overlay_show_chat(void)
 {
     s_want_settings = false;
     s_want_chat = true;
+
+    auto &app = Application::GetInstance();
+    const auto state = app.GetDeviceState();
+    /* 仅 idle/播报中才真正建链开麦；已在听/说只展开抽屉，勿 Toggle（会关通道） */
+    const bool need_start = (state == kDeviceStateIdle || state == kDeviceStateNotifying);
+    const chat_phase_t phase = need_start ? CHAT_CONNECT : CHAT_LISTEN;
+
     if (s_visible && s_ready) {
         DisplayLockGuard lock(nl_ov_disp());
         if (lock) {
-            /* 有多轮记录时保留正文，勿每次 Listening 用占位语盖掉 */
-            nl_ov_show_ai_drawer_session(CHAT_LISTEN);
+            nl_ov_show_ai_drawer_session(phase);
         }
-        return;
+    } else {
+        nodelio_overlay_show(false);
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            nl_ov_show_ai_drawer_session(phase);
+        }
     }
-    nodelio_overlay_show(false);
+
+    if (need_start) {
+        app.ToggleChatState();
+    }
 }
 
 void nodelio_overlay_show_connecting(void)

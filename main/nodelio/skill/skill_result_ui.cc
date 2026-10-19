@@ -1441,6 +1441,8 @@ static void fill_list(void)
         lv_obj_t *err = lv_label_create(s_card_list);
         nl_ov_set_font(err);
         lv_label_set_text(err, s_env.error_message[0] ? s_env.error_message : "技能失败");
+        lv_obj_set_width(err, lv_pct(100));
+        lv_label_set_long_mode(err, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(err, UI_DANGER_FG, 0);
         apply_card_chrome();
         return;

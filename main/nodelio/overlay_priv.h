@@ -220,6 +220,8 @@ void nl_ov_kb_set_visible(bool on);
 void nl_ov_fill_settings(void);
 void nl_ov_build_apps(void);
 void nl_ov_apps_set_visible(bool on);
+/** 有本地缓存则只画列表；无缓存才拉网。 */
+void nl_ov_apps_ensure(void);
 void nl_ov_apps_refresh(void);
 /** 应用列表可滚对象；页隐藏或不可滚时返回 NULL */
 lv_obj_t *nl_ov_apps_scroll_obj(void);

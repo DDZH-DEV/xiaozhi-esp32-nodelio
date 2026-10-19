@@ -5,6 +5,7 @@
 #include "device_caps.h"
 #include "nl_url_util.h"
 #include "nvs_config.h"
+#include "offline_cmd.h"
 #include "panel_ui.h"
 #include "skill_result_ui.h"
 
@@ -136,6 +137,23 @@ static bool cat_url(char *out, size_t out_len, const char *a, const char *b)
     return true;
 }
 
+/**
+ * 蜻蜓 lhttp 子域本身是明文 HTTP 入口；强制 HTTPS 会在本板触发 AES-DMA
+ * 内部分配失败（esp-aes OOM），流开了就断。
+ */
+static void prefer_plain_http_live(char *url, size_t len)
+{
+    if (!url || len < 16) {
+        return;
+    }
+    if (strncmp(url, "https://lhttp.qingting.fm/", 26) != 0) {
+        return;
+    }
+    /* https:// → http:// ：去掉一个字符，整体前移 */
+    memmove(url + 4, url + 5, strlen(url + 5) + 1);
+    ESP_LOGI(TAG, "live radio use plain HTTP");
+}
+
 static void resolve_url(const nodelio_nvs_config_t *cfg, const char *in, char *out, size_t out_len)
 {
     out[0] = '\0';
@@ -144,6 +162,7 @@ static void resolve_url(const nodelio_nvs_config_t *cfg, const char *in, char *o
     }
     if (strncmp(in, "http://", 7) == 0 || strncmp(in, "https://", 8) == 0) {
         (void)cat_url(out, out_len, in, nullptr);
+        prefer_plain_http_live(out, out_len);
         return;
     }
     if (strncmp(in, "sample://", 9) == 0) {
@@ -215,11 +234,21 @@ static bool speech_busy(void)
  * 语音里点歌：先等「即将播放」这句说完再开流。
  * 退下续播：通道已关但尾句还在解码器里时同样要等，否则重试会把曲目清掉。
  * 队列里已有下一条指令则放弃本次，交给后续 PLAY/STOP。
+ *
+ * 换曲时不要走这里：Notifying / HTTP 忙时解码器本就不空闲，speech_busy 会一直为真，
+ * 再碰上队列里下一条就 play superseded，表现为必须先暂停才能切下一首/下一台。
  */
 static bool wait_out_voice_cue(void)
 {
     auto &app = Application::GetInstance();
     DeviceState st = app.GetDeviceState();
+    /* 已在播媒体：交给 release_previous_http 掐流换曲，勿把曲目本身当成语音尾句。 */
+    if (st == kDeviceStateNotifying || s_playing || app.IsHttpAudioBusy()) {
+        if (uxQueueMessagesWaiting(s_q) > 0) {
+            return false;
+        }
+        return true;
+    }
     const bool in_session = st == kDeviceStateListening || st == kDeviceStateSpeaking ||
                             st == kDeviceStateConnecting;
     if (!in_session) {
@@ -320,12 +349,26 @@ static void media_worker(void *arg)
             continue;
         }
 
-        /* 重试请求：延迟 2 秒后再启动，避免立即重试 */
+        /* 重试：多等一会，让 StopNotification / AES 描述符释放 */
         if (s_retry_count > 0) {
-            ESP_LOGI(TAG, "retry delay 2s: %s", msg.title);
-            vTaskDelay(pdMS_TO_TICKS(2000));
+            ESP_LOGI(TAG, "retry delay 3s n=%d: %s", s_retry_count, msg.title);
+            vTaskDelay(pdMS_TO_TICKS(3000));
         }
 
+        /* 口令 MultiNet 若还在，先卸掉，给 TLS/AES-DMA 腾内部 DRAM */
+        nodelio_offline_cmd_stop();
+        {
+            const size_t dma = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+            const size_t intern = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+            ESP_LOGI(TAG, "before play dma_largest=%u internal_free=%u", (unsigned)dma,
+                     (unsigned)intern);
+            if (dma < 8192) {
+                ESP_LOGW(TAG, "DMA low, wait 500ms");
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+        }
+
+        prefer_plain_http_live(msg.url, sizeof(msg.url));
         std::string url(msg.url);
         std::string title(msg.title);
         std::string device_key(msg.device_key);
@@ -660,17 +703,22 @@ void nodelio_media_on_playback_ended(bool success)
     if (success && Application::GetInstance().GetDeviceState() == kDeviceStateNotifying) {
         return;
     }
-    /* 播放失败且未超过重试次数：发送重试消息到队列（由 worker 处理延迟） */
-    if (!success && s_playing && s_now_url[0] != '\0' && s_retry_count == 0 && s_q) {
-        ESP_LOGW(TAG, "playback failed, will retry: %s", s_now_title);
+    /* 播放失败：清 s_started_url，否则 worker 会 should_skip_restart 假成功跳过重试 */
+    if (!success && s_playing && s_now_url[0] != '\0' && s_retry_count < 2 && s_q) {
+        ESP_LOGW(TAG, "playback failed, will retry %d: %s", s_retry_count + 1, s_now_title);
+        s_started_url[0] = '\0';
         s_retry_count++;
+        prefer_plain_http_live(s_now_url, sizeof(s_now_url));
         media_msg_t msg{};
         msg.op = MEDIA_OP_PLAY;
         snprintf(msg.url, sizeof(msg.url), "%s", s_now_url);
         snprintf(msg.title, sizeof(msg.title), "%s", s_now_title);
         snprintf(msg.device_key, sizeof(msg.device_key), "%s", s_now_key);
-        xQueueSend(s_q, &msg, 0);
-        return;
+        if (xQueueSend(s_q, &msg, 0) != pdTRUE) {
+            ESP_LOGW(TAG, "retry queue full");
+        } else {
+            return;
+        }
     }
     /* 自然播完：切到列表下一首。须先清 playing，否则同 URL 会被 should_skip_restart 吃掉。 */
     if (success) {

@@ -1121,8 +1121,24 @@ if(CONFIG_IDF_TARGET_ESP32)
                              )
 endif()
 
+# SILA-86 is WiFi + LCD + BoxAudioCodec only. Drop other-board objects
+# (WHOLE_ARCHIVE would otherwise keep them in xiaozhi.bin).
+if(CONFIG_BOARD_TYPE_SILA_86)
+    list(REMOVE_ITEM SOURCES "audio/codecs/no_audio_codec.cc"
+                             "audio/codecs/es8374_audio_codec.cc"
+                             "audio/codecs/es8388_audio_codec.cc"
+                             "audio/codecs/es8389_audio_codec.cc"
+                             "audio/codecs/dummy_audio_codec.cc"
+                             "display/oled_display.cc"
+                             "display/emote_display.cc"
+                             "boards/common/ml307_board.cc"
+                             "boards/common/nt26_board.cc"
+                             "boards/common/dual_network_board.cc"
+                             )
+endif()
+
 # Include EspVideo if target is ESP32S3 or ESP32P4
-if(CONFIG_IDF_TARGET_ESP32S3 OR CONFIG_IDF_TARGET_ESP32P4)
+if((CONFIG_IDF_TARGET_ESP32S3 OR CONFIG_IDF_TARGET_ESP32P4) AND NOT CONFIG_BOARD_TYPE_SILA_86)
     list(APPEND SOURCES "boards/common/esp_video.cc"
                         "boards/common/rndis_board.cc"
                         )
@@ -1134,7 +1150,7 @@ if(CONFIG_IDF_TARGET_ESP32S31)
 endif()
 
 # Include Esp32Camera if target is ESP32S3
-if(CONFIG_IDF_TARGET_ESP32S3)
+if(CONFIG_IDF_TARGET_ESP32S3 AND NOT CONFIG_BOARD_TYPE_SILA_86)
     list(APPEND SOURCES "boards/common/esp32_camera.cc")
 endif()
 

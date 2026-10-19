@@ -10,5 +10,6 @@ alwaysApply: false
 - 硬件与省电：`NodeLio/ESP32-IDF/docs/hw-constraints.md`。
 - 动态技能（少改固件加第三方能力）：`docs/panel-skills.md` / PLAN 阶段 L。
 - UI：`main/nodelio/ui_theme.h` + `ui_widgets.*`；禁止散落裸 hex。
+- **Flash / 功能落点**：分区 `partitions/v2/16m.csv`；app=`xiaozhi.bin`（ota_0）、资源=`generated_assets.bin`（含 srmodels+字库）；板级 `boards/sila/sila-86/`，控家 `main/nodelio/`，离线口令 `offline_cmd*.c`。SILA 已裁 camera/4G/OLED/Emote。详见 `NodeLio/.codex/rules/esp32-idf-panel.md` §4.1 与本仓 `AGENTS.md`。
 - **禁止**代烧录；本机编不过 OOM 时用 `idf.py build -- -j2`。
 - 语音翻屏/滚屏/关弹窗硬约束见本仓库 `AGENTS.md`「语音导航」；`goto_page` 不关技能弹窗；聆听中禁止 `StopNotification` 收尾。

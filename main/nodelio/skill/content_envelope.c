@@ -260,7 +260,15 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
 
     if (strcmp(out->status, "error") == 0 || strcmp(out->status, "ok") != 0) {
         if (out->error_message[0] == '\0') {
-            copy_str(out->error_message, sizeof(out->error_message), root, "error");
+            const cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+            if (cJSON_IsString(err) && err->valuestring) {
+                snprintf(out->error_message, sizeof(out->error_message), "%s", err->valuestring);
+            } else if (cJSON_IsObject(err)) {
+                copy_str(out->error_message, sizeof(out->error_message), err, "message");
+            }
+            if (out->error_message[0] == '\0' && out->spoken[0] != '\0') {
+                snprintf(out->error_message, sizeof(out->error_message), "%s", out->spoken);
+            }
             if (out->error_message[0] == '\0') {
                 snprintf(out->error_message, sizeof(out->error_message), "技能失败");
             }

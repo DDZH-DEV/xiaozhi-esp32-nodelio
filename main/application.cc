@@ -1531,10 +1531,22 @@ void Application::HandleNotificationFinished(uint32_t playback_id, bool success)
     }
     ESP_LOGI(TAG, "Notification playback %lu %s", static_cast<unsigned long>(playback_id),
              success ? "completed" : "failed");
-    StopNotification();
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 先让媒体决定是否重试/下一首。若仍要播，勿立刻 EnableVoiceProcessing 抢 DRAM（AES OOM）。 */
     nodelio_media_on_playback_ended(success);
+    if (!success && nodelio_media_is_playing()) {
+        notify_player_.Stop();
+        auto& board = Board::GetInstance();
+        board.GetDisplay()->SetChatMessage("assistant", "");
+        board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+        if (GetDeviceState() == kDeviceStateNotifying) {
+            SetDeviceState(kDeviceStateIdle);
+        }
+        audio_service_.EnableWakeWordDetection(true);
+        return;
+    }
 #endif
+    StopNotification();
 }
 
 void Application::Schedule(std::function<void()>&& callback) {

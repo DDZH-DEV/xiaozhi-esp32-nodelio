@@ -22,6 +22,15 @@ esp_err_t nodelio_layout_cache_load(char **out_json, size_t *out_len, int *out_v
 /** 删除 layout 缓存文件；无文件/未挂载视为成功。 */
 esp_err_t nodelio_layout_cache_clear(void);
 
+/**
+ * 已装应用瘦身列表。优先 `/spiffs/panel_apps.json`；
+ * 本板无 storage 分区时落 NVS `apps_list`。
+ * *out_json 由 heap 分配，调用方 free。
+ */
+esp_err_t nodelio_apps_cache_save(const char *json, size_t len);
+esp_err_t nodelio_apps_cache_load(char **out_json);
+esp_err_t nodelio_apps_cache_clear(void);
+
 #ifdef __cplusplus
 }
 #endif

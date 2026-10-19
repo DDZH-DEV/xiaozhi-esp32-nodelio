@@ -19,7 +19,7 @@ void nodelio_overlay_hide(void);
 
 bool nodelio_overlay_visible(void);
 
-/** 切到 overlay 对话页（唤醒/聆听时调用，盖住小智白底聊天气泡）. */
+/** 展开对话抽屉；若当前 idle/播报中则 ToggleChat 建链开麦（点「进入对话」与唤醒同路径）. */
 void nodelio_overlay_show_chat(void);
 
 /** 唤醒建链：先弹出抽屉，正文显示连接进度（旧小智体验）. */

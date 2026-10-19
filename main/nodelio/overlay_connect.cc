@@ -713,6 +713,7 @@ void nl_ov_do_factory_reset(void)
     s_cfg = cfg;
     nodelio_nvs_cache_put(&cfg);
     (void)nodelio_layout_cache_clear();
+    (void)nodelio_apps_cache_clear();
     ESP_LOGW(TAG, "factory reset — reboot");
     nl_ov_toast("已清空，重启…");
     Application::GetInstance().Schedule([cfg]() {

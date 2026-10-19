@@ -162,12 +162,16 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
                 } else {
                     resp[0] = '\0';
                     int status = 0;
-                    esp_err_t err =
-                        nodelio_http_post_json(url, a->cfg.device_key, a->body, &status, resp, cap - 1);
+                    esp_err_t err = nodelio_http_post_json_ms(url, a->cfg.device_key, a->body, &status, resp,
+                                                              cap - 1, 10000);
                     if (err == ESP_OK && resp[0] &&
                         (status == 200 || status == 201 ||
                          (status >= 400 && strstr(resp, "\"schema_version\"") != nullptr))) {
                         nodelio_skill_deliver_json(&a->cfg, resp, false, nullptr, 0);
+                    } else if (err != ESP_OK || status == 0 || !resp[0]) {
+                        nodelio_panel_ui_toast_defer("服务器无响应");
+                    } else if (status == 401 || status == 403) {
+                        nodelio_panel_ui_toast_defer("未授权");
                     } else {
                         nodelio_panel_ui_toast_defer("打开失败");
                     }

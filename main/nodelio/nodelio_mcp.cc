@@ -505,10 +505,14 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
     }
     resp[0] = '\0';
     int status = 0;
-    esp_err_t err = nodelio_http_post_json(url, cfg->device_key, body.c_str(), &status, resp, cap - 1);
+    esp_err_t err =
+        nodelio_http_post_json_ms(url, cfg->device_key, body.c_str(), &status, resp, cap - 1, 10000);
     if (err != ESP_OK || (status != 200 && status != 201)) {
         ESP_LOGW(TAG, "invoke skill '%s' fail: status=%d err=%d", skill_id.c_str(), status, err);
         free(resp);
+        if (err != ESP_OK || status == 0) {
+            return std::unexpected(std::string("服务器无响应，请稍后重试"));
+        }
         return std::unexpected(std::string("调用技能失败：HTTP ") + std::to_string(status));
     }
 

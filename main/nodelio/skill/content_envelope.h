@@ -43,7 +43,7 @@ typedef struct {
     char display_title[NL_ENV_STR];
     char preferred_surface[24];
     char spoken[NL_ENV_SPOKEN];
-    char error_message[NL_ENV_STR];
+    char error_message[NL_ENV_SPOKEN];
     int ttl_sec;
     int track_n;
     nl_env_track_t tracks[NL_ENV_TRACK_MAX];
