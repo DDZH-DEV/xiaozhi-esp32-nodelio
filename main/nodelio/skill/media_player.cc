@@ -569,6 +569,8 @@ esp_err_t nodelio_media_play_track(const nodelio_nvs_config_t *cfg, const nl_env
     snprintf(s_now_title, sizeof(s_now_title), "%s", msg.title);
     snprintf(s_now_url, sizeof(s_now_url), "%s", msg.url);
     snprintf(s_now_key, sizeof(s_now_key), "%s", msg.device_key);
+    /* 入队即亮播放条，避免等语音尾句时「有列表无播放器」 */
+    nodelio_panel_ui_media_now_playing(s_now_title, true);
     ESP_LOGI(TAG, "enqueue title=%s playing=%d tail=%s", msg.title, (int)s_playing, url_tail(msg.url));
 
     if (xQueueSend(s_q, &msg, pdMS_TO_TICKS(100)) != pdTRUE) {

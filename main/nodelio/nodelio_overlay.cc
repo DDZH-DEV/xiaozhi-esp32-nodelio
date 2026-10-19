@@ -178,7 +178,7 @@ const lv_font_t *nl_ov_tile_icon_font(bool is_row)
 #define NL_STATUS_LEFT_PAD 12
 #define NL_STATUS_RIGHT_PAD (-12)
 
-/** 顶栏左挂：VYYYYMMDD（本机编译日；见 nl_build_stamp.h，不读 esp_app_desc） */
+/** 顶栏左挂：VYYYYMMDDNNN（本机编译日 + 当天第几次；见 nl_build_stamp.h） */
 static void fill_build_stamp(char *out, size_t out_len)
 {
     if (!out || out_len == 0) {

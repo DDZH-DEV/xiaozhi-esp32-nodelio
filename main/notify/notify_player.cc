@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstring>
 #include <memory>
 #include <vector>
@@ -11,6 +12,8 @@
 
 #include "board.h"
 #include "esp_ae_rate_cvt.h"
+#include "esp_audio_simple_dec.h"
+#include "esp_audio_simple_dec_default.h"
 #include "esp_mp3_dec.h"
 #include "http.h"
 #include "ogg_demuxer.h"
@@ -19,7 +22,8 @@ namespace {
 constexpr int kHttpTimeoutMs = 15000;
 /* 1KB 读 + 播放队列仅 2 格时，WiFi 稍卡就会 underrun；加大读块并提高任务优先级。 */
 constexpr size_t kHttpReadBufferSize = 4096;
-constexpr uint32_t kNotifyTaskStackSize = 12288;
+/* AAC/M4A 解码栈偏大；任务栈在 PSRAM */
+constexpr uint32_t kNotifyTaskStackSize = 24576;
 constexpr UBaseType_t kNotifyTaskPriority = 5;
 /* MP3 经 EnqueuePlaybackPcm，队列深只有 2。先攒起播、再按片送，避免几十毫秒就见底。 */
 constexpr uint32_t kMp3PrimeMs = 800;
@@ -27,7 +31,7 @@ constexpr uint32_t kMp3BatchMs = 240;
 const char* TAG = "NotifyPlayer";
 constexpr int kMaxRedirects = 4;
 
-enum class StreamKind { kUnknown, kOgg, kMp3 };
+enum class StreamKind { kUnknown, kOgg, kMp3, kM4a };
 
 std::string TrimHeaderValue(std::string s) {
     while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) {
@@ -109,6 +113,13 @@ StreamKind SniffAudio(const uint8_t* p, size_t n) {
     if (n >= 3 && std::memcmp(p, "ID3", 3) == 0) {
         return StreamKind::kMp3;
     }
+    /* ISO BMFF：box size + "ftyp"（偶有前置 free/wide，扫前 1KB） */
+    const size_t ftyp_limit = n > 1024 ? 1024 : n;
+    for (size_t i = 0; i + 8 <= ftyp_limit; ++i) {
+        if (std::memcmp(p + i + 4, "ftyp", 4) == 0) {
+            return StreamKind::kM4a;
+        }
+    }
     const size_t limit = n > 512 ? 512 : n;
     for (size_t i = 0; i + 4 <= limit; ++i) {
         if (IsMp3Frame(p + i, n - i)) {
@@ -118,8 +129,35 @@ StreamKind SniffAudio(const uint8_t* p, size_t n) {
     return StreamKind::kUnknown;
 }
 
+bool LooksM4aHint(const std::string& url, const std::string& ctype) {
+    auto has = [](const std::string& s, const char* needle) {
+        return s.find(needle) != std::string::npos;
+    };
+    std::string c = ctype;
+    std::string u = url;
+    for (char& ch : c) {
+        ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+    }
+    for (char& ch : u) {
+        ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+    }
+    if (has(c, "audio/mp4") || has(c, "audio/aac") || has(c, "audio/x-m4a") || has(c, "audio/m4a") ||
+        has(c, "video/mp4")) {
+        return true;
+    }
+    return has(u, ".m4a") || has(u, ".aac") || has(u, ".mp4");
+}
+
 bool IsSupportedUrl(const std::string& url) {
     return url.compare(0, 7, "http://") == 0 || url.compare(0, 8, "https://") == 0;
+}
+
+void EnsureM4aDecoderRegistered() {
+    static bool once = false;
+    if (!once) {
+        (void)esp_m4a_dec_register();
+        once = true;
+    }
 }
 }  // namespace
 
@@ -303,7 +341,8 @@ void NotifyPlayer::WorkerTask() {
         bool opened_ok = false;
         int status_code = 0;
         for (int hop = 0; hop <= kMaxRedirects; ++hop) {
-            http->SetHeader("Accept", "audio/ogg, application/ogg, audio/mpeg, */*");
+            http->SetHeader("Accept",
+                            "audio/ogg, application/ogg, audio/mpeg, audio/mp4, audio/aac, audio/x-m4a, */*");
             http->SetHeader("Accept-Encoding", "identity");
             if (!device_key.empty() && UrlHost(url) == origin_host) {
                 http->SetHeader("X-Device-Key", device_key);
@@ -339,11 +378,12 @@ void NotifyPlayer::WorkerTask() {
             url = next;
         }
         if (opened_ok && status_code >= 200 && status_code < 300 && !IsCancelled(playback_id)) {
+            const std::string ctype = http->GetResponseHeader("Content-Type");
             std::vector<uint8_t> prefetch;
-            prefetch.reserve(4096);
+            prefetch.reserve(8192);
             std::array<char, kHttpReadBufferSize> buffer;
             StreamKind kind = StreamKind::kUnknown;
-            while (!IsCancelled(playback_id) && prefetch.size() < 4096 &&
+            while (!IsCancelled(playback_id) && prefetch.size() < 8192 &&
                    kind == StreamKind::kUnknown) {
                 auto size = http->Read(buffer.data(), buffer.size());
                 if (!size) {
@@ -357,10 +397,15 @@ void NotifyPlayer::WorkerTask() {
                 prefetch.insert(prefetch.end(), buffer.data(), buffer.data() + *size);
                 kind = SniffAudio(prefetch.data(), prefetch.size());
             }
+            if (kind == StreamKind::kUnknown && LooksM4aHint(url, ctype)) {
+                kind = StreamKind::kM4a;
+            }
             if (kind == StreamKind::kOgg) {
                 success = PlayOgg(http.get(), playback_id, prefetch.data(), prefetch.size());
             } else if (kind == StreamKind::kMp3) {
                 success = PlayMp3(http.get(), playback_id, prefetch.data(), prefetch.size());
+            } else if (kind == StreamKind::kM4a) {
+                success = PlayM4a(http.get(), playback_id, prefetch.data(), prefetch.size());
             } else if (!IsCancelled(playback_id)) {
                 ESP_LOGE(TAG, "Unsupported audio stream");
             }
@@ -688,6 +733,270 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
 
     if (!failed && !IsCancelled(playback_id)) {
         if (!decode_pending()) {
+            failed = true;
+        } else if (!flush_stage(true)) {
+            failed = true;
+        }
+    }
+
+    close_all();
+    return played && !failed && !IsCancelled(playback_id);
+}
+
+bool NotifyPlayer::PlayM4a(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n) {
+    EnsureM4aDecoderRegistered();
+    esp_m4a_dec_cfg_t m4a_cfg = {
+        .track_idx = 0,
+        .aac_plus_enable = true,
+    };
+    esp_audio_simple_dec_cfg_t dec_cfg = {
+        .dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_M4A,
+        .dec_cfg = &m4a_cfg,
+        .cfg_size = sizeof(m4a_cfg),
+        .use_frame_dec = false,
+    };
+    esp_audio_simple_dec_handle_t decoder = nullptr;
+    if (esp_audio_simple_dec_open(&dec_cfg, &decoder) != ESP_AUDIO_ERR_OK || decoder == nullptr) {
+        ESP_LOGE(TAG, "M4A decoder open failed");
+        return false;
+    }
+
+    const int out_rate = Board::GetInstance().GetAudioCodec()->output_sample_rate();
+    const size_t prime_samples =
+        static_cast<size_t>(out_rate) * static_cast<size_t>(kMp3PrimeMs) / 1000;
+    const size_t batch_samples =
+        static_cast<size_t>(out_rate) * static_cast<size_t>(kMp3BatchMs) / 1000;
+    std::vector<uint8_t> pending;
+    if (first_n > 0) {
+        pending.assign(first, first + first_n);
+    }
+    std::vector<uint8_t> pcm_buf(4096);
+    esp_ae_rate_cvt_handle_t resampler = nullptr;
+    int resampler_src = 0;
+    uint32_t media_position_ms = 0;
+    std::vector<int16_t> stage;
+    uint32_t stage_start_ms = 0;
+    bool stage_open = false;
+    bool primed = false;
+    bool played = false;
+    bool failed = false;
+    bool logged_info = false;
+
+    auto close_all = [&]() {
+        if (resampler != nullptr) {
+            esp_ae_rate_cvt_close(resampler);
+            resampler = nullptr;
+        }
+        if (decoder != nullptr) {
+            esp_audio_simple_dec_close(decoder);
+            decoder = nullptr;
+        }
+    };
+
+    auto flush_stage = [&](bool force) -> bool {
+        while (!stage.empty()) {
+            const size_t need = primed ? batch_samples : prime_samples;
+            if (!force && stage.size() < need) {
+                return true;
+            }
+            size_t take = stage.size();
+            if (!force && take > batch_samples && primed) {
+                take = batch_samples;
+            } else if (!primed && !force && take > prime_samples) {
+                take = prime_samples;
+            }
+            std::vector<int16_t> chunk(stage.begin(), stage.begin() + static_cast<std::ptrdiff_t>(take));
+            stage.erase(stage.begin(), stage.begin() + static_cast<std::ptrdiff_t>(take));
+            const uint32_t pos = stage_start_ms;
+            if (!stage.empty()) {
+                stage_start_ms += static_cast<uint32_t>(take * 1000 / static_cast<size_t>(out_rate));
+            } else {
+                stage_open = false;
+            }
+            if (!audio_service_.EnqueuePlaybackPcm(std::move(chunk), playback_id, pos)) {
+                return false;
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (cancelled_ || !active_ || playback_id != playback_id_) {
+                    return false;
+                }
+                playback_drained_ = false;
+                stream_started_ = true;
+            }
+            primed = true;
+            played = true;
+            if (force && stage.empty()) {
+                break;
+            }
+            if (!force && stage.size() < (primed ? batch_samples : prime_samples)) {
+                break;
+            }
+        }
+        return true;
+    };
+
+    auto emit = [&](const int16_t* samples, size_t sample_n, int channels, int sample_rate) -> bool {
+        if (sample_n == 0 || channels <= 0 || sample_rate <= 0) {
+            return true;
+        }
+        std::vector<int16_t> mono;
+        if (channels == 1) {
+            mono.assign(samples, samples + sample_n);
+        } else {
+            const size_t frames = sample_n / static_cast<size_t>(channels);
+            mono.resize(frames);
+            for (size_t i = 0; i < frames; ++i) {
+                int32_t sum = 0;
+                for (int c = 0; c < channels; ++c) {
+                    sum += samples[i * static_cast<size_t>(channels) + c];
+                }
+                mono[i] = static_cast<int16_t>(sum / channels);
+            }
+        }
+        if (mono.empty()) {
+            return true;
+        }
+
+        std::vector<int16_t> play = std::move(mono);
+        if (sample_rate != out_rate) {
+            if (resampler == nullptr || resampler_src != sample_rate) {
+                if (resampler != nullptr) {
+                    esp_ae_rate_cvt_close(resampler);
+                    resampler = nullptr;
+                }
+                esp_ae_rate_cvt_cfg_t cfg = {
+                    .src_rate = static_cast<uint32_t>(sample_rate),
+                    .dest_rate = static_cast<uint32_t>(out_rate),
+                    .channel = 1,
+                    .bits_per_sample = ESP_AUDIO_BIT16,
+                    .complexity = 2,
+                    .perf_type = ESP_AE_RATE_CVT_PERF_TYPE_SPEED,
+                };
+                if (esp_ae_rate_cvt_open(&cfg, &resampler) != ESP_AE_ERR_OK || resampler == nullptr) {
+                    ESP_LOGE(TAG, "M4A resampler open failed %d -> %d", sample_rate, out_rate);
+                    return false;
+                }
+                resampler_src = sample_rate;
+                ESP_LOGI(TAG, "M4A %d Hz %d ch -> %d Hz", sample_rate, channels, out_rate);
+            }
+            uint32_t target = 0;
+            esp_ae_rate_cvt_get_max_out_sample_num(resampler, play.size(), &target);
+            std::vector<int16_t> resampled(target);
+            uint32_t actual = target;
+            if (esp_ae_rate_cvt_process(resampler, reinterpret_cast<esp_ae_sample_t>(play.data()),
+                                        play.size(), reinterpret_cast<esp_ae_sample_t>(resampled.data()),
+                                        &actual) != ESP_AE_ERR_OK) {
+                ESP_LOGE(TAG, "M4A resample failed");
+                return false;
+            }
+            resampled.resize(actual);
+            play = std::move(resampled);
+        } else if (!logged_info) {
+            ESP_LOGI(TAG, "M4A %d Hz %d ch", sample_rate, channels);
+            logged_info = true;
+        }
+
+        if (!stage_open) {
+            stage_start_ms = media_position_ms;
+            stage_open = true;
+        }
+        stage.insert(stage.end(), play.begin(), play.end());
+        media_position_ms += static_cast<uint32_t>(sample_n / static_cast<size_t>(channels) * 1000 /
+                                                    static_cast<size_t>(sample_rate));
+        return flush_stage(false);
+    };
+
+    auto decode_chunk = [&](bool eos) -> bool {
+        if (pending.empty() && !eos) {
+            return true;
+        }
+        esp_audio_simple_dec_raw_t raw = {
+            .buffer = pending.data(),
+            .len = static_cast<uint32_t>(pending.size()),
+            .eos = eos,
+            .consumed = 0,
+            .frame_recover = ESP_AUDIO_SIMPLE_DEC_RECOVERY_NONE,
+        };
+        while ((raw.len > 0 || eos) && !IsCancelled(playback_id)) {
+            esp_audio_simple_dec_out_t frame = {
+                .buffer = pcm_buf.data(),
+                .len = static_cast<uint32_t>(pcm_buf.size()),
+                .needed_size = 0,
+                .decoded_size = 0,
+            };
+            const esp_audio_err_t ret = esp_audio_simple_dec_process(decoder, &raw, &frame);
+            if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
+                const uint32_t need = frame.needed_size > 0 ? frame.needed_size : pcm_buf.size() * 2;
+                pcm_buf.resize(need);
+                continue;
+            }
+            if (ret != ESP_AUDIO_ERR_OK) {
+                ESP_LOGE(TAG, "M4A decode failed ret=%d", static_cast<int>(ret));
+                return false;
+            }
+            if (frame.decoded_size >= sizeof(int16_t)) {
+                esp_audio_simple_dec_info_t info = {};
+                if (esp_audio_simple_dec_get_info(decoder, &info) != ESP_AUDIO_ERR_OK || info.channel == 0 ||
+                    info.sample_rate == 0) {
+                    ESP_LOGE(TAG, "M4A info not ready");
+                    return false;
+                }
+                const size_t sample_n = frame.decoded_size / sizeof(int16_t);
+                if (!emit(reinterpret_cast<const int16_t*>(frame.buffer), sample_n, info.channel,
+                          static_cast<int>(info.sample_rate))) {
+                    return false;
+                }
+            }
+            if (raw.consumed == 0) {
+                break;
+            }
+            if (raw.consumed > raw.len) {
+                return false;
+            }
+            raw.len -= raw.consumed;
+            raw.buffer += raw.consumed;
+            raw.consumed = 0;
+            if (eos && raw.len == 0 && frame.decoded_size == 0) {
+                break;
+            }
+        }
+        if (raw.len <= pending.size()) {
+            const size_t done = pending.size() - raw.len;
+            if (done > 0) {
+                pending.erase(pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(done));
+            }
+        } else {
+            pending.clear();
+        }
+        return !IsCancelled(playback_id);
+    };
+
+    std::array<char, kHttpReadBufferSize> buffer;
+    while (!IsCancelled(playback_id)) {
+        if (!decode_chunk(false)) {
+            failed = true;
+            break;
+        }
+        if (pending.size() > 256 * 1024 && !played) {
+            ESP_LOGE(TAG, "M4A stream has no decodable frame (moov after mdat?)");
+            failed = true;
+            break;
+        }
+        auto size = http->Read(buffer.data(), buffer.size());
+        if (!size) {
+            ESP_LOGE(TAG, "Notification HTTP read failed: %s", size.error().ToString().c_str());
+            failed = true;
+            break;
+        }
+        if (*size == 0) {
+            break;
+        }
+        pending.insert(pending.end(), buffer.data(), buffer.data() + *size);
+    }
+
+    if (!failed && !IsCancelled(playback_id)) {
+        if (!decode_chunk(true)) {
             failed = true;
         } else if (!flush_stage(true)) {
             failed = true;

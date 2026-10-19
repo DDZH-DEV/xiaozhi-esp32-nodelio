@@ -1245,9 +1245,10 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
     # esp_app_desc 的 __DATE__ 只在该 .c 重编时更新，增量编译会停在昨天。
     set(NL_BUILD_STAMP_H "${CMAKE_BINARY_DIR}/nl_build_stamp.h")
     set(NL_BUILD_STAMP_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/nodelio/write_build_stamp.cmake")
+    # configure：仅保证头文件存在；每次 build 再 -DBUMP=1 递增当天序号
     execute_process(COMMAND ${CMAKE_COMMAND} -DOUT=${NL_BUILD_STAMP_H} -P ${NL_BUILD_STAMP_SCRIPT})
     add_custom_target(nl_build_stamp
-        COMMAND ${CMAKE_COMMAND} -DOUT=${NL_BUILD_STAMP_H} -P ${NL_BUILD_STAMP_SCRIPT}
+        COMMAND ${CMAKE_COMMAND} -DOUT=${NL_BUILD_STAMP_H} -DBUMP=1 -P ${NL_BUILD_STAMP_SCRIPT}
         BYPRODUCTS ${NL_BUILD_STAMP_H}
         VERBATIM
     )

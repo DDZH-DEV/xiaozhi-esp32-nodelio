@@ -82,6 +82,8 @@ static void news_ensure_worker(void)
 static char *s_speak_body = nullptr;
 static size_t s_speak_len = 0;
 static size_t s_speak_off = 0;
+/** 刚交给语音的这一段在正文里的字节起点，用来跟读滚屏 */
+static size_t s_speak_off_prev = 0;
 static char s_speak_id[NL_ENV_STR];
 static char s_speak_title[NL_ENV_NEWS_TITLE];
 static int64_t s_chunk_sent_us = 0;
@@ -145,6 +147,7 @@ static void news_speak_clear(void)
     }
     s_speak_len = 0;
     s_speak_off = 0;
+    s_speak_off_prev = 0;
     s_speak_id[0] = '\0';
     s_speak_title[0] = '\0';
     s_chunk_sent_us = 0;
@@ -200,6 +203,49 @@ static void news_speak_set(const char *id, const char *title, const char *body, 
     memcpy(s_speak_body, body, n + 1);
     s_speak_len = n;
     s_speak_off = 0;
+    s_speak_off_prev = 0;
+}
+
+/** 播报到哪，详情滚到哪。须在 LVGL 线程。 */
+static void news_scroll_follow(void)
+{
+    Application::GetInstance().Schedule([]() {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (!lock || !s_card_list || !s_news_body_lbl || !lv_obj_is_valid(s_news_body_lbl) ||
+            s_news_detail < 0 || s_news_detail >= s_env.news_n || !s_speak_body) {
+            return;
+        }
+        if (strcmp(s_speak_id, s_env.news[s_news_detail].id) != 0) {
+            return;
+        }
+        const char *txt = lv_label_get_text(s_news_body_lbl);
+        if (!txt || !txt[0] || strstr(txt, "正在加载") != nullptr) {
+            return;
+        }
+        size_t byte_off = s_speak_off_prev;
+        if (s_speak_from_summary) {
+            const char *nl = strchr(txt, '\n');
+            if (nl) {
+                byte_off += static_cast<size_t>(nl - txt) + 1;
+            }
+        }
+        uint32_t char_id = 0;
+        size_t i = 0;
+        while (txt[i] && i < byte_off) {
+            if ((static_cast<unsigned char>(txt[i]) & 0xC0) != 0x80) {
+                char_id++;
+            }
+            i++;
+        }
+        lv_point_t pos = {};
+        lv_label_get_letter_pos(s_news_body_lbl, char_id, &pos);
+        const lv_coord_t view_h = lv_obj_get_height(s_card_list);
+        lv_coord_t y = lv_obj_get_y(s_news_body_lbl) + pos.y - view_h / 5;
+        if (y < 0) {
+            y = 0;
+        }
+        lv_obj_scroll_to_y(s_card_list, y, LV_ANIM_ON);
+    });
 }
 
 static bool news_format_chunk(char *out, size_t out_len, bool with_title)
@@ -228,8 +274,10 @@ static bool news_format_chunk(char *out, size_t out_len, bool with_title)
     }
     memcpy(piece, s_speak_body + s_speak_off, take);
     piece[take] = '\0';
+    s_speak_off_prev = s_speak_off;
     s_speak_off = end;
     s_chunk_sent_us = esp_timer_get_time();
+    news_scroll_follow();
     const char *tail_more =
         "\n【续】请先逐字朗读以上原文，不要摘要、不要说读完。念完后再调 op=continue。同一轮不要连续调用。";
     const char *tail_done =

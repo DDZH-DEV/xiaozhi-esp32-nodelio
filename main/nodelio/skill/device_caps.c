@@ -164,7 +164,7 @@ int nodelio_caps_export_json(char *buf, size_t buf_len)
         n = snprintf(buf + off, buf_len - (size_t)off,
                      "],\"limits\":{\"max_content_bytes\":%d,\"max_list_items\":%d,"
                      "\"image\":{\"allowed\":true,\"max_edge_px\":480,\"formats\":[\"jpeg\",\"png\"]},"
-                     "\"media\":{\"formats\":[\"audio/ogg\",\"audio/mpeg\"],\"max_bitrate_kbps\":128,"
+                     "\"media\":{\"formats\":[\"audio/ogg\",\"audio/mpeg\",\"audio/mp4\",\"audio/aac\"],\"max_bitrate_kbps\":128,"
                      "\"max_duration_sec\":600,\"concurrent_with_voice_session\":false,"
                      "\"fetch\":\"http_via_server\"}}}",
                      NL_CAPS_MAX_BYTES, NL_CAPS_MAX_ITEMS);

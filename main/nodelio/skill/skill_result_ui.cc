@@ -10,6 +10,7 @@
 #include "skill_runtime.h"
 #include "ui_theme.h"
 
+#include "application.h"
 #include "display.h"
 
 #include <cJSON.h>
