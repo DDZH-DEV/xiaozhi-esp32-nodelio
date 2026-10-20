@@ -74,7 +74,7 @@ void nl_ov_home_skills_invalidate(void)
 
 static const char *skill_icon(const char *id)
 {
-    if (id && (strcmp(id, "music.search") == 0 || strcmp(id, "music_search") == 0)) {
+    if (nodelio_skill_id_is_music(id)) {
         return MATERIAL_SYMBOLS_MUSIC_NOTE;
     }
     return MATERIAL_SYMBOLS_EXPLORE;
@@ -141,8 +141,7 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
     if (xTaskCreateWithCaps(
             [](void *p) {
                 auto *a = static_cast<invoke_arg *>(p);
-                const bool music_app =
-                    strcmp(a->id, "music.search") == 0 || strcmp(a->id, "music_search") == 0;
+                const bool music_app = nodelio_skill_id_is_music(a->id);
                 if (!music_app && nodelio_media_preempt_for_heavy_app()) {
                     nodelio_panel_ui_toast_defer("已停止音乐以打开应用");
                 }
@@ -167,7 +166,10 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
                     if (err == ESP_OK && resp[0] &&
                         (status == 200 || status == 201 ||
                          (status >= 400 && strstr(resp, "\"schema_version\"") != nullptr))) {
-                        nodelio_skill_deliver_json(&a->cfg, resp, false, nullptr, 0);
+                        /* 曲库（含 market::music.search）打开即播；其它技能只上屏 */
+                        ESP_LOGI(TAG, "deliver id=%s music=%d force_play=%d", a->id, music_app ? 1 : 0,
+                                 music_app ? 1 : 0);
+                        nodelio_skill_deliver_json(&a->cfg, resp, music_app, nullptr, 0);
                     } else if (err != ESP_OK || status == 0 || !resp[0]) {
                         nodelio_panel_ui_toast_defer("服务器无响应");
                     } else if (status == 401 || status == 403) {

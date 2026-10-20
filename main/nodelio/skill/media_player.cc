@@ -355,7 +355,7 @@ static void media_worker(void *arg)
             vTaskDelay(pdMS_TO_TICKS(3000));
         }
 
-        /* 口令 MultiNet 若还在，先卸掉，给 TLS/AES-DMA 腾内部 DRAM */
+        /* 结束口令窗，恢复唤醒词。模型继续占着内部连续块，播歌后才能再识别。 */
         nodelio_offline_cmd_stop();
         {
             const size_t dma = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);

@@ -192,7 +192,8 @@ bool nodelio_offline_cmd_is_local(int command_id)
            (command_id >= NL_OC_POWER_SAVE_ON && command_id <= NL_OC_GOTO_RESET) ||
            command_id == NL_OC_PAGE_NEXT || command_id == NL_OC_PAGE_PREV ||
            command_id == NL_OC_SCROLL_DOWN || command_id == NL_OC_SCROLL_UP ||
-           (command_id >= NL_OC_APP_MUSIC && command_id <= NL_OC_APP_QUOTE);
+           (command_id >= NL_OC_APP_MUSIC && command_id <= NL_OC_APP_QUOTE) ||
+           command_id == NL_OC_SKILL_CLOSE;
 }
 
 const char *nodelio_offline_cmd_zh(int command_id)
@@ -286,9 +287,62 @@ const char *nodelio_offline_cmd_zh(int command_id)
         return "打开空气";
     case NL_OC_APP_QUOTE:
         return "打开每日一句";
+    case NL_OC_SKILL_CLOSE:
+        return "关闭播放器";
     default:
         return "未知口令";
     }
+}
+
+/* 与 offline_cmd.c 里 MultiNet 固定拼音一一对应，供设置页一览。 */
+static const nodelio_oc_catalog_entry_t k_oc_catalog[] = {
+    {"本机", "重启 / 重新启动"},
+    {"本机", "进入配网 / 配网 / 配网模式 / 打开热点"},
+    {"本机", "退下 / 再见 / 拜拜 / 息屏"},
+    {"本机", "刷新布局"},
+    {"本机", "检查更新"},
+    {"本机", "恢复出厂"},
+    {"本机", "开启省电 / 开省电"},
+    {"本机", "关闭省电 / 关省电"},
+    {"本机", "打开小智 / 开启小智"},
+    {"本机", "关闭小智"},
+    {"本机", "打开控家"},
+    {"本机", "关闭控家"},
+    {"导航", "打开首页 / 回到首页"},
+    {"导航", "打开应用"},
+    {"导航", "打开设置"},
+    {"导航", "打开连接 / 网络设置"},
+    {"导航", "显示与声音"},
+    {"导航", "打开省电"},
+    {"导航", "语音助手"},
+    {"导航", "播放器设置"},
+    {"导航", "控家设置"},
+    {"导航", "设备信息"},
+    {"导航", "下一屏 / 往后翻"},
+    {"导航", "上一屏 / 往前翻"},
+    {"导航", "往下翻 / 向下滑"},
+    {"导航", "往上翻 / 向上滑"},
+    {"播放", "上一首"},
+    {"播放", "下一首"},
+    {"播放", "暂停"},
+    {"播放", "继续播放"},
+    {"应用", "打开曲库 / 打开音乐"},
+    {"应用", "打开新闻"},
+    {"应用", "打开天气"},
+    {"应用", "打开电台"},
+    {"应用", "打开播客"},
+    {"应用", "打开空气"},
+    {"应用", "打开每日一句"},
+    {"播放", "关闭播放器 / 关闭曲库 / 关掉音乐 / 退出播放器"},
+    {"控家关", "开灯 / 关灯 / 回家 / 出门（仅控家关闭时提示）"},
+};
+
+const nodelio_oc_catalog_entry_t *nodelio_offline_cmd_catalog(size_t *count)
+{
+    if (count) {
+        *count = sizeof(k_oc_catalog) / sizeof(k_oc_catalog[0]);
+    }
+    return k_oc_catalog;
 }
 
 esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int command_id,
@@ -413,6 +467,11 @@ esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int comm
             return e;
         }
         nodelio_panel_ui_set_voice_hint(hint);
+        return ESP_OK;
+    }
+    if (command_id == NL_OC_SKILL_CLOSE) {
+        nodelio_panel_ui_set_voice_hint("已关闭播放器");
+        nodelio_skill_close_all();
         return ESP_OK;
     }
     if (command_id == NL_OC_GOODBYE) {
@@ -725,6 +784,14 @@ static int phrase_to_cmd_id(const char *phrase)
     if (strstr(phrase, "继续播放") || strstr(phrase, "继续播") || strstr(phrase, "恢复播放")) {
         return NL_OC_MEDIA_RESUME;
     }
+    /* 关曲库/播放器须在泛化「关闭」→关灯之前 */
+    if ((strstr(phrase, "关闭") || strstr(phrase, "关掉") || strstr(phrase, "关上") ||
+         strstr(phrase, "退出") || strstr(phrase, "收起")) &&
+        (strstr(phrase, "播放器") || strstr(phrase, "曲库") || strstr(phrase, "音乐") ||
+         strstr(phrase, "电台") || strstr(phrase, "播客") || strstr(phrase, "新闻") ||
+         strstr(phrase, "技能") || strstr(phrase, "应用"))) {
+        return NL_OC_SKILL_CLOSE;
+    }
     if (strstr(phrase, "回家") || strstr(phrase, "到家") || strstr(phrase, "我回来了")) {
         return NL_OC_SCENE_HOME;
     }
@@ -851,7 +918,10 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session)
         (cmd >= NL_OC_GOTO_HOME && cmd <= NL_OC_GOTO_SYS) ||
         (cmd >= NL_OC_POWER_SAVE_ON && cmd <= NL_OC_GOTO_RESET) ||
         cmd == NL_OC_PAGE_NEXT || cmd == NL_OC_PAGE_PREV ||
-        cmd == NL_OC_SCROLL_DOWN || cmd == NL_OC_SCROLL_UP) {
+        cmd == NL_OC_SCROLL_DOWN || cmd == NL_OC_SCROLL_UP ||
+        cmd == NL_OC_MEDIA_PREV || cmd == NL_OC_MEDIA_NEXT ||
+        cmd == NL_OC_MEDIA_PAUSE || cmd == NL_OC_MEDIA_RESUME ||
+        cmd == NL_OC_SKILL_CLOSE) {
         ESP_LOGI(TAG, "system phrase → %s", nodelio_offline_cmd_zh(cmd));
         if (end_session && (cmd == NL_OC_REBOOT || cmd == NL_OC_WIFI_CONFIG)) {
             *end_session = true;

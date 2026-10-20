@@ -480,7 +480,7 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
     if (skill_id.empty()) {
         return std::unexpected(std::string("skill_id 不能为空"));
     }
-    const bool music_app = skill_id == "music.search" || skill_id == "music_search";
+    const bool music_app = nodelio_skill_id_is_music(skill_id.c_str());
     if (!music_app && nodelio_media_preempt_for_heavy_app()) {
         ESP_LOGI(TAG, "preempt media before skill '%s'", skill_id.c_str());
     }
@@ -531,7 +531,9 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
 
     /* 双投递：UI Envelope + 模型短摘要（禁止只塞整段 JSON） */
     char spoken[NL_ENV_SPOKEN];
-    nodelio_skill_deliver_json(cfg, resp, true /* N4：有 media 则播首条 */, spoken, sizeof(spoken));
+    /* 是否开播跟 Envelope display.auto_play（点播/搜歌 true，「有什么歌」false）。
+     * 勿传 force：否则浏览列表也会自动播。打开曲库走 open_app，那边会 force。 */
+    nodelio_skill_deliver_json(cfg, resp, false, spoken, sizeof(spoken));
     free(resp);
     ESP_LOGI(TAG, "invoke skill '%s' spoken=%s", skill_id.c_str(), spoken[0] ? spoken : "(empty)");
     if (spoken[0]) {

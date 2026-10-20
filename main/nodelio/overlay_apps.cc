@@ -145,8 +145,7 @@ static void render_list(void)
                     if (xTaskCreateWithCaps(
                             [](void *p) {
                                 auto *a = static_cast<invoke_arg *>(p);
-                                const bool music_app = strcmp(a->id, "music.search") == 0 ||
-                                                       strcmp(a->id, "music_search") == 0;
+                                const bool music_app = nodelio_skill_id_is_music(a->id);
                                 if (!music_app && nodelio_media_preempt_for_heavy_app()) {
                                     nodelio_panel_ui_toast_defer("已停止音乐以打开应用");
                                 }
@@ -167,6 +166,7 @@ static void render_list(void)
                                     resp[0] = '\0';
                                     int status = 0;
                                     /* 天气/空气等要回源公网，默认 2.5s 读超时会 recv=0 → 假「打开失败」 */
+                                    /* 曲库空关键词：服务端按点播抽一批；auto_play_first 播首条 */
                                     esp_err_t err = nodelio_http_post_json_ms(
                                         url, a->cfg->device_key, "{\"keyword\":\"\"}", &status, resp, cap - 1,
                                         10000);
@@ -174,7 +174,9 @@ static void render_list(void)
                                     if (err == ESP_OK && resp[0] &&
                                         (status == 200 || status == 201 ||
                                          (status >= 400 && strstr(resp, "\"schema_version\"") != nullptr))) {
-                                        nodelio_skill_deliver_json(a->cfg, resp, false, nullptr, 0);
+                                        ESP_LOGI(TAG, "deliver id=%s music=%d force_play=%d", a->id,
+                                                 music_app ? 1 : 0, music_app ? 1 : 0);
+                                        nodelio_skill_deliver_json(a->cfg, resp, music_app, nullptr, 0);
                                     } else if (err != ESP_OK || status == 0 || !resp[0]) {
                                         nodelio_panel_ui_toast_defer("服务器无响应");
                                     } else if (status == 401 || status == 403) {
@@ -207,7 +209,7 @@ static void render_list(void)
         lv_obj_clear_flag(pod, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_t *ic = lv_label_create(pod);
         lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
-        const bool music = strcmp(it->id, "music.search") == 0 || strcmp(it->id, "music_search") == 0;
+        const bool music = nodelio_skill_id_is_music(it->id);
         lv_label_set_text(ic, music ? MATERIAL_SYMBOLS_MUSIC_NOTE : MATERIAL_SYMBOLS_EXPLORE);
         lv_obj_set_style_text_color(ic, it->enabled ? UI_ACCENT_SOFT : UI_TEXT_MUTED, 0);
         lv_obj_center(ic);

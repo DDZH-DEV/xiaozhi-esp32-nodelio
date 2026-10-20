@@ -4,6 +4,7 @@
 
 #include <esp_err.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -36,7 +37,7 @@ bool nodelio_offline_cmd_listening(void);
 /** AFE fetch 单声道 PCM（16k）；仅 listening 时处理。 */
 void nodelio_offline_cmd_feed(const int16_t *data, int samples);
 
-/** TLS/OTA/播歌前：停听并释放 MultiNet（不碰小智 AFE）。释放后立刻占住原 DRAM 块。 */
+/** 播歌前：结束口令窗并恢复唤醒词。不释放 MultiNet，连续内部块留给播歌后的再次唤醒。 */
 void nodelio_offline_cmd_stop(void);
 
 /** 当前 DRAM 占位代号。播歌任务开始时记下，结束时带回来，避免和下一首抢。 */
@@ -74,6 +75,13 @@ void nodelio_offline_cmd_commit_dynamic(void);
 
 /** 按布局磁贴 title 的 pinyinOn/Off 重建词表（屏上名） */
 void nodelio_offline_cmd_rebuild_from_layout(const nodelio_panel_layout_t *layout);
+
+/** 布局动态口令条数（设置页一览）。 */
+int nodelio_offline_cmd_dynamic_count(void);
+
+/** 取第 i 条动态口令：屏上名 + ON/OFF。 */
+bool nodelio_offline_cmd_dynamic_at(int i, char *name, size_t name_len, char *action,
+                                   size_t action_len);
 
 #ifdef __cplusplus
 }

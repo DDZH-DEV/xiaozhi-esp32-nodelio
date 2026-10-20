@@ -16,11 +16,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <esp_heap_caps.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
-#include <vector>
 
 #define TAG "nl_http"
 
@@ -429,28 +430,66 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
     /* 服务端限流看的是到达时刻，约等于这一下 send 完成 */
     invoke_pace.mark_sent();
 
-    std::vector<char> buf;
-    buf.reserve(4096);
+    /* 收包放 PSRAM。默认 new/vector 扩容失败会走异常桩 abort（片内 DRAM 碎片时常见）。 */
+    constexpr size_t kMaxRaw = 96 * 1024;
+    size_t cap = 4096;
+    char *raw_buf =
+        static_cast<char *>(heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!raw_buf) {
+        raw_buf = static_cast<char *>(malloc(cap));
+    }
+    if (!raw_buf) {
+        close(fd);
+        ESP_LOGW(TAG, "recv buf alloc fail");
+        return ESP_ERR_NO_MEM;
+    }
+    size_t raw_len = 0;
     char tmp[1024];
     while (true) {
         int n = recv(fd, tmp, sizeof(tmp), 0);
-        if (n > 0) {
-            buf.insert(buf.end(), tmp, tmp + n);
-            if (buf.size() > 96 * 1024) {
+        if (n <= 0) {
+            break;
+        }
+        if (raw_len + (size_t)n + 1 > cap) {
+            size_t ncap = cap * 2;
+            if (ncap < raw_len + (size_t)n + 1) {
+                ncap = raw_len + (size_t)n + 1;
+            }
+            if (ncap > kMaxRaw + 1) {
+                ncap = kMaxRaw + 1;
+            }
+            if (raw_len + (size_t)n + 1 > ncap) {
+                ESP_LOGW(TAG, "recv truncated at %u", (unsigned)raw_len);
                 break;
             }
-            continue;
+            char *nb = static_cast<char *>(
+                heap_caps_realloc(raw_buf, ncap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+            if (!nb) {
+                nb = static_cast<char *>(realloc(raw_buf, ncap));
+            }
+            if (!nb) {
+                free(raw_buf);
+                close(fd);
+                ESP_LOGW(TAG, "recv grow fail need=%u", (unsigned)ncap);
+                return ESP_ERR_NO_MEM;
+            }
+            raw_buf = nb;
+            cap = ncap;
         }
-        break;
+        memcpy(raw_buf + raw_len, tmp, (size_t)n);
+        raw_len += (size_t)n;
+        if (raw_len >= kMaxRaw) {
+            break;
+        }
     }
     close(fd);
+    raw_buf[raw_len] = '\0';
 
-    size_t raw_len = buf.size();
-    buf.push_back('\0'); /* sscanf / 日志用；body_len 仍按 raw_len */
-    const char *raw = buf.data();
+    const char *raw = raw_buf;
     int status = 0;
     if (sscanf(raw, "HTTP/%*s %d", &status) != 1) {
         ESP_LOGW(TAG, "bad status line (recv bytes=%u)", (unsigned)raw_len);
+        free(raw_buf);
         return ESP_FAIL;
     }
     if (out_status) {
@@ -473,20 +512,23 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
     if (header_has_chunked(raw, resp_hdr_len)) {
         if (!decode_chunked(body_start, body_len, &decoded)) {
             ESP_LOGW(TAG, "chunked decode fail len=%u", (unsigned)body_len);
+            free(raw_buf);
             return ESP_FAIL;
         }
         resp_body = decoded.c_str();
         resp_n = decoded.size();
     }
 
+    esp_err_t ret = ESP_OK;
     if (resp && resp_cap > 0) {
         if (out_n) {
             if (resp_n > (size_t)resp_cap) {
                 ESP_LOGW(TAG, "body %u exceeds cap %d", (unsigned)resp_n, resp_cap);
-                return ESP_ERR_INVALID_SIZE;
+                ret = ESP_ERR_INVALID_SIZE;
+            } else {
+                memcpy(resp, resp_body, resp_n);
+                *out_n = resp_n;
             }
-            memcpy(resp, resp_body, resp_n);
-            *out_n = resp_n;
         } else {
             size_t n = resp_n;
             if (n >= (size_t)resp_cap) {
@@ -496,17 +538,19 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
             resp[n] = '\0';
         }
     }
-    if (status != 200 && status != 201 && status != 304) {
+    if (ret == ESP_OK && status != 200 && status != 201 && status != 304) {
         /* 打出 body 便于定位 401/403（绑定码、密钥、配额等） */
         char trunc[160];
         size_t sn = resp_n < sizeof(trunc) - 1 ? resp_n : sizeof(trunc) - 1;
         memcpy(trunc, resp_body, sn);
         trunc[sn] = '\0';
         ESP_LOGW(TAG, "%s %s → HTTP %d body=%s", method, url, status, trunc);
-        return ESP_FAIL;
+        ret = ESP_FAIL;
+    } else if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "%s %s → HTTP %d", method, url, status);
     }
-    ESP_LOGI(TAG, "%s %s → HTTP %d", method, url, status);
-    return ESP_OK;
+    free(raw_buf);
+    return ret;
 }
 
 esp_err_t nodelio_http_post_json(const char *url, const char *device_key, const char *body, int *out_status,

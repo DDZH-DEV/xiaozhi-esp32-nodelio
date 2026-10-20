@@ -9,6 +9,7 @@
 #include "mqtt_panel.h"
 #include "nvs_config.h"
 #include "offline_cmd.h"
+#include "offline_cmd_map.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
 #include "ssid_manager.h"
@@ -1309,6 +1310,68 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_obj_set_style_text_color(lis_hint, UI_TEXT_TIP, 0);
         lv_label_set_long_mode(lis_hint, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(lis_hint, lv_pct(100));
+
+        /* 本地口令一览：固定词表 + 布局动态名 */
+        lv_obj_t *cat = settings_card(body, "可说口令");
+        lv_obj_set_style_pad_all(cat, 16, 0);
+        lv_obj_set_style_pad_row(cat, 8, 0);
+        lv_obj_t *cat_hint = lv_label_create(cat);
+        lv_label_set_text(cat_hint,
+                          s_cfg.local_cmd_en
+                              ? "唤醒后说下面任一句。布局磁贴另有开关名。"
+                              : "本地口令关闭时下列不生效，仅作参考。");
+        lv_obj_set_width(cat_hint, lv_pct(100));
+        lv_label_set_long_mode(cat_hint, LV_LABEL_LONG_WRAP);
+        nl_ov_set_font(cat_hint);
+        lv_obj_set_style_text_color(cat_hint, UI_TEXT_TIP, 0);
+
+        size_t n_cat = 0;
+        const nodelio_oc_catalog_entry_t *ents = nodelio_offline_cmd_catalog(&n_cat);
+        const char *last_group = "";
+        for (size_t i = 0; i < n_cat; i++) {
+            if (!ents[i].group || !ents[i].say) {
+                continue;
+            }
+            if (strcmp(last_group, ents[i].group) != 0) {
+                last_group = ents[i].group;
+                lv_obj_t *g = lv_label_create(cat);
+                lv_label_set_text(g, last_group);
+                nl_ov_set_font(g);
+                lv_obj_set_style_text_color(g, UI_ACCENT, 0);
+                lv_obj_set_style_pad_top(g, 4, 0);
+            }
+            lv_obj_t *row = lv_label_create(cat);
+            lv_label_set_text(row, ents[i].say);
+            lv_obj_set_width(row, lv_pct(100));
+            lv_label_set_long_mode(row, LV_LABEL_LONG_WRAP);
+            nl_ov_set_font(row);
+            lv_obj_set_style_text_color(row, UI_TEXT, 0);
+        }
+
+        const int dyn_n = nodelio_offline_cmd_dynamic_count();
+        if (dyn_n > 0) {
+            lv_obj_t *g = lv_label_create(cat);
+            lv_label_set_text(g, "布局磁贴");
+            nl_ov_set_font(g);
+            lv_obj_set_style_text_color(g, UI_ACCENT, 0);
+            lv_obj_set_style_pad_top(g, 4, 0);
+            for (int i = 0; i < dyn_n; i++) {
+                char name[40];
+                char act[8];
+                if (!nodelio_offline_cmd_dynamic_at(i, name, sizeof(name), act, sizeof(act))) {
+                    continue;
+                }
+                char line[72];
+                std::snprintf(line, sizeof(line), "%s · %s", name,
+                              strcmp(act, "ON") == 0 ? "开" : "关");
+                lv_obj_t *row = lv_label_create(cat);
+                lv_label_set_text(row, line);
+                lv_obj_set_width(row, lv_pct(100));
+                lv_label_set_long_mode(row, LV_LABEL_LONG_WRAP);
+                nl_ov_set_font(row);
+                lv_obj_set_style_text_color(row, UI_TEXT, 0);
+            }
+        }
     } else if (page == SET_PAGE_RESET) {
         lv_obj_t *card = settings_card(body, "恢复出厂");
         lv_obj_set_style_pad_all(card, 16, 0);

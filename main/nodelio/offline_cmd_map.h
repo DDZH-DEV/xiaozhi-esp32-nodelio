@@ -4,6 +4,7 @@
 #include "panel_layout.h"
 
 #include <esp_err.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -64,6 +65,8 @@ enum {
     NL_OC_APP_PODCAST = 42,
     NL_OC_APP_AIR = 43,
     NL_OC_APP_QUOTE = 44,
+    /* 停播并收起曲库/电台等技能弹窗（≠ 退下息屏） */
+    NL_OC_SKILL_CLOSE = 45,
 };
 
 /** 重启/退下等纯本机口令（不依赖 WiFi / layout）。 */
@@ -71,6 +74,14 @@ bool nodelio_offline_cmd_is_local(int command_id);
 
 /** 命令 ID → 中文口令（供 MCP / 口令提示）. */
 const char *nodelio_offline_cmd_zh(int command_id);
+
+/** 设置页「可说口令」：分组 + 用户可说的中文（多别名用「 / 」）。 */
+typedef struct {
+    const char *group;
+    const char *say;
+} nodelio_oc_catalog_entry_t;
+
+const nodelio_oc_catalog_entry_t *nodelio_offline_cmd_catalog(size_t *count);
 
 /** 按 command_id 在 layout 中找 bind 并 POST panel/command。 */
 esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int command_id,

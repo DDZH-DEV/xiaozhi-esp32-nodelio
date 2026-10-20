@@ -1635,7 +1635,16 @@ bool nodelio_skill_try_dismiss_phrase(const char *text)
         strstr(text, "控家") || strstr(text, "小智") || strstr(text, "省电")) {
         return false;
     }
-    if (!skill_ui_is_up()) {
+    /* 点名关播放器/曲库：即使弹窗已收成播放条也关 */
+    const bool named =
+        strstr(text, "播放器") || strstr(text, "曲库") || strstr(text, "音乐") ||
+        strstr(text, "电台") || strstr(text, "播客") || strstr(text, "新闻") ||
+        strstr(text, "技能") || strstr(text, "应用");
+    if (!named && !skill_ui_is_up()) {
+        return false;
+    }
+    if (named && !skill_ui_is_up() && !nodelio_media_is_playing() && !nodelio_media_is_paused()) {
+        /* 无弹窗也无在播：不当作已处理，留给其它口令 */
         return false;
     }
     /* 弹窗/播放条已在屏上：关闭电台/关掉/收起…一律停播并退下 */
@@ -1789,11 +1798,16 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content
 
     if (auto_play_first && nodelio_caps_has_media() && s_env.track_n > 0 &&
         s_env.tracks[0].playback_url[0]) {
-        /* LLM 常连打 music.search+auto_play；同曲已在播则只刷新列表，不掐 HTTP */
+        ESP_LOGI(TAG, "auto play #0 title=%s", s_env.tracks[0].title);
         play_at(0);
+    } else if (auto_play_first) {
+        ESP_LOGW(TAG, "auto play skipped caps=%d tracks=%d url0=%d",
+                 nodelio_caps_has_media() ? 1 : 0, s_env.track_n,
+                 (s_env.track_n > 0 && s_env.tracks[0].playback_url[0]) ? 1 : 0);
     }
 
-    ESP_LOGI(TAG, "show card_type=%s tracks=%d news=%d", s_env.card_type, s_env.track_n, s_env.news_n);
+    ESP_LOGI(TAG, "show card_type=%s tracks=%d news=%d auto_play=%d", s_env.card_type, s_env.track_n,
+             s_env.news_n, auto_play_first ? 1 : 0);
 }
 
 void nodelio_panel_ui_media_now_playing(const char *title, bool playing)

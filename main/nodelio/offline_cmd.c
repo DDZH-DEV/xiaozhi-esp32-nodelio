@@ -63,6 +63,17 @@ bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel_or_pin, 
 }
 void nodelio_offline_cmd_commit_dynamic(void) {}
 void nodelio_offline_cmd_rebuild_from_layout(const nodelio_panel_layout_t *layout) { (void)layout; }
+int nodelio_offline_cmd_dynamic_count(void) { return 0; }
+bool nodelio_offline_cmd_dynamic_at(int i, char *name, size_t name_len, char *action,
+                                   size_t action_len)
+{
+    (void)i;
+    (void)name;
+    (void)name_len;
+    (void)action;
+    (void)action_len;
+    return false;
+}
 
 #else
 
@@ -73,8 +84,15 @@ static volatile bool s_session;   /* 口令窗进行中（含排队执行） */
 static volatile bool s_listening; /* 仍接受 AFE feed */
 static srmodel_list_t *s_models;
 static bool s_owns_models;
+
+/* 当前正在 detect 的实例。L1 可在播歌前拆掉；L2 开机建好后不拆。 */
 static esp_mn_iface_t *s_mn;
 static model_iface_data_t *s_mn_data;
+static esp_mn_iface_t *s_l1_mn;
+static model_iface_data_t *s_l1_data;
+static esp_mn_iface_t *s_l2_mn;
+static model_iface_data_t *s_l2_data;
+
 static QueueHandle_t s_cmd_q;
 static TaskHandle_t s_cmd_task;
 static StackType_t *s_cmd_stack;
@@ -150,6 +168,10 @@ bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel_or_pin, 
         strcmp(pinyin, "wang shang fan") == 0 || strcmp(pinyin, "wang xia fan") == 0 ||
         strcmp(pinyin, "xiang shang hua") == 0 || strcmp(pinyin, "xiang xia hua") == 0 ||
         strcmp(pinyin, "zan ting") == 0 || strcmp(pinyin, "ji xu bo fang") == 0 ||
+        strcmp(pinyin, "guan bi bo fang qi") == 0 || strcmp(pinyin, "guan bi qu ku") == 0 ||
+        strcmp(pinyin, "guan bi yin yue") == 0 || strcmp(pinyin, "guan diao yin yue") == 0 ||
+        strcmp(pinyin, "tui chu bo fang qi") == 0 || strcmp(pinyin, "guan diao bo fang qi") == 0 ||
+        strcmp(pinyin, "shou qi qu ku") == 0 ||
         strcmp(pinyin, "da kai qu ku") == 0 || strcmp(pinyin, "da kai yin yue") == 0 ||
         strcmp(pinyin, "da kai xin wen") == 0 || strcmp(pinyin, "da kai tian qi") == 0 ||
         strcmp(pinyin, "da kai dian tai") == 0 || strcmp(pinyin, "da kai bo ke") == 0 ||
@@ -173,6 +195,22 @@ bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel_or_pin, 
     snprintf(cmd->name, sizeof(cmd->name), "%s", name ? name : device_id);
     snprintf(cmd->pinyin, sizeof(cmd->pinyin), "%s", pinyin);
     s_dyn_cmd_count++;
+    return true;
+}
+
+int nodelio_offline_cmd_dynamic_count(void)
+{
+    return s_dyn_cmd_count;
+}
+
+bool nodelio_offline_cmd_dynamic_at(int i, char *name, size_t name_len, char *action,
+                                   size_t action_len)
+{
+    if (i < 0 || i >= s_dyn_cmd_count || !name || name_len == 0 || !action || action_len == 0) {
+        return false;
+    }
+    snprintf(name, name_len, "%s", s_dyn_cmds[i].name);
+    snprintf(action, action_len, "%s", s_dyn_cmds[i].action);
     return true;
 }
 
@@ -222,12 +260,17 @@ void nodelio_offline_cmd_rebuild_from_layout(const nodelio_panel_layout_t *layou
     ESP_LOGI(TAG, "voice cmds from layout: %d", s_dyn_cmd_count);
 }
 
-static void install_commands(void);
+static const nl_dyn_cmd_t *find_dynamic_cmd(int cid);
+static void install_commands_level1(void);  /* L1: 全功能命令集 */
+static void install_commands_level2(void);  /* L2: 应急模式命令集（极简） */
+static esp_err_t ensure_multinet_level(int level);
 
 void nodelio_offline_cmd_commit_dynamic(void)
 {
-    if (s_mn && s_mn_data) {
-        install_commands();
+    /* 动态词只进 L1。命令表是全局的，更新前必须重新绑到 L1，避免写成 L2。 */
+    if (s_l1_mn && s_l1_data) {
+        (void)esp_mn_commands_alloc(s_l1_mn, s_l1_data);
+        install_commands_level1();
     }
 }
 
@@ -236,7 +279,7 @@ void nodelio_offline_cmd_set_done_cb(nodelio_offline_cmd_done_cb_t cb)
     s_done_cb = cb;
 }
 
-static void install_commands(void)
+static void install_commands_level1(void)
 {
     esp_mn_commands_clear();
     /* 本机系统口令：断网也可执行 */
@@ -290,6 +333,13 @@ static void install_commands(void)
         {NL_OC_SCROLL_DOWN, "xiang xia hua"},
         {NL_OC_MEDIA_PAUSE, "zan ting"},
         {NL_OC_MEDIA_RESUME, "ji xu bo fang"},
+        {NL_OC_SKILL_CLOSE, "guan bi bo fang qi"},
+        {NL_OC_SKILL_CLOSE, "guan bi qu ku"},
+        {NL_OC_SKILL_CLOSE, "guan bi yin yue"},
+        {NL_OC_SKILL_CLOSE, "guan diao yin yue"},
+        {NL_OC_SKILL_CLOSE, "tui chu bo fang qi"},
+        {NL_OC_SKILL_CLOSE, "guan diao bo fang qi"},
+        {NL_OC_SKILL_CLOSE, "shou qi qu ku"},
         {NL_OC_APP_MUSIC, "da kai qu ku"},
         {NL_OC_APP_MUSIC, "da kai yin yue"},
         {NL_OC_APP_NEWS, "da kai xin wen"},
@@ -341,19 +391,53 @@ static void install_commands(void)
     if (err) {
         ESP_LOGW(TAG, "mn commands update has %d error phrases", err->num);
     }
-    if (s_mn && s_mn_data) {
-        s_mn->print_active_speech_commands(s_mn_data);
+    if (s_l1_mn && s_l1_data) {
+        s_l1_mn->print_active_speech_commands(s_l1_data);
+    }
+}
+
+/* L2 应急模式：极简命令集（内存需求最低） */
+static void install_commands_level2(void)
+{
+    esp_mn_commands_clear();
+    /* 核心离线命令：重启 / 配网 / 退下 / 首页 / 设置 */
+    static const struct {
+        int id;
+        const char *py;
+    } k_l2[] = {
+        {NL_OC_REBOOT, "chong qi"},
+        {NL_OC_REBOOT, "chong xin qi dong"},
+        {NL_OC_WIFI_CONFIG, "pei wang"},
+        {NL_OC_WIFI_CONFIG, "jin ru pei wang"},
+        {NL_OC_GOODBYE, "tui xia"},
+        {NL_OC_GOODBYE, "zai jian"},
+        {NL_OC_GOODBYE, "bai bai"},
+        {NL_OC_GOTO_HOME, "da kai shou ye"},
+        {NL_OC_GOTO_HOME, "hui dao shou ye"},
+        {NL_OC_GOTO_SETTINGS, "da kai she zhi"},
+        {NL_OC_GOTO_SYS, "she bei xin xi"},
+    };
+    
+    for (int i = 0; i < (int)(sizeof(k_l2) / sizeof(k_l2[0])); i++) {
+        esp_err_t ret = esp_mn_commands_add(k_l2[i].id, k_l2[i].py);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "L2 cmd: id=%d pinyin='%s'", k_l2[i].id, k_l2[i].py);
+        } else {
+            ESP_LOGW(TAG, "Fail to add L2 cmd: '%s'", k_l2[i].py);
+        }
+    }
+
+    esp_mn_error_t *err = esp_mn_commands_update();
+    if (err) {
+        ESP_LOGW(TAG, "L2 mn commands update has %d error phrases", err->num);
     }
 }
 
 /* 由 application.cc 提供：复用 assets 已 load 的 srmodels，勿再找已删除的 model 分区 */
 extern srmodel_list_t *nodelio_get_srmodels(void);
 
-/* MultiNet 的 FST 必须在开机那块连续内部 RAM 上创建。播歌一旦把它 free 回堆，
- * 下载/解码里的小块会嵌进去，之后 largest 只剩 8KB，唤醒再也建不起来。
- * stop 后立刻用 s_slot 占住；开流前 yield；解码器打开后用 s_shield 占住剩余大块；
- * 关流后马上重新占住，再回主任务创建模型。 */
-static esp_err_t ensure_multinet(void);
+/* 开机最大连续内部块约 60KB，只够一份 MultiNet。播歌后堆会被切到约 8KB，建不回来。
+ * 模型从 prewarm 一直留到重启，stop() 只结束口令窗，不 destroy。 */
 
 static void *s_slot;
 static size_t s_slot_size;
@@ -464,75 +548,146 @@ void nodelio_offline_cmd_restore_after_media(int epoch)
     if (!nodelio_local_cmd_enabled() || nodelio_xiaozhi_enabled()) {
         return;
     }
-    const esp_err_t err = ensure_multinet();
-    ESP_LOGI(TAG, "restore multinet after media: %s", esp_err_to_name(err));
+    
+    /* L2 占着唯一的大块。播歌后堆已碎，拆掉 L2 也拼不出 48KB，不要在这里升级。 */
+    if (s_l2_mn && s_l2_data) {
+        ESP_LOGI(TAG, "after media keep L2");
+        return;
+    }
+    esp_err_t err = ensure_multinet_level(1);
+    if (err != ESP_OK) {
+        err = ensure_multinet_level(2);
+    }
+    ESP_LOGI(TAG, "after media rebuild %s", esp_err_to_name(err));
 }
 
-static esp_err_t ensure_multinet(void)
+/* L1 门槛 48KB；L2 词少，门槛 20KB。已建好的实例直接复用，不再看空闲块。 */
+static esp_err_t ensure_multinet_level(int level)
 {
-    if (s_mn && s_mn_data) {
+    if (level == 1 && s_l1_mn && s_l1_data) {
         return ESP_OK;
     }
-    free_slot();
+    if (level == 2 && s_l2_mn && s_l2_data) {
+        return ESP_OK;
+    }
+    if (level != 1 && level != 2) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* L1 的占位块要先还回堆，create 才能用到那块连续内存。失败再占回去。 */
+    if (level == 1) {
+        free_slot();
+    }
+
+    const size_t dram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    const size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    const size_t need_dram = (level == 1) ? 48 * 1024 : 20 * 1024;
+    if (dram_largest < need_dram || psram_largest < 160 * 1024) {
+        ESP_LOGW(TAG, "multinet L%d skipped: dram largest=%u need=%u; psram largest=%u",
+                 level, (unsigned)dram_largest, (unsigned)need_dram, (unsigned)psram_largest);
+        if (level == 1) {
+            reserve_slot();
+        }
+        return ESP_ERR_NO_MEM;
+    }
+
     if (!s_models) {
         s_models = nodelio_get_srmodels();
         s_owns_models = false;
         if (!s_models) {
-            /* 兼容旧分区表：仅当 assets 未注入时再试 partition "model" */
             s_models = esp_srmodel_init("model");
             s_owns_models = s_models != NULL;
         }
         if (!s_models) {
             ESP_LOGE(TAG, "no srmodels (assets 未加载 / 无 model 分区)");
-            reserve_slot();
+            if (level == 1) {
+                reserve_slot();
+            }
             return ESP_ERR_NOT_FOUND;
         }
     }
+
     char *mn_name = esp_srmodel_filter(s_models, ESP_MN_PREFIX, ESP_MN_CHINESE);
     if (!mn_name) {
         mn_name = esp_srmodel_filter(s_models, ESP_MN_PREFIX, NULL);
     }
     if (!mn_name) {
         ESP_LOGW(TAG, "no MultiNet in srmodels — 需 CONFIG_SR_MN_CN_MULTINET6_QUANT 并重烧 assets");
-        reserve_slot();
+        if (level == 1) {
+            reserve_slot();
+        }
         return ESP_ERR_NOT_FOUND;
     }
-    s_mn = esp_mn_handle_from_name(mn_name);
-    if (!s_mn) {
-        reserve_slot();
+
+    esp_mn_iface_t *mn = esp_mn_handle_from_name(mn_name);
+    if (!mn) {
+        if (level == 1) {
+            reserve_slot();
+        }
         return ESP_FAIL;
     }
-    /* build_fsts 里 fst_copy_fst 分配失败不检查，直接 StoreProhibited。
-     * 实测 AFE 之后内部最大连续块只有 8KB，create 必崩。不够就拒建。 */
-    const size_t k_mn_dram = 48 * 1024;
-    const size_t dram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    const size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
-    if (dram_largest < k_mn_dram || psram_largest < 160 * 1024) {
-        ESP_LOGW(TAG, "multinet skipped: dram largest=%u need=%u; psram largest=%u",
-                 (unsigned)dram_largest, (unsigned)k_mn_dram, (unsigned)psram_largest);
-        s_mn = NULL;
-        reserve_slot();
+
+    const size_t before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "creating multinet L%d dram free=%u largest=%u", level,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)before);
+
+    model_iface_data_t *mn_data = mn->create(mn_name, LISTEN_MS);
+    if (!mn_data) {
+        ESP_LOGE(TAG, "multinet L%d create failed (DRAM?)", level);
+        if (level == 1) {
+            reserve_slot();
+        }
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "multinet create dram free=%u largest=%u",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)dram_largest);
-    s_mn_data = s_mn->create(mn_name, LISTEN_MS);
-    if (!s_mn_data) {
-        ESP_LOGE(TAG, "multinet create failed (DRAM?)");
-        s_mn = NULL;
-        reserve_slot();
-        return ESP_ERR_NO_MEM;
-    }
-    if (s_mn->switch_loader_mode) {
-        model_iface_data_t *sw = s_mn->switch_loader_mode(s_mn_data, ESP_MN_LOAD_FROM_FLASH);
+
+    if (mn->switch_loader_mode) {
+        model_iface_data_t *sw = mn->switch_loader_mode(mn_data, ESP_MN_LOAD_FROM_FLASH);
         if (sw) {
-            s_mn_data = sw;
+            mn_data = sw;
         }
     }
-    (void)esp_mn_commands_alloc(s_mn, s_mn_data);
-    install_commands();
-    ESP_LOGI(TAG, "MultiNet ready %s", mn_name);
+
+    /* alloc 会丢掉上一次的短语链表，但已经 update 进模型里的 FST 还在。先绑再装词。 */
+    (void)esp_mn_commands_alloc(mn, mn_data);
+    if (level == 1) {
+        s_l1_mn = mn;
+        s_l1_data = mn_data;
+        install_commands_level1();
+    } else {
+        s_l2_mn = mn;
+        s_l2_data = mn_data;
+        install_commands_level2();
+    }
+    const size_t after = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "MultiNet L%d ready %s largest %u -> %u", level, mn_name, (unsigned)before,
+             (unsigned)after);
     return ESP_OK;
+}
+
+/* 激活指定级别的模型进行聆听 */
+static esp_err_t activate_listening_mode(int level)
+{
+    if (level == 1) {
+        s_mn = s_l1_mn;
+        s_mn_data = s_l1_data;
+    } else if (level == 2) {
+        s_mn = s_l2_mn;
+        s_mn_data = s_l2_data;
+    } else {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (s_mn && s_mn_data) {
+        s_mn->clean(s_mn_data);
+        s_mn_div = 0;
+        s_deadline_us = esp_timer_get_time() + (int64_t)LISTEN_MS * 1000;
+        s_session = true;
+        s_listening = true;
+        nodelio_panel_ui_note_activity();
+        ESP_LOGI(TAG, "activated listening mode L%d dyn=%d", level, s_dyn_cmd_count);
+    }
+    
+    return s_mn && s_mn_data ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
 static void finish_listen(const char *hint, bool ok)
@@ -556,7 +711,8 @@ static bool cmd_ends_session(int cid)
     /* 切歌会马上拆 MultiNet 给解码器。窗口若续开，AFE 会在 destroy 途中再进 detect。 */
     return cid == NL_OC_GOODBYE || cid == NL_OC_REBOOT || cid == NL_OC_WIFI_CONFIG ||
            cid == NL_OC_XIAOZHI_ON || cid == NL_OC_XIAOZHI_OFF || cid == NL_OC_MEDIA_PREV ||
-           cid == NL_OC_MEDIA_NEXT || cid == NL_OC_MEDIA_PAUSE || cid == NL_OC_MEDIA_RESUME;
+           cid == NL_OC_MEDIA_NEXT || cid == NL_OC_MEDIA_PAUSE || cid == NL_OC_MEDIA_RESUME ||
+           cid == NL_OC_SKILL_CLOSE;
 }
 
 /** 一条口令执行完后继续听，直到超时或退下/重启/配网。 */
@@ -702,13 +858,18 @@ esp_err_t nodelio_offline_cmd_prewarm(void)
         return ESP_ERR_INVALID_STATE;
     }
     ESP_LOGI(TAG, "prewarm begin");
-    esp_err_t err = ensure_multinet();
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "MultiNet prewarmed");
-    } else {
-        ESP_LOGW(TAG, "MultiNet prewarm failed: %s", esp_err_to_name(err));
+    /* 60KB 连续块只够一份模型。先建全量 L1；失败再退到 L2。 */
+    const esp_err_t e1 = ensure_multinet_level(1);
+    if (e1 == ESP_OK) {
+        ESP_LOGI(TAG, "prewarm L1");
+        return ESP_OK;
     }
-    return err;
+    ESP_LOGW(TAG, "L1 prewarm failed: %s", esp_err_to_name(e1));
+    const esp_err_t e2 = ensure_multinet_level(2);
+    if (e2 != ESP_OK) {
+        ESP_LOGW(TAG, "L2 prewarm failed: %s", esp_err_to_name(e2));
+    }
+    return e2 == ESP_OK ? ESP_OK : e1;
 }
 
 esp_err_t nodelio_offline_cmd_begin_listen(void)
@@ -734,29 +895,46 @@ esp_err_t nodelio_offline_cmd_begin_listen(void)
         ESP_LOGW(TAG, "begin_listen: not registered — system cmds only");
     }
 
-    esp_err_t err = ensure_multinet();
+    /* 已有的实例直接用。L2 占着唯一大块时不要再尝试建 L1。 */
+    int selected_level = 0;
+    if (s_l1_mn && s_l1_data) {
+        selected_level = 1;
+    } else if (s_l2_mn && s_l2_data) {
+        selected_level = 2;
+    } else if (ensure_multinet_level(1) == ESP_OK) {
+        selected_level = 1;
+    } else if (ensure_multinet_level(2) == ESP_OK) {
+        selected_level = 2;
+    }
+
+    if (!selected_level) {
+        nodelio_panel_ui_set_voice_hint("口令模型不可用");
+        nodelio_panel_ui_toast("离线语音不可用");
+        ESP_LOGW(TAG, "begin_listen failed: no multinet (dram largest=%u)",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t err = activate_listening_mode(selected_level);
     if (err != ESP_OK) {
-        nodelio_panel_ui_set_voice_hint("口令未就绪");
-        nodelio_panel_ui_toast("本地口令模型未就绪（需 MN6 assets）");
-        ESP_LOGW(TAG, "begin_listen blocked: multinet err=%s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "activate_listening_mode failed for L%d", selected_level);
         return err;
     }
+    
     err = ensure_cmd_worker();
     if (err != ESP_OK) {
         nodelio_panel_ui_toast("本地口令启动失败");
         return err;
     }
-    if (s_mn && s_mn_data) {
-        s_mn->clean(s_mn_data);
-    }
-    s_mn_div = 0;
-    s_deadline_us = esp_timer_get_time() + (int64_t)LISTEN_MS * 1000;
-    s_session = true;
-    s_listening = true;
-    nodelio_panel_ui_note_activity();
+    
+    /* 显示提示信息 */
     if (!provisioned || !registered) {
         nodelio_panel_ui_set_voice_hint("可说重启、配网、打开首页/设置");
         nodelio_panel_ui_toast(provisioned ? "未注册：重启/配网/切页" : "未绑定：重启/配网/切页");
+    } else if (selected_level == 2) {
+        /* 应急模式提示 */
+        nodelio_panel_ui_set_voice_hint("应急模式：重启/配网/退下");
+        nodelio_panel_ui_toast("触控失效时可用这些命令");
     } else if (s_dyn_cmd_count > 0) {
         nodelio_panel_ui_set_voice_hint("可连续说，退下或停顿后结束");
         nodelio_panel_ui_toast("本地口令");
@@ -767,9 +945,11 @@ esp_err_t nodelio_offline_cmd_begin_listen(void)
         nodelio_panel_ui_set_voice_hint("可说打开首页/设置/应用");
         nodelio_panel_ui_toast("无布局：切页/重启/配网");
     }
+    
     nodelio_panel_ui_play_cue(0); /* 与小智进听同款 POPUP */
-    ESP_LOGI(TAG, "local command window %dms dyn=%d layout=%d prov=%d reg=%d", LISTEN_MS,
-             s_dyn_cmd_count, have_layout ? 1 : 0, provisioned ? 1 : 0, registered ? 1 : 0);
+    ESP_LOGI(TAG, "local command window %dms level=%d dyn=%d layout=%d prov=%d reg=%d", 
+             LISTEN_MS, selected_level, s_dyn_cmd_count, have_layout ? 1 : 0, 
+             provisioned ? 1 : 0, registered ? 1 : 0);
     return ESP_OK;
 }
 
@@ -872,9 +1052,11 @@ void nodelio_offline_cmd_stop(void)
     const bool had_session = s_session || s_listening;
     s_session = false;
     s_listening = false;
-    s_dram_epoch++;
+    s_mn = NULL;
+    s_mn_data = NULL;
     portEXIT_CRITICAL(&s_mn_mux);
-    /* AFE 任务可能已拿着模型指针进了 detect，等它退出再 destroy。 */
+
+    /* 等 AFE 退出 detect。模型实例留着，不能 destroy，否则播歌会把那块切碎。 */
     for (int i = 0; i < 40; i++) {
         portENTER_CRITICAL(&s_mn_mux);
         const int busy = s_in_detect;
@@ -884,33 +1066,14 @@ void nodelio_offline_cmd_stop(void)
         }
         vTaskDelay(pdMS_TO_TICKS(5));
     }
-    esp_mn_iface_t *mn = NULL;
-    model_iface_data_t *mn_data = NULL;
-    portENTER_CRITICAL(&s_mn_mux);
-    mn = s_mn;
-    mn_data = s_mn_data;
-    s_mn = NULL;
-    s_mn_data = NULL;
-    portEXIT_CRITICAL(&s_mn_mux);
-    if (mn && mn_data) {
-        mn->destroy(mn_data);
-        /* 立刻占回刚释放的连续块，别让随后的队列/LVGL 小分配嵌进去。 */
-        reserve_slot();
+
+    if (had_session && s_done_cb) {
+        s_done_cb();
     }
-    if (s_owns_models && s_models) {
-        esp_srmodel_deinit(s_models);
-        s_models = NULL;
-        s_owns_models = false;
-    }
-    /* 播歌会 stop 模型，但 EnableLocalCommandMode 若仍开着，AFE 永远走 feed 分支、
-     * 跳过唤醒词。必须回调关掉本地口令模式并恢复唤醒。 */
-    if (had_session || mn_data) {
-        if (s_done_cb) {
-            s_done_cb();
-        }
-    }
-    ESP_LOGI(TAG, "offline cmd stopped, internal free=%u",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+
+    ESP_LOGI(TAG, "offline cmd stop keep L1=%d L2=%d dram largest=%u",
+             (s_l1_mn && s_l1_data) ? 1 : 0, (s_l2_mn && s_l2_data) ? 1 : 0,
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 }
 
 #endif /* CONFIG_NODELIO_PANEL */
