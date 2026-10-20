@@ -1199,6 +1199,14 @@ menu "NodeLio Panel (SILA-86)"
         string "Optional factory seed owner (prefer LVGL settings)"
         depends on NODELIO_PANEL
         default ""
+
+    config NODELIO_PANEL_OTA_URL
+        string "SILA-86 panel OTA manifest URL"
+        depends on NODELIO_PANEL
+        default "http://z-y.site/works/esp32s3-slia-86-update.json"
+        help
+            Static JSON: { "firmware": { "version": "YYYYMMDD.NNN", "url": "https://..." } }.
+            Compared against NODELIO_BUILD_STAMP (not Xiaozhi PROJECT_VER).
 endmenu
 
 endmenu

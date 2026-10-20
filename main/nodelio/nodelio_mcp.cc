@@ -625,7 +625,10 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
     int status = 0;
     esp_err_t err =
         nodelio_http_post_json_ms(url, cfg->device_key, body.c_str(), &status, resp, cap - 1, 10000);
-    if (err != ESP_OK || (status != 200 && status != 201)) {
+    const bool envelope_body = resp[0] && strstr(resp, "\"schema_version\"") != nullptr;
+    const bool http_ok = (status == 200 || status == 201);
+    const bool envelope_err = status >= 400 && envelope_body;
+    if (err != ESP_OK || (!http_ok && !envelope_err)) {
         ESP_LOGW(TAG, "invoke skill '%s' fail: status=%d err=%d", skill_id.c_str(), status, err);
         free(resp);
         if (status == 404) {

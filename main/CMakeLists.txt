@@ -967,6 +967,7 @@ if(CONFIG_BOARD_TYPE_SILA_86 AND CONFIG_NODELIO_PANEL)
         "nodelio/mqtt_panel.c"
         "nodelio/layout_cache.c"
         "nodelio/panel_layout.c"
+        "nodelio/diol_lan.c"
         "nodelio/nodelio_bridge.cc"
         "nodelio/fonts/font_puhui_14_1.c"
         "nodelio/skill/device_caps.c"
@@ -1222,6 +1223,24 @@ idf_component_register(SRCS ${SOURCES}
                         ${MAIN_PRIV_REQUIRES_EXTRA}
                     )
 
+# SILA 墙板：编译前按源码指纹生成 YYYYMMDD.NNN 构建号（改代码才涨，重编不涨）
+if(CONFIG_BOARD_TYPE_SILA_86 AND CONFIG_NODELIO_PANEL AND NOT CMAKE_BUILD_EARLY_EXPANSION)
+    set(NODELIO_STAMP_PY ${PROJECT_DIR}/scripts/nodelio_build_stamp.py)
+    set(NODELIO_STAMP_H ${CMAKE_CURRENT_SOURCE_DIR}/nodelio/nodelio_build_stamp.h)
+    set(NODELIO_STAMP_STATE ${PROJECT_DIR}/.nodelio_build_stamp.json)
+    add_custom_target(nodelio_gen_build_stamp
+        COMMAND ${PYTHON} ${NODELIO_STAMP_PY}
+                --root ${PROJECT_DIR}
+                --out ${NODELIO_STAMP_H}
+                --state ${NODELIO_STAMP_STATE}
+        BYPRODUCTS ${NODELIO_STAMP_H}
+        WORKING_DIRECTORY ${PROJECT_DIR}
+        COMMENT "NodeLio panel build stamp YYYYMMDD.NNN"
+        VERBATIM
+    )
+    add_dependencies(${COMPONENT_LIB} nodelio_gen_build_stamp)
+endif()
+
 # Keep project-owned C++ on GNU C++23. ESP-IDF 6 may default to a newer
 # dialect; pin the baseline so main/ does not depend on it.
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
@@ -1245,17 +1264,7 @@ endif()
 set(TEXT_FONT_SIZE "${CMAKE_MATCH_1}")
 set(TEXT_FONT_BPP "${CMAKE_MATCH_2}")
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
-    # esp_app_desc 的 __DATE__ 只在该 .c 重编时更新，增量编译会停在昨天。
-    set(NL_BUILD_STAMP_H "${CMAKE_BINARY_DIR}/nl_build_stamp.h")
-    set(NL_BUILD_STAMP_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/nodelio/write_build_stamp.cmake")
-    # configure：仅保证头文件存在；每次 build 再 -DBUMP=1 递增当天序号
-    execute_process(COMMAND ${CMAKE_COMMAND} -DOUT=${NL_BUILD_STAMP_H} -P ${NL_BUILD_STAMP_SCRIPT})
-    add_custom_target(nl_build_stamp
-        COMMAND ${CMAKE_COMMAND} -DOUT=${NL_BUILD_STAMP_H} -DBUMP=1 -P ${NL_BUILD_STAMP_SCRIPT}
-        BYPRODUCTS ${NL_BUILD_STAMP_H}
-        VERBATIM
-    )
-    add_dependencies(${COMPONENT_LIB} nl_build_stamp)
+    # 版本展示/OTA 用 nodelio_build_stamp.h（nodelio_build_stamp.py），不再每次 bump NL_BUILD_STAMP
     target_include_directories(${COMPONENT_LIB} PRIVATE "${CMAKE_BINARY_DIR}")
     target_compile_definitions(${COMPONENT_LIB}
                         PRIVATE BOARD_TYPE=\"${BOARD_TYPE}\" BOARD_NAME=\"${BOARD_NAME}\"

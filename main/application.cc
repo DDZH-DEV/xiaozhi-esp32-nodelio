@@ -546,11 +546,9 @@ void Application::ActivationTask() {
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     /*
-     * 墙板开机不做小智 OTA 版本检查：该请求走 https://api.tenclass.net（TLS + 证书链
-     * 校验），实测 DNS+TCP+TLS 4.98s、响应 4.49s，整段串在 Activating 里既拖慢进
-     * idle，又挡住息屏计时。而墙板本来就不自动刷固件，mqtt/websocket 配置与服务器
-     * 时间都已落 NVS。固件更新改为设置页「检查更新」手工触发
-     * （Application::RequestManualFirmwareCheck，同样会刷新 NVS 里的服务器配置）。
+     * 墙板开机不做 OTA 检查（省电/省时）。设置页「检查更新」手工触发
+     * RequestManualFirmwareCheck：拉 http://z-y.site/works/esp32s3-slia-86-update.json，
+     * 用构建号 YYYYMMDD.NNN 比较后按清单 url 下载 xiaozhi.bin。
      *
      * 但 MarkCurrentVersionValid 不能一起跳过：CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
      * 时，刚 OTA 上来的镜像处于 PENDING_VERIFY，不确认就会在下次重启回滚。
@@ -1819,7 +1817,7 @@ void Application::RequestManualFirmwareCheck() {
             });
             vTaskDelete(nullptr);
         },
-        "fw_chk", 4096 * 2, nullptr, 2, nullptr);
+        "fw_chk", 4096 * 3, nullptr, 2, nullptr);
     if (ok != pdPASS) {
         busy = false;
         nodelio_panel_ui_toast_defer("检查任务启动失败");

@@ -18,6 +18,12 @@
 #include "ui_widgets.h"
 #include "wifi_manager.h"
 #include "wifi_provision.h"
+#if __has_include("nodelio_build_stamp.h")
+#include "nodelio_build_stamp.h"
+#endif
+#ifndef NODELIO_BUILD_STAMP
+#define NODELIO_BUILD_STAMP "0.0.0"
+#endif
 #include <material_symbols.h>
 
 LV_FONT_DECLARE(font_material_symbols_20_4);
@@ -930,10 +936,34 @@ void nl_ov_open_settings_detail(set_page_id_t page)
             std::string ua = SystemInfo::GetUserAgent();
             sys_kv_row(dev, "固件", ua.c_str(), nullptr);
         }
+        /* 构建号：与顶栏、OTA 同一套；改 nodelio/sila 源码才涨 */
+        {
+            std::snprintf(line, sizeof(line), "V%s", NODELIO_BUILD_STAMP);
+            sys_kv_row(dev, "构建号", line, nullptr);
+        }
         {
             const esp_app_desc_t *app = esp_app_get_description();
             if (app) {
-                std::snprintf(line, sizeof(line), "%s %s", app->date, app->time);
+                /* IDF __DATE__ 是 "Oct 20 2026"，转成数字日期避免中英文混排 */
+                static const char *k_mon[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+                char mmm[4] = {};
+                int day = 0, year = 0, mon = 0, hh = 0, mm = 0, ss = 0;
+                if (std::sscanf(app->date, "%3s %d %d", mmm, &day, &year) == 3) {
+                    for (int i = 0; i < 12; ++i) {
+                        if (std::strcmp(mmm, k_mon[i]) == 0) {
+                            mon = i + 1;
+                            break;
+                        }
+                    }
+                }
+                std::sscanf(app->time, "%d:%d:%d", &hh, &mm, &ss);
+                if (mon > 0 && year > 0) {
+                    std::snprintf(line, sizeof(line), "%04d-%02d-%02d %02d:%02d:%02d", year, mon,
+                                  day, hh, mm, ss);
+                } else {
+                    std::snprintf(line, sizeof(line), "%s %s", app->date, app->time);
+                }
             } else {
                 std::snprintf(line, sizeof(line), "-");
             }
@@ -942,7 +972,6 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         sys_kv_row(dev, "作者", "Dev-SL", nullptr);
         sys_kv_row(dev, "唤醒词", "你好小智", nullptr);
         sys_kv_row(dev, "小智云", s_cfg.xiaozhi_en ? "已启用" : "已关闭", nullptr);
-        sys_kv_row(dev, "本地口令", s_cfg.local_cmd_en ? "已启用" : "已关闭", nullptr);
         sys_kv_row(dev, "本地口令", s_cfg.local_cmd_en ? "已启用" : "已关闭", nullptr);
         if (s_cfg.power_save_en) {
             std::snprintf(line, sizeof(line), "屏%ds · 网%ds · 退%d", (int)s_cfg.idle_sleep_s,

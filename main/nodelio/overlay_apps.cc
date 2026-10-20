@@ -174,13 +174,11 @@ static void render_list(void)
                                     if (err == ESP_OK && resp[0] &&
                                         (status == 200 || status == 201 ||
                                          (status >= 400 && strstr(resp, "\"schema_version\"") != nullptr))) {
-                                        ESP_LOGI(TAG, "deliver id=%s music=%d force_play=%d", a->id,
-                                                 music_app ? 1 : 0, music_app ? 1 : 0);
+                                        ESP_LOGI(TAG, "deliver id=%s music=%d force_play=%d status=%d", a->id,
+                                                 music_app ? 1 : 0, music_app ? 1 : 0, status);
                                         nodelio_skill_deliver_json(a->cfg, resp, music_app, nullptr, 0);
                                     } else if (err != ESP_OK || status == 0 || !resp[0]) {
                                         nodelio_panel_ui_toast_defer("服务器无响应");
-                                    } else if (status == 401 || status == 403) {
-                                        nodelio_panel_ui_toast_defer("未授权");
                                     } else {
                                         nodelio_panel_ui_toast_defer("打开失败");
                                     }

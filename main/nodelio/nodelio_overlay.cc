@@ -15,7 +15,12 @@
 #include "ui_theme.h"
 #include "ui_widgets.h"
 #include "wifi_provision.h"
-#include "nl_build_stamp.h"
+#if __has_include("nodelio_build_stamp.h")
+#include "nodelio_build_stamp.h"
+#endif
+#ifndef NODELIO_BUILD_STAMP
+#define NODELIO_BUILD_STAMP "0.0.0"
+#endif
 #include <material_symbols.h>
 
 LV_FONT_DECLARE(font_material_symbols_20_4);
@@ -178,17 +183,13 @@ const lv_font_t *nl_ov_tile_icon_font(bool is_row)
 #define NL_STATUS_LEFT_PAD 12
 #define NL_STATUS_RIGHT_PAD (-12)
 
-/** 顶栏左挂：VYYYYMMDDNNN（本机编译日 + 当天第几次；见 nl_build_stamp.h） */
+/** 顶栏左挂：与设置页「构建号」、OTA 同一套 NODELIO_BUILD_STAMP */
 static void fill_build_stamp(char *out, size_t out_len)
 {
     if (!out || out_len == 0) {
         return;
     }
-#ifdef NL_BUILD_STAMP
-    std::snprintf(out, out_len, "%s", NL_BUILD_STAMP);
-#else
-    std::snprintf(out, out_len, "V-");
-#endif
+    std::snprintf(out, out_len, "V%s", NODELIO_BUILD_STAMP);
 }
 
 static void status_bar_relayout(void)

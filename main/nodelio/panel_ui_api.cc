@@ -546,12 +546,38 @@ extern "C" void nodelio_panel_ui_snapshot_add(const char *device_id, const char 
     }
 }
 
+extern "C" void nodelio_panel_ui_snapshot_set_lan(const char *device_id, const char *ip, bool lan_control,
+                                                  bool has_pass)
+{
+    nl_dev_cache_t *d = nl_ov_find_dev(device_id);
+    if (!d) {
+        return;
+    }
+    d->lan_control = lan_control;
+    d->pass_required = has_pass;
+    if (ip && ip[0]) {
+        std::snprintf(d->ip, sizeof(d->ip), "%s", ip);
+    } else {
+        d->ip[0] = '\0';
+    }
+}
+
 extern "C" void nodelio_panel_ui_snapshot_add_channel(const char *device_id, int channel_index,
                                                       const char *ch_name, const char *state)
 {
     nl_dev_cache_t *d = nl_ov_find_dev(device_id);
     if (!d || !state || channel_index < 0 || d->ch_n >= NL_CH_PER_DEV) {
         return;
+    }
+    /* 同 index 已存在则覆盖（LAN 探测刷新） */
+    for (uint8_t i = 0; i < d->ch_n; i++) {
+        if (d->ch_idx[i] == (int16_t)channel_index) {
+            if (ch_name && ch_name[0]) {
+                std::snprintf(d->ch_name[i], sizeof(d->ch_name[0]), "%s", ch_name);
+            }
+            std::snprintf(d->ch_st[i], sizeof(d->ch_st[0]), "%s", state);
+            return;
+        }
     }
     d->ch_idx[d->ch_n] = (int16_t)channel_index;
     if (ch_name && ch_name[0]) {
@@ -560,6 +586,52 @@ extern "C" void nodelio_panel_ui_snapshot_add_channel(const char *device_id, int
     std::snprintf(d->ch_st[d->ch_n], sizeof(d->ch_st[0]), "%s", state);
     d->ch_cd[d->ch_n] = 0;
     d->ch_n++;
+}
+
+extern "C" void nodelio_panel_ui_set_lan_online(const char *device_id, bool online, const char *power_state)
+{
+    nl_dev_cache_t *d = nl_ov_find_dev(device_id);
+    if (!d) {
+        return;
+    }
+    d->online = online;
+    if (power_state && power_state[0]) {
+        std::snprintf(d->power, sizeof(d->power), "%s", power_state);
+    }
+}
+
+extern "C" void nodelio_panel_ui_set_lan_pass_required(const char *device_id, bool need)
+{
+    nl_dev_cache_t *d = nl_ov_find_dev(device_id);
+    if (!d) {
+        return;
+    }
+    d->pass_required = need;
+}
+
+extern "C" void nodelio_panel_ui_clear_lan_channels(const char *device_id)
+{
+    nl_dev_cache_t *d = nl_ov_find_dev(device_id);
+    if (!d) {
+        return;
+    }
+    d->ch_n = 0;
+    std::memset(d->ch_idx, 0, sizeof(d->ch_idx));
+    std::memset(d->ch_name, 0, sizeof(d->ch_name));
+    std::memset(d->ch_st, 0, sizeof(d->ch_st));
+    std::memset(d->ch_cd, 0, sizeof(d->ch_cd));
+}
+
+extern "C" void nodelio_panel_ui_refresh_tiles(void)
+{
+    if (!s_home) {
+        return;
+    }
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        return;
+    }
+    nl_ov_refresh_home_tiles();
 }
 
 extern "C" void nodelio_panel_ui_note_countdown(const char *device_id, int channel_index, int seconds)

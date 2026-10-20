@@ -1,6 +1,7 @@
 #include "panel_layout.h"
 
 #include "board_info.h"
+#include "diol_lan.h"
 #include "layout_cache.h"
 #include "nl_url_util.h"
 #include "nodelio_bridge.h"
@@ -26,6 +27,7 @@ static nodelio_nvs_config_t s_cfg;
 static int s_applied_version = -1;
 static volatile bool s_sync_kick;
 static volatile bool s_snapshot_kick;
+static volatile bool s_snapshot_force; /* status 变更：跳过 ≥60s 限频 */
 static bool s_layout_task_started;
 static StackType_t *s_layout_stack;
 static StaticTask_t s_layout_tcb;
@@ -35,7 +37,7 @@ static SemaphoreHandle_t s_layout_mu;
 static bool s_boot_cloud_done; /* 开机云端 layout+snapshot 已成功过一次 */
 static int64_t s_last_snapshot_ms; /* MQTT 自动 snapshot 限频 */
 
-/** MQTT 推送 snapshot 最短间隔；手动「刷新布局」不受限 */
+/** MQTT 推送 snapshot（非 force）最短间隔；手动刷新 / force 不受限 */
 #define NL_SNAPSHOT_MIN_INTERVAL_MS (60 * 1000)
 
 /** cJSON 节点默认吃内部 DRAM；与 WS/MQTT 并行时易 tlsf assert → 改走 PSRAM. */
@@ -558,7 +560,7 @@ esp_err_t nodelio_layout_fetch(const nodelio_nvs_config_t *cfg, int known_versio
 esp_err_t nodelio_panel_command(const nodelio_nvs_config_t *cfg, const char *widget_id, const char *action,
                                 const nl_bind_t *bind, const char *value_str, int *http_status)
 {
-    if (!cfg || !bind || cfg->server_url[0] == '\0' || cfg->device_id[0] == '\0' || cfg->device_key[0] == '\0') {
+    if (!cfg || !bind) {
         return ESP_ERR_INVALID_STATE;
     }
     if (!action) {
@@ -569,6 +571,18 @@ esp_err_t nodelio_panel_command(const nodelio_nvs_config_t *cfg, const char *wid
     }
     if (!value_str) {
         value_str = "";
+    }
+
+    /* DIOL：同网 HTTP，不经 SERVER */
+    {
+        esp_err_t diol = nodelio_diol_try_command(bind, value_str, http_status);
+        if (diol != ESP_ERR_NOT_FOUND) {
+            return diol;
+        }
+    }
+
+    if (cfg->server_url[0] == '\0' || cfg->device_id[0] == '\0' || cfg->device_key[0] == '\0') {
+        return ESP_ERR_INVALID_STATE;
     }
 
     char base[160];
@@ -707,6 +721,15 @@ esp_err_t nodelio_snapshot_fetch(const nodelio_nvs_config_t *cfg)
             }
             nodelio_panel_ui_snapshot_add(id_s, name_s, online, power);
             {
+                const cJSON *lan = cJSON_GetObjectItemCaseSensitive(d, "lanControl");
+                const cJSON *ip = cJSON_GetObjectItemCaseSensitive(d, "ipAddress");
+                const cJSON *hp = cJSON_GetObjectItemCaseSensitive(d, "hasPass");
+                if (cJSON_IsTrue(lan)) {
+                    const char *ip_s = cJSON_IsString(ip) ? ip->valuestring : "";
+                    nodelio_panel_ui_snapshot_set_lan(id_s, ip_s, true, cJSON_IsTrue(hp));
+                }
+            }
+            {
                 const cJSON *cd = cJSON_GetObjectItemCaseSensitive(d, "countdown");
                 if (cJSON_IsNumber(cd) && cd->valuedouble > 0) {
                     nodelio_panel_ui_note_countdown(id_s, -1, (int)cd->valuedouble);
@@ -735,6 +758,8 @@ esp_err_t nodelio_snapshot_fetch(const nodelio_nvs_config_t *cfg)
         }
     }
     nodelio_panel_ui_snapshot_end();
+    /* DIOL：snapshot 后同网探测覆盖 online/通道态 */
+    nodelio_diol_probe_all_from_cache();
     ESP_LOGI(TAG, "snapshot devices=%d online=%d", n, online_n);
     cJSON_Delete(root);
     return ESP_OK;
@@ -750,6 +775,7 @@ static int layout_wait_kick(void)
     if (s_sync_kick) {
         s_sync_kick = false;
         s_snapshot_kick = false;
+        s_snapshot_force = false;
         return 1;
     }
     s_snapshot_kick = false;
@@ -882,7 +908,9 @@ static void layout_sync_task(void *arg)
         } else if (!layout) {
             ESP_LOGE(TAG, "layout buf OOM");
         } else if (nodelio_wifi_is_connected()) {
-            esp_err_t err = snapshot_fetch_limited(false); /* MQTT：限频 */
+            const bool force = s_snapshot_force;
+            s_snapshot_force = false;
+            esp_err_t err = snapshot_fetch_limited(force); /* force=status；否则限频 */
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "snapshot: %s", esp_err_to_name(err));
             }
@@ -898,6 +926,12 @@ void nodelio_layout_request_sync(void)
 
 void nodelio_layout_request_snapshot(void)
 {
+    s_snapshot_kick = true;
+}
+
+void nodelio_layout_request_snapshot_force(void)
+{
+    s_snapshot_force = true;
     s_snapshot_kick = true;
 }
 

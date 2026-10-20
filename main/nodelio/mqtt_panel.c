@@ -20,28 +20,18 @@ static char s_notify_topic[96];
 static TimerHandle_t s_debounce;
 static volatile bool s_need_layout;
 static volatile bool s_need_snapshot;
+static volatile bool s_need_snapshot_force;
 static volatile bool s_connected;
 
-static void debounce_cb(TimerHandle_t t)
-{
-    (void)t;
-    bool layout = s_need_layout;
-    bool snap = s_need_snapshot;
-    s_need_layout = false;
-    s_need_snapshot = false;
-    if (layout) {
-        nodelio_layout_request_sync();
-    } else if (snap) {
-        nodelio_layout_request_snapshot();
-    }
-}
-
-static void schedule_kick(bool layout)
+static void schedule_kick_ex(bool layout, bool force)
 {
     if (layout) {
         s_need_layout = true;
     } else {
         s_need_snapshot = true;
+        if (force) {
+            s_need_snapshot_force = true;
+        }
     }
     if (!s_debounce) {
         return;
@@ -49,6 +39,31 @@ static void schedule_kick(bool layout)
     xTimerStop(s_debounce, 0);
     xTimerChangePeriod(s_debounce, pdMS_TO_TICKS(300), 0);
     xTimerStart(s_debounce, 0);
+}
+
+static void schedule_kick(bool layout)
+{
+    schedule_kick_ex(layout, false);
+}
+
+static void debounce_cb(TimerHandle_t t)
+{
+    (void)t;
+    bool layout = s_need_layout;
+    bool snap = s_need_snapshot;
+    bool force = s_need_snapshot_force;
+    s_need_layout = false;
+    s_need_snapshot = false;
+    s_need_snapshot_force = false;
+    if (layout) {
+        nodelio_layout_request_sync();
+    } else if (snap) {
+        if (force) {
+            nodelio_layout_request_snapshot_force();
+        } else {
+            nodelio_layout_request_snapshot();
+        }
+    }
 }
 
 static void handle_notify_payload(const char *data, int len)
@@ -88,7 +103,9 @@ static void handle_notify_payload(const char *data, int len)
             nodelio_panel_ui_set_countdown(id->valuestring, ch_idx, sec);
         }
     } else {
-        schedule_kick(false);
+        /* snapshot；force=true 时跳过固件 ≥60s 限频（online/status） */
+        const cJSON *force = cJSON_GetObjectItemCaseSensitive(root, "force");
+        schedule_kick_ex(false, cJSON_IsTrue(force));
     }
     cJSON_Delete(root);
 }

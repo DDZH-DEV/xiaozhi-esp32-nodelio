@@ -2,6 +2,14 @@
 #include "system_info.h"
 #include "settings.h"
 #include "assets/lang_config.h"
+#if defined(CONFIG_BOARD_TYPE_SILA_86) && defined(CONFIG_NODELIO_PANEL)
+#if __has_include("nodelio_build_stamp.h")
+#include "nodelio_build_stamp.h"
+#endif
+#ifndef NODELIO_BUILD_STAMP
+#define NODELIO_BUILD_STAMP "0.0.0"
+#endif
+#endif
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -31,10 +39,15 @@
 static constexpr int kOtaHttpTimeoutMs = 15000;
 
 Ota::Ota() {
-    /* 墙板开机跳过 CheckVersion，current_version_ 只能在这里取，供「版本 x.y.z」提示用。 */
+    /* 墙板开机跳过 CheckVersion，current_version_ 只能在这里取，供「版本」提示用。 */
+#if defined(CONFIG_BOARD_TYPE_SILA_86) && defined(CONFIG_NODELIO_PANEL)
+    /* 升级比较以构建号 YYYYMMDD.NNN 为准（改代码才涨）；小智 PROJECT_VER 仍在 app_desc 里不动。 */
+    current_version_ = NODELIO_BUILD_STAMP;
+#else
     if (const esp_app_desc_t* app_desc = esp_app_get_description(); app_desc != nullptr) {
         current_version_ = app_desc->version;
     }
+#endif
 #ifdef ESP_EFUSE_BLOCK_USR_DATA
     // USER_DATA may contain board metadata instead of a textual serial number.
     uint8_t serial_number[32] = {0};
@@ -65,7 +78,16 @@ std::string Ota::GetCheckVersionUrl() {
     Settings settings("wifi", false);
     std::string url = settings.GetString("ota_url");
     if (url.empty()) {
+#if defined(CONFIG_BOARD_TYPE_SILA_86) && defined(CONFIG_NODELIO_PANEL)
+        /* 墙板走自建清单，不走 api.tenclass.net */
+#ifdef CONFIG_NODELIO_PANEL_OTA_URL
+        url = CONFIG_NODELIO_PANEL_OTA_URL;
+#else
+        url = "http://z-y.site/works/esp32s3-slia-86-update.json";
+#endif
+#else
         url = CONFIG_OTA_URL;
+#endif
     }
     return url;
 }
@@ -102,12 +124,17 @@ std::unique_ptr<Http> Ota::SetupHttp() {
  * Specification: https://ccnphfhqs21z.feishu.cn/wiki/FjW6wZmisimNBBkov6OcmfvknVd
  */
 NetworkResult<> Ota::CheckVersion() {
-    auto& board = Board::GetInstance();
     auto app_desc = esp_app_get_description();
 
     // Check if there is a new firmware version available
+#if defined(CONFIG_BOARD_TYPE_SILA_86) && defined(CONFIG_NODELIO_PANEL)
+    current_version_ = NODELIO_BUILD_STAMP;
+    ESP_LOGI(TAG, "Current build stamp: %s (app_desc=%s)", current_version_.c_str(),
+             app_desc ? app_desc->version : "?");
+#else
     current_version_ = app_desc->version;
     ESP_LOGI(TAG, "Current version: %s", current_version_.c_str());
+#endif
 
     std::string url = GetCheckVersionUrl();
     if (url.length() < 10) {
@@ -116,15 +143,27 @@ NetworkResult<> Ota::CheckVersion() {
     }
 
     auto http = SetupHttp();
+    std::string data;
 
-    std::string data = board.GetSystemInfoJson();
-    std::string method = data.length() > 0 ? "POST" : "GET";
-    http->SetContent(std::move(data));
-
-    if (auto opened = http->Open(method, url); !opened) {
+#if defined(CONFIG_BOARD_TYPE_SILA_86) && defined(CONFIG_NODELIO_PANEL)
+    /* 静态清单：只 GET JSON，不 POST 小智系统信息 */
+    ESP_LOGI(TAG, "Panel OTA manifest: %s", url.c_str());
+    if (auto opened = http->Open("GET", url); !opened) {
         ESP_LOGE(TAG, "Failed to open HTTP connection: %s", opened.error().ToString().c_str());
         return opened;
     }
+#else
+    {
+        auto& board = Board::GetInstance();
+        data = board.GetSystemInfoJson();
+        std::string method = data.length() > 0 ? "POST" : "GET";
+        http->SetContent(std::move(data));
+        if (auto opened = http->Open(method, url); !opened) {
+            ESP_LOGE(TAG, "Failed to open HTTP connection: %s", opened.error().ToString().c_str());
+            return opened;
+        }
+    }
+#endif
 
     auto status_code = http->GetStatusCode();
     if (!status_code) {
@@ -148,6 +187,42 @@ NetworkResult<> Ota::CheckVersion() {
         ESP_LOGE(TAG, "Failed to parse JSON response");
         return std::unexpected(NetworkError::ProtocolError());
     }
+
+#if defined(CONFIG_BOARD_TYPE_SILA_86) && defined(CONFIG_NODELIO_PANEL)
+    /* 墙板清单只关心 firmware.version / url；忽略小智 mqtt/activation 段 */
+    has_activation_code_ = false;
+    has_activation_challenge_ = false;
+    has_mqtt_config_ = false;
+    has_websocket_config_ = false;
+    has_server_time_ = false;
+    has_new_version_ = false;
+    cJSON *firmware = cJSON_GetObjectItem(root, "firmware");
+    if (cJSON_IsObject(firmware)) {
+        cJSON *version = cJSON_GetObjectItem(firmware, "version");
+        cJSON *fw_url = cJSON_GetObjectItem(firmware, "url");
+        if (cJSON_IsString(version)) {
+            firmware_version_ = version->valuestring;
+        }
+        if (cJSON_IsString(fw_url)) {
+            firmware_url_ = fw_url->valuestring;
+        }
+        if (cJSON_IsString(version) && cJSON_IsString(fw_url) && firmware_url_.size() > 8) {
+            has_new_version_ = IsNewVersionAvailable(current_version_, firmware_version_);
+            cJSON *force = cJSON_GetObjectItem(firmware, "force");
+            if (cJSON_IsNumber(force) && force->valueint == 1) {
+                has_new_version_ = true;
+            }
+            ESP_LOGI(TAG, "manifest version=%s current=%s newer=%d url=%s", firmware_version_.c_str(),
+                     current_version_.c_str(), has_new_version_ ? 1 : 0, firmware_url_.c_str());
+        } else {
+            ESP_LOGW(TAG, "Panel OTA manifest missing firmware.version/url");
+        }
+    } else {
+        ESP_LOGW(TAG, "Panel OTA manifest has no firmware object");
+    }
+    cJSON_Delete(root);
+    return {};
+#else
 
     has_activation_code_ = false;
     has_activation_challenge_ = false;
@@ -272,6 +347,7 @@ NetworkResult<> Ota::CheckVersion() {
 
     cJSON_Delete(root);
     return {};
+#endif
 }
 
 void Ota::MarkCurrentVersionValid() {

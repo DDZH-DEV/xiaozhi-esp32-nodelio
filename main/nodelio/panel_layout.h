@@ -139,7 +139,7 @@ esp_err_t nodelio_panel_command(const nodelio_nvs_config_t *cfg, const char *wid
 
 /**
  * 起后台 kick 任务；若尚未成功过云端同步则同步拉 layout+snapshot 一次。
- * 策略：开机一次 + MQTT 推送（snapshot ≥60s 限频）+ 设置页手动刷新；
+ * 策略：开机一次 + MQTT 推送（power snapshot ≥60s 限频；status force 不限）+ 设置页手动刷新；
  * 无定时轮询；语音会话中延后。应在 register 成功之后调用。
  */
 esp_err_t nodelio_layout_start_poll(const nodelio_nvs_config_t *cfg);
@@ -150,8 +150,11 @@ esp_err_t nodelio_layout_start_poll(const nodelio_nvs_config_t *cfg);
  */
 void nodelio_layout_request_sync(void);
 
-/** MQTT panel/notify 触发：只拉 snapshot（限频）；不重建布局。 */
+/** MQTT panel/notify 触发：只拉 snapshot（默认限频）；不重建布局。 */
 void nodelio_layout_request_snapshot(void);
+
+/** MQTT panel/notify force=true（online/status）：跳过 snapshot 限频。 */
+void nodelio_layout_request_snapshot_force(void);
 
 #ifdef __cplusplus
 }

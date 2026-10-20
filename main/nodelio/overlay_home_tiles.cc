@@ -1197,7 +1197,13 @@ static void async_cmd_worker(void *arg)
             ESP_LOGW(TAG, "async cmd %s http=%d err=%s", item.widget_id, http, esp_err_to_name(err));
             DisplayLockGuard lock(nl_ov_disp());
             if (lock) {
-                nl_ov_toast(http == 503 ? "设备未在线" : "操作未响应");
+                const char *msg = "操作未响应";
+                if (http == 503) {
+                    msg = "设备未在线";
+                } else if (http == 401) {
+                    msg = "需口令";
+                }
+                nl_ov_toast(msg);
                 if (item.rollback_on_fail) {
                     const nodelio_panel_layout_t *layout = nodelio_panel_ui_get_layout();
                     if (layout) {

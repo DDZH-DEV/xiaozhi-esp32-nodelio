@@ -111,14 +111,25 @@ typedef struct {
     char ch_name[NL_CH_PER_DEV][NL_LAYOUT_STR];
     char ch_st[NL_CH_PER_DEV][12];
     int16_t ch_cd[NL_CH_PER_DEV]; /* 通道倒计时剩余秒 */
+    /* DUAL_IO_LOCAL_WEB：同网 HTTP 直控 */
+    bool lan_control;
+    bool pass_required;
+    char ip[48];
 } nl_dev_cache_t;
 
 /** snapshot 增量写入（解析完后 end 刷新磁贴开/关色）。 */
 void nodelio_panel_ui_snapshot_begin(void);
 void nodelio_panel_ui_snapshot_add(const char *device_id, const char *name, bool online, const char *power_state);
+/** 标记局域网直控设备（须在 snapshot_add 之后）。 */
+void nodelio_panel_ui_snapshot_set_lan(const char *device_id, const char *ip, bool lan_control, bool has_pass);
 void nodelio_panel_ui_snapshot_add_channel(const char *device_id, int channel_index, const char *ch_name,
                                            const char *state);
 void nodelio_panel_ui_snapshot_end(void);
+
+void nodelio_panel_ui_set_lan_online(const char *device_id, bool online, const char *power_state);
+void nodelio_panel_ui_set_lan_pass_required(const char *device_id, bool need);
+void nodelio_panel_ui_clear_lan_channels(const char *device_id);
+void nodelio_panel_ui_refresh_tiles(void);
 
 /** 仅写缓存（snapshot 批量用）；channel_index 为负表示设备级。 */
 void nodelio_panel_ui_note_countdown(const char *device_id, int channel_index, int seconds);

@@ -2,6 +2,8 @@ tmp/
 components/
 managed_components/
 build/
+.nodelio_build_stamp.json
+main/nodelio/nodelio_build_stamp.h
 dist/
 .vscode/
 .devcontainer/

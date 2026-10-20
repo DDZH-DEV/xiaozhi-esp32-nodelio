@@ -40,6 +40,12 @@ esp_err_t nodelio_http_delete(const char *url, const char *device_key, int *out_
 /** 纯 TCP 探测 host:port，打日志；成功 ESP_OK。 */
 esp_err_t nodelio_http_probe_tcp(const char *host, int port);
 
+/** 局域网设备 HTTP（无 X-Device-Key；可选 X-Pass）。DIOL 等同网直控。 */
+esp_err_t nodelio_http_lan_get_ms(const char *url, const char *x_pass, int *out_status, char *resp, int resp_cap,
+                                  int io_ms);
+esp_err_t nodelio_http_lan_post_form_ms(const char *url, const char *x_pass, const char *form_body, int *out_status,
+                                        char *resp, int resp_cap, int io_ms);
+
 #ifdef __cplusplus
 }
 #endif

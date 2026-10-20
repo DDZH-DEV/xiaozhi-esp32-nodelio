@@ -355,7 +355,7 @@ struct SkillInvokePace {
 
 static esp_err_t http_exchange(const char *method, const char *url, const char *device_key, const char *body,
                                const char *if_none_match, int *out_status, char *resp, int resp_cap, size_t *out_n,
-                               int io_ms)
+                               int io_ms, const char *content_type, const char *x_pass)
 {
     if (!url || !url[0]) {
         return ESP_ERR_INVALID_ARG;
@@ -393,14 +393,15 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
 
     const char *payload = body ? body : "";
     size_t payload_len = body ? strlen(body) : 0;
+    const char *ctype = (content_type && content_type[0]) ? content_type : "application/json";
     char hdr[512];
     int hdr_len = snprintf(hdr, sizeof(hdr),
                            "%s %s HTTP/1.1\r\n"
                            "Host: %s:%d\r\n"
                            "Connection: close\r\n"
-                           "Content-Type: application/json\r\n"
+                           "Content-Type: %s\r\n"
                            "Content-Length: %u\r\n",
-                           method, path.c_str(), host.c_str(), port, (unsigned)payload_len);
+                           method, path.c_str(), host.c_str(), port, ctype, (unsigned)payload_len);
     if (hdr_len <= 0 || hdr_len >= (int)sizeof(hdr)) {
         close(fd);
         return ESP_ERR_INVALID_SIZE;
@@ -409,6 +410,11 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
     if (device_key && device_key[0]) {
         req += "X-Device-Key: ";
         req += device_key;
+        req += "\r\n";
+    }
+    if (x_pass && x_pass[0]) {
+        req += "X-Pass: ";
+        req += x_pass;
         req += "\r\n";
     }
     if (if_none_match && if_none_match[0]) {
@@ -545,7 +551,13 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
         memcpy(trunc, resp_body, sn);
         trunc[sn] = '\0';
         ESP_LOGW(TAG, "%s %s → HTTP %d body=%s", method, url, status, trunc);
-        ret = ESP_FAIL;
+        /* 技能 invoke 的 config_missing 等会回 403 + Envelope；body 已写入 resp，交给上层上屏/toast */
+        const bool skill_envelope_err =
+            status >= 400 && status < 500 && resp_n > 0 && resp_body &&
+            strstr(resp_body, "\"schema_version\"") != nullptr;
+        if (!skill_envelope_err) {
+            ret = ESP_FAIL;
+        }
     } else if (ret == ESP_OK) {
         ESP_LOGI(TAG, "%s %s → HTTP %d", method, url, status);
     }
@@ -566,7 +578,7 @@ esp_err_t nodelio_http_post_json_ms(const char *url, const char *device_key, con
         io_ms = NOD_HTTP_IO_MS;
     }
     return http_exchange("POST", url, device_key, body ? body : "{}", nullptr, out_status, resp, resp_cap, nullptr,
-                         io_ms);
+                         io_ms, nullptr, nullptr);
 }
 
 esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const void *data, size_t len,
@@ -634,13 +646,14 @@ esp_err_t nodelio_http_get(const char *url, const char *device_key, const char *
                            char *resp, int resp_cap)
 {
     return http_exchange("GET", url, device_key, nullptr, if_none_match, out_status, resp, resp_cap, nullptr,
-                         NOD_HTTP_IO_MS);
+                         NOD_HTTP_IO_MS, nullptr, nullptr);
 }
 
 esp_err_t nodelio_http_get_ms(const char *url, const char *device_key, const char *if_none_match, int *out_status,
                               char *resp, int resp_cap, int io_ms)
 {
-    return http_exchange("GET", url, device_key, nullptr, if_none_match, out_status, resp, resp_cap, nullptr, io_ms);
+    return http_exchange("GET", url, device_key, nullptr, if_none_match, out_status, resp, resp_cap, nullptr, io_ms,
+                         nullptr, nullptr);
 }
 
 esp_err_t nodelio_http_get_bin(const char *url, const char *device_key, int *out_status, uint8_t *resp, int resp_cap,
@@ -656,11 +669,32 @@ esp_err_t nodelio_http_get_bin_ms(const char *url, const char *device_key, int *
         return ESP_ERR_INVALID_ARG;
     }
     *out_n = 0;
-    return http_exchange("GET", url, device_key, nullptr, nullptr, out_status, (char *)resp, resp_cap, out_n, io_ms);
+    return http_exchange("GET", url, device_key, nullptr, nullptr, out_status, (char *)resp, resp_cap, out_n, io_ms,
+                         nullptr, nullptr);
 }
 
 esp_err_t nodelio_http_delete(const char *url, const char *device_key, int *out_status, char *resp, int resp_cap)
 {
     return http_exchange("DELETE", url, device_key, nullptr, nullptr, out_status, resp, resp_cap, nullptr,
-                         NOD_HTTP_IO_MS);
+                         NOD_HTTP_IO_MS, nullptr, nullptr);
+}
+
+esp_err_t nodelio_http_lan_get_ms(const char *url, const char *x_pass, int *out_status, char *resp, int resp_cap,
+                                  int io_ms)
+{
+    if (io_ms <= 0) {
+        io_ms = NOD_HTTP_IO_MS;
+    }
+    return http_exchange("GET", url, nullptr, nullptr, nullptr, out_status, resp, resp_cap, nullptr, io_ms, nullptr,
+                         x_pass);
+}
+
+esp_err_t nodelio_http_lan_post_form_ms(const char *url, const char *x_pass, const char *form_body, int *out_status,
+                                        char *resp, int resp_cap, int io_ms)
+{
+    if (io_ms <= 0) {
+        io_ms = NOD_HTTP_IO_MS;
+    }
+    return http_exchange("POST", url, nullptr, form_body ? form_body : "", nullptr, out_status, resp, resp_cap, nullptr,
+                         io_ms, "application/x-www-form-urlencoded", x_pass);
 }

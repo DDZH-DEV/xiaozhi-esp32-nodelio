@@ -89,6 +89,11 @@ static char s_speak_title[NL_ENV_NEWS_TITLE];
 static int64_t s_chunk_sent_us = 0;
 /** true=仅摘要/标题，勿让模型声称「全文已读完」 */
 static bool s_speak_from_summary = false;
+/** 分片长达 ~2800B，仅在 chunk 边界滚几乎看不出跟读；定时按语速估算进度 */
+static esp_timer_handle_t s_news_follow_tmr = nullptr;
+static void news_follow_stop_timer(void);
+static void news_follow_ensure_timer(void);
+static void news_scroll_to_byte(size_t byte_off);
 
 /** 单飞缓存：语音 read 与 UI worker 共用一次 HTTP，避免 net-lock 竞态把摘要盖上正文 */
 static SemaphoreHandle_t s_pull_mu = nullptr;
@@ -141,6 +146,7 @@ static void news_body_heap_clear(void)
 
 static void news_speak_clear(void)
 {
+    news_follow_stop_timer();
     if (s_speak_body) {
         heap_caps_free(s_speak_body);
         s_speak_body = nullptr;
@@ -152,6 +158,79 @@ static void news_speak_clear(void)
     s_speak_title[0] = '\0';
     s_chunk_sent_us = 0;
     s_speak_from_summary = false;
+}
+
+static size_t news_utf8_floor(const char *s, size_t off)
+{
+    if (!s || off == 0) {
+        return 0;
+    }
+    while (off > 0 && (static_cast<unsigned char>(s[off]) & 0xC0) == 0x80) {
+        off--;
+    }
+    return off;
+}
+
+static size_t news_follow_estimate_off(void)
+{
+    if (!s_speak_body || s_chunk_sent_us == 0) {
+        return s_speak_off_prev;
+    }
+    /* 约 4.5 汉字/秒 → ~14 UTF-8 字节/秒；宁肯略慢，别超前 TTS */
+    const int64_t elapsed_us = esp_timer_get_time() - s_chunk_sent_us;
+    if (elapsed_us <= 0) {
+        return s_speak_off_prev;
+    }
+    size_t adv = static_cast<size_t>((elapsed_us * 14) / 1000000LL);
+    size_t off = s_speak_off_prev + adv;
+    if (off > s_speak_off) {
+        off = s_speak_off;
+    }
+    if (off > s_speak_len) {
+        off = s_speak_len;
+    }
+    return news_utf8_floor(s_speak_body, off);
+}
+
+static void news_follow_timer_cb(void * /*arg*/)
+{
+    Application::GetInstance().Schedule([]() {
+        if (!s_speak_body || s_news_detail < 0) {
+            news_follow_stop_timer();
+            return;
+        }
+        news_scroll_to_byte(news_follow_estimate_off());
+        /* 本段已估到末尾且全文念完 → 停表 */
+        if (s_speak_off >= s_speak_len && news_follow_estimate_off() >= s_speak_off) {
+            news_follow_stop_timer();
+        }
+    });
+}
+
+static void news_follow_stop_timer(void)
+{
+    if (s_news_follow_tmr) {
+        esp_timer_stop(s_news_follow_tmr);
+    }
+}
+
+static void news_follow_ensure_timer(void)
+{
+    if (!s_news_follow_tmr) {
+        const esp_timer_create_args_t args = {
+            .callback = &news_follow_timer_cb,
+            .arg = nullptr,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "nl_news_flw",
+            .skip_unhandled_events = true,
+        };
+        if (esp_timer_create(&args, &s_news_follow_tmr) != ESP_OK) {
+            s_news_follow_tmr = nullptr;
+            return;
+        }
+    }
+    esp_timer_stop(s_news_follow_tmr);
+    esp_timer_start_periodic(s_news_follow_tmr, 1200 * 1000);
 }
 
 static size_t news_utf8_chunk_end(const char *s, size_t off, size_t max_bytes)
@@ -206,46 +285,66 @@ static void news_speak_set(const char *id, const char *title, const char *body, 
     s_speak_off_prev = 0;
 }
 
-/** 播报到哪，详情滚到哪。须在 LVGL 线程。 */
+/** 播报到哪，详情滚到哪。可在新闻 worker / Schedule 回调里调（内部加 Display 锁）。 */
+static void news_scroll_to_byte(size_t byte_off)
+{
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock || !s_card_list || !s_news_body_lbl || !lv_obj_is_valid(s_news_body_lbl) ||
+        s_news_detail < 0 || s_news_detail >= s_env.news_n || !s_speak_body) {
+        return;
+    }
+    if (strcmp(s_speak_id, s_env.news[s_news_detail].id) != 0) {
+        return;
+    }
+    if (!lv_obj_has_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE)) {
+        return;
+    }
+    const char *txt = lv_label_get_text(s_news_body_lbl);
+    if (!txt || !txt[0] || strstr(txt, "正在加载") != nullptr) {
+        return;
+    }
+    /* 摘要标签带「（仅摘要）\n」前缀，朗读正文从换行后算 */
+    size_t map_off = byte_off;
+    if (s_speak_from_summary) {
+        const char *nl = strchr(txt, '\n');
+        if (nl) {
+            map_off += static_cast<size_t>(nl - txt) + 1;
+        }
+    }
+    if (map_off > strlen(txt)) {
+        map_off = strlen(txt);
+    }
+    map_off = news_utf8_floor(txt, map_off);
+
+    lv_obj_update_layout(s_card_list);
+    lv_obj_update_layout(s_news_body_lbl);
+
+    uint32_t char_id = 0;
+    size_t i = 0;
+    while (txt[i] && i < map_off) {
+        if ((static_cast<unsigned char>(txt[i]) & 0xC0) != 0x80) {
+            char_id++;
+        }
+        i++;
+    }
+    lv_point_t pos = {};
+    lv_label_get_letter_pos(s_news_body_lbl, char_id, &pos);
+    const lv_coord_t view_h = lv_obj_get_content_height(s_card_list);
+    lv_coord_t y = lv_obj_get_y(s_news_body_lbl) + pos.y - (view_h > 0 ? view_h / 4 : 40);
+    if (y < 0) {
+        y = 0;
+    }
+    const lv_coord_t max_y = lv_obj_get_scroll_bottom(s_card_list) + lv_obj_get_scroll_y(s_card_list);
+    if (max_y > 0 && y > max_y) {
+        y = max_y;
+    }
+    lv_obj_scroll_to_y(s_card_list, y, LV_ANIM_ON);
+}
+
 static void news_scroll_follow(void)
 {
-    Application::GetInstance().Schedule([]() {
-        DisplayLockGuard lock(nl_ov_disp());
-        if (!lock || !s_card_list || !s_news_body_lbl || !lv_obj_is_valid(s_news_body_lbl) ||
-            s_news_detail < 0 || s_news_detail >= s_env.news_n || !s_speak_body) {
-            return;
-        }
-        if (strcmp(s_speak_id, s_env.news[s_news_detail].id) != 0) {
-            return;
-        }
-        const char *txt = lv_label_get_text(s_news_body_lbl);
-        if (!txt || !txt[0] || strstr(txt, "正在加载") != nullptr) {
-            return;
-        }
-        size_t byte_off = s_speak_off_prev;
-        if (s_speak_from_summary) {
-            const char *nl = strchr(txt, '\n');
-            if (nl) {
-                byte_off += static_cast<size_t>(nl - txt) + 1;
-            }
-        }
-        uint32_t char_id = 0;
-        size_t i = 0;
-        while (txt[i] && i < byte_off) {
-            if ((static_cast<unsigned char>(txt[i]) & 0xC0) != 0x80) {
-                char_id++;
-            }
-            i++;
-        }
-        lv_point_t pos = {};
-        lv_label_get_letter_pos(s_news_body_lbl, char_id, &pos);
-        const lv_coord_t view_h = lv_obj_get_height(s_card_list);
-        lv_coord_t y = lv_obj_get_y(s_news_body_lbl) + pos.y - view_h / 5;
-        if (y < 0) {
-            y = 0;
-        }
-        lv_obj_scroll_to_y(s_card_list, y, LV_ANIM_ON);
-    });
+    news_scroll_to_byte(news_follow_estimate_off());
+    news_follow_ensure_timer();
 }
 
 static bool news_format_chunk(char *out, size_t out_len, bool with_title)

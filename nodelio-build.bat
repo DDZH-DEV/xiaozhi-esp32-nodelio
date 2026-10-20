@@ -30,6 +30,20 @@ if errorlevel 1 (
   powershell -NoProfile -Command ^
     "$c=Get-Content sdkconfig -Raw; $c=$c -replace 'CONFIG_SR_MN_CN_NONE=y','# CONFIG_SR_MN_CN_NONE is not set'; $c=$c -replace '# CONFIG_SR_MN_CN_MULTINET6_QUANT is not set','CONFIG_SR_MN_CN_MULTINET6_QUANT=y'; if ($c -notmatch 'CONFIG_SR_MN_CN_MULTINET6_QUANT=y') { $c=$c + \"`nCONFIG_SR_MN_CN_MULTINET6_QUANT=y`n\" }; Set-Content sdkconfig -Value $c -Encoding ascii -NoNewline"
 )
+echo [nodelio] build stamp (code-change day serial) ...
+python "%~dp0scripts\nodelio_build_stamp.py" --root "%~dp0."
+if errorlevel 1 (
+  echo [nodelio] build stamp failed
+  exit /b 1
+)
 echo [nodelio] building SILA-86 ...
 idf.py build
-exit /b %ERRORLEVEL%
+if errorlevel 1 exit /b %ERRORLEVEL%
+
+echo [nodelio] sync panel OTA manifest + bin to Z-Y ...
+python "%~dp0scripts\nodelio_sync_panel_ota.py" --root "%~dp0."
+if errorlevel 1 (
+  echo [nodelio] WARN panel OTA sync failed ^(build ok^)
+  exit /b 0
+)
+exit /b 0
