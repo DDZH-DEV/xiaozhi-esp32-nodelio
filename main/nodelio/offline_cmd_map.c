@@ -817,6 +817,61 @@ static int phrase_to_cmd_id(const char *phrase)
     return 0;
 }
 
+/** 去掉首尾空白与句末标点（STT 常带「音乐。」）；中间标点仍留给 plausible 拒绝。 */
+static void strip_app_query(char *dst, size_t dst_sz, const char *src)
+{
+    if (!dst || dst_sz == 0) {
+        return;
+    }
+    dst[0] = '\0';
+    if (!src || !src[0]) {
+        return;
+    }
+    snprintf(dst, dst_sz, "%s", src);
+    /* 去头空白 */
+    size_t lead = 0;
+    while (dst[lead] == ' ' || dst[lead] == '\t') {
+        lead++;
+    }
+    if (lead > 0) {
+        memmove(dst, dst + lead, strlen(dst + lead) + 1);
+    }
+    for (;;) {
+        size_t n = strlen(dst);
+        if (n == 0) {
+            break;
+        }
+        unsigned char c = (unsigned char)dst[n - 1];
+        if (c == ' ' || c == '\t' || c == '.' || c == ',' || c == '?' || c == '!' || c == ';' ||
+            c == ':' || c == '~' || c == '"' || c == '\'') {
+            dst[n - 1] = '\0';
+            continue;
+        }
+        if (n >= 3) {
+            unsigned char a = (unsigned char)dst[n - 3];
+            unsigned char b = (unsigned char)dst[n - 2];
+            unsigned char d = (unsigned char)dst[n - 1];
+            /* 。U+3002 、U+3001 */
+            if (a == 0xE3 && b == 0x80 && (d == 0x82 || d == 0x81)) {
+                dst[n - 3] = '\0';
+                continue;
+            }
+            /* ？！，；： U+FF1F/FF01/FF0C/FF1B/FF1A */
+            if (a == 0xEF && b == 0xBC &&
+                (d == 0x9F || d == 0x81 || d == 0x8C || d == 0x9B || d == 0x9A)) {
+                dst[n - 3] = '\0';
+                continue;
+            }
+            /* … U+2026 */
+            if (a == 0xE2 && b == 0x80 && d == 0xA6) {
+                dst[n - 3] = '\0';
+                continue;
+            }
+        }
+        break;
+    }
+}
+
 /** 抽取到的应用名是否像口令（拒「失败了，你再试一下」这类整句） */
 static bool app_query_plausible(const char *q)
 {
@@ -889,12 +944,43 @@ static bool try_open_named_app(const char *phrase)
         strncmp(p, "控家", 6) == 0 || strncmp(p, "语音", 6) == 0 || strncmp(p, "小智", 6) == 0) {
         return false;
     }
-    if (!app_query_plausible(p)) {
-        ESP_LOGI(TAG, "skip open-app (not a name): '%s'", p);
+    char name[48];
+    strip_app_query(name, sizeof(name), p);
+    if (!app_query_plausible(name)) {
+        ESP_LOGI(TAG, "skip open-app (not a name): '%s'", name[0] ? name : p);
         return false;
     }
-    ESP_LOGI(TAG, "open app query='%s'", p);
-    return nodelio_panel_ui_open_app(p);
+    ESP_LOGI(TAG, "open app query='%s'", name);
+    return nodelio_panel_ui_open_app(name);
+}
+
+/** 整句就是应用短名（「电台。」），无「打开」前缀也走 open_app。 */
+static bool try_open_bare_known_app(const char *phrase)
+{
+    if (!phrase || !phrase[0]) {
+        return false;
+    }
+    char name[48];
+    strip_app_query(name, sizeof(name), phrase);
+    if (!name[0] || !app_query_plausible(name)) {
+        return false;
+    }
+    static const char *const kKnown[] = {
+        "电台", "播客", "曲库", "音乐", "新闻", "天气", "空气", "一句", "名言", "网络电台",
+        "radio", "podcast", "music", "news", "weather",
+    };
+    bool hit = false;
+    for (size_t i = 0; i < sizeof(kKnown) / sizeof(kKnown[0]); i++) {
+        if (strcmp(name, kKnown[i]) == 0) {
+            hit = true;
+            break;
+        }
+    }
+    if (!hit) {
+        return false;
+    }
+    ESP_LOGI(TAG, "bare open app query='%s'", name);
+    return nodelio_panel_ui_open_app(name);
 }
 
 esp_err_t nodelio_offline_try_phrase(const nodelio_nvs_config_t *cfg, const char *phrase,
@@ -931,6 +1017,10 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session)
     }
     /* 「打开曲库」等：phrase_to_cmd_id 会落到 LIGHT_ON，这里再抢一次应用 */
     if (try_open_named_app(phrase)) {
+        return true;
+    }
+    /* 裸说「电台。」/「播客」：无「打开」也开对应应用（剥句末标点） */
+    if (try_open_bare_known_app(phrase)) {
         return true;
     }
     return false;

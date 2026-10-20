@@ -474,12 +474,126 @@ static std::string list_controls_json()
     return out;
 }
 
-static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::string &skill_id,
+/** 曲库 keyword：打开别名 → 空词点播；浏览口令保持原样。 */
+static bool music_keyword_is_browse(const char *kw)
+{
+    if (!kw || !kw[0]) {
+        return false;
+    }
+    return strstr(kw, "有什么") || strstr(kw, "什么歌") || strstr(kw, "列表") || strstr(kw, "全部") ||
+           strstr(kw, "歌单") || strstr(kw, "换一批") || strstr(kw, "再来一批") || strstr(kw, "看看") ||
+           strstr(kw, "试听") || strstr(kw, "测试") || strstr(kw, "本地");
+}
+
+static bool music_keyword_is_open_alias(const char *kw)
+{
+    if (!kw || !kw[0]) {
+        return true; /* 空 = 打开曲库点播 */
+    }
+    if (music_keyword_is_browse(kw)) {
+        return false;
+    }
+    /* 「打开音乐 / 曲库 / 放首歌」等：与服务端 isMusicPlayIntent 对齐 */
+    if (strstr(kw, "曲库") || strstr(kw, "音乐") || strstr(kw, "放一") || strstr(kw, "来一") ||
+        strstr(kw, "播一") || strstr(kw, "播放") || strstr(kw, "放歌") || strstr(kw, "听歌") ||
+        strstr(kw, "点播") || strstr(kw, "开播") || strstr(kw, "随便放") || strstr(kw, "随便播") ||
+        strstr(kw, "随便听") || strstr(kw, "随机") || strstr(kw, "来点歌") || strstr(kw, "放点歌") ||
+        strstr(kw, "放首歌") || strstr(kw, "听首歌") || strstr(kw, "来首歌") || strcmp(kw, "随便") == 0) {
+        return true;
+    }
+    return false;
+}
+
+static std::string music_normalize_invoke_body(const std::string &body_in, bool *force_play)
+{
+    if (force_play) {
+        *force_play = false;
+    }
+    std::string body = body_in.empty() ? "{}" : body_in;
+    if (body.empty() || body.front() != '{') {
+        body = std::string("{\"keyword\":\"") + body_in + "\"}";
+    }
+    cJSON *root = cJSON_Parse(body.c_str());
+    if (!root) {
+        if (force_play) {
+            *force_play = true; /* 无法解析时按空搜点播 */
+        }
+        return std::string("{\"keyword\":\"\"}");
+    }
+    const cJSON *kwj = cJSON_GetObjectItemCaseSensitive(root, "keyword");
+    if (!kwj) {
+        kwj = cJSON_GetObjectItemCaseSensitive(root, "query");
+    }
+    if (!kwj) {
+        kwj = cJSON_GetObjectItemCaseSensitive(root, "q");
+    }
+    const char *kw = (cJSON_IsString(kwj) && kwj->valuestring) ? kwj->valuestring : "";
+    if (music_keyword_is_open_alias(kw)) {
+        if (force_play) {
+            *force_play = true;
+        }
+        cJSON_Delete(root);
+        if (kw[0]) {
+            ESP_LOGI(TAG, "music open-alias keyword='%s' → empty+force", kw);
+        }
+        return std::string("{\"keyword\":\"\"}");
+    }
+    cJSON_Delete(root);
+    return body;
+}
+
+/** LLM 常写短 id（radio）→ 市场真实 app_id（radio.stations）。保留 market:: 前缀。 */
+static std::string normalize_skill_id_alias(const std::string &raw)
+{
+    if (raw.empty()) {
+        return raw;
+    }
+    std::string prefix;
+    std::string id = raw;
+    const size_t sep = raw.rfind("::");
+    if (sep != std::string::npos) {
+        prefix = raw.substr(0, sep + 2);
+        id = raw.substr(sep + 2);
+    }
+    std::string low = id;
+    for (char &c : low) {
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+    }
+    const char *canon = nullptr;
+    if (low == "radio" || low == "fm" || low == "netradio") {
+        canon = "radio.stations";
+    } else if (low == "podcast" || low == "pod") {
+        canon = "podcast.latest";
+    } else if (low == "music" || low == "music_search" || low == "library") {
+        canon = "music.search";
+    } else if (low == "news") {
+        canon = "news.latest";
+    } else if (low == "weather") {
+        canon = "weather.today";
+    } else if (low == "air" || low == "aqi") {
+        canon = "air.now";
+    } else if (low == "quote" || low == "daily") {
+        canon = "quote.daily";
+    }
+    if (!canon) {
+        return raw;
+    }
+    std::string out = prefix + canon;
+    if (out != raw) {
+        ESP_LOGI(TAG, "skill_id alias '%s' → '%s'", raw.c_str(), out.c_str());
+    }
+    return out;
+}
+
+static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::string &skill_id_in,
                                const std::string &params)
 {
-    if (skill_id.empty()) {
+    if (skill_id_in.empty()) {
         return std::unexpected(std::string("skill_id 不能为空"));
     }
+    const std::string skill_id = normalize_skill_id_alias(skill_id_in);
     const bool music_app = nodelio_skill_id_is_music(skill_id.c_str());
     if (!music_app && nodelio_media_preempt_for_heavy_app()) {
         ESP_LOGI(TAG, "preempt media before skill '%s'", skill_id.c_str());
@@ -493,6 +607,10 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
     std::string body = params.empty() ? "{}" : params;
     if (body.empty() || body.front() != '{') {
         body = std::string("{\"keyword\":\"") + params + "\"}";
+    }
+    bool force_play = false;
+    if (music_app) {
+        body = music_normalize_invoke_body(body, &force_play);
     }
 
     const int cap = nodelio_caps_max_content_bytes() + 512;
@@ -510,7 +628,10 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
     if (err != ESP_OK || (status != 200 && status != 201)) {
         ESP_LOGW(TAG, "invoke skill '%s' fail: status=%d err=%d", skill_id.c_str(), status, err);
         free(resp);
-        if (err != ESP_OK || status == 0) {
+        if (status == 404) {
+            return std::unexpected(std::string("未安装该技能，请先在应用市场安装"));
+        }
+        if (status == 0 || (err != ESP_OK && status < 400)) {
             return std::unexpected(std::string("服务器无响应，请稍后重试"));
         }
         return std::unexpected(std::string("调用技能失败：HTTP ") + std::to_string(status));
@@ -531,11 +652,11 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
 
     /* 双投递：UI Envelope + 模型短摘要（禁止只塞整段 JSON） */
     char spoken[NL_ENV_SPOKEN];
-    /* 是否开播跟 Envelope display.auto_play（点播/搜歌 true，「有什么歌」false）。
-     * 勿传 force：否则浏览列表也会自动播。打开曲库走 open_app，那边会 force。 */
-    nodelio_skill_deliver_json(cfg, resp, false, spoken, sizeof(spoken));
+    /* 打开曲库/点播别名 force；「有什么歌」等浏览仍跟 Envelope auto_play。 */
+    nodelio_skill_deliver_json(cfg, resp, force_play, spoken, sizeof(spoken));
     free(resp);
-    ESP_LOGI(TAG, "invoke skill '%s' spoken=%s", skill_id.c_str(), spoken[0] ? spoken : "(empty)");
+    ESP_LOGI(TAG, "invoke skill '%s' force=%d spoken=%s", skill_id.c_str(), force_play ? 1 : 0,
+             spoken[0] ? spoken : "(empty)");
     if (spoken[0]) {
         return std::string(spoken);
     }
@@ -927,7 +1048,8 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.nodelio.open_app",
-        "打开已装应用。name=曲库/新闻/天气/电台/播客/空气/每日一句或 app_id。仅列应用页用 goto_page apps。",
+        "打开已装应用并执行（曲库/音乐会自动开播）。name=曲库/音乐/新闻/天气/电台/播客/空气/每日一句或 "
+        "app_id。用户说打开音乐/曲库优先本工具。仅列应用页用 goto_page apps。",
         PropertyList({Property("name", kPropertyTypeString)}),
         [](const PropertyList &properties) -> ToolResult {
             std::string name = properties["name"].value<std::string>();
@@ -1079,8 +1201,10 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.skill.invoke",
-        "调用已装技能，结果上屏。曲库用 skill_id=music.search，params={\"keyword\":\"歌名或空\"}。"
-        "列表已开且随便放→用 self.skill.transport op=play，勿再 invoke。切歌/新闻翻篇用 transport/news。",
+        "调用已装技能。skill_id 须用完整 id：music.search / radio.stations / podcast.latest / "
+        "news.latest / weather.today / air.now / quote.daily（短写 radio/music 固件会归一）。"
+        "打开曲库/电台/播客优先 open_app。曲库 keyword 空=自动播；有什么歌=只列表。"
+        "列表已开随便放→transport op=play。",
         PropertyList({
             Property("skill_id", kPropertyTypeString, ""),
             Property("params", kPropertyTypeString, ""),

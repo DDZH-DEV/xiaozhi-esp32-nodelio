@@ -448,6 +448,45 @@ extern "C" void nodelio_panel_ui_goto(int page)
     });
 }
 
+/** 去掉句末标点，避免 MCP/STT「音乐。」匹配失败。 */
+static void strip_open_app_query(char *s)
+{
+    if (!s) {
+        return;
+    }
+    for (;;) {
+        size_t n = strlen(s);
+        if (n == 0) {
+            break;
+        }
+        unsigned char c = (unsigned char)s[n - 1];
+        if (c == ' ' || c == '\t' || c == '.' || c == ',' || c == '?' || c == '!' || c == ';' ||
+            c == ':' || c == '~' || c == '"' || c == '\'') {
+            s[n - 1] = '\0';
+            continue;
+        }
+        if (n >= 3) {
+            unsigned char a = (unsigned char)s[n - 3];
+            unsigned char b = (unsigned char)s[n - 2];
+            unsigned char d = (unsigned char)s[n - 1];
+            if (a == 0xE3 && b == 0x80 && (d == 0x82 || d == 0x81)) {
+                s[n - 3] = '\0';
+                continue;
+            }
+            if (a == 0xEF && b == 0xBC &&
+                (d == 0x9F || d == 0x81 || d == 0x8C || d == 0x9B || d == 0x9A)) {
+                s[n - 3] = '\0';
+                continue;
+            }
+            if (a == 0xE2 && b == 0x80 && d == 0xA6) {
+                s[n - 3] = '\0';
+                continue;
+            }
+        }
+        break;
+    }
+}
+
 extern "C" bool nodelio_panel_ui_open_app(const char *name_or_id)
 {
     if (!name_or_id || !name_or_id[0]) {
@@ -456,6 +495,11 @@ extern "C" bool nodelio_panel_ui_open_app(const char *name_or_id)
     Board::GetInstance().NoteUserActivity();
     char *q = strdup(name_or_id);
     if (!q) {
+        return false;
+    }
+    strip_open_app_query(q);
+    if (!q[0]) {
+        free(q);
         return false;
     }
     Application::GetInstance().Schedule([q]() {

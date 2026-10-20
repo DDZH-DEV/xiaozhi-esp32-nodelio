@@ -1713,17 +1713,19 @@ void Application::HandleNotificationFinished(uint32_t playback_id, bool success)
     ESP_LOGI(TAG, "Notification playback %lu %s", static_cast<unsigned long>(playback_id),
              success ? "completed" : "failed");
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-    /* 先让媒体决定是否重试/下一首。若仍要播，勿立刻 EnableVoiceProcessing 抢 DRAM（AES OOM）。 */
+    /* 先让媒体决定是否重试/下一首。若已开下一首，勿再 StopNotification 把新流掐掉。 */
     nodelio_media_on_playback_ended(success);
-    if (!success && nodelio_media_is_playing()) {
-        notify_player_.Stop();
-        auto& board = Board::GetInstance();
-        board.GetDisplay()->SetChatMessage("assistant", "");
-        board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-        if (GetDeviceState() == kDeviceStateNotifying) {
-            SetDeviceState(kDeviceStateIdle);
+    if (nodelio_media_is_playing() || notification_playback_id_ != playback_id) {
+        ESP_LOGI(TAG, "media continues after track end (playing=%d id %lu→%lu)",
+                 (int)nodelio_media_is_playing(), static_cast<unsigned long>(playback_id),
+                 static_cast<unsigned long>(notification_playback_id_));
+        if (!success) {
+            /* 失败重试：旧 NotifyPlayer 已结束，保持 notifying，只恢复唤醒 */
+            auto& board = Board::GetInstance();
+            board.GetDisplay()->SetChatMessage("assistant", "");
+            board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+            audio_service_.EnableWakeWordDetection(true);
         }
-        audio_service_.EnableWakeWordDetection(true);
         return;
     }
 #endif
