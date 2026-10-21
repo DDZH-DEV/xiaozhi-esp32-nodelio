@@ -3,7 +3,7 @@
   "app_id": "dsh.status",
   "version": "1.0.0",
   "name": "DSH 进度",
-  "description": "查询某个工作区里 DSH 任务的当前状态：第几轮第几步、最后调用的工具、是否需要人工确认。返回一屏可读的列表 + 一句可直接播报的 spoken。",
+  "description": "查询 DSH 任务进度：顶栏横滑工作区 + 当前区会话列表；可指定 workspace/session。返回 list + spoken。",
   "publisher": {
     "name": "NodeLio",
     "contact": "https://github.com/DDZH-DEV/nodelio-protocol/issues"
@@ -11,16 +11,21 @@
   "categories": ["tool"],
   "min_protocol": 1,
   "requires": ["content.list", "action.invoke", "net.http_via_server"],
-  "optional": ["content.text", "content.error"],
-  "surfaces": ["card", "voice_reply"],
+  "optional": ["content.text", "content.error", "content.action"],
+  "surfaces": ["card", "home_tile", "voice_reply"],
   "fallback": { "card_type": "plain_result" },
+  "config_schema": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  },
   "input_schema": {
     "type": "object",
     "properties": {
       "workspace": {
         "type": "string",
         "title": "工作区路径",
-        "description": "留空则列出全部工作区。",
+        "description": "留空则自动选默认/有会话的工作区；顶栏仍列出全部供切换。",
         "maxLength": 260,
         "ui_hint": "text"
       },
@@ -37,13 +42,13 @@
   "invoke": {
     "method": "GET",
     "timeout_ms": 8000,
-    "url": "https://REPLACE-ME.example.com/nodelio/dsh/status",
+    "url": "http://127.0.0.1:8790/nodelio/dsh/status",
     "result_types": ["list", "plain_result", "error"],
     "default_display": {
       "card_type": "list",
       "preferred_surface": "card",
-      "density": "compact",
-      "max_items": 8
+      "density": "comfortable",
+      "max_items": 5
     }
   },
   "expose_mcp": true,

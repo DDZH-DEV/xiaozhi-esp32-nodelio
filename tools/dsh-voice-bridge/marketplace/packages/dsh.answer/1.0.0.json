@@ -3,7 +3,7 @@
   "app_id": "dsh.answer",
   "version": "1.0.0",
   "name": "DSH 确认",
-  "description": "回答 DSH 任务挂起的审批或追问。协议 v1 没有『审批』交互原语，因此这里表达为一个独立的 invoke 动作：端从 dsh.status 的结果里拿到 notice_id，再调本应用提交 allow / deny。",
+  "description": "内部动作：只供进度卡「允许/拒绝」按钮调用。须带 session + notice_id；不要从应用列表或首页打开。",
   "publisher": {
     "name": "NodeLio",
     "contact": "https://github.com/DDZH-DEV/nodelio-protocol/issues"
@@ -11,8 +11,8 @@
   "categories": ["tool"],
   "min_protocol": 1,
   "requires": ["content.text", "action.invoke", "net.http_via_server"],
-  "optional": ["content.list", "content.error"],
-  "surfaces": ["card", "voice_reply", "notification"],
+  "optional": ["content.list", "content.error", "content.action"],
+  "surfaces": ["card"],
   "fallback": { "card_type": "plain_result" },
   "input_schema": {
     "type": "object",
@@ -46,7 +46,7 @@
   "invoke": {
     "method": "POST",
     "timeout_ms": 8000,
-    "url": "https://REPLACE-ME.example.com/nodelio/dsh/answer",
+    "url": "http://127.0.0.1:8790/nodelio/dsh/answer",
     "result_types": ["plain_result", "error"],
     "default_display": {
       "card_type": "plain_result",

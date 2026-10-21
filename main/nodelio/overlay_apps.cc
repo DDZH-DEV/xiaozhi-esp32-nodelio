@@ -6,6 +6,7 @@
 #include "media_player.h"
 #include "nl_url_util.h"
 #include "nodelio_http.h"
+#include "content_envelope.h"
 #include "panel_ui.h"
 #include "skill_runtime.h"
 #include "wifi_provision.h"
@@ -46,6 +47,12 @@ static lv_obj_t *s_page;
 static lv_obj_t *s_list;
 static lv_obj_t *s_hint;
 static nl_app_item s_items[APP_MAX];
+
+/** 仅供进度卡「允许/拒绝」按钮 invoke，不进应用列表 / 语音打开。 */
+static bool skill_is_button_only(const char *id)
+{
+    return id && strstr(id, "dsh.answer") != nullptr;
+}
 static int s_item_n;
 static bool s_loading;
 static bool s_have_list;
@@ -118,6 +125,11 @@ static void render_list(void)
                         nl_ov_toast("本机暂不支持");
                         return;
                     }
+                    /* 派活须带 instruction；点应用只提示口令 */
+                    if (strstr(s_items[idx].id, "dsh.task") != nullptr) {
+                        (void)nl_ov_apps_invoke_dsh_task(nullptr);
+                        return;
+                    }
                     auto *cfgp = static_cast<nodelio_nvs_config_t *>(malloc(sizeof(nodelio_nvs_config_t)));
                     if (!cfgp) {
                         nl_ov_toast("内存不足");
@@ -166,7 +178,7 @@ static void render_list(void)
                                     resp[0] = '\0';
                                     int status = 0;
                                     /* 天气/空气等要回源公网，默认 2.5s 读超时会 recv=0 → 假「打开失败」 */
-                                    /* 曲库空关键词：服务端按点播抽一批；auto_play_first 播首条 */
+                                    /* 打开即播与否由 Host Envelope display.auto_play（技能配置）决定 */
                                     esp_err_t err = nodelio_http_post_json_ms(
                                         url, a->cfg->device_key, "{\"keyword\":\"\"}", &status, resp, cap - 1,
                                         10000);
@@ -174,9 +186,16 @@ static void render_list(void)
                                     if (err == ESP_OK && resp[0] &&
                                         (status == 200 || status == 201 ||
                                          (status >= 400 && strstr(resp, "\"schema_version\"") != nullptr))) {
-                                        ESP_LOGI(TAG, "deliver id=%s music=%d force_play=%d status=%d", a->id,
-                                                 music_app ? 1 : 0, music_app ? 1 : 0, status);
-                                        nodelio_skill_deliver_json(a->cfg, resp, music_app, nullptr, 0);
+                                        ESP_LOGI(TAG, "deliver id=%s music=%d status=%d", a->id,
+                                                 music_app ? 1 : 0, status);
+                                        char spoken[NL_ENV_SPOKEN];
+                                        spoken[0] = '\0';
+                                        nodelio_skill_deliver_json(a->cfg, resp, false, spoken,
+                                                                   sizeof(spoken));
+                                        /* DSH：只用文字 toast，禁止桥 WAV（会挂起 MQTT 导致再唤醒 hello 超时） */
+                                        if (strstr(a->id, "dsh") != nullptr && spoken[0]) {
+                                            nodelio_panel_ui_announce_spoken(spoken);
+                                        }
                                     } else if (err != ESP_OK || status == 0 || !resp[0]) {
                                         nodelio_panel_ui_toast_defer("服务器无响应");
                                     } else {
@@ -459,7 +478,7 @@ void nl_ov_apps_refresh(void)
                                 if (!row->id[0]) {
                                     copy_field(row->id, sizeof(row->id), it, "instanceId");
                                 }
-                                if (!row->id[0]) {
+                                if (!row->id[0] || skill_is_button_only(row->id)) {
                                     continue;
                                 }
                                 copy_field(row->name, sizeof(row->name), it, "name");
@@ -483,7 +502,7 @@ void nl_ov_apps_refresh(void)
                                     if (!row->id[0]) {
                                         copy_field(row->id, sizeof(row->id), it, "app_id");
                                     }
-                                    if (!row->id[0]) {
+                                    if (!row->id[0] || skill_is_button_only(row->id)) {
                                         continue;
                                     }
                                     copy_field(row->name, sizeof(row->name), it, "name");
@@ -535,51 +554,187 @@ void nl_ov_apps_set_visible(bool on)
     }
 }
 
+/** 在已装列表里找 app_id 后缀匹配（兼容 market::app_id）。prefer_status：DSH 浏览优先进度。 */
+static const char *find_installed_app_id(const char *app_key, bool prefer_status)
+{
+    if (!app_key || !app_key[0]) {
+        return nullptr;
+    }
+    const char *fallback = nullptr;
+    for (int i = 0; i < s_item_n; i++) {
+        if (!s_items[i].enabled || !s_items[i].id[0]) {
+            continue;
+        }
+        const char *id = s_items[i].id;
+        const char *tail = strstr(id, "::");
+        const char *key = tail ? tail + 2 : id;
+        if (strcmp(key, app_key) != 0 && strstr(id, app_key) == nullptr) {
+            continue;
+        }
+        if (prefer_status && strstr(id, "dsh.status") != nullptr) {
+            return id;
+        }
+        if (!fallback) {
+            fallback = id;
+        }
+    }
+    return fallback;
+}
+
+bool nl_ov_apps_invoke_dsh_task(const char *instruction)
+{
+    if (!instruction || !instruction[0]) {
+        nl_ov_toast("请说：让它 + 要做的事");
+        nodelio_panel_ui_announce_spoken("请说让它，再加上要做的事。");
+        return true;
+    }
+    char esc[180];
+    size_t o = 0;
+    for (const char *p = instruction; *p && o + 1 < sizeof(esc); ++p) {
+        if (*p == '"' || *p == '\\' || (unsigned char)*p < 0x20) {
+            continue;
+        }
+        esc[o++] = *p;
+    }
+    esc[o] = '\0';
+    if (!esc[0]) {
+        nl_ov_toast("请说：让它 + 要做的事");
+        return true;
+    }
+    char ws[200];
+    char sess[80];
+    nodelio_panel_ui_get_dsh_arm(ws, sizeof(ws), sess, sizeof(sess));
+
+    const char *sid = find_installed_app_id("dsh.task", false);
+    if (!sid) {
+        sid = "com.nodelio.dsh::dsh.task";
+    }
+    /* 未武装：仍发请求（Host 可注入 APP default_workspace）；先提示避免「不知道建在哪」 */
+    if (!ws[0] && !sess[0]) {
+        nl_ov_toast("未选工作区，将用 APP 默认");
+        ESP_LOGW(TAG, "dsh.task no arm — Host will inject default_workspace; instr='%s'", esc);
+    } else {
+        ESP_LOGI(TAG, "dsh.task armed ws='%s' sess='%s' instr='%s'", ws, sess, esc);
+    }
+    /* esc≤179 + ws_esc≤219 + sess≤79 + JSON 外壳 ≈524；给足余量消 -Wformat-truncation */
+    char body[544];
+    /* 转义 path 反斜杠供 JSON */
+    char ws_esc[220];
+    size_t wi = 0;
+    for (const char *p = ws; *p && wi + 2 < sizeof(ws_esc); ++p) {
+        if (*p == '\\' || *p == '"') {
+            ws_esc[wi++] = '\\';
+        }
+        ws_esc[wi++] = *p;
+    }
+    ws_esc[wi] = '\0';
+
+    if (sess[0] && ws_esc[0]) {
+        snprintf(body, sizeof(body),
+                 "{\"instruction\":\"%s\",\"workspace\":\"%s\",\"session\":\"%s\"}", esc, ws_esc, sess);
+    } else if (ws_esc[0]) {
+        snprintf(body, sizeof(body), "{\"instruction\":\"%s\",\"workspace\":\"%s\"}", esc, ws_esc);
+    } else if (sess[0]) {
+        snprintf(body, sizeof(body), "{\"instruction\":\"%s\",\"session\":\"%s\"}", esc, sess);
+    } else {
+        snprintf(body, sizeof(body), "{\"instruction\":\"%s\"}", esc);
+    }
+    ESP_LOGI(TAG, "invoke dsh.task sid=%s body=%s", sid, body);
+    nl_ov_invoke_skill_async(sid, body);
+    nodelio_panel_ui_clear_dsh_arm();
+    return true;
+}
+
 bool nl_ov_apps_open_by_query(const char *query)
 {
     if (!query || !query[0]) {
+        ESP_LOGW(TAG, "open_by_query: empty");
         return false;
     }
-    /* 先扫已缓存列表（应用页拉过一次就有） */
-    int hit = -1;
-    for (int i = 0; i < s_item_n; i++) {
-        if (!s_items[i].enabled) {
-            continue;
-        }
-        if (strstr(s_items[i].name, query) || strstr(s_items[i].id, query) ||
-            strstr(query, s_items[i].name) || strstr(query, s_items[i].id)) {
-            hit = i;
-            break;
-        }
+    ESP_LOGI(TAG, "open_by_query q='%s' installed=%d", query, s_item_n);
+
+    /* 裸「派活」无 instruction → 只提示，避免 error 卡「缺少参数」 */
+    if (strcmp(query, "派活") == 0 || strcmp(query, "DSH派活") == 0 ||
+        strcmp(query, "dsh.task") == 0 || strcmp(query, "dsh_task") == 0) {
+        return nl_ov_apps_invoke_dsh_task(nullptr);
     }
-    /* 样例市场别名（列表未刷时也能开） */
+
+    /* DSH 意图优先于模糊名匹配：裸「DSH」曾误开「DSH 派活」→ 缺 instruction 报错 */
     const char *alias_id = nullptr;
-    if (hit < 0) {
-        if (strstr(query, "曲库") || strstr(query, "音乐") || strstr(query, "music")) {
-            alias_id = "music.search";
-        } else if (strstr(query, "新闻") || strstr(query, "news")) {
-            alias_id = "news.latest";
-        } else if (strstr(query, "天气") || strstr(query, "weather")) {
-            alias_id = "weather.today";
-        } else if (strstr(query, "电台") || strstr(query, "radio")) {
-            alias_id = "radio.stations";
-        } else if (strstr(query, "播客") || strstr(query, "podcast")) {
-            alias_id = "podcast.latest";
-        } else if (strstr(query, "空气") || strstr(query, "air")) {
-            alias_id = "air.now";
-        } else if (strstr(query, "一句") || strstr(query, "名言") || strstr(query, "quote")) {
-            alias_id = "quote.daily";
-        }
+    if (strstr(query, "派活") != nullptr || strstr(query, "dsh.task") != nullptr) {
+        /* 「派活查一下…」少见；含派活且还有别的字 → 当进度？仍提示派活口令 */
+        return nl_ov_apps_invoke_dsh_task(nullptr);
+    } else if (strstr(query, "任务情况") != nullptr || strstr(query, "查看任务") != nullptr ||
+               strstr(query, "任务列表") != nullptr || strstr(query, "任务详情") != nullptr ||
+               strstr(query, "任务应用") != nullptr || strstr(query, "任务表情") != nullptr ||
+               strstr(query, "dsh.status") != nullptr || strstr(query, "进度") != nullptr ||
+               strstr(query, "DSH") != nullptr || strstr(query, "dsh") != nullptr ||
+               (strstr(query, "任务") != nullptr && strstr(query, "派活") == nullptr)) {
+        /* 含「打开DSH / 查看任务 / 任务应用」一律进度列表；派活须带「派活」 */
+        alias_id = "dsh.status";
+    } else if (strstr(query, "曲库") || strstr(query, "音乐") || strstr(query, "music") ||
+               strstr(query, "听歌") || strstr(query, "放歌") || strstr(query, "爱音乐")) {
+        alias_id = "music.search";
+    } else if (strstr(query, "新闻") || strstr(query, "news")) {
+        alias_id = "news.latest";
+    } else if (strstr(query, "天气") || strstr(query, "weather")) {
+        alias_id = "weather.today";
+    } else if (strstr(query, "电台") || strstr(query, "radio")) {
+        alias_id = "radio.stations";
+    } else if (strstr(query, "播客") || strstr(query, "podcast")) {
+        alias_id = "podcast.latest";
+    } else if (strstr(query, "空气") || strstr(query, "air")) {
+        alias_id = "air.now";
+    } else if (strstr(query, "一句") || strstr(query, "名言") || strstr(query, "quote")) {
+        alias_id = "quote.daily";
     }
+
     const char *sid = nullptr;
-    if (hit >= 0) {
-        sid = s_items[hit].id;
-    } else if (alias_id) {
-        sid = alias_id;
+    if (alias_id) {
+        const bool dsh_browse = strcmp(alias_id, "dsh.status") == 0;
+        sid = find_installed_app_id(alias_id, dsh_browse);
+        if (!sid) {
+            sid = alias_id;
+        }
+        ESP_LOGI(TAG, "open_by_query alias=%s → sid=%s", alias_id, sid ? sid : "(null)");
+    } else {
+        /* 单字/过短不 fuzzy：「电」会命中「网络电台」 */
+        const size_t qn = strlen(query);
+        int qchars = 0;
+        for (const unsigned char *p = (const unsigned char *)query; *p; ) {
+            if (*p < 0x80) {
+                p++;
+                qchars++;
+            } else if ((*p & 0xE0) == 0xC0 && p[1]) {
+                p += 2;
+                qchars++;
+            } else if ((*p & 0xF0) == 0xE0 && p[1] && p[2]) {
+                p += 3;
+                qchars++;
+            } else {
+                p++;
+                qchars++;
+            }
+        }
+        if (qchars >= 2 && qn >= 4) {
+            for (int i = 0; i < s_item_n; i++) {
+                if (!s_items[i].enabled || skill_is_button_only(s_items[i].id)) {
+                    continue;
+                }
+                if (strstr(s_items[i].name, query) || strstr(s_items[i].id, query) ||
+                    strstr(query, s_items[i].name) || strstr(query, s_items[i].id)) {
+                    sid = s_items[i].id;
+                    break;
+                }
+            }
+        }
+        ESP_LOGI(TAG, "open_by_query fuzzy sid=%s qchars=%d", sid ? sid : "(none)", qchars);
     }
     if (!sid || !sid[0]) {
+        ESP_LOGW(TAG, "open_by_query FAIL q='%s'", query);
         return false;
     }
+    ESP_LOGI(TAG, "open_by_query invoke sid=%s", sid);
     nl_ov_invoke_skill_async(sid, "{}");
     return true;
 }

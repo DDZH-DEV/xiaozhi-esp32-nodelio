@@ -72,7 +72,7 @@ static void handle_notify_payload(const char *data, int len)
         schedule_kick(false);
         return;
     }
-    char tmp[192];
+    char tmp[320];
     int n = len < (int)sizeof(tmp) - 1 ? len : (int)sizeof(tmp) - 1;
     memcpy(tmp, data, (size_t)n);
     tmp[n] = '\0';
@@ -88,6 +88,20 @@ static void handle_notify_payload(const char *data, int len)
                strcmp(kind->valuestring, "skills") == 0) {
         /* 只拉已装清单，不拉 layout/snapshot，不拉市场 */
         nodelio_panel_ui_skills_changed();
+    } else if (cJSON_IsString(kind) && kind->valuestring &&
+               strcmp(kind->valuestring, "skill_hint") == 0) {
+        /* PC 桥边沿：needs_you / completed → 单次 invoke，无轮询 */
+        const cJSON *inst = cJSON_GetObjectItemCaseSensitive(root, "instance_id");
+        const cJSON *app = cJSON_GetObjectItemCaseSensitive(root, "app_id");
+        const char *id = nullptr;
+        if (cJSON_IsString(inst) && inst->valuestring && inst->valuestring[0]) {
+            id = inst->valuestring;
+        } else if (cJSON_IsString(app) && app->valuestring && app->valuestring[0]) {
+            id = app->valuestring;
+        }
+        if (id) {
+            nodelio_panel_ui_skill_hint(id);
+        }
     } else if (cJSON_IsString(kind) && kind->valuestring &&
                strcmp(kind->valuestring, "countdown") == 0) {
         /* 轻量推送：不拉 HTTP，直接改本地剩余秒 */

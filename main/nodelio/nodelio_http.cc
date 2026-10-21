@@ -584,14 +584,26 @@ esp_err_t nodelio_http_post_json_ms(const char *url, const char *device_key, con
 esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const void *data, size_t len,
                                   int *out_status)
 {
+    if (out_status) {
+        *out_status = 0;
+    }
     if (!url || !url[0] || !data || len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    HttpNetGuard net;
+    /* 截图体大，等网锁更久；心跳/技能并发时 2s 易误判 */
+    HttpNetGuard net(8000);
     if (!net) {
+        ESP_LOGW(TAG, "POST image skip: net not ready / lock busy");
         return ESP_ERR_INVALID_STATE;
     }
     force_wifi_perf();
+
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    /* 碎片下 largest 常仅 6～8KB；短 TCP 心跳仍成功，勿 12KB 误杀 */
+    if (largest < 2 * 1024) {
+        ESP_LOGW(TAG, "POST image abort: largest_dram=%u (TCP buf)", (unsigned)largest);
+        return ESP_ERR_NO_MEM;
+    }
 
     std::string host;
     std::string path;
@@ -600,9 +612,18 @@ esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const
     if (!parse_host_port(url, &host, &port, &path, &https)) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (https) {
+        ESP_LOGW(TAG, "POST image: https not supported on this path");
+        return ESP_ERR_NOT_SUPPORTED;
+    }
 
-    int fd = tcp_connect_ms(host.c_str(), port, NOD_HTTP_CONNECT_MS, NOD_HTTP_IO_MS);
+    /* 大图：连接/发送超时加长（默认 2.5s 易在弱网半截失败 → http=0） */
+    const int connect_ms = 5000;
+    const int io_ms = 20000;
+    int fd = tcp_connect_ms(host.c_str(), port, connect_ms, io_ms);
     if (fd < 0) {
+        ESP_LOGW(TAG, "POST image connect fail %s:%d len=%u dram=%u", host.c_str(), port, (unsigned)len,
+                 (unsigned)largest);
         return ESP_FAIL;
     }
 
@@ -622,7 +643,13 @@ esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const
     }
     req += "\r\n";
 
-    if (!send_all(fd, req.data(), req.size()) || !send_all(fd, (const char *)data, len)) {
+    if (!send_all(fd, req.data(), req.size())) {
+        ESP_LOGW(TAG, "POST image hdr send fail errno=%d", errno);
+        close(fd);
+        return ESP_FAIL;
+    }
+    if (!send_all(fd, (const char *)data, len)) {
+        ESP_LOGW(TAG, "POST image body send fail errno=%d sent_target=%u", errno, (unsigned)len);
         close(fd);
         return ESP_FAIL;
     }
@@ -634,6 +661,8 @@ esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const
     if (n > 0) {
         tmp[n] = '\0';
         sscanf(tmp, "HTTP/%*s %d", &status);
+    } else {
+        ESP_LOGW(TAG, "POST image no response errno=%d n=%d", errno, n);
     }
     if (out_status) {
         *out_status = status;

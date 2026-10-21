@@ -19,6 +19,7 @@ static const char *const k_caps_base[] = {
     "content.news_list",
     "content.weather",
     "content.error",
+    "content.action",
     "action.invoke",
     "net.http_via_server",
     "input.touch",

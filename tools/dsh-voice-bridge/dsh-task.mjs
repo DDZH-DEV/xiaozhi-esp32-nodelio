@@ -13,6 +13,8 @@ import { connect, readEndpoint, RpcError } from './lib/rpc.mjs';
 import {
   ATTENTION,
   decodeSessionLog,
+  displayTaskSubtitle,
+  displayTaskTitle,
   foldSession,
   sessionLogPath,
   speakTask,
@@ -96,17 +98,21 @@ async function listTasks(client, asJson) {
     } catch {
       // A cold session still lists; live state is optional.
     }
+    const folded = foldFromDisk(session);
+    const status = live?.status ?? 'unknown';
+    const needsYou = ATTENTION.has(status);
     rows.push({
       workspace: session.cwd,
       sessionId: session.externalSessionId,
-      title: session.title,
+      title: displayTaskTitle(session, folded),
+      subtitle: displayTaskSubtitle(status, folded, needsYou),
       live: session.metadata?.live ?? false,
-      status: live?.status ?? 'unknown',
-      turn: null,
-      step: null,
-      lastTool: null,
-      toolCalls: null,
-      needsYou: ATTENTION.has(live?.status ?? ''),
+      status,
+      turn: folded?.turn ?? null,
+      step: folded?.step ?? null,
+      lastTool: folded?.lastTool ?? null,
+      toolCalls: folded?.toolCalls ?? null,
+      needsYou,
       speak: live ? null : '会话未激活，只能看到标题。',
     });
   }
@@ -124,6 +130,7 @@ async function listTasks(client, asJson) {
     for (const row of group) {
       const mark = row.needsYou ? '!' : row.status === 'running' ? '*' : ' ';
       process.stdout.write(`  ${mark} [${row.status}] ${row.title}\n`);
+      process.stdout.write(`      ${row.subtitle}\n`);
       process.stdout.write(`      ${row.sessionId}\n`);
     }
   }
@@ -146,17 +153,19 @@ async function showTask(client, reference, flags) {
   ]);
   const folded = foldFromDisk(session);
 
+  const needsYou = ATTENTION.has(state.status);
   const task = {
     workspace: session.cwd,
     sessionId: session.externalSessionId,
-    title: session.title ?? folded?.title ?? null,
+    title: displayTaskTitle(session, folded),
+    subtitle: displayTaskSubtitle(state.status, folded, needsYou),
     status: state.status,
     turn: folded?.turn ?? null,
     step: folded?.step ?? null,
     lastTool: folded?.lastTool ?? null,
     lastToolStatus: folded?.lastToolStatus ?? null,
     toolCalls: folded?.toolCalls ?? null,
-    needsYou: ATTENTION.has(state.status),
+    needsYou,
     pendingNotices: (notices.notices ?? []).map((n) => ({
       noticeId: n.noticeId,
       kind: n.kind,
@@ -181,6 +190,7 @@ async function showTask(client, reference, flags) {
         `workspace   ${task.workspace}`,
         `session     ${task.sessionId}`,
         `title       ${task.title}`,
+        `subtitle    ${task.subtitle}`,
         `status      ${task.status}${task.needsYou ? '  (需要你确认)' : ''}`,
         `progress    turn ${task.turn} / step ${task.step}`,
         `tools       ${task.toolCalls} calls, last=${task.lastTool ?? '-'} (${task.lastToolStatus ?? '-'})`,

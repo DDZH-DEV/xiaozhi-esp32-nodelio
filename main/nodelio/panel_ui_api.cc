@@ -180,6 +180,46 @@ extern "C" void nodelio_panel_ui_notify_net(bool on)
 extern "C" void nodelio_panel_ui_toast(const char *text) { nl_ov_toast(text); }
 extern "C" void nodelio_panel_ui_toast_defer(const char *text) { nl_ov_toast(text); }
 
+extern "C" void nodelio_panel_ui_announce_spoken(const char *text)
+{
+    nodelio_panel_ui_announce_spoken_ex(text, nullptr);
+}
+
+extern "C" void nodelio_panel_ui_announce_spoken_ex(const char *text, const char *audio_url)
+{
+    if (!text || !text[0]) {
+        return;
+    }
+    char *copy = strdup(text);
+    if (!copy) {
+        return;
+    }
+    char *audio = (audio_url && audio_url[0]) ? strdup(audio_url) : nullptr;
+    Application::GetInstance().Schedule([copy, audio]() {
+        auto &app = Application::GetInstance();
+        auto *disp = Board::GetInstance().GetDisplay();
+        if (disp) {
+            disp->SetChatMessage("assistant", copy);
+        }
+        {
+            DisplayLockGuard lock(nl_ov_disp());
+            if (lock) {
+                nodelio_overlay_on_chat_locked("助手", copy);
+                if (nl_ov_ai_session_active()) {
+                    nodelio_overlay_show_chat();
+                }
+            }
+        }
+        char tip[64];
+        snprintf(tip, sizeof(tip), "%.56s", copy);
+        nl_ov_toast(tip);
+        ESP_LOGI(TAG, "announce_spoken audio=%s", audio ? audio : "(none)");
+        app.PlaySpokenAfterLocalSkill(audio);
+        free(copy);
+        free(audio);
+    });
+}
+
 extern "C" void nodelio_panel_ui_skills_changed(void)
 {
     Application::GetInstance().Schedule([]() {
@@ -187,6 +227,12 @@ extern "C" void nodelio_panel_ui_skills_changed(void)
         nl_ov_home_skills_ensure_fetched();
         nl_ov_apps_refresh();
     });
+}
+
+extern "C" void nodelio_panel_ui_skill_hint(const char *app_or_instance_id)
+{
+    /* 复用 open_app：按名/id 找到已装技能并 invoke 一次（事件驱动，无轮询） */
+    (void)nodelio_panel_ui_open_app(app_or_instance_id);
 }
 
 extern "C" void nodelio_panel_ui_play_cue(int cue)
@@ -490,8 +536,10 @@ static void strip_open_app_query(char *s)
 extern "C" bool nodelio_panel_ui_open_app(const char *name_or_id)
 {
     if (!name_or_id || !name_or_id[0]) {
+        ESP_LOGW(TAG, "open_app: empty name");
         return false;
     }
+    ESP_LOGI(TAG, "open_app request='%s'", name_or_id);
     Board::GetInstance().NoteUserActivity();
     char *q = strdup(name_or_id);
     if (!q) {
@@ -499,9 +547,11 @@ extern "C" bool nodelio_panel_ui_open_app(const char *name_or_id)
     }
     strip_open_app_query(q);
     if (!q[0]) {
+        ESP_LOGW(TAG, "open_app: empty after strip from '%s'", name_or_id);
         free(q);
         return false;
     }
+    ESP_LOGI(TAG, "open_app stripped='%s'", q);
     Application::GetInstance().Schedule([q]() {
         if (!nodelio_overlay_visible()) {
             if (nl_ov_ai_session_active()) {
@@ -512,12 +562,72 @@ extern "C" bool nodelio_panel_ui_open_app(const char *name_or_id)
         }
         DisplayLockGuard lock(nl_ov_disp());
         if (lock) {
-            if (!nl_ov_apps_open_by_query(q)) {
+            const bool ok = nl_ov_apps_open_by_query(q);
+            ESP_LOGI(TAG, "open_app run q='%s' ok=%d", q, ok ? 1 : 0);
+            if (!ok) {
                 nl_ov_toast("未找到应用");
             }
             nl_ov_restore_ai_drawer_if_session();
         }
         free(q);
+    });
+    return true;
+}
+
+static char s_dsh_arm_ws[200];
+static char s_dsh_arm_sess[80];
+
+extern "C" void nodelio_panel_ui_arm_dsh(const char *workspace, const char *session)
+{
+    s_dsh_arm_ws[0] = '\0';
+    s_dsh_arm_sess[0] = '\0';
+    if (workspace && workspace[0]) {
+        snprintf(s_dsh_arm_ws, sizeof(s_dsh_arm_ws), "%s", workspace);
+    }
+    if (session && session[0]) {
+        snprintf(s_dsh_arm_sess, sizeof(s_dsh_arm_sess), "%s", session);
+    }
+    ESP_LOGI(TAG, "arm dsh ws='%s' sess='%s'", s_dsh_arm_ws, s_dsh_arm_sess);
+}
+
+extern "C" void nodelio_panel_ui_clear_dsh_arm(void)
+{
+    s_dsh_arm_ws[0] = '\0';
+    s_dsh_arm_sess[0] = '\0';
+}
+
+extern "C" bool nodelio_panel_ui_dsh_is_armed(void)
+{
+    return s_dsh_arm_ws[0] != '\0' || s_dsh_arm_sess[0] != '\0';
+}
+
+extern "C" void nodelio_panel_ui_get_dsh_arm(char *workspace, size_t ws_len, char *session,
+                                            size_t sess_len)
+{
+    if (workspace && ws_len) {
+        snprintf(workspace, ws_len, "%s", s_dsh_arm_ws);
+    }
+    if (session && sess_len) {
+        snprintf(session, sess_len, "%s", s_dsh_arm_sess);
+    }
+}
+
+extern "C" bool nodelio_panel_ui_dsh_task(const char *instruction)
+{
+    Board::GetInstance().NoteUserActivity();
+    char *copy = nullptr;
+    if (instruction && instruction[0]) {
+        copy = strdup(instruction);
+        if (!copy) {
+            return false;
+        }
+    }
+    Application::GetInstance().Schedule([copy]() {
+        if (!nodelio_overlay_visible()) {
+            nodelio_overlay_show(false);
+        }
+        (void)nl_ov_apps_invoke_dsh_task(copy);
+        free(copy);
     });
     return true;
 }

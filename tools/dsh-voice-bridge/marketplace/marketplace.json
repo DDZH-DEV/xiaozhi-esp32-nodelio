@@ -7,43 +7,86 @@
     "name": "NodeLio",
     "contact": "https://github.com/DDZH-DEV/nodelio-protocol/issues"
   },
-  "updated_at": "2026-10-19T07:10:00Z",
+  "updated_at": "2026-10-21T08:40:14.270Z",
   "apps": [
     {
       "app_id": "dsh.task",
       "name": "DSH 派活",
       "version": "1.0.0",
-      "package_url": "https://REPLACE-ME.example.com/nodelio/dsh/packages/dsh.task/1.0.0.json",
+      "package_url": "/nodelio-dsh-market/packages/dsh.task/1.0.0.json",
+      "package_sha256": "c879cd5085ad88c797977ccf822151ba92a1c6be112ba5fa6a8126f91d7b2ddf",
       "summary": "把一句口语指令投给 DSH，并列出当前任务",
-      "categories": ["tool"],
+      "categories": [
+        "tool"
+      ],
       "min_protocol": 1,
-      "requires": ["content.list", "action.invoke", "net.http_via_server"],
-      "optional": ["content.text", "content.error", "content.action"],
-      "surfaces": ["card", "home_tile", "voice_reply"]
+      "requires": [
+        "content.list",
+        "action.invoke",
+        "net.http_via_server"
+      ],
+      "optional": [
+        "content.text",
+        "content.error",
+        "content.action"
+      ],
+      "surfaces": [
+        "card",
+        "home_tile",
+        "voice_reply"
+      ]
     },
     {
       "app_id": "dsh.status",
       "name": "DSH 进度",
       "version": "1.0.0",
-      "package_url": "https://REPLACE-ME.example.com/nodelio/dsh/packages/dsh.status/1.0.0.json",
+      "package_url": "/nodelio-dsh-market/packages/dsh.status/1.0.0.json",
+      "package_sha256": "589e63a9444a8e3ef896dc6cd534e5683ee6b5483b515f2478da5864f352b96f",
       "summary": "查任务跑到第几步、卡在哪个工具",
-      "categories": ["tool"],
+      "categories": [
+        "tool"
+      ],
       "min_protocol": 1,
-      "requires": ["content.list", "action.invoke", "net.http_via_server"],
-      "optional": ["content.text", "content.error"],
-      "surfaces": ["card", "voice_reply"]
+      "requires": [
+        "content.list",
+        "action.invoke",
+        "net.http_via_server"
+      ],
+      "optional": [
+        "content.text",
+        "content.error",
+        "content.action"
+      ],
+      "surfaces": [
+        "card",
+        "home_tile",
+        "voice_reply"
+      ]
     },
     {
       "app_id": "dsh.answer",
       "name": "DSH 确认",
       "version": "1.0.0",
-      "package_url": "https://REPLACE-ME.example.com/nodelio/dsh/packages/dsh.answer/1.0.0.json",
-      "summary": "允许或拒绝任务挂起的审批",
-      "categories": ["tool"],
+      "package_url": "/nodelio-dsh-market/packages/dsh.answer/1.0.0.json",
+      "package_sha256": "a9add4b286b2667e32dfb0afa5b2dabf9467859088262d1af4ad540b67d37384",
+      "summary": "内部动作：进度卡允许/拒绝（勿当入口）",
+      "categories": [
+        "tool"
+      ],
       "min_protocol": 1,
-      "requires": ["content.text", "action.invoke", "net.http_via_server"],
-      "optional": ["content.list", "content.error"],
-      "surfaces": ["card", "voice_reply", "notification"]
+      "requires": [
+        "content.text",
+        "action.invoke",
+        "net.http_via_server"
+      ],
+      "optional": [
+        "content.list",
+        "content.error",
+        "content.action"
+      ],
+      "surfaces": [
+        "card"
+      ]
     }
   ]
 }

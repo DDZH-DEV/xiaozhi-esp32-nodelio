@@ -16,6 +16,9 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content
 
 void nodelio_skill_result_hide(void);
 
+/** 技能列表/结果卡是否仍显示（本地开应用后勿 goodbye 息屏）。 */
+bool nodelio_skill_result_is_visible(void);
+
 /** 停播并收起技能卡/播放条/悬浮球（语音「关闭电台」或 MCP close）。 */
 void nodelio_skill_close_all(void);
 
@@ -45,6 +48,12 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len);
  * 已处理返回 true。
  */
 bool nodelio_skill_try_dismiss_phrase(const char *text);
+
+/**
+ * DSH 列表可见时：「第几个工作区/任务」→ 进入或续聊。
+ * 已处理返回 true。
+ */
+bool nodelio_skill_try_pick_phrase(const char *text);
 
 #ifdef __cplusplus
 }

@@ -36,7 +36,7 @@ constexpr uint32_t kMp3BatchMs = 1600;
 const char* TAG = "NotifyPlayer";
 constexpr int kMaxRedirects = 4;
 
-enum class StreamKind { kUnknown, kOgg, kMp3, kM4a };
+enum class StreamKind { kUnknown, kOgg, kMp3, kM4a, kWav };
 
 std::string TrimHeaderValue(std::string s) {
     while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) {
@@ -112,6 +112,9 @@ bool IsMp3Frame(const uint8_t* p, size_t n) {
 }
 
 StreamKind SniffAudio(const uint8_t* p, size_t n) {
+    if (n >= 12 && std::memcmp(p, "RIFF", 4) == 0 && std::memcmp(p + 8, "WAVE", 4) == 0) {
+        return StreamKind::kWav;
+    }
     if (n >= 4 && std::memcmp(p, "OggS", 4) == 0) {
         return StreamKind::kOgg;
     }
@@ -353,7 +356,8 @@ void NotifyPlayer::WorkerTask() {
         int status_code = 0;
         for (int hop = 0; hop <= kMaxRedirects; ++hop) {
             http->SetHeader("Accept",
-                            "audio/ogg, application/ogg, audio/mpeg, audio/mp4, audio/aac, audio/x-m4a, */*");
+                            "audio/ogg, application/ogg, audio/mpeg, audio/wav, audio/x-wav, "
+                            "audio/mp4, audio/aac, audio/x-m4a, */*");
             http->SetHeader("Accept-Encoding", "identity");
             if (!device_key.empty() && UrlHost(url) == origin_host) {
                 http->SetHeader("X-Device-Key", device_key);
@@ -425,6 +429,8 @@ void NotifyPlayer::WorkerTask() {
                 success = PlayMp3(http.get(), playback_id, prefetch.data(), prefetch.size());
             } else if (kind == StreamKind::kM4a) {
                 success = PlayM4a(http.get(), playback_id, prefetch.data(), prefetch.size());
+            } else if (kind == StreamKind::kWav) {
+                success = PlayWav(http.get(), playback_id, prefetch.data(), prefetch.size());
             } else if (!IsCancelled(playback_id)) {
                 ESP_LOGE(TAG, "Unsupported audio stream");
             }
@@ -533,6 +539,167 @@ bool NotifyPlayer::PlayOgg(Http* http, uint32_t playback_id, const uint8_t* firs
         }
     }
     return false;
+}
+
+bool NotifyPlayer::PlayWav(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n) {
+    /* 短 TTS：整文件进 PSRAM（SAPI wav 通常几十～几百 KB） */
+    constexpr size_t kWavMax = 512 * 1024;
+    std::vector<uint8_t> all;
+    all.reserve(std::min(kWavMax, first_n + 64 * 1024));
+    if (first_n > 0) {
+        all.insert(all.end(), first, first + first_n);
+    }
+    std::array<char, kHttpReadBufferSize> buffer;
+    while (!IsCancelled(playback_id) && all.size() < kWavMax) {
+        auto size = http->Read(buffer.data(), buffer.size());
+        if (!size) {
+            ESP_LOGE(TAG, "WAV HTTP read failed: %s", size.error().ToString().c_str());
+            return false;
+        }
+        if (*size == 0) {
+            break;
+        }
+        all.insert(all.end(), buffer.data(), buffer.data() + *size);
+    }
+    if (all.size() < 44 || std::memcmp(all.data(), "RIFF", 4) != 0 ||
+        std::memcmp(all.data() + 8, "WAVE", 4) != 0) {
+        ESP_LOGE(TAG, "WAV header invalid size=%u", (unsigned)all.size());
+        return false;
+    }
+
+    uint16_t audio_format = 0;
+    uint16_t channels = 0;
+    uint32_t sample_rate = 0;
+    uint16_t bits = 0;
+    size_t data_off = 0;
+    size_t data_sz = 0;
+    size_t pos = 12;
+    while (pos + 8 <= all.size()) {
+        const char* tag = reinterpret_cast<const char*>(all.data() + pos);
+        uint32_t chunk_sz = static_cast<uint32_t>(all[pos + 4]) |
+                            (static_cast<uint32_t>(all[pos + 5]) << 8) |
+                            (static_cast<uint32_t>(all[pos + 6]) << 16) |
+                            (static_cast<uint32_t>(all[pos + 7]) << 24);
+        pos += 8;
+        if (pos + chunk_sz > all.size()) {
+            break;
+        }
+        if (std::memcmp(tag, "fmt ", 4) == 0 && chunk_sz >= 16) {
+            audio_format = static_cast<uint16_t>(all[pos] | (all[pos + 1] << 8));
+            channels = static_cast<uint16_t>(all[pos + 2] | (all[pos + 3] << 8));
+            sample_rate = static_cast<uint32_t>(all[pos + 4]) | (static_cast<uint32_t>(all[pos + 5]) << 8) |
+                          (static_cast<uint32_t>(all[pos + 6]) << 16) |
+                          (static_cast<uint32_t>(all[pos + 7]) << 24);
+            bits = static_cast<uint16_t>(all[pos + 14] | (all[pos + 15] << 8));
+        } else if (std::memcmp(tag, "data", 4) == 0) {
+            data_off = pos;
+            data_sz = chunk_sz;
+            break;
+        }
+        pos += chunk_sz + (chunk_sz & 1);
+    }
+    if (audio_format != 1 || (bits != 16 && bits != 8) || channels < 1 || channels > 2 ||
+        sample_rate < 8000 || sample_rate > 48000 || data_off == 0 || data_sz == 0) {
+        ESP_LOGE(TAG, "WAV unsupported fmt=%u ch=%u rate=%lu bits=%u data=%u", audio_format, channels,
+                 (unsigned long)sample_rate, bits, (unsigned)data_sz);
+        return false;
+    }
+    if (data_off + data_sz > all.size()) {
+        data_sz = all.size() - data_off;
+    }
+
+    nodelio_offline_cmd_shield_up();
+    const int out_rate = Board::GetInstance().GetAudioCodec()->output_sample_rate();
+    esp_ae_rate_cvt_handle_t resampler = nullptr;
+    auto close_rs = [&]() {
+        if (resampler != nullptr) {
+            esp_ae_rate_cvt_close(resampler);
+            resampler = nullptr;
+        }
+        nodelio_offline_cmd_finish_playback_dram(dram_epoch_);
+    };
+
+    const uint8_t* raw = all.data() + data_off;
+    const size_t frame_bytes = static_cast<size_t>(channels) * (bits / 8);
+    if (frame_bytes == 0 || data_sz < frame_bytes) {
+        close_rs();
+        return false;
+    }
+    const size_t frames = data_sz / frame_bytes;
+    std::vector<int16_t> mono(frames);
+    for (size_t i = 0; i < frames; ++i) {
+        const uint8_t* f = raw + i * frame_bytes;
+        int32_t sum = 0;
+        for (uint16_t c = 0; c < channels; ++c) {
+            int16_t s = 0;
+            if (bits == 16) {
+                s = static_cast<int16_t>(f[c * 2] | (f[c * 2 + 1] << 8));
+            } else {
+                s = static_cast<int16_t>((static_cast<int>(f[c]) - 128) << 8);
+            }
+            sum += s;
+        }
+        mono[i] = static_cast<int16_t>(sum / channels);
+    }
+
+    std::vector<int16_t> play = std::move(mono);
+    if (static_cast<int>(sample_rate) != out_rate) {
+        esp_ae_rate_cvt_cfg_t cfg = {
+            .src_rate = sample_rate,
+            .dest_rate = static_cast<uint32_t>(out_rate),
+            .channel = 1,
+            .bits_per_sample = ESP_AUDIO_BIT16,
+            .complexity = 2,
+            .perf_type = ESP_AE_RATE_CVT_PERF_TYPE_SPEED,
+        };
+        if (esp_ae_rate_cvt_open(&cfg, &resampler) != ESP_AE_ERR_OK || resampler == nullptr) {
+            ESP_LOGE(TAG, "WAV resampler open failed");
+            close_rs();
+            return false;
+        }
+        uint32_t target = 0;
+        esp_ae_rate_cvt_get_max_out_sample_num(resampler, play.size(), &target);
+        std::vector<int16_t> resampled(target ? target : play.size() * 3);
+        uint32_t actual = static_cast<uint32_t>(resampled.size());
+        if (esp_ae_rate_cvt_process(resampler, reinterpret_cast<esp_ae_sample_t>(play.data()),
+                                    play.size(), reinterpret_cast<esp_ae_sample_t>(resampled.data()),
+                                    &actual) != ESP_AE_ERR_OK) {
+            ESP_LOGE(TAG, "WAV resample failed");
+            close_rs();
+            return false;
+        }
+        resampled.resize(actual);
+        play = std::move(resampled);
+    }
+
+    const size_t batch = static_cast<size_t>(out_rate) * 400 / 1000; /* 400ms */
+    uint32_t pos_ms = 0;
+    size_t off = 0;
+    bool played = false;
+    while (off < play.size() && !IsCancelled(playback_id)) {
+        size_t take = std::min(batch, play.size() - off);
+        std::vector<int16_t> chunk(play.begin() + static_cast<std::ptrdiff_t>(off),
+                                   play.begin() + static_cast<std::ptrdiff_t>(off + take));
+        off += take;
+        if (!audio_service_.EnqueuePlaybackPcm(std::move(chunk), playback_id, pos_ms)) {
+            close_rs();
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (cancelled_ || !active_ || playback_id != playback_id_) {
+                close_rs();
+                return false;
+            }
+            playback_drained_ = false;
+            stream_started_ = true;
+        }
+        played = true;
+        pos_ms += static_cast<uint32_t>(take * 1000 / static_cast<size_t>(out_rate));
+    }
+    close_rs();
+    ESP_LOGI(TAG, "WAV play done frames_out played=%d", played ? 1 : 0);
+    return played;
 }
 
 bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n) {

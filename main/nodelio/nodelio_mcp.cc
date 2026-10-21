@@ -576,6 +576,10 @@ static std::string normalize_skill_id_alias(const std::string &raw)
         canon = "air.now";
     } else if (low == "quote" || low == "daily") {
         canon = "quote.daily";
+    } else if (low == "dsh" || low == "dsh.status" || low == "dsh_status" || low == "tasks") {
+        canon = "dsh.status";
+    } else if (low == "dsh.task" || low == "dsh_task") {
+        canon = "dsh.task";
     }
     if (!canon) {
         return raw;
@@ -608,9 +612,9 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
     if (body.empty() || body.front() != '{') {
         body = std::string("{\"keyword\":\"") + params + "\"}";
     }
-    bool force_play = false;
     if (music_app) {
-        body = music_normalize_invoke_body(body, &force_play);
+        bool unused = false;
+        body = music_normalize_invoke_body(body, &unused);
     }
 
     const int cap = nodelio_caps_max_content_bytes() + 512;
@@ -653,12 +657,11 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
                  (unsigned)n, (unsigned)(unsigned char)resp[n - 1]);
     }
 
-    /* 双投递：UI Envelope + 模型短摘要（禁止只塞整段 JSON） */
+    /* 双投递：UI Envelope + 模型短摘要；开播只信 Host display.auto_play */
     char spoken[NL_ENV_SPOKEN];
-    /* 打开曲库/点播别名 force；「有什么歌」等浏览仍跟 Envelope auto_play。 */
-    nodelio_skill_deliver_json(cfg, resp, force_play, spoken, sizeof(spoken));
+    nodelio_skill_deliver_json(cfg, resp, false, spoken, sizeof(spoken));
     free(resp);
-    ESP_LOGI(TAG, "invoke skill '%s' force=%d spoken=%s", skill_id.c_str(), force_play ? 1 : 0,
+    ESP_LOGI(TAG, "invoke skill '%s' spoken=%s", skill_id.c_str(),
              spoken[0] ? spoken : "(empty)");
     if (spoken[0]) {
         return std::string(spoken);
@@ -901,7 +904,7 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.nodelio.enter_wifi_config",
-        "进入 SoftAP 配网热点。用户说进入配网/打开热点时调用。屏上网络表单用 goto_page connect。",
+        "进入 SoftAP 配网。说进入配网/打开热点时调用。屏上网络页用 goto_page connect。",
         PropertyList(), [](const PropertyList &) -> ReturnValue {
             nodelio_panel_ui_local_wifi_config();
             return std::string("已进入配网热点，请手机连接后打开 192.168.4.1");
@@ -909,10 +912,8 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.nodelio.goto_page",
-        "切墙板页面（不结束对话）。page=home|apps|settings|connect|display|power|voice|media|"
-        "controls|system|reset。reset=恢复出厂确认页（须触屏确认）。"
-        "只切底层 Tab，不会关掉技能弹窗；用户说关闭电台/播客/曲库/新闻时必须再调 self.skill.close。"
-        "打开后继续听下一句。",
+        "切页面。page=home|apps|settings|connect|display|power|voice|media|controls|system|reset。"
+        "不关技能弹窗；关电台/新闻须再调 self.skill.close。",
         PropertyList({Property("page", kPropertyTypeString, "home")}),
         [](const PropertyList &properties) -> ToolResult {
             std::string page = properties["page"].value<std::string>();
@@ -952,8 +953,7 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.nodelio.home_screen",
-        "翻首页用户屏（与左滑下一屏、右滑上一屏相同）。用户说上一屏/下一屏/往前翻/往后翻时调用。"
-        "dir=next|prev。不在首页时先回到首页再翻。到头或只有一屏时说明原因，不结束对话。",
+        "翻首页屏。dir=next|prev。说上一屏/下一屏时调用。到头说明原因。",
         PropertyList({Property("dir", kPropertyTypeString, "next")}),
         [](const PropertyList &properties) -> ToolResult {
             std::string dir = properties["dir"].value<std::string>();
@@ -980,9 +980,7 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.nodelio.scroll",
-        "竖向滚动当前可见页（设置首页/设置内页/网络连接/应用列表/启动台）。"
-        "用户说往上翻/往下翻/向上滑/向下滑时调用。dir=up|down。"
-        "首页有磁贴网格时通常不能滚（用 home_screen 换屏）。到顶/底说明原因，不结束对话。",
+        "竖滚设置/连接/应用列表。dir=up|down。首页磁贴用 home_screen。",
         PropertyList({Property("dir", kPropertyTypeString, "down")}),
         [](const PropertyList &properties) -> ToolResult {
             std::string dir = properties["dir"].value<std::string>();
@@ -1009,9 +1007,9 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.nodelio.set_pref",
-        "改设置（不结束对话）。空闲断网→idle_wifi_s=秒(15-300)；息屏→idle_sleep_s；"
-        "退下息屏→bye_sleep_s；另 brightness/volume/power_save/controls/xiaozhi/local_cmd/"
-        "listen_idle_s/media_sleep|media_pause_s；动作 layout_sync|fw_check|factory_reset。",
+        "改设置。key=idle_wifi_s|idle_sleep_s|bye_sleep_s|brightness|volume|power_save|"
+        "controls|xiaozhi|local_cmd|listen_idle_s|media_sleep|media_pause_s|"
+        "layout_sync|fw_check|factory_reset。",
         PropertyList({
             Property("key", kPropertyTypeString),
             Property("value", kPropertyTypeString, ""),
@@ -1051,29 +1049,63 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.nodelio.open_app",
-        "打开已装应用并执行（曲库/音乐会自动开播）。name=曲库/音乐/新闻/天气/电台/播客/空气/每日一句或 "
-        "app_id。用户说打开音乐/曲库优先本工具。仅列应用页用 goto_page apps。",
+        "打开本机已装 NodeLio 应用（唯一正确入口）。"
+        "听歌/放歌/来点音乐/曲库→name=曲库；电台/播客/新闻/天气/空气/每日一句同理。"
+        "任务/进度/DSH→name=查看任务或 DSH进度（同步返回摘要，请原文念给用户）。"
+        "禁止改用云端 search_music/play_music 等非本机工具；不要说找不到而不调用。"
+        "name=曲库/音乐/新闻/天气/电台/播客/空气/每日一句/"
+        "DSH派活/DSH进度/DSH任务/任务情况/任务应用 或 app_id。",
         PropertyList({Property("name", kPropertyTypeString)}),
         [](const PropertyList &properties) -> ToolResult {
             std::string name = properties["name"].value<std::string>();
+            ESP_LOGI(TAG, "MCP open_app name='%s'", name.c_str());
             if (name.empty()) {
                 return std::unexpected(std::string("name 不能为空"));
             }
+            /* DSH 进度：同步 invoke，把 spoken 摘要交回模型播报 */
+            const bool dsh_status = name.find("进度") != std::string::npos ||
+                                    name.find("任务情况") != std::string::npos ||
+                                    name.find("查看任务") != std::string::npos ||
+                                    name.find("任务列表") != std::string::npos ||
+                                    name.find("任务详情") != std::string::npos ||
+                                    name.find("任务应用") != std::string::npos ||
+                                    name.find("任务表情") != std::string::npos ||
+                                    name.find("DSH任务") != std::string::npos ||
+                                    name.find("dsh任务") != std::string::npos ||
+                                    name.find("dsh.status") != std::string::npos ||
+                                    (name.find("任务") != std::string::npos &&
+                                     name.find("派活") == std::string::npos) ||
+                                    (name.find("DSH") != std::string::npos &&
+                                     name.find("派活") == std::string::npos) ||
+                                    (name.find("dsh") != std::string::npos &&
+                                     name.find("task") == std::string::npos &&
+                                     name.find("派活") == std::string::npos);
+            ESP_LOGI(TAG, "MCP open_app dsh_status=%d", dsh_status ? 1 : 0);
+            if (dsh_status) {
+                nodelio_nvs_config_t cfg{};
+                if (!load_cfg(&cfg)) {
+                    ESP_LOGW(TAG, "MCP open_app dsh: no cfg");
+                    return std::unexpected(std::string("未绑定 NodeLio 服务"));
+                }
+                return invoke_skill(&cfg, "dsh.status", "{}");
+            }
             if (!nodelio_panel_ui_open_app(name.c_str())) {
+                ESP_LOGW(TAG, "MCP open_app fail name='%s'", name.c_str());
                 return std::unexpected(std::string("无法打开应用：") + name);
             }
+            ESP_LOGI(TAG, "MCP open_app scheduled name='%s'", name.c_str());
             return std::string("正在打开 ") + name;
         });
 
     mcp.AddTool(
         "self.nodelio.list_controls",
-        "列出首页可控设备 JSON[{title,room?,kind?,online?}]。offline 勿控。配合 self.nodelio.control。",
+        "列出可控设备 JSON[{title,room?,kind?,online?}]。offline 勿控。",
         PropertyList(), [](const PropertyList &) -> ReturnValue { return list_controls_json(); });
 
     mcp.AddTool(
         "self.nodelio.control",
-        "控家：target_title=名称；action=ON|OFF|TOGGLE|SET_PWM|OFF_IN|CANCEL_COUNTDOWN|apply；"
-        "value=OFF_IN秒或PWM0-100；phrase=备用口令。离线目标勿控。",
+        "控家。target_title；action=ON|OFF|TOGGLE|SET_PWM|OFF_IN|CANCEL_COUNTDOWN|apply；"
+        "value=秒或PWM0-100；phrase=备用口令。",
         PropertyList({
             Property("target_title", kPropertyTypeString, ""),
             Property("action", kPropertyTypeString, ""),
@@ -1205,8 +1237,12 @@ void nodelio_mcp_register_tools(void)
     mcp.AddTool(
         "self.skill.invoke",
         "调用已装技能。skill_id 须用完整 id：music.search / radio.stations / podcast.latest / "
-        "news.latest / weather.today / air.now / quote.daily（短写 radio/music 固件会归一）。"
-        "打开曲库/电台/播客优先 open_app。曲库 keyword 空=自动播；有什么歌=只列表。"
+        "news.latest / weather.today / air.now / quote.daily / dsh.status / dsh.task"
+        "（短写 radio/music/dsh 固件会归一）。"
+        "用户问任务/进度/DSH 在干嘛→dsh.status，把返回摘要念给用户；"
+        "派活→dsh.task 且 params 含 instruction。"
+        "听歌/放歌/打开曲库必须 self.nodelio.open_app(name=曲库)，禁止云端 search_music/play_music。"
+        "电台/播客同理用 open_app。曲库 keyword 空=自动播；有什么歌=只列表。"
         "列表已开随便放→transport op=play。",
         PropertyList({
             Property("skill_id", kPropertyTypeString, ""),

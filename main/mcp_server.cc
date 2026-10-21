@@ -43,6 +43,52 @@ void McpServer::AddCommonTools() {
     // Do not add custom tools here.
     // Custom tools must be added in the board's InitializeTools function.
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* SILA 内部 DRAM 紧：tools/list 经 MQTT TLS 发送，描述过长易 esp-aes OOM 拆线 */
+    AddTool("self.get_device_status",
+            "Device status JSON (volume, screen, battery, network). Call before volume changes.",
+            PropertyList(), [&board](const PropertyList& properties) -> ReturnValue {
+                return board.GetDeviceStatusJson();
+            });
+
+    AddTool("self.audio_speaker.set_volume", "Set speaker volume 0-100.",
+            PropertyList({Property("volume", kPropertyTypeInteger, 0, 100)}),
+            [&board](const PropertyList& properties) -> ReturnValue {
+                auto codec = board.GetAudioCodec();
+                codec->SetOutputVolume(properties["volume"].value<int>());
+                return true;
+            });
+
+    auto backlight = board.GetBacklight();
+    if (backlight) {
+        AddTool("self.screen.set_brightness", "Set screen brightness 0-100.",
+                PropertyList({Property("brightness", kPropertyTypeInteger, 0, 100)}),
+                [backlight](const PropertyList& properties) -> ReturnValue {
+                    uint8_t brightness =
+                        static_cast<uint8_t>(properties["brightness"].value<int>());
+                    backlight->SetBrightness(brightness, true);
+                    return true;
+                });
+    }
+
+#ifdef HAVE_LVGL
+    auto display = board.GetDisplay();
+    if (display && display->GetTheme() != nullptr) {
+        AddTool("self.screen.set_theme", "Set theme: light or dark.",
+                PropertyList({Property("theme", kPropertyTypeString)}),
+                [display](const PropertyList& properties) -> ReturnValue {
+                    auto theme_name = properties["theme"].value<std::string>();
+                    auto& theme_manager = LvglThemeManager::GetInstance();
+                    auto theme = theme_manager.GetTheme(theme_name);
+                    if (theme != nullptr) {
+                        display->SetTheme(theme);
+                        return true;
+                    }
+                    return false;
+                });
+    }
+#endif
+#else
     AddTool("self.get_device_status",
             "Provides the real-time information of the device, including the current status of the "
             "audio speaker, screen, battery, network, etc.\n"
@@ -120,7 +166,8 @@ void McpServer::AddCommonTools() {
                     return std::move(*result);
                 });
     }
-#endif
+#endif /* HAVE_LVGL */
+#endif /* !SILA / SILA common tools */
 
     // Restore the original tools list to the end of the tools list
     tools_.insert(tools_.end(), std::make_move_iterator(original_tools.begin()),
@@ -510,8 +557,20 @@ void McpServer::ReplyError(int id, const std::string& message,
 
 void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_only_tools,
                              const ResponseSender& response_sender) {
-    /* 说话时 MQTT 写 8KB 易超时断线；单页压到 ~4.5KB，多页 nextCursor */
-    const int max_payload_size = 4500;
+    /* 外层再包 session/type/mcp；MQTT TLS 写要整块内部 DRAM。
+     * SILA 开音频瞬间 DRAM 更紧，单页必须更小（多页 nextCursor）。 */
+    int max_payload_size = 4500;
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    if (largest < 32 * 1024) {
+        max_payload_size = 900; /* 约 1～2 个短描述工具 */
+    } else if (largest < 48 * 1024) {
+        max_payload_size = 1400;
+    } else {
+        max_payload_size = 2000;
+    }
+    ESP_LOGI(TAG, "tools/list page_cap=%d largest_dram=%u", max_payload_size, (unsigned)largest);
+#endif
     std::string json = "{\"tools\":[";
 
     bool found_cursor = cursor.empty();

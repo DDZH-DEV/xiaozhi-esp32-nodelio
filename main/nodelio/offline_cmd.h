@@ -47,6 +47,12 @@ int nodelio_offline_cmd_dram_epoch(void);
 bool nodelio_offline_cmd_yield_slot(void);
 
 /**
+ * 云端聆听/UDP 开流前：放开 slot + shield，给 lwIP pbuf / AES-CTR。
+ * 不拆 MultiNet 实例（下次本地口令仍可复用）。
+ */
+void nodelio_offline_cmd_yield_for_cloud_audio(void);
+
+/**
  * 解码器已打开后调用：把剩下的大块内部 RAM 占住，避免下载循环里的小分配把它切碎。
  * MultiNet 仍在时不做任何事。
  */

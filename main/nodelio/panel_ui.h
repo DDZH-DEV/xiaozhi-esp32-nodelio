@@ -48,11 +48,24 @@ void nodelio_panel_ui_toast(const char *text);
 /** MQTT kind=skills：invalidate 已装清单后再拉一次（无市场轮询）. */
 void nodelio_panel_ui_skills_changed(void);
 
+/**
+ * MQTT kind=skill_hint：按 app_id / instance_id 触发一次技能 invoke（拉最新 Envelope）。
+ * 仅事件驱动；禁止在固件侧轮询。
+ */
+void nodelio_panel_ui_skill_hint(const char *app_or_instance_id);
+
 /** 本地口令提示音（主任务播 OGG）；0=听令 1=成功 2=失败 */
 void nodelio_panel_ui_play_cue(int cue);
 
 /** 异步 toast：不等 LVGL 锁；供 AFE/MultiNet 任务，避免 FEED 环满. */
 void nodelio_panel_ui_toast_defer(const char *text);
+
+/**
+ * 技能摘要上屏；可选 audio_url（桥侧 MP3）在结束语音会话回 Idle 后 HTTP 播报。
+ * 云端 listen detect 不能传长文本。MCP invoke 返回值仍可由模型直接播报。
+ */
+void nodelio_panel_ui_announce_spoken(const char *text);
+void nodelio_panel_ui_announce_spoken_ex(const char *text, const char *audio_url);
 
 /**
  * 语音状态写入助手页预埋区（开机已建好的定宽标签，只改字不改布局）.
@@ -194,6 +207,21 @@ esp_err_t nodelio_panel_ui_scroll(int dir);
  * 命中返回 true；未装/未知返回 false。
  */
 bool nodelio_panel_ui_open_app(const char *name_or_id);
+
+/**
+ * 语音派活：POST dsh.task，body 含 instruction。
+ * instruction 空则只 toast 提示，不 invoke。
+ * 若已 arm 工作区/会话，body 会带上 workspace/session。
+ */
+bool nodelio_panel_ui_dsh_task(const char *instruction);
+
+/** 列表「派活/续聊」：武装下次「让它…」或武装直说（可空）。 */
+void nodelio_panel_ui_arm_dsh(const char *workspace, const char *session);
+void nodelio_panel_ui_clear_dsh_arm(void);
+/** 是否已武装工作区或会话（续聊后下一句可直接派活）。 */
+bool nodelio_panel_ui_dsh_is_armed(void);
+/** 读当前武装；无则对应缓冲为空串。 */
+void nodelio_panel_ui_get_dsh_arm(char *workspace, size_t ws_len, char *session, size_t sess_len);
 
 /**
  * 统一改设置（语音/MCP/UI 同路径）。key/value 见 PLAN-VOICE-SETTINGS。

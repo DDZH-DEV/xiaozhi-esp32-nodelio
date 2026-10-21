@@ -43,6 +43,7 @@
 extern "C" srmodel_list_t* nodelio_get_srmodels(void) {
     return Application::GetInstance().GetAudioService().GetModelsList();
 }
+static bool tts_looks_like_dsh_app_deny(const char *text);
 #endif
 
 Application::Application() : notify_player_(audio_service_) {
@@ -795,6 +796,11 @@ void Application::InitializeProtocol() {
     });
 
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        if (IsCloudTtsSuppressed()) {
+            return;
+        }
+#endif
         if (GetDeviceState() == kDeviceStateSpeaking) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
@@ -824,17 +830,15 @@ void Application::InitializeProtocol() {
             SetDeviceState(kDeviceStateIdle);
 #endif
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-            /* 听歌中 goodbye 勿 MAX_MODEM，否则 wifi:m f null + HTTP 超时。 */
-            if (nodelio_media_is_playing() || notify_player_.IsBusy() ||
-                GetDeviceState() == kDeviceStateNotifying) {
+            /* 听歌 / 本地播报 / 技能卡仍开：勿 MAX_MODEM，也勿 goodbye 9s 息屏 */
+            const bool keep_awake = nodelio_media_is_playing() || nodelio_media_resume_after_voice() ||
+                                    notify_player_.IsBusy() || GetDeviceState() == kDeviceStateNotifying ||
+                                    nodelio_skill_result_is_visible() || !pending_spoken_notify_url_.empty();
+            if (keep_awake) {
                 board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-            } else {
-                board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
-            }
-            /* 听歌被语音打断：续播并保持亮屏，勿走退下息屏 */
-            if (nodelio_media_is_playing() || nodelio_media_resume_after_voice()) {
                 board.NoteUserActivity();
             } else {
+                board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
                 board.RequestGoodbyeSleep();
             }
 #else
@@ -890,6 +894,23 @@ void Application::InitializeProtocol() {
             }
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+                    if (IsCloudTtsSuppressed()) {
+                        ESP_LOGI(TAG, "drop cloud tts start (suppressed remain_ms=%lld)",
+                                 (long long)((suppress_cloud_tts_until_us_ - esp_timer_get_time()) /
+                                             1000));
+                        aborted_ = true;
+                        if (protocol_) {
+                            protocol_->SendAbortSpeaking(kAbortReasonNone);
+                        }
+                        if (GetDeviceState() == kDeviceStateSpeaking) {
+                            SetDeviceState(kDeviceStateListening);
+                        }
+                        return;
+                    }
+                    ESP_LOGI(TAG, "cloud tts start (pending_dsh=%d)",
+                             pending_confirm_open_dsh_ ? 1 : 0);
+#endif
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
                 });
@@ -906,14 +927,47 @@ void Application::InitializeProtocol() {
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                 auto text = cJSON_GetObjectItem(root, "text");
                 if (cJSON_IsString(text)) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+                    if (IsCloudTtsSuppressed()) {
+                        ESP_LOGI(TAG, "drop cloud tts sentence: %s", text->valuestring);
+                        return;
+                    }
+                    /* 否认句：协议线程立刻掐音频，主任务再开 dsh.status */
+                    if (tts_looks_like_dsh_app_deny(text->valuestring)) {
+                        /* 本地刚开过列表：只丢弃否定句，勿再 invoke 一次 */
+                        if (dsh_local_open_cooldown_until_us_ > 0 &&
+                            esp_timer_get_time() < dsh_local_open_cooldown_until_us_) {
+                            ESP_LOGI(TAG, "drop cloud deny (dsh already open): %s",
+                                     text->valuestring);
+                            SuppressCloudTts(2000);
+                            return;
+                        }
+                        ESP_LOGW(TAG, "cloud deny app → suppress+local open: %s",
+                                 text->valuestring);
+                        SuppressCloudTts(3000);
+                        Schedule([this]() {
+                            pending_confirm_open_dsh_ = false;
+                            nodelio_panel_ui_open_app("查看任务");
+                        });
+                        return;
+                    }
+#endif
                     std::vector<TextGlyph> glyphs;
                     uint8_t bpp = 0;
                     if (!TextGlyphPayload::Parse(root, glyphs, bpp)) {
                         glyphs.clear();
                     }
                     ESP_LOGI(TAG, "<< %s", text->valuestring);
-                    Schedule([display, message = std::string(text->valuestring),
+                    Schedule([this, display, message = std::string(text->valuestring),
                               glyphs = std::move(glyphs), bpp]() {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+                        MaybeArmPendingOpenDshFromTts(message.c_str());
+                        if (IsCloudTtsSuppressed()) {
+                            ESP_LOGI(TAG, "drop cloud tts sentence after local open: %s",
+                                     message.c_str());
+                            return;
+                        }
+#endif
                         display->AddTextGlyphs(glyphs, bpp);
                         display->SetChatMessage("assistant", message.c_str());
                     });
@@ -933,21 +987,44 @@ void Application::InitializeProtocol() {
                     display->AddTextGlyphs(glyphs, bpp);
                     display->SetChatMessage("user", message.c_str());
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-                    /* 本机口令旁路：切页/开应用保持会话；仅重启/配网结束语音 */
+                    /* 新一轮识别先清抑制；本地命中后再 SuppressCloudTts。
+                     * 勿清 pending_confirm_open_dsh_（要留给「是的」）。 */
+                    ESP_LOGI(TAG,
+                             "stt local-route begin phrase='%s' pending_dsh=%d suppress_was=%d",
+                             message.c_str(), pending_confirm_open_dsh_ ? 1 : 0,
+                             IsCloudTtsSuppressed() ? 1 : 0);
+                    suppress_cloud_tts_until_us_ = 0;
+                    if (TryConfirmOpenDshFromStt(message.c_str())) {
+                        ESP_LOGI(TAG, "stt local-route: confirm→dsh.status");
+                        return;
+                    }
+                    /* 本机口令旁路：切页/曲库等可保持会话；DSH/重启/配网结束语音 */
                     bool end_session = false;
                     if (nodelio_offline_try_system_phrase(message.c_str(), &end_session)) {
+                        ESP_LOGI(TAG, "stt local-route: system/open_app hit end_session=%d",
+                                 end_session ? 1 : 0);
+                        /* 开 DSH 后云端常继续「没这应用/放首歌」；长抑制 + 立刻关通道 */
+                        SuppressCloudTts(end_session ? 15000 : 3000);
                         if (end_session) {
-                            AbortSpeaking(kAbortReasonNone);
                             if (protocol_ && protocol_->IsAudioChannelOpened()) {
                                 protocol_->CloseAudioChannel();
                             }
                         }
                         return;
                     }
-                    /* 关闭电台/播客/曲库…：本地先收弹窗；云端可再确认，勿只靠 goto_page */
-                    if (nodelio_skill_try_dismiss_phrase(message.c_str())) {
+                    /* DSH 卡：第几个工作区/任务 */
+                    if (nodelio_skill_try_pick_phrase(message.c_str())) {
+                        ESP_LOGI(TAG, "stt local-route: dsh pick");
+                        SuppressCloudTts(3000);
                         return;
                     }
+                    /* 关闭电台/播客/曲库…：本地先收弹窗；云端可再确认，勿只靠 goto_page */
+                    if (nodelio_skill_try_dismiss_phrase(message.c_str())) {
+                        ESP_LOGI(TAG, "stt local-route: skill dismiss");
+                        SuppressCloudTts(3000);
+                        return;
+                    }
+                    ESP_LOGI(TAG, "stt local-route: miss → cloud continues");
 #endif
                 });
             }
@@ -1442,6 +1519,8 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 
     if (!protocol_->IsAudioChannelOpened()) {
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        /* 唤醒后先让出口令 slot，再测堆；否则 48KB 占位把 UDP/AES 饿死 */
+        nodelio_offline_cmd_yield_for_cloud_audio();
         /* 内部堆不够时 TLS 的 esp-aes 会失败，并把已有 MQTT 拆掉。优先本地口令。 */
         const size_t internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
         bool skip_mqtt = internal_largest < 32 * 1024;
@@ -1519,12 +1598,27 @@ void Application::HandleStateChangedEvent() {
             // otherwise wipe the status, emotion, and chat message.
             if (last_error_message_.empty()) {
                 display->SetStatus(Lang::Strings::STANDBY);
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+                /* 有待播摘要时勿清对话，否则上屏 spoken 被立刻抹掉 */
+                if (pending_spoken_notify_url_.empty()) {
+                    display->ClearChatMessages();
+                }
+#else
                 display->ClearChatMessages();  // Clear messages first
+#endif
                 display->SetEmotion(
                     "neutral");  // Then set emotion (wechat mode checks child count)
             }
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            if (!pending_spoken_notify_url_.empty()) {
+                std::string url = std::move(pending_spoken_notify_url_);
+                pending_spoken_notify_url_.clear();
+                ESP_LOGI(TAG, "idle → play spoken notify");
+                StartNotification(std::move(url), {});
+            }
+#endif
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
@@ -1593,6 +1687,11 @@ void Application::StartListeningAudio() {
     if (GetDeviceState() != kDeviceStateListening) {
         return;
     }
+
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 云端 UDP/AES 需连续内部堆；先放开口令 DRAM 占位，否则 errno=12 炸上行 */
+    nodelio_offline_cmd_yield_for_cloud_audio();
+#endif
 
     // Send the start listening command
     protocol_->SendStartListening(listening_mode_);
@@ -1745,6 +1844,156 @@ void Application::AbortSpeaking(AbortReason reason) {
         protocol_->SendAbortSpeaking(reason);
     }
 }
+
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+void Application::SuppressCloudTts(int duration_ms)
+{
+    if (duration_ms < 500) {
+        duration_ms = 500;
+    }
+    if (duration_ms > 8000) {
+        duration_ms = 8000; /* 上限收紧：长抑制会卡 Listening、唤醒失灵 */
+    }
+    AbortSpeaking(kAbortReasonNone);
+    suppress_cloud_tts_until_us_ = esp_timer_get_time() + (int64_t)duration_ms * 1000;
+    ESP_LOGI(TAG, "suppress cloud tts for %d ms (until=%lld)", duration_ms,
+             (long long)suppress_cloud_tts_until_us_);
+    if (GetDeviceState() == kDeviceStateSpeaking) {
+        SetDeviceState(kDeviceStateListening);
+    }
+}
+
+bool Application::IsCloudTtsSuppressed() const
+{
+    return suppress_cloud_tts_until_us_ > 0 && esp_timer_get_time() < suppress_cloud_tts_until_us_;
+}
+
+void Application::EndVoiceSessionAfterLocalSkill()
+{
+    suppress_cloud_tts_until_us_ = 0;
+    aborted_ = false;
+    ESP_LOGI(TAG, "end voice session after local skill (state=%d ch=%d)", (int)GetDeviceState(),
+             (protocol_ && protocol_->IsAudioChannelOpened()) ? 1 : 0);
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        protocol_->CloseAudioChannel();
+        return;
+    }
+    if (GetDeviceState() == kDeviceStateListening || GetDeviceState() == kDeviceStateSpeaking ||
+        GetDeviceState() == kDeviceStateConnecting) {
+        SetDeviceState(kDeviceStateIdle);
+    }
+}
+
+void Application::PlaySpokenAfterLocalSkill(const char *audio_url)
+{
+    suppress_cloud_tts_until_us_ = 0;
+    aborted_ = false;
+    dsh_local_open_cooldown_until_us_ = esp_timer_get_time() + (int64_t)20000 * 1000;
+    pending_spoken_notify_url_.clear();
+    /* 技能卡/播报期间重置息屏计时，避免 CloseAudioChannel → goodbye 9s 黑屏 */
+    Board::GetInstance().NoteUserActivity();
+    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+    if (audio_url && audio_url[0]) {
+        /* WAV→StartNotification 会 SuspendTransport 拆 MQTT；播完重连后再唤醒易 hello 超时 */
+        pending_spoken_notify_url_ = audio_url;
+        ESP_LOGI(TAG, "pending spoken notify url=%s", audio_url);
+        EndVoiceSessionAfterLocalSkill();
+        if (GetDeviceState() == kDeviceStateIdle && !pending_spoken_notify_url_.empty()) {
+            std::string url = std::move(pending_spoken_notify_url_);
+            pending_spoken_notify_url_.clear();
+            StartNotification(std::move(url), {});
+        }
+        return;
+    }
+    /* 纯文字：结束本轮语音回 Idle（勿 keep listening，否则云端继续闲聊+UDP 空转） */
+    ESP_LOGI(TAG, "spoken text-only → end voice session");
+    SuppressCloudTts(12000);
+    EndVoiceSessionAfterLocalSkill();
+}
+
+void Application::LocalOpenDshStatus(const char *reason)
+{
+    ESP_LOGI(TAG, "local open dsh.status reason=%s", reason ? reason : "?");
+    SuppressCloudTts(3000);
+    pending_confirm_open_dsh_ = false;
+    dsh_local_open_cooldown_until_us_ = esp_timer_get_time() + (int64_t)20000 * 1000;
+    nodelio_panel_ui_open_app("查看任务");
+}
+
+void Application::MaybeArmPendingOpenDshFromTts(const char *text)
+{
+    if (!text || !text[0]) {
+        return;
+    }
+    /* 云端在问/承诺打开任务应用 → 下一句肯定答复本地开 */
+    const bool offer = (strstr(text, "任务应用") != nullptr) || (strstr(text, "打开任务") != nullptr) ||
+                       (strstr(text, "DSH任务") != nullptr) || (strstr(text, "DSH") != nullptr &&
+                                                                strstr(text, "打开") != nullptr) ||
+                       (strstr(text, "任务情况") != nullptr) || (strstr(text, "查看任务") != nullptr);
+    if (offer) {
+        pending_confirm_open_dsh_ = true;
+        ESP_LOGI(TAG, "arm pending_confirm_open_dsh from tts: %s", text);
+    }
+}
+
+static bool tts_looks_like_dsh_app_deny(const char *text)
+{
+    if (!text || !text[0]) {
+        return false;
+    }
+    const bool deny = (strstr(text, "找不到") != nullptr || strstr(text, "没有找到") != nullptr ||
+                       strstr(text, "没找到") != nullptr || strstr(text, "无法打开") != nullptr);
+    if (!deny) {
+        return false;
+    }
+    return strstr(text, "DSH") != nullptr || strstr(text, "任务") != nullptr ||
+           strstr(text, "应用") != nullptr;
+}
+
+bool Application::TryConfirmOpenDshFromStt(const char *text)
+{
+    if (!pending_confirm_open_dsh_ || !text || !text[0]) {
+        return false;
+    }
+    /* 剥句末标点后比肯定词 */
+    char buf[48];
+    size_t n = 0;
+    for (const char *p = text; *p && n + 1 < sizeof(buf); ++p) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '.' || c == '?' || c == '!' || c == ',' || c == ' ' || c == '\t') {
+            continue;
+        }
+        /* 。？！， */
+        if ((c == 0xE3 && (unsigned char)p[1] == 0x80 &&
+             ((unsigned char)p[2] == 0x82 || (unsigned char)p[2] == 0x81)) ||
+            (c == 0xEF && (unsigned char)p[1] == 0xBC &&
+             ((unsigned char)p[2] == 0x9F || (unsigned char)p[2] == 0x81 ||
+              (unsigned char)p[2] == 0x8C))) {
+            p += 2;
+            continue;
+        }
+        buf[n++] = *p;
+    }
+    buf[n] = '\0';
+    const bool yes = (strcmp(buf, "是的") == 0 || strcmp(buf, "是") == 0 || strcmp(buf, "好的") == 0 ||
+                      strcmp(buf, "好") == 0 || strcmp(buf, "嗯") == 0 || strcmp(buf, "行") == 0 ||
+                      strcmp(buf, "可以") == 0 || strcmp(buf, "打开") == 0 || strcmp(buf, "打开吧") == 0 ||
+                      strcmp(buf, "对") == 0 || strcmp(buf, "要") == 0 ||
+                      strstr(buf, "打开任务") != nullptr || strstr(buf, "打开DSH") != nullptr);
+    ESP_LOGI(TAG, "confirm_open_dsh pending=1 stt='%s' norm='%s' yes=%d", text, buf, yes ? 1 : 0);
+    if (!yes) {
+        /* 否定则撤；其它新意图留给后面本地/云端 */
+        if (strcmp(buf, "不") == 0 || strcmp(buf, "不用") == 0 || strcmp(buf, "不要") == 0 ||
+            strcmp(buf, "算了") == 0 || strstr(buf, "不用了") != nullptr) {
+            pending_confirm_open_dsh_ = false;
+            ESP_LOGI(TAG, "pending_confirm_open_dsh cleared (no)");
+        }
+        return false;
+    }
+    LocalOpenDshStatus("stt_confirm_yes");
+    return true;
+}
+#endif
 
 void Application::SetListeningMode(ListeningMode mode) {
     listening_mode_ = mode;

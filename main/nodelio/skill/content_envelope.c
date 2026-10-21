@@ -3,7 +3,9 @@
 #include "device_caps.h"
 
 #include <cJSON.h>
+#include <esp_heap_caps.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void copy_str(char *dst, size_t dst_len, const cJSON *obj, const char *key)
@@ -77,15 +79,45 @@ static void parse_track_obj(const cJSON *item, nl_env_track_t *t, bool allow_pla
         copy_str(t->playback_url, sizeof(t->playback_url), item, "url");
     }
     const cJSON *actions = cJSON_GetObjectItemCaseSensitive(item, "actions");
-    if (cJSON_IsArray(actions) && allow_play) {
+    if (cJSON_IsArray(actions)) {
         const cJSON *a;
         cJSON_ArrayForEach(a, actions)
         {
+            const cJSON *run = cJSON_GetObjectItemCaseSensitive(a, "run");
             const cJSON *local = cJSON_GetObjectItemCaseSensitive(a, "local");
-            if (cJSON_IsString(local) && local->valuestring &&
+            if (allow_play && cJSON_IsString(local) && local->valuestring &&
                 strcmp(local->valuestring, "media.play") == 0) {
                 t->has_play_action = true;
-                break;
+            }
+            if (!cJSON_IsString(run) || !run->valuestring || strcmp(run->valuestring, "invoke") != 0) {
+                continue;
+            }
+            if (t->invoke_n >= NL_ENV_ACTION_MAX) {
+                continue;
+            }
+            const cJSON *inv = cJSON_GetObjectItemCaseSensitive(a, "invoke");
+            if (!cJSON_IsObject(inv)) {
+                continue;
+            }
+            nl_env_invoke_action_t *ia = &t->invokes[t->invoke_n];
+            memset(ia, 0, sizeof(*ia));
+            copy_str(ia->id, sizeof(ia->id), a, "id");
+            copy_str(ia->title, sizeof(ia->title), a, "title");
+            copy_str(ia->app_id, sizeof(ia->app_id), inv, "app_id");
+            copy_str(ia->instance_id, sizeof(ia->instance_id), inv, "instance_id");
+            const cJSON *params = cJSON_GetObjectItemCaseSensitive(inv, "params");
+            if (cJSON_IsObject(params)) {
+                char *ps = cJSON_PrintUnformatted(params);
+                if (ps) {
+                    snprintf(ia->params_json, sizeof(ia->params_json), "%s", ps);
+                    free(ps);
+                }
+            }
+            if (ia->title[0] == '\0') {
+                snprintf(ia->title, sizeof(ia->title), "%s", ia->id[0] ? ia->id : "执行");
+            }
+            if (ia->app_id[0] || ia->instance_id[0]) {
+                t->invoke_n++;
             }
         }
     }
@@ -184,6 +216,7 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
         copy_str(out->card_type, sizeof(out->card_type), display, "card_type");
         copy_str(out->display_title, sizeof(out->display_title), display, "title");
         copy_str(out->preferred_surface, sizeof(out->preferred_surface), display, "preferred_surface");
+        copy_str(out->density, sizeof(out->density), display, "density");
         const cJSON *ttl = cJSON_GetObjectItemCaseSensitive(display, "ttl_sec");
         if (cJSON_IsNumber(ttl)) {
             out->ttl_sec = ttl->valueint;
@@ -194,11 +227,65 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
         }
         const cJSON *max_items = cJSON_GetObjectItemCaseSensitive(display, "max_items");
         (void)max_items;
+        const cJSON *filters = cJSON_GetObjectItemCaseSensitive(display, "filters");
+        if (cJSON_IsArray(filters)) {
+            const cJSON *f;
+            cJSON_ArrayForEach(f, filters)
+            {
+                if (out->filter_n >= NL_ENV_FILTER_MAX) {
+                    out->truncated = true;
+                    break;
+                }
+                nl_env_filter_t *dst = &out->filters[out->filter_n];
+                memset(dst, 0, sizeof(*dst));
+                copy_str(dst->title, sizeof(dst->title), f, "title");
+                if (dst->title[0] == '\0') {
+                    copy_str(dst->title, sizeof(dst->title), f, "label");
+                }
+                const cJSON *sel = cJSON_GetObjectItemCaseSensitive(f, "selected");
+                dst->selected = cJSON_IsTrue(sel);
+                /* workspace：params.workspace → id → 根字段 */
+                const cJSON *inv = cJSON_GetObjectItemCaseSensitive(f, "invoke");
+                if (cJSON_IsObject(inv)) {
+                    const cJSON *params = cJSON_GetObjectItemCaseSensitive(inv, "params");
+                    if (cJSON_IsObject(params)) {
+                        copy_str(dst->workspace, sizeof(dst->workspace), params, "workspace");
+                    }
+                }
+                if (dst->workspace[0] == '\0') {
+                    copy_str(dst->workspace, sizeof(dst->workspace), f, "id");
+                }
+                if (dst->workspace[0] == '\0') {
+                    copy_str(dst->workspace, sizeof(dst->workspace), f, "workspace");
+                }
+                if (dst->title[0] == '\0' && dst->workspace[0]) {
+                    /* 取路径末段作 chip 文案 */
+                    const char *leaf = dst->workspace;
+                    for (const char *p = dst->workspace; *p; ++p) {
+                        if (*p == '\\' || *p == '/') {
+                            leaf = p + 1;
+                        }
+                    }
+                    snprintf(dst->title, sizeof(dst->title), "%.20s", leaf[0] ? leaf : dst->workspace);
+                }
+                if (dst->workspace[0] == '\0') {
+                    continue;
+                }
+                out->filter_n++;
+            }
+        }
     }
 
     const cJSON *spoken = cJSON_GetObjectItemCaseSensitive(root, "spoken");
+    out->spoken_audio_url[0] = '\0';
     if (cJSON_IsObject(spoken)) {
         copy_str(out->spoken, sizeof(out->spoken), spoken, "text");
+        const cJSON *audio = cJSON_GetObjectItemCaseSensitive(spoken, "audio");
+        if (cJSON_IsObject(audio)) {
+            copy_str(out->spoken_audio_url, sizeof(out->spoken_audio_url), audio, "url");
+        } else {
+            copy_str(out->spoken_audio_url, sizeof(out->spoken_audio_url), spoken, "audio_url");
+        }
     } else if (cJSON_IsString(spoken) && spoken->valuestring) {
         snprintf(out->spoken, sizeof(out->spoken), "%s", spoken->valuestring);
     }
@@ -253,6 +340,22 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
             parse_track_obj(item, &out->tracks[out->track_n], allow_play);
             if (out->tracks[out->track_n].title[0] == '\0') {
                 continue;
+            }
+            /* 会话详情：list_item.body → envelope.detail_body（仅取第一条） */
+            if (out->detail_body == NULL) {
+                const cJSON *body = cJSON_GetObjectItemCaseSensitive(item, "body");
+                if (cJSON_IsString(body) && body->valuestring && body->valuestring[0]) {
+                    const size_t n = strnlen(body->valuestring, 6000);
+                    char *dup = (char *)heap_caps_malloc(n + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                    if (!dup) {
+                        dup = (char *)malloc(n + 1);
+                    }
+                    if (dup) {
+                        memcpy(dup, body->valuestring, n);
+                        dup[n] = '\0';
+                        out->detail_body = dup;
+                    }
+                }
             }
             out->track_n++;
         }

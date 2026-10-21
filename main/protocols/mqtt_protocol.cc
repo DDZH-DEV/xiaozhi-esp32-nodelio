@@ -3,6 +3,7 @@
 #include "board.h"
 #include "settings.h"
 
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -232,8 +233,27 @@ bool MqttProtocol::SendText(const std::string& text) {
     if (publish_topic_.empty() || !mqtt_) {
         return false;
     }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 开 I2S/重采样时内部堆骤降；此时 TLS 写任意 1KB+ 包都可能 esp-aes OOM 拆线。 */
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    const bool risky =
+        (largest < 24 * 1024 && text.size() >= 256) ||
+        (largest < 40 * 1024 && text.size() >= 800) ||
+        (largest < 56 * 1024 && text.size() >= 1600);
+    if (risky) {
+        ESP_LOGW(TAG, "skip mqtt publish (%u B), largest_dram=%u (avoid esp-aes OOM)",
+                 (unsigned)text.size(), (unsigned)largest);
+        return false; /* 不 SetError，避免「发送失败」误导成断网 */
+    }
+#endif
     if (!mqtt_->Publish(publish_topic_, text)) {
         ESP_LOGE(TAG, "Failed to publish message: %s", text.c_str());
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        /* MCP tools/list 失败常见于 OOM；勿弹「检查网络」 */
+        if (text.find("\"type\":\"mcp\"") != std::string::npos) {
+            return false;
+        }
+#endif
         SetError(Lang::Strings::SERVER_ERROR);
         return false;
     }

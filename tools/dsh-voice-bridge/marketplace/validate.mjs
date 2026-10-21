@@ -82,6 +82,14 @@ for (const [relative, schemaName] of targets) {
     continue;
   }
   const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  /* 相对路径校验时映射成 https 以满足官方 schema（不改盘上文件）。 */
+  if (schemaName === 'marketplace.schema.json' && Array.isArray(data.apps)) {
+    for (const app of data.apps) {
+      if (typeof app.package_url === 'string' && app.package_url.startsWith('/')) {
+        app.package_url = `https://host.local${app.package_url}`;
+      }
+    }
+  }
   const validate = ajv.getSchema(ids.get(schemaName));
   if (!validate) {
     console.log(`FAIL  ${relative} — schema ${schemaName} 未注册`);

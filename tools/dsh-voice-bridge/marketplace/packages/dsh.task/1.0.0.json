@@ -14,6 +14,19 @@
   "optional": ["content.text", "content.error", "content.action"],
   "surfaces": ["card", "home_tile", "voice_reply"],
   "fallback": { "card_type": "plain_result" },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "default_workspace": {
+        "type": "string",
+        "title": "默认工作区",
+        "description": "DSH 所在电脑上的绝对路径。APP 配置页会从桥拉取会话目录与本机常见目录供点选；派活时注入为 workspace。",
+        "maxLength": 260,
+        "ui_hint": "text"
+      }
+    },
+    "required": []
+  },
   "input_schema": {
     "type": "object",
     "properties": {
@@ -28,8 +41,15 @@
       "workspace": {
         "type": "string",
         "title": "工作区路径",
-        "description": "留空则用 DSH 的默认工作区；填绝对路径则投进该工作区的空闲会话。",
+        "description": "留空则用配置里的默认工作区。",
         "maxLength": 260,
+        "ui_hint": "text"
+      },
+      "session": {
+        "type": "string",
+        "title": "会话 ID",
+        "description": "续聊时传入 externalSessionId，对该会话 startTurn。",
+        "maxLength": 128,
         "ui_hint": "text"
       }
     },
@@ -38,13 +58,13 @@
   "invoke": {
     "method": "POST",
     "timeout_ms": 15000,
-    "url": "https://REPLACE-ME.example.com/nodelio/dsh/task",
+    "url": "http://127.0.0.1:8790/nodelio/dsh/task",
     "result_types": ["list", "plain_result", "error"],
     "default_display": {
       "card_type": "list",
       "preferred_surface": "card",
-      "density": "compact",
-      "max_items": 8
+      "density": "comfortable",
+      "max_items": 5
     }
   },
   "expose_mcp": true,

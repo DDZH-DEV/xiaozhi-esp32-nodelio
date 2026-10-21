@@ -31,13 +31,13 @@ enum media_op_t : uint8_t { MEDIA_OP_PLAY = 1, MEDIA_OP_STOP = 2 };
 struct media_msg_t {
     media_op_t op;
     char url[NL_ENV_URL];
-    char title[NL_ENV_STR];
+    char title[NL_ENV_TITLE];
     char device_key[65];
 };
 
 static QueueHandle_t s_q;
 static TaskHandle_t s_task;
-static char s_now_title[NL_ENV_STR];
+static char s_now_title[NL_ENV_TITLE];
 static char s_now_url[NL_ENV_URL];
 /** 已经交给 HTTP 播放器的地址。请求地址会提前写入 s_now_url，不能拿它判断「同一首」。 */
 static char s_started_url[NL_ENV_URL];

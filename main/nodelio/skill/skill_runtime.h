@@ -19,6 +19,9 @@ bool nodelio_skill_id_is_music(const char *skill_id);
 void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *json, bool auto_play_first,
                                 char *spoken_out, size_t spoken_len);
 
+/** 最近一次 deliver 的 spoken.audio.url（无则 NULL）；供本地 announce 播报。 */
+const char *nodelio_skill_last_spoken_audio_url(void);
+
 #ifdef __cplusplus
 }
 #endif

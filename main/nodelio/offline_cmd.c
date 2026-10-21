@@ -46,6 +46,7 @@ void nodelio_offline_cmd_feed(const int16_t *data, int samples)
 void nodelio_offline_cmd_stop(void) {}
 int nodelio_offline_cmd_dram_epoch(void) { return 0; }
 bool nodelio_offline_cmd_yield_slot(void) { return false; }
+void nodelio_offline_cmd_yield_for_cloud_audio(void) {}
 void nodelio_offline_cmd_shield_up(void) {}
 void nodelio_offline_cmd_finish_playback_dram(int epoch) { (void)epoch; }
 void nodelio_offline_cmd_restore_after_media(int epoch) { (void)epoch; }
@@ -502,6 +503,16 @@ bool nodelio_offline_cmd_yield_slot(void)
     s_yield_epoch = s_dram_epoch;
     free_slot();
     return true;
+}
+
+void nodelio_offline_cmd_yield_for_cloud_audio(void)
+{
+    free_shield_if(s_shield_epoch);
+    const bool y = nodelio_offline_cmd_yield_slot();
+    const size_t free_i = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "yield for cloud audio slot=%d free=%u largest=%u", y ? 1 : 0, (unsigned)free_i,
+             (unsigned)largest);
 }
 
 void nodelio_offline_cmd_shield_up(void)

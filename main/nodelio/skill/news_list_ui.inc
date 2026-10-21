@@ -290,10 +290,10 @@ static void news_scroll_to_byte(size_t byte_off)
 {
     DisplayLockGuard lock(nl_ov_disp());
     if (!lock || !s_card_list || !s_news_body_lbl || !lv_obj_is_valid(s_news_body_lbl) ||
-        s_news_detail < 0 || s_news_detail >= s_env.news_n || !s_speak_body) {
+        s_news_detail < 0 || s_news_detail >= s_env->news_n || !s_speak_body) {
         return;
     }
-    if (strcmp(s_speak_id, s_env.news[s_news_detail].id) != 0) {
+    if (strcmp(s_speak_id, s_env->news[s_news_detail].id) != 0) {
         return;
     }
     if (!lv_obj_has_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE)) {
@@ -427,12 +427,12 @@ static bool news_pull_article_text(int idx, char **out_heap, const char **out_vi
     if (from_summary) {
         *from_summary = true;
     }
-    if (idx < 0 || idx >= s_env.news_n || !s_env.news[idx].id[0]) {
+    if (idx < 0 || idx >= s_env->news_n || !s_env->news[idx].id[0]) {
         return false;
     }
-    const char *id = s_env.news[idx].id;
+    const char *id = s_env->news[idx].id;
     const char *fallback =
-        s_env.news[idx].summary[0] ? s_env.news[idx].summary : s_env.news[idx].title;
+        s_env->news[idx].summary[0] ? s_env->news[idx].summary : s_env->news[idx].title;
     if (out_view) {
         *out_view = fallback;
     }
@@ -591,11 +591,11 @@ static bool news_load_spoken(int idx, uint32_t gen, char *out, size_t out_len, b
     if (out && out_len > 0) {
         out[0] = '\0';
     }
-    if (idx < 0 || idx >= s_env.news_n || !s_env.news[idx].id[0]) {
+    if (idx < 0 || idx >= s_env->news_n || !s_env->news[idx].id[0]) {
         return false;
     }
-    const char *title = s_env.news[idx].title;
-    const char *id = s_env.news[idx].id;
+    const char *title = s_env->news[idx].title;
+    const char *id = s_env->news[idx].id;
     if (!reset_chunk && s_speak_body && strcmp(s_speak_id, id) == 0) {
         return news_format_chunk(out, out_len, false);
     }
@@ -668,17 +668,17 @@ static bool news_post_mark_read(const char *item_id)
 
 static void news_remove_local(int idx)
 {
-    if (idx < 0 || idx >= s_env.news_n) {
+    if (idx < 0 || idx >= s_env->news_n) {
         return;
     }
-    for (int i = idx; i + 1 < s_env.news_n; i++) {
-        s_env.news[i] = s_env.news[i + 1];
+    for (int i = idx; i + 1 < s_env->news_n; i++) {
+        s_env->news[i] = s_env->news[i + 1];
     }
-    s_env.news_n -= 1;
-    if (s_env.news_n <= 0) {
+    s_env->news_n -= 1;
+    if (s_env->news_n <= 0) {
         s_news_detail = -1;
-    } else if (s_news_detail >= s_env.news_n) {
-        s_news_detail = s_env.news_n - 1;
+    } else if (s_news_detail >= s_env->news_n) {
+        s_news_detail = s_env->news_n - 1;
     } else if (s_news_detail > idx) {
         s_news_detail -= 1;
     }
@@ -686,7 +686,7 @@ static void news_remove_local(int idx)
 
 static void news_enqueue_article(int idx)
 {
-    if (idx < 0 || idx >= s_env.news_n || !s_env.news[idx].id[0]) {
+    if (idx < 0 || idx >= s_env->news_n || !s_env->news[idx].id[0]) {
         return;
     }
     if (!nodelio_panel_ui_screen_on() || !s_skill_cfg.device_id[0]) {
@@ -701,7 +701,7 @@ static void news_enqueue_article(int idx)
     job.slot = idx;
     job.gen = s_news_gen;
     snprintf(job.url, sizeof(job.url), "/api/devices/%s/panel/news/article?id=%s", s_skill_cfg.device_id,
-             s_env.news[idx].id);
+             s_env->news[idx].id);
     xQueueSendToFront(s_news_q, &job, 0);
 }
 
@@ -721,7 +721,7 @@ static void news_time_short(const char *iso, char *out, size_t out_len)
 static void on_news_row(lv_event_t *e)
 {
     const int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (idx < 0 || idx >= s_env.news_n) {
+    if (idx < 0 || idx >= s_env->news_n) {
         return;
     }
     s_news_detail = idx;
@@ -769,29 +769,29 @@ static void fill_news(void)
     lv_obj_set_scroll_dir(s_card_list, LV_DIR_VER);
     lv_obj_scroll_to_y(s_card_list, 0, LV_ANIM_OFF);
 
-    if (strcmp(s_env.status, "ok") != 0 || s_env.news_n <= 0) {
+    if (strcmp(s_env->status, "ok") != 0 || s_env->news_n <= 0) {
         if (s_card_sub) {
             lv_label_set_text(s_card_sub, "点关闭或点遮罩收起");
         }
         lv_obj_t *err = lv_label_create(s_card_list);
         nl_ov_set_font(err);
-        const char *msg = s_env.error_message[0] ? s_env.error_message : (s_env.spoken[0] ? s_env.spoken : "无新闻");
+        const char *msg = s_env->error_message[0] ? s_env->error_message : (s_env->spoken[0] ? s_env->spoken : "无新闻");
         lv_label_set_text(err, msg);
         lv_obj_set_width(err, lv_pct(100));
         lv_label_set_long_mode(err, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_color(err, strcmp(s_env.status, "ok") == 0 ? UI_TEXT_DIM : UI_DANGER_FG, 0);
+        lv_obj_set_style_text_color(err, strcmp(s_env->status, "ok") == 0 ? UI_TEXT_DIM : UI_DANGER_FG, 0);
         return;
     }
 
-    if (s_news_detail >= s_env.news_n) {
+    if (s_news_detail >= s_env->news_n) {
         s_news_detail = -1;
     }
 
     if (s_news_detail >= 0) {
-        const nl_env_news_t *n = &s_env.news[s_news_detail];
+        const nl_env_news_t *n = &s_env->news[s_news_detail];
         if (s_card_sub) {
             char sub[32];
-            snprintf(sub, sizeof(sub), "详情 %d/%d", s_news_detail + 1, s_env.news_n);
+            snprintf(sub, sizeof(sub), "详情 %d/%d", s_news_detail + 1, s_env->news_n);
             lv_label_set_text(s_card_sub, sub);
         }
         lv_obj_t *back = lv_label_create(s_card_list);
@@ -840,12 +840,12 @@ static void fill_news(void)
 
     if (s_card_sub) {
         char sub[48];
-        snprintf(sub, sizeof(sub), "%d 条 · 点开看详情", s_env.news_n);
+        snprintf(sub, sizeof(sub), "%d 条 · 点开看详情", s_env->news_n);
         lv_label_set_text(s_card_sub, sub);
     }
 
-    for (int i = 0; i < s_env.news_n; i++) {
-        const nl_env_news_t *n = &s_env.news[i];
+    for (int i = 0; i < s_env->news_n; i++) {
+        const nl_env_news_t *n = &s_env->news[i];
         lv_obj_t *row = lv_obj_create(s_card_list);
         lv_obj_remove_style_all(row);
         lv_obj_set_width(row, lv_pct(100));
@@ -923,11 +923,11 @@ static bool news_step_locked(int delta, char *title, size_t title_len)
     if (title && title_len > 0) {
         title[0] = '\0';
     }
-    if (!s_have_env || strcmp(s_env.card_type, "news_list") != 0 || strcmp(s_env.status, "ok") != 0 ||
-        s_env.news_n <= 0 || !s_card) {
+    if (!s_have_env || strcmp(s_env->card_type, "news_list") != 0 || strcmp(s_env->status, "ok") != 0 ||
+        s_env->news_n <= 0 || !s_card) {
         return false;
     }
-    const int n = s_env.news_n;
+    const int n = s_env->news_n;
     const int cur = s_news_detail;
     int nxt = -1;
     if (delta == 0) {
@@ -963,7 +963,7 @@ static bool news_step_locked(int delta, char *title, size_t title_len)
         fill_list();
     }
     if (title && title_len > 0) {
-        snprintf(title, title_len, "%s", s_env.news[nxt].title);
+        snprintf(title, title_len, "%s", s_env->news[nxt].title);
     }
     return true;
 }
@@ -981,7 +981,7 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
         bool open = false;
         {
             DisplayLockGuard lock(nl_ov_disp());
-            open = lock && s_have_env && strcmp(s_env.card_type, "news_list") == 0;
+            open = lock && s_have_env && strcmp(s_env->card_type, "news_list") == 0;
         }
         if (open) {
             nodelio_skill_result_hide();
@@ -999,12 +999,12 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
         id[0] = '\0';
         {
             DisplayLockGuard lock(nl_ov_disp());
-            if (!lock || s_news_detail < 0 || s_news_detail >= s_env.news_n) {
+            if (!lock || s_news_detail < 0 || s_news_detail >= s_env->news_n) {
                 return false;
             }
             idx = s_news_detail;
             gen = s_news_gen;
-            snprintf(id, sizeof(id), "%s", s_env.news[idx].id);
+            snprintf(id, sizeof(id), "%s", s_env->news[idx].id);
         }
         if (s_chunk_sent_us != 0 && esp_timer_get_time() - s_chunk_sent_us < 8000000) {
             if (out && out_len > 0) {
@@ -1055,7 +1055,7 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
     int cur = -1;
     {
         DisplayLockGuard lock(nl_ov_disp());
-        if (!lock || !s_have_env || strcmp(s_env.card_type, "news_list") != 0 || s_env.news_n <= 0) {
+        if (!lock || !s_have_env || strcmp(s_env->card_type, "news_list") != 0 || s_env->news_n <= 0) {
             return false;
         }
         cur = s_news_detail;
@@ -1063,10 +1063,10 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
             cur = 0;
             s_news_detail = 0;
         }
-        if (cur < 0 || cur >= s_env.news_n) {
+        if (cur < 0 || cur >= s_env->news_n) {
             return false;
         }
-        snprintf(cur_id, sizeof(cur_id), "%s", s_env.news[cur].id);
+        snprintf(cur_id, sizeof(cur_id), "%s", s_env->news[cur].id);
     }
 
     (void)news_post_mark_read(cur_id);
@@ -1083,8 +1083,8 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
             return false;
         }
         int rm = -1;
-        for (int i = 0; i < s_env.news_n; i++) {
-            if (strcmp(s_env.news[i].id, cur_id) == 0) {
+        for (int i = 0; i < s_env->news_n; i++) {
+            if (strcmp(s_env->news[i].id, cur_id) == 0) {
                 rm = i;
                 break;
             }
@@ -1104,7 +1104,7 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
         /* next/skip：删掉当前后同下标即下一篇；prev：删后取前一篇 */
         const int prefer = is_prev ? (rm - 1) : rm;
         news_remove_local(rm);
-        if (s_env.news_n <= 0) {
+        if (s_env->news_n <= 0) {
             s_news_detail = -1;
             fill_list();
             if (out && out_len > 0) {
@@ -1120,7 +1120,7 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
             }
             return true;
         }
-        s_news_detail = prefer < s_env.news_n ? prefer : s_env.news_n - 1;
+        s_news_detail = prefer < s_env->news_n ? prefer : s_env->news_n - 1;
         if (s_minimized || lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
             s_minimized = false;
             hide_mini_fab();

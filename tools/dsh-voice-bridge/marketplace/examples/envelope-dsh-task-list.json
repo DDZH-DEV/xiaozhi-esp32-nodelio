@@ -7,28 +7,28 @@
     {
       "type": "list_item",
       "id": "session-b2000c6b",
-      "title": "DeepSeek dsh工作台硬件对接方案",
-      "subtitle": "running · turn 2 / step 52 · pwsh"
+      "title": "你知道deepseek出的dsh工作台吗",
+      "subtitle": "正在用 pwsh · 第52步"
     },
     {
       "type": "list_item",
       "id": "session-28e4c12e",
-      "title": "提交并推送 Git 更改",
-      "subtitle": "idle · turn 6 已完成 · 40 次工具"
+      "title": "请提交git并推送。",
+      "subtitle": "空闲 · 已提交。分支 nodelio-sila86，工作区干净。"
     },
     {
       "type": "list_item",
       "id": "session-0b2b70b5",
       "title": "Go build failed access denied",
-      "subtitle": "idle · turn 3 已完成"
+      "subtitle": "空闲 · 第5轮已完成"
     }
   ],
   "display": {
     "card_type": "list",
     "title": "D:\\xz25",
     "preferred_surface": "card",
-    "density": "compact",
-    "max_items": 8,
+    "density": "comfortable",
+    "max_items": 5,
     "ttl_sec": 30
   },
   "spoken": {

@@ -135,6 +135,19 @@ public:
     void YieldVoiceForMedia();
     void StopHttpAudio();
     bool IsHttpAudioBusy() const;
+    /**
+     * 本地已处理口令（开 DSH/曲库等）：Abort + 短时丢弃云端否定 TTS。
+     * 勿用过长窗口，否则会卡在 Listening、唤醒无响应。
+     */
+    void SuppressCloudTts(int duration_ms = 3000);
+    bool IsCloudTtsSuppressed() const;
+    /** 本地技能完成：清抑制、关语音通道回 Idle，恢复唤醒。 */
+    void EndVoiceSessionAfterLocalSkill();
+    /**
+     * 本地摘要播报。有 audio_url → Idle 后 StartNotification（会挂起 MQTT，慎用）；
+     * 无 url → toast + 结束本轮语音回 Idle（禁止 keep listening 让云端继续闲聊）。
+     */
+    void PlaySpokenAfterLocalSkill(const char *audio_url);
 #endif
     
     /**
@@ -174,6 +187,14 @@ private:
     int listen_idle_ticks_ = 0; /* 聆听无语音累计秒；勿复用 clock_ticks_ */
     int listen_announce_hold_ticks_ = 0; /* 已提示后独立计时关通道，不受 VAD 清零 */
     bool listen_idle_pending_close_ = false; /* 已提示，待短暂展示后再关通道 */
+    int64_t suppress_cloud_tts_until_us_ = 0; /* 本地口令处理后丢弃云端 TTS 截止时间 */
+    /** 云端刚问「要不要打开任务应用」：下一句「是的」本地直接开 dsh.status */
+    bool pending_confirm_open_dsh_ = false;
+    void MaybeArmPendingOpenDshFromTts(const char *text);
+    bool TryConfirmOpenDshFromStt(const char *text);
+    void LocalOpenDshStatus(const char *reason);
+    int64_t dsh_local_open_cooldown_until_us_ = 0; /* 本地已开列表，忽略云端否认再开 */
+    std::string pending_spoken_notify_url_; /* Idle 后播报的 HTTP 音频 */
 #endif
     TaskHandle_t activation_task_handle_ = nullptr;
 

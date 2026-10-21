@@ -1098,21 +1098,35 @@ static void capture_and_upload_screenshot(void)
         nl_ov_toast("未配置服务器");
         return;
     }
+    const size_t dram_before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    const size_t dram_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    /* 技能卡打开时常见 free≈17KB、largest≈7KB（碎片）。心跳仍能短 TCP，
+     * 勿用 16KB 一刀切；仅在几乎无连续块时放弃。JPEG/任务走 PSRAM。 */
+    if (dram_before < 3 * 1024) {
+        ESP_LOGW(TAG, "screenshot skip: largest_dram=%u free=%u", (unsigned)dram_before,
+                 (unsigned)dram_free);
+        nl_ov_toast("内存过碎，先关掉技能卡再截");
+        return;
+    }
     /* JPEG 在 LVGL 线程生成；HTTP 必须扔后台，否则堵 UI / 撑爆 LVGL 栈 */
     auto *jpeg = new (std::nothrow) std::string();
     if (!jpeg) {
         nl_ov_toast("内存不足");
         return;
     }
+    /* 碎片严重时压质量，减小编码峰值与上传体积 */
+    const int quality = (dram_before < 20 * 1024) ? 40 : ((dram_before < 40 * 1024) ? 55 : 70);
     lv_obj_t *snap = lv_layer_top();
-    if (!disp->SnapshotToJpeg(*jpeg, 80, snap) || jpeg->empty()) {
-        ESP_LOGW(TAG, "SnapshotToJpeg failed");
+    if (!disp->SnapshotToJpeg(*jpeg, quality, snap) || jpeg->empty()) {
+        ESP_LOGW(TAG, "SnapshotToJpeg failed q=%d dram=%u", quality, (unsigned)dram_before);
         delete jpeg;
         nl_ov_toast("截屏生成失败");
         return;
     }
+    ESP_LOGI(TAG, "screenshot jpeg=%u q=%d dram_free_largest=%u", (unsigned)jpeg->size(), quality,
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
-    auto *job = static_cast<shot_job *>(malloc(sizeof(shot_job)));
+    auto *job = static_cast<shot_job *>(heap_caps_malloc(sizeof(shot_job), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!job) {
         delete jpeg;
         nl_ov_toast("无法上传");
@@ -1125,16 +1139,26 @@ static void capture_and_upload_screenshot(void)
     if (xTaskCreateWithCaps(
             [](void *p) {
                 auto *job = static_cast<shot_job *>(p);
+                /* 把 JPEG 拷到 PSRAM，释放 string 可能占的内部堆，给 lwIP TCP 缓冲腾地方 */
+                const size_t n = job->jpeg->size();
+                uint8_t *ps =
+                    static_cast<uint8_t *>(heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                if (ps) {
+                    memcpy(ps, job->jpeg->data(), n);
+                    delete job->jpeg;
+                    job->jpeg = nullptr;
+                }
+                const void *body = ps ? static_cast<const void *>(ps) : job->jpeg->data();
+                const size_t body_n = ps ? n : job->jpeg->size();
+
                 char base[160];
                 nl_url_strip_base(job->cfg.server_url, base, sizeof(base));
                 char url[256];
                 std::snprintf(url, sizeof(url), "%s/api/devices/%s/panel/screenshot", base, job->cfg.device_id);
                 int http_status = 0;
-                esp_err_t err = nodelio_http_post_image(url, job->cfg.device_key, job->jpeg->data(),
-                                                        job->jpeg->size(), &http_status);
+                esp_err_t err = nodelio_http_post_image(url, job->cfg.device_key, body, body_n, &http_status);
                 if (err == ESP_OK && http_status >= 200 && http_status < 300) {
-                    ESP_LOGI(TAG, "Screenshot uploaded successfully: %u bytes",
-                             (unsigned)job->jpeg->size());
+                    ESP_LOGI(TAG, "Screenshot uploaded successfully: %u bytes", (unsigned)body_n);
                     /* P3c：多屏时提示当前屏序号，便于各拍一帧 */
                     const int pi = nl_ov_home_user_page_index();
                     const int pn = nl_ov_home_user_page_count();
@@ -1146,17 +1170,29 @@ static void capture_and_upload_screenshot(void)
                         nodelio_panel_ui_toast_defer("已上传实机截图");
                     }
                 } else {
-                    ESP_LOGW(TAG, "Screenshot upload failed err=%s http=%d", esp_err_to_name(err),
-                             http_status);
-                    nodelio_panel_ui_toast_defer("截图上传失败");
+                    ESP_LOGW(TAG, "Screenshot upload failed err=%s http=%d jpeg=%u dram=%u",
+                             esp_err_to_name(err), http_status, (unsigned)body_n,
+                             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+                    if (err == ESP_ERR_NO_MEM || err == ESP_ERR_INVALID_STATE) {
+                        nodelio_panel_ui_toast_defer("内存/网络忙，稍后再截");
+                    } else {
+                        nodelio_panel_ui_toast_defer("截图上传失败");
+                    }
                 }
-                delete job->jpeg;
-                free(job);
+                if (ps) {
+                    heap_caps_free(ps);
+                }
+                if (job->jpeg) {
+                    delete job->jpeg;
+                }
+                heap_caps_free(job);
                 vTaskDeleteWithCaps(nullptr);
             },
             "nl_shot", kStackWords, job, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
-        delete job->jpeg;
-        free(job);
+        if (job->jpeg) {
+            delete job->jpeg;
+        }
+        heap_caps_free(job);
         nl_ov_toast("无法上传");
     }
 }

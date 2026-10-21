@@ -30,7 +30,8 @@ LV_FONT_DECLARE(font_material_symbols_20_4);
 #define TAG "nl_home_sk"
 #define HOME_SKILL_MAX 6
 #define HOME_SKILL_STRIP_H 76
-#define HOME_INVOKE_BODY_MAX 192
+/* DSH：instruction + workspace + session；原 192 会截断路径 */
+#define HOME_INVOKE_BODY_MAX 384
 
 struct nl_home_skill {
     char id[72];
@@ -166,10 +167,15 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
                     if (err == ESP_OK && resp[0] &&
                         (status == 200 || status == 201 ||
                          (status >= 400 && strstr(resp, "\"schema_version\"") != nullptr))) {
-                        /* 曲库打开即播；error Envelope（未填地区等）也上屏+toast */
-                        ESP_LOGI(TAG, "deliver id=%s music=%d force_play=%d status=%d", a->id,
-                                 music_app ? 1 : 0, music_app ? 1 : 0, status);
-                        nodelio_skill_deliver_json(&a->cfg, resp, music_app, nullptr, 0);
+                        /* 是否开播看 Envelope auto_play（Host 技能配置）；error 也上屏+toast */
+                        ESP_LOGI(TAG, "deliver id=%s music=%d status=%d", a->id, music_app ? 1 : 0,
+                                 status);
+                        char spoken[NL_ENV_SPOKEN];
+                        spoken[0] = '\0';
+                        nodelio_skill_deliver_json(&a->cfg, resp, false, spoken, sizeof(spoken));
+                        if (strstr(a->id, "dsh") != nullptr && spoken[0]) {
+                            nodelio_panel_ui_announce_spoken(spoken);
+                        }
                     } else if (err != ESP_OK || status == 0 || !resp[0]) {
                         nodelio_panel_ui_toast_defer("服务器无响应");
                     } else {
@@ -633,7 +639,8 @@ void nl_ov_home_skills_ensure_fetched(void)
                         }
                         nl_home_skill *row = &items[n];
                         copy_json_field(row->id, sizeof(row->id), it, "skillId");
-                        if (!row->id[0]) {
+                        /* dsh.answer 仅审批按钮，不进首页钉选条 */
+                        if (!row->id[0] || strstr(row->id, "dsh.answer") != nullptr) {
                             continue;
                         }
                         copy_json_field(row->name, sizeof(row->name), it, "name");

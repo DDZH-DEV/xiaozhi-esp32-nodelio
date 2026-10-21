@@ -231,6 +231,9 @@ void nl_ov_stop_sys_monitor(void);
 /** 按应用名/app_id 子串打开已装应用（语音）；未命中返回 false */
 bool nl_ov_apps_open_by_query(const char *query);
 
+/** 派活：invoke dsh.task + instruction；空指令只提示不请求 */
+bool nl_ov_apps_invoke_dsh_task(const char *instruction);
+
 /* —— ai drawer —— */
 void nl_ov_create_ai_drawer(lv_obj_t *parent);
 void nl_ov_hide_ai_drawer(void);

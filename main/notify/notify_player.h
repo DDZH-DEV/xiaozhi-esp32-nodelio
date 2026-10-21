@@ -66,6 +66,7 @@ private:
     bool PlayOgg(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n);
     bool PlayMp3(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n);
     bool PlayM4a(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n);
+    bool PlayWav(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n);
     bool IsCancelled(uint32_t playback_id) const;
     FinishedCallback CompleteLocked(uint32_t& playback_id);
 };

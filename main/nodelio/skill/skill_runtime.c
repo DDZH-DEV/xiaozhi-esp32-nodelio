@@ -13,6 +13,8 @@
 
 static const char *TAG = "nl_skill";
 
+static char s_last_spoken_audio[NL_ENV_URL];
+
 bool nodelio_skill_id_is_music(const char *skill_id)
 {
     if (!skill_id || !skill_id[0]) {
@@ -61,6 +63,9 @@ void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *jso
 
     /* E5：error Envelope 也上屏，并 toast，禁止当成功静默 */
     if (strcmp(env->status, "ok") != 0) {
+        ESP_LOGW(TAG, "deliver error app=%s msg=%s",
+                 env->app_id[0] ? env->app_id : "-",
+                 env->error_message[0] ? env->error_message : "(none)");
         nodelio_panel_ui_toast_defer(env->error_message[0] ? env->error_message : "技能失败");
     }
 
@@ -69,14 +74,30 @@ void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *jso
     const bool ok = strcmp(env->status, "ok") == 0;
     const bool play = ok && caps && (env->auto_play || auto_play_first);
     ESP_LOGI(TAG,
-             "deliver play=%d env_ap=%d force=%d caps=%d ok=%d card=%s app=%s tracks=%d url0=%d",
+             "deliver play=%d env_ap=%d force=%d caps=%d ok=%d card=%s app=%s tracks=%d url0=%d title=%s",
              play ? 1 : 0, env->auto_play ? 1 : 0, auto_play_first ? 1 : 0, caps ? 1 : 0, ok ? 1 : 0,
              env->card_type[0] ? env->card_type : "-", env->app_id[0] ? env->app_id : "-",
-             env->track_n, (env->track_n > 0 && env->tracks[0].playback_url[0]) ? 1 : 0);
+             env->track_n, (env->track_n > 0 && env->tracks[0].playback_url[0]) ? 1 : 0,
+             env->display_title[0] ? env->display_title : "-");
     nodelio_skill_result_show(cfg, env, play);
 
     if (spoken_out && spoken_len) {
         nodelio_envelope_spoken_summary(env, spoken_out, spoken_len);
     }
+    /* 供本地 open_app 播报；MCP 路径只取 spoken 文本交模型，勿在此 EndVoiceSession */
+    s_last_spoken_audio[0] = '\0';
+    if (env->spoken_audio_url[0]) {
+        snprintf(s_last_spoken_audio, sizeof(s_last_spoken_audio), "%s", env->spoken_audio_url);
+    }
+    /* detail_body 已由 show 深拷走；此处释放解析侧副本 */
+    if (env->detail_body) {
+        heap_caps_free(env->detail_body);
+        env->detail_body = NULL;
+    }
     free(env);
+}
+
+const char *nodelio_skill_last_spoken_audio_url(void)
+{
+    return s_last_spoken_audio[0] ? s_last_spoken_audio : NULL;
 }

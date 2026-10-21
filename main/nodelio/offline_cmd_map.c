@@ -872,6 +872,34 @@ static void strip_app_query(char *dst, size_t dst_sz, const char *src)
     }
 }
 
+/** UTF-8 大致字数（CJK 按 3 字节计）；用于拒「电」单字误匹配电台。 */
+static int utf8_approx_chars(const char *q)
+{
+    if (!q) {
+        return 0;
+    }
+    int n = 0;
+    for (const unsigned char *p = (const unsigned char *)q; *p; ) {
+        if (*p < 0x80) {
+            p++;
+            n++;
+        } else if ((*p & 0xE0) == 0xC0 && p[1]) {
+            p += 2;
+            n++;
+        } else if ((*p & 0xF0) == 0xE0 && p[1] && p[2]) {
+            p += 3;
+            n++;
+        } else if ((*p & 0xF8) == 0xF0 && p[1] && p[2] && p[3]) {
+            p += 4;
+            n++;
+        } else {
+            p++;
+            n++;
+        }
+    }
+    return n;
+}
+
 /** 抽取到的应用名是否像口令（拒「失败了，你再试一下」这类整句） */
 static bool app_query_plausible(const char *q)
 {
@@ -886,6 +914,15 @@ static bool app_query_plausible(const char *q)
     if (strstr(q, "，") || strstr(q, "。") || strstr(q, "？") || strstr(q, "！") ||
         strstr(q, ",") || strstr(q, ".") || strstr(q, "?") || strstr(q, "!") ||
         strchr(q, ' ') || strchr(q, '\t')) {
+        return false;
+    }
+    /* 控家残片：「打开电。」≠ 打开电台；须「电台/电器」完整词 */
+    if (strcmp(q, "电") == 0 || strcmp(q, "机") == 0 || strcmp(q, "器") == 0 ||
+        strcmp(q, "灯") == 0 || strcmp(q, "扇") == 0) {
+        return false;
+    }
+    /* 至少 2 个字；单字极易 fuzzy 进「网络电台」等 */
+    if (utf8_approx_chars(q) < 2) {
         return false;
     }
     /* 应用名通常很短；过长当整句抱怨 */
@@ -911,10 +948,31 @@ static bool try_open_named_app(const char *phrase)
         strstr(phrase, "再试") || strstr(phrase, "重试") || strstr(phrase, "又开")) {
         return false;
     }
-    /* 控家对象留给 control / MultiNet 动态词 */
+    /* 控家对象留给 control / MultiNet 动态词；「打开电」勿当开应用 */
     if (strstr(phrase, "灯") || strstr(phrase, "帘") || strstr(phrase, "继电器") ||
-        strstr(phrase, "插座") || strstr(phrase, "开关") || strstr(phrase, "情景")) {
+        strstr(phrase, "插座") || strstr(phrase, "开关") || strstr(phrase, "情景") ||
+        strstr(phrase, "电器") || strstr(phrase, "客厅") || strstr(phrase, "卧室") ||
+        strstr(phrase, "空调") || strstr(phrase, "风扇")) {
         return false;
+    }
+    /* 「打开电。」残句：无「电台」则不当开应用（交云端澄清） */
+    if (strstr(phrase, "电") && !strstr(phrase, "电台") && !strstr(phrase, "电视") &&
+        !strstr(phrase, "电脑") && !strstr(phrase, "电器")) {
+        const char *open = strstr(phrase, "打开");
+        if (!open) {
+            open = strstr(phrase, "开启");
+        }
+        if (open) {
+            const char *rest = open + 6;
+            while (*rest == ' ' || *rest == '\t') {
+                rest++;
+            }
+            char tmp[48];
+            strip_app_query(tmp, sizeof(tmp), rest);
+            if (strcmp(tmp, "电") == 0 || utf8_approx_chars(tmp) < 2) {
+                return false;
+            }
+        }
     }
     const char *p = strstr(phrase, "打开一下");
     if (p) {
@@ -946,12 +1004,121 @@ static bool try_open_named_app(const char *phrase)
     }
     char name[48];
     strip_app_query(name, sizeof(name), p);
+    /* 「打开任务应用 / 打开DSH」：即使名不完全在白名单也开进度 */
+    if (strstr(name, "任务") != NULL || strstr(name, "DSH") != NULL || strstr(name, "dsh") != NULL) {
+        if (strstr(name, "派活") == NULL) {
+            ESP_LOGI(TAG, "open app (task alias) query='%s' → 查看任务", name);
+            return nodelio_panel_ui_open_app("查看任务");
+        }
+    }
     if (!app_query_plausible(name)) {
         ESP_LOGI(TAG, "skip open-app (not a name): '%s'", name[0] ? name : p);
         return false;
     }
     ESP_LOGI(TAG, "open app query='%s'", name);
     return nodelio_panel_ui_open_app(name);
+}
+
+/** 「让它 / 让他 …」→ dsh.task；须带指令正文。ASR 常把「它」听成「他」。 */
+static bool try_dsh_dispatch_phrase(const char *phrase)
+{
+    if (!phrase || !phrase[0]) {
+        return false;
+    }
+    const char *p = NULL;
+    /* 长前缀优先 */
+    if ((p = strstr(phrase, "让助手")) != NULL) {
+        p += 9;
+    } else if ((p = strstr(phrase, "让它去")) != NULL) {
+        p += 9;
+    } else if ((p = strstr(phrase, "让他去")) != NULL) {
+        p += 9;
+    } else if ((p = strstr(phrase, "让它")) != NULL) {
+        p += 6;
+    } else if ((p = strstr(phrase, "让他")) != NULL) {
+        p += 6;
+    } else if ((p = strstr(phrase, "叫它")) != NULL) {
+        p += 6;
+    } else if ((p = strstr(phrase, "叫他")) != NULL) {
+        p += 6;
+    } else if ((p = strstr(phrase, "请它")) != NULL) {
+        p += 6;
+    } else if ((p = strstr(phrase, "请他")) != NULL) {
+        p += 6;
+    } else {
+        return false;
+    }
+    for (;;) {
+        if (*p == ' ' || *p == '\t' || *p == ',' || *p == ':' || *p == ';' || *p == '-') {
+            p++;
+            continue;
+        }
+        /* ，：、 （UTF-8） */
+        if ((unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBC &&
+            ((unsigned char)p[2] == 0x8C || (unsigned char)p[2] == 0x9A)) {
+            p += 3;
+            continue;
+        }
+        if ((unsigned char)p[0] == 0xE3 && (unsigned char)p[1] == 0x80 &&
+            (unsigned char)p[2] == 0x81) {
+            p += 3;
+            continue;
+        }
+        break;
+    }
+    char instr[200];
+    strip_app_query(instr, sizeof(instr), p);
+    if (!instr[0]) {
+        ESP_LOGI(TAG, "dsh dispatch: empty instruction after prefix");
+        return nodelio_panel_ui_dsh_task(NULL);
+    }
+    ESP_LOGI(TAG, "dsh dispatch instruction='%s'", instr);
+    return nodelio_panel_ui_dsh_task(instr);
+}
+
+/**
+ * 听歌/看天气等口语：云端常抢 search_music 等自带工具，本地先开 NodeLio 应用。
+ * 不要求「打开」前缀。
+ */
+static bool try_open_intent_app(const char *phrase)
+{
+    if (!phrase || !phrase[0]) {
+        return false;
+    }
+    /* 音乐 */
+    if (strstr(phrase, "听歌") || strstr(phrase, "放歌") || strstr(phrase, "来首歌") ||
+        strstr(phrase, "播放音乐") || strstr(phrase, "放音乐") || strstr(phrase, "爱音乐") ||
+        strstr(phrase, "想听歌") || strstr(phrase, "来点音乐") || strstr(phrase, "随便放一") ||
+        strstr(phrase, "放一首") || strstr(phrase, "播一首")) {
+        ESP_LOGI(TAG, "intent open → 曲库 phrase='%s'", phrase);
+        return nodelio_panel_ui_open_app("曲库");
+    }
+    /* 电台 / 播客 */
+    if (strstr(phrase, "听电台") || strstr(phrase, "放电台") || strstr(phrase, "开电台") ||
+        (strstr(phrase, "电台") && (strstr(phrase, "听") || strstr(phrase, "放") || strstr(phrase, "播")))) {
+        ESP_LOGI(TAG, "intent open → 电台 phrase='%s'", phrase);
+        return nodelio_panel_ui_open_app("电台");
+    }
+    if (strstr(phrase, "听播客") || strstr(phrase, "放播客") || strstr(phrase, "开播客")) {
+        ESP_LOGI(TAG, "intent open → 播客 phrase='%s'", phrase);
+        return nodelio_panel_ui_open_app("播客");
+    }
+    /* 资讯类 */
+    if (strstr(phrase, "看新闻") || strstr(phrase, "听新闻") || strstr(phrase, "今日新闻") ||
+        strstr(phrase, "最新新闻")) {
+        ESP_LOGI(TAG, "intent open → 新闻 phrase='%s'", phrase);
+        return nodelio_panel_ui_open_app("新闻");
+    }
+    if (strstr(phrase, "看天气") || strstr(phrase, "今天天气") || strstr(phrase, "天气预报") ||
+        (strstr(phrase, "天气") && (strstr(phrase, "怎么样") || strstr(phrase, "如何")))) {
+        ESP_LOGI(TAG, "intent open → 天气 phrase='%s'", phrase);
+        return nodelio_panel_ui_open_app("天气");
+    }
+    if (strstr(phrase, "空气质量") || strstr(phrase, "看空气")) {
+        ESP_LOGI(TAG, "intent open → 空气 phrase='%s'", phrase);
+        return nodelio_panel_ui_open_app("空气");
+    }
+    return false;
 }
 
 /** 整句就是应用短名（「电台。」），无「打开」前缀也走 open_app。 */
@@ -968,6 +1135,9 @@ static bool try_open_bare_known_app(const char *phrase)
     static const char *const kKnown[] = {
         "电台", "播客", "曲库", "音乐", "新闻", "天气", "空气", "一句", "名言", "网络电台",
         "radio", "podcast", "music", "news", "weather",
+        "DSH", "dsh", "DSH任务", "DSH进度", "查看任务", "任务情况", "任务列表", "任务详情",
+        "任务应用", "任务表情", /* 表情=情况 ASR 误识 */
+        "派活",
     };
     bool hit = false;
     for (size_t i = 0; i < sizeof(kKnown) / sizeof(kKnown[0]); i++) {
@@ -976,10 +1146,24 @@ static bool try_open_bare_known_app(const char *phrase)
             break;
         }
     }
+    /* 「帮我查看一下任务情况 / 任务详情 / 任务应用」等；「任务表情」当情况误识 */
     if (!hit) {
+        if (strstr(name, "查看任务") || strstr(name, "任务情况") || strstr(name, "任务列表") ||
+            strstr(name, "任务详情") || strstr(name, "任务应用") || strstr(name, "任务表情") ||
+            strstr(phrase, "查看任务") || strstr(phrase, "任务情况") || strstr(phrase, "任务列表") ||
+            strstr(phrase, "任务详情") || strstr(phrase, "任务应用") || strstr(phrase, "任务表情") ||
+            strstr(phrase, "DSH") || strstr(phrase, "dsh")) {
+            if (strstr(phrase, "派活") == NULL && strstr(name, "派活") == NULL) {
+                hit = true;
+                snprintf(name, sizeof(name), "%s", "查看任务");
+            }
+        }
+    }
+    if (!hit) {
+        ESP_LOGI(TAG, "bare open miss name='%s' phrase='%s'", name, phrase);
         return false;
     }
-    ESP_LOGI(TAG, "bare open app query='%s'", name);
+    ESP_LOGI(TAG, "bare open app query='%s' from phrase='%s'", name, phrase);
     return nodelio_panel_ui_open_app(name);
 }
 
@@ -999,7 +1183,13 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session)
     if (end_session) {
         *end_session = false;
     }
+    if (!phrase || !phrase[0]) {
+        ESP_LOGI(TAG, "system phrase: empty");
+        return false;
+    }
     int cmd = phrase_to_cmd_id(phrase);
+    ESP_LOGI(TAG, "system phrase try phrase='%s' cmd=%d(%s)", phrase, cmd,
+             nodelio_offline_cmd_zh(cmd));
     if (cmd == NL_OC_REBOOT || cmd == NL_OC_WIFI_CONFIG ||
         (cmd >= NL_OC_GOTO_HOME && cmd <= NL_OC_GOTO_SYS) ||
         (cmd >= NL_OC_POWER_SAVE_ON && cmd <= NL_OC_GOTO_RESET) ||
@@ -1015,13 +1205,54 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session)
         /* 开启/关闭省电等 set_pref：end_session 保持 false，会话不退下 */
         return nodelio_offline_cmd_dispatch(NULL, cmd, NULL) == ESP_OK;
     }
+    /* 「让它…」派活：须在 open_app「派活」之前；派活后由技能卡收尾，本轮可退会话 */
+    if (try_dsh_dispatch_phrase(phrase)) {
+        ESP_LOGI(TAG, "system phrase: dsh.task dispatch hit");
+        if (end_session) {
+            *end_session = true;
+        }
+        return true;
+    }
+    /* 点「续聊」武装后：下一句无需「让它」前缀，整句当 instruction */
+    if (nodelio_panel_ui_dsh_is_armed()) {
+        char instr[200];
+        strip_app_query(instr, sizeof(instr), phrase);
+        if (instr[0] && phrase_to_cmd_id(phrase) == 0 &&
+            strstr(instr, "打开") == NULL && strstr(instr, "关闭") == NULL &&
+            strstr(instr, "查看任务") == NULL) {
+            ESP_LOGI(TAG, "system phrase: armed bare → dsh.task '%s'", instr);
+            if (end_session) {
+                *end_session = true;
+            }
+            return nodelio_panel_ui_dsh_task(instr);
+        }
+    }
     /* 「打开曲库」等：phrase_to_cmd_id 会落到 LIGHT_ON，这里再抢一次应用 */
     if (try_open_named_app(phrase)) {
+        ESP_LOGI(TAG, "system phrase: named open hit");
+        /* 打开 DSH/任务：只开列表，必须退会话，禁止云端接着闲聊 */
+        if (end_session &&
+            (strstr(phrase, "DSH") != NULL || strstr(phrase, "dsh") != NULL ||
+             strstr(phrase, "任务") != NULL)) {
+            *end_session = true;
+        }
+        return true;
+    }
+    /* 「听歌/看天气」等：抢在云端 search_music 之前 */
+    if (try_open_intent_app(phrase)) {
+        ESP_LOGI(TAG, "system phrase: intent open hit");
         return true;
     }
     /* 裸说「电台。」/「播客」：无「打开」也开对应应用（剥句末标点） */
     if (try_open_bare_known_app(phrase)) {
+        ESP_LOGI(TAG, "system phrase: bare open hit");
+        if (end_session &&
+            (strstr(phrase, "DSH") != NULL || strstr(phrase, "dsh") != NULL ||
+             strstr(phrase, "任务") != NULL)) {
+            *end_session = true;
+        }
         return true;
     }
+    ESP_LOGI(TAG, "system phrase: no local hit");
     return false;
 }
