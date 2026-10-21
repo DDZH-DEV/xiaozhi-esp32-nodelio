@@ -173,9 +173,21 @@ static void clear_ttl(void)
     s_ttl_tmr = nullptr;
 }
 
+static void close_list_keep_player(void);
+
 static void on_ttl(lv_timer_t *t)
 {
     (void)t;
+    s_ttl_tmr = nullptr;
+    /* 播歌中勿自动关列表：ttl_sec=300 常撞上首曲尾声，表现为「列表突然没了又接着播」 */
+    if (nodelio_media_is_playing() || nodelio_media_is_paused()) {
+        return;
+    }
+    /* 曲库空闲超时：只收起卡片，保留歌单，点播放条「点此打开列表」可再开 */
+    if (strcmp(s_env.card_type, "music_list") == 0 && s_env.track_n > 0) {
+        close_list_keep_player();
+        return;
+    }
     nodelio_skill_result_hide();
 }
 
@@ -1682,7 +1694,10 @@ void nodelio_skill_result_hide(void)
         lv_label_set_text(s_now_sub, "点此打开列表");
     }
     set_drawer_for_skill(false);
-    s_have_env = false;
+    /* 保留歌单：hide 只收起卡片；点播放条仍可 reopen_list */
+    if (s_env.track_n <= 0) {
+        s_have_env = false;
+    }
     ensure_chrome_order();
 }
 

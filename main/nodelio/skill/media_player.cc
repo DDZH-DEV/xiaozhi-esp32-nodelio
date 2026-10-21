@@ -576,6 +576,8 @@ esp_err_t nodelio_media_play_track(const nodelio_nvs_config_t *cfg, const nl_env
     if (xQueueSend(s_q, &msg, pdMS_TO_TICKS(100)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
+    /* 入队成功即算在播：播完切下一首时外层靠此跳过 StopNotification */
+    s_playing = true;
     return ESP_OK;
 }
 
@@ -701,10 +703,6 @@ void nodelio_media_on_playback_ended(bool success)
     if (s_paused || s_suppress_ended) {
         return;
     }
-    /* 若已换曲进入新一轮 notifying 且播放成功：勿清新曲状态 */
-    if (success && Application::GetInstance().GetDeviceState() == kDeviceStateNotifying) {
-        return;
-    }
     /* 播放失败：清 s_started_url，否则 worker 会 should_skip_restart 假成功跳过重试 */
     if (!success && s_playing && s_now_url[0] != '\0' && s_retry_count < 2 && s_q) {
         ESP_LOGW(TAG, "playback failed, will retry %d: %s", s_retry_count + 1, s_now_title);
@@ -722,11 +720,15 @@ void nodelio_media_on_playback_ended(bool success)
             return;
         }
     }
-    /* 自然播完：切到列表下一首。须先清 playing，否则同 URL 会被 should_skip_restart 吃掉。 */
+    /* 自然播完：切到列表下一首。须先清 playing，否则同 URL 会被 should_skip_restart 吃掉。
+     * 注意：播完瞬间状态仍是 Notifying（HandleNotificationFinished 前置条件），
+     * 不能用「Notifying 就 return」——那会永远跳过 media_next。 */
     if (success) {
         s_playing = false;
+        s_started_url[0] = '\0';
         s_retry_count = 0;
         if (nodelio_skill_media_next()) {
+            /* play_track 入队时已置 s_playing，供外层跳过 StopNotification */
             return;
         }
     }
