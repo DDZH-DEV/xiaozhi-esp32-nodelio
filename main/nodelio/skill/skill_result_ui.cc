@@ -93,7 +93,9 @@ static bool s_now_border_anim_on;
 static bool s_mini_pulse_on;
 static bool s_dsh_eq_anim_on;
 static bool s_dsh_row_pulse_on;
-static lv_obj_t *s_dsh_focus_row; /* 当前高亮行，rebuild 时清空 */
+static lv_obj_t *s_dsh_focus_row; /* 续聊焦点行，rebuild 时清空 */
+static lv_obj_t *s_dsh_pulse_rows[SKILL_LIST_ROWS]; /* 边框呼吸：焦点 + 执行中 */
+static int s_dsh_pulse_n;
 enum dsh_ui_phase_t : uint8_t { DSH_UI_IDLE = 0, DSH_UI_ARMED, DSH_UI_DISPATCHED };
 static dsh_ui_phase_t s_dsh_phase = DSH_UI_IDLE;
 static char s_dsh_focus_sess[80];
@@ -250,6 +252,7 @@ static void on_dsh_detail_poll(lv_timer_t *t);
 static void fill_list(void);
 static void anim_eq_height(void *var, int32_t v);
 static void anim_border_opa(void *var, int32_t v);
+static bool dsh_subtitle_is_running(const char *sub);
 
 static bool dsh_is_detail_view(void)
 {
@@ -323,29 +326,95 @@ static bool dsh_track_is_focus(int track_idx)
     return sess[0] && strcmp(sess, s_dsh_focus_sess) == 0;
 }
 
+static void stop_dsh_row_pulses(void)
+{
+    if (!s_dsh_row_pulse_on) {
+        s_dsh_pulse_n = 0;
+        return;
+    }
+    for (int i = 0; i < s_dsh_pulse_n; i++) {
+        if (s_dsh_pulse_rows[i]) {
+            lv_anim_delete(s_dsh_pulse_rows[i], anim_border_opa);
+        }
+        s_dsh_pulse_rows[i] = nullptr;
+    }
+    s_dsh_pulse_n = 0;
+    s_dsh_row_pulse_on = false;
+}
+
+static void stop_dsh_eq_anims(void)
+{
+    if (!s_dsh_eq_anim_on) {
+        return;
+    }
+    for (int i = 0; i < 3; i++) {
+        if (s_dsh_eq[i]) {
+            lv_anim_delete(s_dsh_eq[i], anim_eq_height);
+            lv_obj_set_height(s_dsh_eq[i], 6 + i * 3);
+        }
+    }
+    s_dsh_eq_anim_on = false;
+}
+
 static void stop_dsh_status_anims(void)
 {
-    if (s_dsh_eq_anim_on) {
-        for (int i = 0; i < 3; i++) {
-            if (s_dsh_eq[i]) {
-                lv_anim_delete(s_dsh_eq[i], anim_eq_height);
-                lv_obj_set_height(s_dsh_eq[i], 6 + i * 3);
+    stop_dsh_eq_anims();
+    stop_dsh_row_pulses();
+}
+
+static void dsh_register_pulse_row(lv_obj_t *row)
+{
+    if (!row || s_dsh_pulse_n >= SKILL_LIST_ROWS) {
+        return;
+    }
+    for (int i = 0; i < s_dsh_pulse_n; i++) {
+        if (s_dsh_pulse_rows[i] == row) {
+            return;
+        }
+    }
+    s_dsh_pulse_rows[s_dsh_pulse_n++] = row;
+}
+
+static void start_dsh_row_pulses(void)
+{
+    if (s_dsh_pulse_n <= 0) {
+        return;
+    }
+    if (s_dsh_row_pulse_on) {
+        for (int i = 0; i < s_dsh_pulse_n; i++) {
+            if (s_dsh_pulse_rows[i]) {
+                lv_anim_delete(s_dsh_pulse_rows[i], anim_border_opa);
             }
         }
-        s_dsh_eq_anim_on = false;
-    }
-    if (s_dsh_row_pulse_on && s_dsh_focus_row) {
-        lv_anim_delete(s_dsh_focus_row, anim_border_opa);
         s_dsh_row_pulse_on = false;
     }
+    for (int i = 0; i < s_dsh_pulse_n; i++) {
+        lv_obj_t *row = s_dsh_pulse_rows[i];
+        if (!row) {
+            continue;
+        }
+        lv_anim_t b;
+        lv_anim_init(&b);
+        lv_anim_set_var(&b, row);
+        lv_anim_set_values(&b, 90, 220);
+        lv_anim_set_time(&b, 700);
+        lv_anim_set_playback_time(&b, 700);
+        lv_anim_set_repeat_count(&b, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_set_path_cb(&b, lv_anim_path_ease_in_out);
+        lv_anim_set_exec_cb(&b, anim_border_opa);
+        lv_anim_set_delay(&b, (uint32_t)(i * 80));
+        lv_anim_start(&b);
+    }
+    s_dsh_row_pulse_on = true;
 }
 
 static void start_dsh_status_anims(void)
 {
     if (!s_dsh_status || lv_obj_has_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN)) {
+        start_dsh_row_pulses();
         return;
     }
-    stop_dsh_status_anims();
+    stop_dsh_eq_anims();
     static const int32_t k_lo[3] = {5, 8, 6};
     static const int32_t k_hi[3] = {14, 18, 16};
     static const uint32_t k_ms[3] = {360, 440, 400};
@@ -367,18 +436,9 @@ static void start_dsh_status_anims(void)
     }
     s_dsh_eq_anim_on = true;
     if (s_dsh_focus_row) {
-        lv_anim_t b;
-        lv_anim_init(&b);
-        lv_anim_set_var(&b, s_dsh_focus_row);
-        lv_anim_set_values(&b, 90, 220);
-        lv_anim_set_time(&b, 700);
-        lv_anim_set_playback_time(&b, 700);
-        lv_anim_set_repeat_count(&b, LV_ANIM_REPEAT_INFINITE);
-        lv_anim_set_path_cb(&b, lv_anim_path_ease_in_out);
-        lv_anim_set_exec_cb(&b, anim_border_opa);
-        lv_anim_start(&b);
-        s_dsh_row_pulse_on = true;
+        dsh_register_pulse_row(s_dsh_focus_row);
     }
+    start_dsh_row_pulses();
 }
 
 static void dsh_clear_ui_phase(void)
@@ -401,9 +461,11 @@ static void dsh_paint_status_strip(void)
         return;
     }
     if (s_dsh_phase == DSH_UI_IDLE) {
-        stop_dsh_status_anims();
+        /* 仅收顶条 EQ；列表「正在用」行的青色呼吸由 fill_list 保留 */
+        stop_dsh_eq_anims();
         lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_height(s_dsh_status, 0);
+        start_dsh_row_pulses();
         return;
     }
     lv_obj_clear_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
@@ -439,27 +501,40 @@ static void dsh_paint_status_strip(void)
     start_dsh_status_anims();
 }
 
-static void dsh_style_focus_row(lv_obj_t *row, int track_idx, lv_obj_t *idx_pod, lv_obj_t *artist_lbl)
+/** 续聊焦点=绿；已投递/远端「正在用」=青（UI_INFO），边框呼吸区分空闲卡 */
+static void dsh_style_list_row(lv_obj_t *row, int track_idx, lv_obj_t *idx_pod, lv_obj_t *artist_lbl,
+                               const char *artist)
 {
-    if (!row || !dsh_track_is_focus(track_idx)) {
+    if (!row) {
         return;
     }
-    s_dsh_focus_row = row;
-    const bool dispatched = s_dsh_phase == DSH_UI_DISPATCHED;
+    const bool focus = dsh_track_is_focus(track_idx);
+    const bool running = dsh_subtitle_is_running(artist);
+    if (!focus && !running) {
+        return;
+    }
+    const bool dispatched = focus && s_dsh_phase == DSH_UI_DISPATCHED;
+    const bool armed = focus && s_dsh_phase == DSH_UI_ARMED;
+    /* 焦点武装用绿；其余工作态（投递 / 远端执行中）用青 */
+    const bool work_cyan = dispatched || (!armed && running);
+    if (focus) {
+        s_dsh_focus_row = row;
+    }
     lv_obj_set_style_border_width(row, 2, 0);
-    lv_obj_set_style_border_color(row, dispatched ? UI_INFO : UI_ACCENT, 0);
+    lv_obj_set_style_border_color(row, work_cyan ? UI_INFO : UI_ACCENT, 0);
     lv_obj_set_style_border_opa(row, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(row, dispatched ? UI_TILE_PWM : UI_TILE_SWITCH, 0);
+    lv_obj_set_style_bg_color(row, work_cyan ? UI_TILE_PWM : UI_TILE_SWITCH, 0);
     if (idx_pod) {
-        lv_obj_set_style_bg_color(idx_pod, dispatched ? UI_CAPSULE_PWM : UI_CAPSULE_ON, 0);
+        lv_obj_set_style_bg_color(idx_pod, work_cyan ? UI_CAPSULE_PWM : UI_CAPSULE_ON, 0);
         lv_obj_t *ic = lv_obj_get_child(idx_pod, 0);
         if (ic) {
             lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
-            lv_label_set_text(ic, dispatched ? MATERIAL_SYMBOLS_PROGRESS_ACTIVITY : MATERIAL_SYMBOLS_MIC);
+            lv_label_set_text(ic, work_cyan ? MATERIAL_SYMBOLS_PROGRESS_ACTIVITY
+                                            : MATERIAL_SYMBOLS_MIC);
             lv_obj_set_style_text_color(ic, UI_ON_TILE, 0);
         }
     }
-    if (artist_lbl && s_dsh_phase == DSH_UI_ARMED) {
+    if (artist_lbl && armed) {
         lv_label_set_text(artist_lbl, "续聊中 · 开麦等待你的指令");
         lv_obj_set_style_text_color(artist_lbl, UI_ACCENT_SOFT, 0);
     } else if (artist_lbl && dispatched) {
@@ -471,7 +546,10 @@ static void dsh_style_focus_row(lv_obj_t *row, int track_idx, lv_obj_t *idx_pod,
             lv_label_set_text(artist_lbl, "已投递 · 正在执行…");
         }
         lv_obj_set_style_text_color(artist_lbl, UI_INFO, 0);
+    } else if (artist_lbl && running) {
+        lv_obj_set_style_text_color(artist_lbl, UI_INFO, 0);
     }
+    dsh_register_pulse_row(row);
 }
 
 static void dsh_enter_armed(const char *ws, const char *sess)
@@ -1820,6 +1898,10 @@ static void null_skill_widget_ptrs(void)
     s_mini_ic = nullptr;
     s_news_body_lbl = nullptr;
     s_dsh_focus_row = nullptr;
+    s_dsh_pulse_n = 0;
+    for (int i = 0; i < SKILL_LIST_ROWS; i++) {
+        s_dsh_pulse_rows[i] = nullptr;
+    }
     s_dsh_eq_anim_on = false;
     s_dsh_row_pulse_on = false;
     memset(s_row_idx_labels, 0, sizeof(s_row_idx_labels));
@@ -2912,7 +2994,7 @@ static void fill_list(void)
                     lv_obj_set_style_bg_color(ab, btn_bg, 0);
                 }
             }
-            dsh_style_focus_row(row, i, idx_pod, a);
+            dsh_style_list_row(row, i, idx_pod, a, s_env->tracks[i].artist);
         }
         if (ncell < cols) {
             lv_obj_t *pad = lv_obj_create(line);
