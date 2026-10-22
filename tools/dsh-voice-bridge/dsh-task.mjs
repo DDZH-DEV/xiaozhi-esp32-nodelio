@@ -10,6 +10,8 @@
 // The transport is the JSON-RPC bridge that DSH Desktop already runs.
 
 import { connect, readEndpoint, RpcError } from './lib/rpc.mjs';
+import { resolveCreateParams } from './lib/dsh-create.mjs';
+import { getConfig, loadConfig } from './lib/bridge-config.mjs';
 import {
   ATTENTION,
   decodeSessionLog,
@@ -237,11 +239,15 @@ async function sendTask(client, workspace, text, flags, values) {
 
   let result;
   if (target.created) {
+    loadConfig();
+    const createOpts = await resolveCreateParams(client, getConfig());
     result = await client.call('session.createAndStart', {
       sessionId: crypto.randomUUID(),
       content: text,
       cwd: workspace,
       clientMessageId,
+      selections: createOpts.selections,
+      agentPreset: createOpts.agentPreset,
     });
   } else {
     result = await client.call('session.startTurn', {

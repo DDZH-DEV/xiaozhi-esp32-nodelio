@@ -67,6 +67,10 @@ LV_FONT_DECLARE(font_material_symbols_20_4);
 static lv_obj_t *s_scrim;
 static lv_obj_t *s_card;
 static lv_obj_t *s_filter_bar;
+static lv_obj_t *s_dsh_status;      /* 续聊/执行中状态条：EQ + 文案 */
+static lv_obj_t *s_dsh_status_lbl;
+static lv_obj_t *s_dsh_eq[3];
+static lv_obj_t *s_dsh_detail_bar;  /* 详情底栏：续聊悬浮，不随正文滚走 */
 static lv_obj_t *s_card_list;
 static lv_obj_t *s_card_title;
 static lv_obj_t *s_card_sub;
@@ -87,6 +91,14 @@ static bool s_dsh_detail_busy;
 static lv_anim_t s_now_border_anim;
 static bool s_now_border_anim_on;
 static bool s_mini_pulse_on;
+static bool s_dsh_eq_anim_on;
+static bool s_dsh_row_pulse_on;
+static lv_obj_t *s_dsh_focus_row; /* 当前高亮行，rebuild 时清空 */
+enum dsh_ui_phase_t : uint8_t { DSH_UI_IDLE = 0, DSH_UI_ARMED, DSH_UI_DISPATCHED };
+static dsh_ui_phase_t s_dsh_phase = DSH_UI_IDLE;
+static char s_dsh_focus_sess[80];
+static char s_dsh_focus_ws[200];
+static char s_dsh_last_instr[96];
 static bool s_minimized;
 static bool s_ui_closing;
 static uint32_t s_close_gen;
@@ -235,6 +247,9 @@ static void clear_ttl(void)
 
 static void dsh_fetch_detail(const char *ws, const char *sess, bool silent);
 static void on_dsh_detail_poll(lv_timer_t *t);
+static void fill_list(void);
+static void anim_eq_height(void *var, int32_t v);
+static void anim_border_opa(void *var, int32_t v);
 
 static bool dsh_is_detail_view(void)
 {
@@ -292,6 +307,192 @@ static void remember_dsh_detail_keys(void)
     }
     dsh_extract_arm(&s_env->tracks[0], s_dsh_detail_ws, sizeof(s_dsh_detail_ws), s_dsh_detail_sess,
                     sizeof(s_dsh_detail_sess));
+}
+
+static bool dsh_track_is_focus(int track_idx)
+{
+    if (s_dsh_phase == DSH_UI_IDLE || !s_dsh_focus_sess[0] || !s_env) {
+        return false;
+    }
+    if (track_idx < 0 || track_idx >= s_env->track_n) {
+        return false;
+    }
+    char ws[200] = {0};
+    char sess[80] = {0};
+    dsh_extract_arm(&s_env->tracks[track_idx], ws, sizeof(ws), sess, sizeof(sess));
+    return sess[0] && strcmp(sess, s_dsh_focus_sess) == 0;
+}
+
+static void stop_dsh_status_anims(void)
+{
+    if (s_dsh_eq_anim_on) {
+        for (int i = 0; i < 3; i++) {
+            if (s_dsh_eq[i]) {
+                lv_anim_delete(s_dsh_eq[i], anim_eq_height);
+                lv_obj_set_height(s_dsh_eq[i], 6 + i * 3);
+            }
+        }
+        s_dsh_eq_anim_on = false;
+    }
+    if (s_dsh_row_pulse_on && s_dsh_focus_row) {
+        lv_anim_delete(s_dsh_focus_row, anim_border_opa);
+        s_dsh_row_pulse_on = false;
+    }
+}
+
+static void start_dsh_status_anims(void)
+{
+    if (!s_dsh_status || lv_obj_has_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN)) {
+        return;
+    }
+    stop_dsh_status_anims();
+    static const int32_t k_lo[3] = {5, 8, 6};
+    static const int32_t k_hi[3] = {14, 18, 16};
+    static const uint32_t k_ms[3] = {360, 440, 400};
+    for (int i = 0; i < 3; i++) {
+        if (!s_dsh_eq[i]) {
+            continue;
+        }
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, s_dsh_eq[i]);
+        lv_anim_set_values(&a, k_lo[i], k_hi[i]);
+        lv_anim_set_time(&a, k_ms[i]);
+        lv_anim_set_playback_time(&a, k_ms[i]);
+        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+        lv_anim_set_exec_cb(&a, anim_eq_height);
+        lv_anim_set_delay(&a, (uint32_t)(i * 60));
+        lv_anim_start(&a);
+    }
+    s_dsh_eq_anim_on = true;
+    if (s_dsh_focus_row) {
+        lv_anim_t b;
+        lv_anim_init(&b);
+        lv_anim_set_var(&b, s_dsh_focus_row);
+        lv_anim_set_values(&b, 90, 220);
+        lv_anim_set_time(&b, 700);
+        lv_anim_set_playback_time(&b, 700);
+        lv_anim_set_repeat_count(&b, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_set_path_cb(&b, lv_anim_path_ease_in_out);
+        lv_anim_set_exec_cb(&b, anim_border_opa);
+        lv_anim_start(&b);
+        s_dsh_row_pulse_on = true;
+    }
+}
+
+static void dsh_clear_ui_phase(void)
+{
+    stop_dsh_status_anims();
+    s_dsh_phase = DSH_UI_IDLE;
+    s_dsh_focus_sess[0] = '\0';
+    s_dsh_focus_ws[0] = '\0';
+    s_dsh_last_instr[0] = '\0';
+    s_dsh_focus_row = nullptr;
+    if (s_dsh_status) {
+        lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_height(s_dsh_status, 0);
+    }
+}
+
+static void dsh_paint_status_strip(void)
+{
+    if (!s_dsh_status || !s_dsh_status_lbl) {
+        return;
+    }
+    if (s_dsh_phase == DSH_UI_IDLE) {
+        stop_dsh_status_anims();
+        lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_height(s_dsh_status, 0);
+        return;
+    }
+    lv_obj_clear_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_height(s_dsh_status, 32);
+    uint32_t pill = UI_C_TILE_SWITCH;
+    uint32_t bar = UI_C_ACCENT_SOFT;
+    const char *txt = "续聊中 · 请直接说指令";
+    if (s_dsh_phase == DSH_UI_DISPATCHED) {
+        pill = UI_C_TILE_PWM;
+        bar = UI_C_INFO;
+        if (s_dsh_last_instr[0]) {
+            static char buf[120];
+            snprintf(buf, sizeof(buf), "已投递 · %s", s_dsh_last_instr);
+            txt = buf;
+        } else {
+            txt = "已投递 · 执行中 · 点刷新看进度";
+        }
+    }
+    lv_obj_set_style_bg_color(s_dsh_status, lv_color_hex(pill), 0);
+    for (int i = 0; i < 3; i++) {
+        if (s_dsh_eq[i]) {
+            lv_obj_set_style_bg_color(s_dsh_eq[i], lv_color_hex(bar), 0);
+        }
+    }
+    lv_label_set_text(s_dsh_status_lbl, txt);
+    lv_obj_set_style_text_color(s_dsh_status_lbl, UI_TEXT, 0);
+    if (s_card_sub) {
+        lv_label_set_text(s_card_sub,
+                          s_dsh_phase == DSH_UI_ARMED ? "续聊中 · 直接说 · 勿点别处卡片"
+                                                     : "已投递 · 等回复 · 点刷新更新");
+        lv_obj_set_style_text_color(s_card_sub, lv_color_hex(bar), 0);
+    }
+    start_dsh_status_anims();
+}
+
+static void dsh_style_focus_row(lv_obj_t *row, int track_idx, lv_obj_t *idx_pod, lv_obj_t *artist_lbl)
+{
+    if (!row || !dsh_track_is_focus(track_idx)) {
+        return;
+    }
+    s_dsh_focus_row = row;
+    const bool dispatched = s_dsh_phase == DSH_UI_DISPATCHED;
+    lv_obj_set_style_border_width(row, 2, 0);
+    lv_obj_set_style_border_color(row, dispatched ? UI_INFO : UI_ACCENT, 0);
+    lv_obj_set_style_border_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(row, dispatched ? UI_TILE_PWM : UI_TILE_SWITCH, 0);
+    if (idx_pod) {
+        lv_obj_set_style_bg_color(idx_pod, dispatched ? UI_CAPSULE_PWM : UI_CAPSULE_ON, 0);
+        lv_obj_t *ic = lv_obj_get_child(idx_pod, 0);
+        if (ic) {
+            lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
+            lv_label_set_text(ic, dispatched ? MATERIAL_SYMBOLS_PROGRESS_ACTIVITY : MATERIAL_SYMBOLS_MIC);
+            lv_obj_set_style_text_color(ic, UI_ON_TILE, 0);
+        }
+    }
+    if (artist_lbl && s_dsh_phase == DSH_UI_ARMED) {
+        lv_label_set_text(artist_lbl, "续聊中 · 开麦等待你的指令");
+        lv_obj_set_style_text_color(artist_lbl, UI_ACCENT_SOFT, 0);
+    } else if (artist_lbl && dispatched) {
+        if (s_dsh_last_instr[0]) {
+            char line[128];
+            snprintf(line, sizeof(line), "已投递 · %s", s_dsh_last_instr);
+            lv_label_set_text(artist_lbl, line);
+        } else {
+            lv_label_set_text(artist_lbl, "已投递 · 正在执行…");
+        }
+        lv_obj_set_style_text_color(artist_lbl, UI_INFO, 0);
+    }
+}
+
+static void dsh_enter_armed(const char *ws, const char *sess)
+{
+    s_dsh_phase = DSH_UI_ARMED;
+    s_dsh_focus_ws[0] = '\0';
+    s_dsh_focus_sess[0] = '\0';
+    s_dsh_last_instr[0] = '\0';
+    s_dsh_focus_row = nullptr;
+    if (ws && ws[0]) {
+        snprintf(s_dsh_focus_ws, sizeof(s_dsh_focus_ws), "%s", ws);
+    }
+    if (sess && sess[0]) {
+        snprintf(s_dsh_focus_sess, sizeof(s_dsh_focus_sess), "%s", sess);
+    }
+    /* 列表/详情已在：重填高亮与底栏续聊态 */
+    if (s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr && s_card_list) {
+        fill_list();
+    } else {
+        dsh_paint_status_strip();
+    }
 }
 
 static void start_dsh_detail_poll(void)
@@ -356,6 +557,8 @@ static void minimize_to_fab(void);
 static void expand_from_fab(void);
 static void anim_show_obj(lv_obj_t *obj, bool from_below);
 static void reset_obj_anim_style(lv_obj_t *obj);
+static void anim_eq_height(void *var, int32_t v);
+static void anim_border_opa(void *var, int32_t v);
 static void hide_mini_fab(void);
 static void show_mini_fab(bool playing);
 static void stop_now_anims(void);
@@ -595,14 +798,22 @@ static void set_hdr_mid_icon(const char *sym)
     }
 }
 
-/** 列表翻页（曲库 / DSH 等）；新闻收成悬浮球。 */
+/** 列表翻页（曲库等）；新闻收成悬浮球。DSH 详情勿用此钮（易与刷新混淆）。 */
 static void on_hdr_mid(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
         return;
     }
+    if (!s_env) {
+        return;
+    }
     if (strcmp(s_env->card_type, "news_list") == 0) {
         minimize_to_fab();
+        return;
+    }
+    /* DSH 详情：顶栏中间钮已隐藏；若仍点到则回列表 */
+    if (s_env->detail_body && s_env->detail_body[0] && strstr(s_env->app_id, "dsh") != nullptr) {
+        dsh_refresh_list();
         return;
     }
     const int pages = list_page_count();
@@ -611,6 +822,14 @@ static void on_hdr_mid(lv_event_t *e)
     }
     s_list_page = (s_list_page + 1) % pages;
     fill_list();
+}
+
+static void on_dsh_back_list(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    dsh_refresh_list();
 }
 
 static void reopen_list(void)
@@ -1030,14 +1249,10 @@ static void run_invoke_action(const nl_env_invoke_action_t *ia)
             s_skill_ui_active && s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN);
         if (sess_buf[0]) {
             nl_ov_toast(card_open ? "请直接说要做的事" : "已续聊，请直接说要做的事");
-            if (card_open && s_card_sub) {
-                lv_label_set_text(s_card_sub, "续聊中 · 直接说指令 · 点刷新看进度");
-            }
+            dsh_enter_armed(ws_buf, sess_buf);
         } else if (ws_buf[0]) {
             nl_ov_toast("已选工作区，请直接说");
-            if (card_open && s_card_sub) {
-                lv_label_set_text(s_card_sub, "已选工作区 · 直接说要做的事");
-            }
+            dsh_enter_armed(ws_buf, nullptr);
         } else {
             nl_ov_toast("请直接说要做的事");
         }
@@ -1325,13 +1540,14 @@ static lv_obj_t *make_text_action_btn(lv_obj_t *parent, const char *title, lv_ev
 {
     lv_obj_t *btn = lv_obj_create(parent);
     lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, LV_SIZE_CONTENT, 28);
-    lv_obj_set_style_pad_hor(btn, 8, 0);
-    lv_obj_set_style_radius(btn, 8, 0);
+    lv_obj_set_size(btn, LV_SIZE_CONTENT, 36);
+    lv_obj_set_style_pad_hor(btn, 12, 0);
+    lv_obj_set_style_radius(btn, 10, 0);
     lv_obj_set_style_bg_color(btn, UI_ACCENT, 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(btn, 6);
+    lv_obj_set_ext_click_area(btn, 10);
     if (cb) {
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, ud);
     }
@@ -1582,6 +1798,12 @@ static void null_skill_widget_ptrs(void)
     s_scrim = nullptr;
     s_card = nullptr;
     s_filter_bar = nullptr;
+    s_dsh_status = nullptr;
+    s_dsh_status_lbl = nullptr;
+    for (int i = 0; i < 3; i++) {
+        s_dsh_eq[i] = nullptr;
+    }
+    s_dsh_detail_bar = nullptr;
     s_card_list = nullptr;
     s_card_title = nullptr;
     s_card_sub = nullptr;
@@ -1597,12 +1819,16 @@ static void null_skill_widget_ptrs(void)
     s_mini_fab = nullptr;
     s_mini_ic = nullptr;
     s_news_body_lbl = nullptr;
+    s_dsh_focus_row = nullptr;
+    s_dsh_eq_anim_on = false;
+    s_dsh_row_pulse_on = false;
     memset(s_row_idx_labels, 0, sizeof(s_row_idx_labels));
     memset(s_row_btns, 0, sizeof(s_row_btns));
 }
 
 static void free_skill_widgets(void)
 {
+    stop_dsh_status_anims();
     stop_now_anims();
     stop_mini_pulse();
     lv_obj_t *scrim = s_scrim;
@@ -2043,6 +2269,44 @@ static void ensure_card(void)
     lv_obj_add_flag(s_filter_bar, LV_OBJ_FLAG_SCROLL_ELASTIC);
     lv_obj_add_flag(s_filter_bar, LV_OBJ_FLAG_HIDDEN);
 
+    /* 续聊状态条：开麦/投递时展开，带 EQ 动画 */
+    s_dsh_status = lv_obj_create(s_card);
+    lv_obj_remove_style_all(s_dsh_status);
+    lv_obj_set_width(s_dsh_status, lv_pct(100));
+    lv_obj_set_height(s_dsh_status, 0);
+    lv_obj_set_style_radius(s_dsh_status, 10, 0);
+    lv_obj_set_style_bg_color(s_dsh_status, UI_TILE_SWITCH, 0);
+    lv_obj_set_style_bg_opa(s_dsh_status, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_hor(s_dsh_status, 10, 0);
+    lv_obj_set_style_pad_column(s_dsh_status, 8, 0);
+    lv_obj_set_flex_flow(s_dsh_status, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_dsh_status, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(s_dsh_status, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_dsh_status, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *eq_wrap = lv_obj_create(s_dsh_status);
+    lv_obj_remove_style_all(eq_wrap);
+    lv_obj_set_size(eq_wrap, 22, 22);
+    lv_obj_set_flex_flow(eq_wrap, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(eq_wrap, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(eq_wrap, LV_OBJ_FLAG_CLICKABLE);
+    for (int i = 0; i < 3; i++) {
+        s_dsh_eq[i] = lv_obj_create(eq_wrap);
+        lv_obj_remove_style_all(s_dsh_eq[i]);
+        lv_obj_set_size(s_dsh_eq[i], 3, 6 + i * 3);
+        lv_obj_set_style_radius(s_dsh_eq[i], 2, 0);
+        lv_obj_set_style_bg_color(s_dsh_eq[i], UI_ACCENT_SOFT, 0);
+        lv_obj_set_style_bg_opa(s_dsh_eq[i], LV_OPA_COVER, 0);
+        lv_obj_clear_flag(s_dsh_eq[i], LV_OBJ_FLAG_CLICKABLE);
+    }
+    s_dsh_status_lbl = lv_label_create(s_dsh_status);
+    nl_ov_set_font(s_dsh_status_lbl);
+    lv_label_set_text(s_dsh_status_lbl, "");
+    lv_obj_set_style_text_color(s_dsh_status_lbl, UI_TEXT, 0);
+    lv_obj_set_flex_grow(s_dsh_status_lbl, 1);
+    lv_label_set_long_mode(s_dsh_status_lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(s_dsh_status_lbl, lv_pct(100));
+
     s_card_list = lv_obj_create(s_card);
     lv_obj_remove_style_all(s_card_list);
     lv_obj_set_width(s_card_list, lv_pct(100));
@@ -2051,6 +2315,21 @@ static void ensure_card(void)
     lv_obj_set_style_pad_row(s_card_list, 4, 0);
     lv_obj_clear_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(s_card_list, LV_SCROLLBAR_MODE_OFF);
+
+    /* 详情底栏：续聊固定在窗口底部，不进滚动区 */
+    s_dsh_detail_bar = lv_obj_create(s_card);
+    lv_obj_remove_style_all(s_dsh_detail_bar);
+    lv_obj_set_width(s_dsh_detail_bar, lv_pct(100));
+    lv_obj_set_height(s_dsh_detail_bar, 0);
+    lv_obj_set_style_pad_top(s_dsh_detail_bar, 6, 0);
+    lv_obj_set_style_pad_bottom(s_dsh_detail_bar, 2, 0);
+    lv_obj_set_flex_flow(s_dsh_detail_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_dsh_detail_bar, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(s_dsh_detail_bar, 8, 0);
+    lv_obj_clear_flag(s_dsh_detail_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_dsh_detail_bar, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(s_dsh_detail_bar, LV_OBJ_FLAG_HIDDEN);
 
     if (nodelio_caps_has_surface("now_playing")) {
         s_now_bar = lv_obj_create(parent);
@@ -2180,8 +2459,10 @@ static void apply_card_chrome(void)
     /* 有顶栏 chip 时勿 compact：否则列表 SIZE_CONTENT 被 max_h 裁切且难滚，第 4 行露不全 */
     const bool compact = !paged && !dsh_detail && s_env->filter_n == 0 && s_env->track_n <= 4;
     if (s_hdr_mid_btn) {
-        /* 详情页保留刷新（回列表）；分页卡显示换页 */
-        if (paged || dsh_detail) {
+        /* DSH 详情：中间钮与左侧刷新易混，改用底栏「返回列表」；仅曲库/新闻分页显示 */
+        if (dsh_detail) {
+            lv_obj_add_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
+        } else if (paged) {
             lv_obj_clear_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
@@ -2207,7 +2488,68 @@ static void apply_card_chrome(void)
     }
 }
 
-/** DSH 会话详情：滚动纯文本（detail_body），顶栏保留返回=刷新列表感 */
+static bool dsh_subtitle_is_running(const char *sub)
+{
+    if (!sub || !sub[0]) {
+        return false;
+    }
+    return strstr(sub, "正在用") != nullptr || strstr(sub, "正在思考") != nullptr ||
+           strstr(sub, "执行中") != nullptr;
+}
+
+/** 详情页：执行中 → 顶状态条 EQ；空闲则按续聊 phase 画 */
+static void dsh_detail_paint_running(const char *subtitle)
+{
+    const bool running =
+        s_dsh_phase == DSH_UI_DISPATCHED || s_dsh_phase == DSH_UI_ARMED || dsh_subtitle_is_running(subtitle);
+    if (!running) {
+        if (s_dsh_phase == DSH_UI_IDLE) {
+            stop_dsh_status_anims();
+            if (s_dsh_status) {
+                lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_height(s_dsh_status, 0);
+            }
+        } else {
+            dsh_paint_status_strip();
+        }
+        return;
+    }
+    if (!s_dsh_status || !s_dsh_status_lbl) {
+        return;
+    }
+    lv_obj_clear_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_height(s_dsh_status, 32);
+    uint32_t pill = UI_C_TILE_PWM;
+    uint32_t bar = UI_C_INFO;
+    const char *txt = "执行中…";
+    if (s_dsh_phase == DSH_UI_ARMED) {
+        pill = UI_C_TILE_SWITCH;
+        bar = UI_C_ACCENT_SOFT;
+        txt = "续聊中 · 请直接说指令";
+    } else if (s_dsh_phase == DSH_UI_DISPATCHED && s_dsh_last_instr[0]) {
+        static char buf[120];
+        snprintf(buf, sizeof(buf), "已投递 · %s", s_dsh_last_instr);
+        txt = buf;
+    } else if (subtitle && subtitle[0] && dsh_subtitle_is_running(subtitle)) {
+        txt = subtitle;
+    }
+    lv_obj_set_style_bg_color(s_dsh_status, lv_color_hex(pill), 0);
+    for (int i = 0; i < 3; i++) {
+        if (s_dsh_eq[i]) {
+            lv_obj_set_style_bg_color(s_dsh_eq[i], lv_color_hex(bar), 0);
+        }
+    }
+    lv_label_set_text(s_dsh_status_lbl, txt);
+    lv_obj_set_style_text_color(s_dsh_status_lbl, UI_TEXT, 0);
+    if (s_card_sub) {
+        lv_label_set_text(s_card_sub, s_dsh_phase == DSH_UI_ARMED ? "续聊中 · 直接说 · 底栏可返回"
+                                                                  : "执行中 · 底栏可返回列表");
+        lv_obj_set_style_text_color(s_card_sub, lv_color_hex(bar), 0);
+    }
+    start_dsh_status_anims();
+}
+
+/** DSH 会话详情：滚动纯文本；续聊固定底栏；执行中顶条 EQ */
 static void fill_dsh_detail(void)
 {
     if (!s_card_list || !s_env) {
@@ -2223,11 +2565,17 @@ static void fill_dsh_detail(void)
     lv_obj_add_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_card_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_card_list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_pad_bottom(s_card_list, 8, 0);
+
+    const char *artist =
+        (s_env->track_n > 0 && s_env->tracks[0].artist[0]) ? s_env->tracks[0].artist : "";
+    const bool running = dsh_subtitle_is_running(artist) || s_dsh_phase != DSH_UI_IDLE;
 
     if (s_card_sub) {
-        lv_label_set_text(s_card_sub, "约10秒自动更新 · 上滑阅读 · 点刷新回列表");
+        lv_label_set_text(s_card_sub, running ? "执行中 · 底栏可返回列表"
+                                              : "上滑阅读 · 底栏返回列表 / 续聊");
+        lv_obj_set_style_text_color(s_card_sub, running ? UI_INFO : UI_TEXT_MUTED, 0);
     }
-    set_hdr_mid_icon(MATERIAL_SYMBOLS_REFRESH);
 
     if (s_env->track_n > 0 && s_env->tracks[0].title[0]) {
         lv_obj_t *ttl = lv_label_create(s_card_list);
@@ -2237,10 +2585,11 @@ static void fill_dsh_detail(void)
         lv_label_set_long_mode(ttl, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(ttl, UI_TEXT, 0);
     }
-    if (s_env->track_n > 0 && s_env->tracks[0].artist[0]) {
+    if (artist[0] && !dsh_subtitle_is_running(artist)) {
+        /* 空闲字幕仍放正文上；执行中改走顶状态条，避免重复 */
         lv_obj_t *sub = lv_label_create(s_card_list);
         nl_ov_set_font(sub);
-        lv_label_set_text(sub, s_env->tracks[0].artist);
+        lv_label_set_text(sub, artist);
         lv_obj_set_width(sub, lv_pct(100));
         lv_label_set_long_mode(sub, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(sub, UI_TEXT_MUTED, 0);
@@ -2250,21 +2599,56 @@ static void fill_dsh_detail(void)
     nl_ov_set_font(s_news_body_lbl);
     const char *body =
         (s_env->detail_body && s_env->detail_body[0]) ? s_env->detail_body : "（无正文）";
-    /* 拷贝进 label：刷新会先 free detail_body，避免悬空 static 指针 */
     lv_label_set_text(s_news_body_lbl, body);
     lv_obj_set_width(s_news_body_lbl, lv_pct(100));
     lv_label_set_long_mode(s_news_body_lbl, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(s_news_body_lbl, UI_TEXT, 0);
     lv_obj_set_style_pad_top(s_news_body_lbl, 8, 0);
 
-    /* 详情仍可续聊 */
-    if (s_env->track_n > 0) {
-        for (int ai = 0; ai < s_env->tracks[0].invoke_n && ai < NL_ENV_ACTION_MAX; ai++) {
-            const intptr_t packed = ((intptr_t)0 << 8) | (intptr_t)ai;
-            make_text_action_btn(s_card_list, s_env->tracks[0].invokes[ai].title, on_invoke_action,
-                                 (void *)packed);
+    /* 底栏：返回列表 + 续聊（固定不滚） */
+    if (s_dsh_detail_bar) {
+        lv_obj_clean(s_dsh_detail_bar);
+        lv_obj_set_flex_align(s_dsh_detail_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_t *back = make_text_action_btn(s_dsh_detail_bar, "返回列表", on_dsh_back_list, nullptr);
+        if (back) {
+            lv_obj_set_style_bg_color(back, UI_CAPSULE_OFF, 0);
+            lv_obj_t *bl = lv_obj_get_child(back, 0);
+            if (bl) {
+                lv_obj_set_style_text_color(bl, UI_TEXT_SUB, 0);
+            }
+            lv_obj_set_size(back, LV_SIZE_CONTENT, 40);
+            lv_obj_set_style_pad_hor(back, 14, 0);
         }
+        if (s_env->track_n > 0) {
+            for (int ai = 0; ai < s_env->tracks[0].invoke_n && ai < NL_ENV_ACTION_MAX; ai++) {
+                const intptr_t packed = ((intptr_t)0 << 8) | (intptr_t)ai;
+                const char *btn_title = s_env->tracks[0].invokes[ai].title;
+                lv_color_t btn_bg = UI_ACCENT;
+                if (strstr(btn_title, "续聊") != nullptr) {
+                    if (s_dsh_phase == DSH_UI_ARMED) {
+                        btn_title = "聆听中";
+                        btn_bg = UI_WARN;
+                    } else if (s_dsh_phase == DSH_UI_DISPATCHED || dsh_subtitle_is_running(artist)) {
+                        btn_title = "执行中";
+                        btn_bg = UI_INFO;
+                    }
+                }
+                lv_obj_t *ab =
+                    make_text_action_btn(s_dsh_detail_bar, btn_title, on_invoke_action, (void *)packed);
+                if (ab) {
+                    lv_obj_set_style_bg_color(ab, btn_bg, 0);
+                    lv_obj_set_size(ab, LV_SIZE_CONTENT, 40);
+                    lv_obj_set_style_pad_hor(ab, 16, 0);
+                }
+            }
+        }
+        lv_obj_clear_flag(s_dsh_detail_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_height(s_dsh_detail_bar, 48);
     }
+
+    dsh_detail_paint_running(artist);
+
     if (keep_y > 0) {
         lv_obj_update_layout(s_card_list);
         lv_obj_scroll_to_y(s_card_list, keep_y, LV_ANIM_OFF);
@@ -2283,6 +2667,10 @@ static void fill_list(void)
     fill_filters(); /* news 等无 filters 时收起横条 */
     if (strcmp(s_env->card_type, "news_list") == 0) {
         stop_dsh_detail_poll();
+        if (s_dsh_detail_bar) {
+            lv_obj_add_flag(s_dsh_detail_bar, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_height(s_dsh_detail_bar, 0);
+        }
         fill_news();
         apply_card_chrome();
         return;
@@ -2293,6 +2681,13 @@ static void fill_list(void)
         return;
     }
     stop_dsh_detail_poll();
+    stop_dsh_status_anims();
+    s_dsh_focus_row = nullptr;
+    if (s_dsh_detail_bar) {
+        lv_obj_clean(s_dsh_detail_bar);
+        lv_obj_add_flag(s_dsh_detail_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_height(s_dsh_detail_bar, 0);
+    }
     lv_obj_clean(s_card_list);
     /* 清空控件引用数组 */
     bzero(s_row_idx_labels, sizeof(s_row_idx_labels));
@@ -2328,7 +2723,13 @@ static void fill_list(void)
                 snprintf(sub, sizeof(sub), "共 %d 条 · %d/%d · 语音说指令派活", s_env->track_n,
                          s_list_page + 1, pages);
             } else if (strstr(s_env->app_id, "dsh") != nullptr) {
-                snprintf(sub, sizeof(sub), "共 %d 条 · 点卡片看回复 · 「续聊」开麦", s_env->track_n);
+                if (s_dsh_phase == DSH_UI_ARMED) {
+                    snprintf(sub, sizeof(sub), "续聊中 · 直接说指令");
+                } else if (s_dsh_phase == DSH_UI_DISPATCHED) {
+                    snprintf(sub, sizeof(sub), "已投递 · 点刷新看进度");
+                } else {
+                    snprintf(sub, sizeof(sub), "共 %d 条 · 点卡片看回复 · 「续聊」开麦", s_env->track_n);
+                }
             } else {
                 snprintf(sub, sizeof(sub), "共 %d 条", s_env->track_n);
             }
@@ -2492,9 +2893,26 @@ static void fill_list(void)
             /* Protocol run:invoke（如 DSH 允许/拒绝）；最多 2 个 */
             for (int ai = 0; ai < s_env->tracks[i].invoke_n && ai < NL_ENV_ACTION_MAX; ai++) {
                 const intptr_t packed = ((intptr_t)i << 8) | (intptr_t)ai;
-                make_text_action_btn(row, s_env->tracks[i].invokes[ai].title, on_invoke_action,
-                                     (void *)packed);
+                const char *btn_title = s_env->tracks[i].invokes[ai].title;
+                bool restyle = false;
+                lv_color_t btn_bg = UI_ACCENT;
+                if (dsh_track_is_focus(i) && strstr(btn_title, "续聊") != nullptr) {
+                    if (s_dsh_phase == DSH_UI_ARMED) {
+                        btn_title = "聆听中";
+                        btn_bg = UI_WARN;
+                        restyle = true;
+                    } else if (s_dsh_phase == DSH_UI_DISPATCHED) {
+                        btn_title = "已投递";
+                        btn_bg = UI_INFO;
+                        restyle = true;
+                    }
+                }
+                lv_obj_t *ab = make_text_action_btn(row, btn_title, on_invoke_action, (void *)packed);
+                if (ab && restyle) {
+                    lv_obj_set_style_bg_color(ab, btn_bg, 0);
+                }
             }
+            dsh_style_focus_row(row, i, idx_pod, a);
         }
         if (ncell < cols) {
             lv_obj_t *pad = lv_obj_create(line);
@@ -2503,6 +2921,11 @@ static void fill_list(void)
             lv_obj_set_height(pad, row_h);
             lv_obj_clear_flag(pad, LV_OBJ_FLAG_CLICKABLE);
         }
+    }
+    if (strstr(s_env->app_id, "dsh") != nullptr) {
+        dsh_paint_status_strip();
+    } else if (s_dsh_phase != DSH_UI_IDLE) {
+        dsh_clear_ui_phase();
     }
     apply_card_chrome();
 }
@@ -2597,8 +3020,14 @@ void nodelio_skill_result_hide(void)
     s_dsh_detail_sess[0] = '\0';
     DisplayLockGuard lock(nl_ov_disp());
     if (!lock) {
+        s_dsh_phase = DSH_UI_IDLE;
+        s_dsh_focus_sess[0] = '\0';
+        s_dsh_focus_ws[0] = '\0';
+        s_dsh_last_instr[0] = '\0';
+        s_dsh_focus_row = nullptr;
         return;
     }
+    dsh_clear_ui_phase();
     s_minimized = false;
     stop_now_anims();
     hide_mini_fab();
@@ -2686,6 +3115,15 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content
     *s_env = *env;
     s_env->detail_body = owned_detail;
     s_have_env = true;
+    /* 新 Envelope 覆盖续聊乐观态（LVGL 清动画放进锁内） */
+    const bool clear_dsh_ui = strstr(s_env->app_id, "dsh") != nullptr;
+    if (clear_dsh_ui) {
+        s_dsh_phase = DSH_UI_IDLE;
+        s_dsh_focus_sess[0] = '\0';
+        s_dsh_focus_ws[0] = '\0';
+        s_dsh_last_instr[0] = '\0';
+        s_dsh_focus_row = nullptr;
+    }
     s_list_page = 0;
     s_play_idx = -1;
     if (keep_url[0]) {
@@ -2714,6 +3152,11 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content
     if (!lock) {
         return;
     }
+    /* 卡已开：刷新/派活回包只换内容，禁止再跑入场淡入（否则像关了又弹） */
+    const bool card_already_open =
+        s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN) && !s_minimized &&
+        s_skill_ui_active && !s_ui_closing;
+
     if (s_ui_closing) {
         s_close_gen += 1;
         s_ui_closing = false;
@@ -2724,6 +3167,13 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content
     ensure_card();
     if (!s_card) {
         return;
+    }
+    if (clear_dsh_ui) {
+        stop_dsh_status_anims();
+        if (s_dsh_status) {
+            lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_height(s_dsh_status, 0);
+        }
     }
 
     ensure_chrome_order();
@@ -2746,10 +3196,18 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content
 
     if (s_scrim) {
         lv_obj_clear_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
-        anim_show_obj(s_scrim, false);
+        if (card_already_open) {
+            reset_obj_anim_style(s_scrim);
+        } else {
+            anim_show_obj(s_scrim, false);
+        }
     }
     lv_obj_clear_flag(s_card, LV_OBJ_FLAG_HIDDEN);
-    anim_show_obj(s_card, true);
+    if (card_already_open) {
+        reset_obj_anim_style(s_card);
+    } else {
+        anim_show_obj(s_card, true);
+    }
     layout_skill_layers();
     raise_skill_layers();
     ensure_chrome_order();
@@ -2851,4 +3309,44 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
     lv_obj_move_foreground(s_now_bar);
     layout_skill_layers();
     ensure_chrome_order();
+}
+
+void nodelio_skill_dsh_on_dispatched(const char *instruction)
+{
+    if (s_dsh_phase == DSH_UI_IDLE && !s_dsh_focus_sess[0]) {
+        char ws[200] = {0};
+        char sess[80] = {0};
+        nodelio_panel_ui_get_dsh_arm(ws, sizeof(ws), sess, sizeof(sess));
+        if (sess[0]) {
+            snprintf(s_dsh_focus_sess, sizeof(s_dsh_focus_sess), "%s", sess);
+        }
+        if (ws[0]) {
+            snprintf(s_dsh_focus_ws, sizeof(s_dsh_focus_ws), "%s", ws);
+        }
+    }
+    /* 无续聊焦点时仍 toast，避免「说了没反应」 */
+    s_dsh_phase = DSH_UI_DISPATCHED;
+    s_dsh_last_instr[0] = '\0';
+    if (instruction && instruction[0]) {
+        snprintf(s_dsh_last_instr, sizeof(s_dsh_last_instr), "%s", instruction);
+        const size_t n = strlen(s_dsh_last_instr);
+        if (n > 36) {
+            s_dsh_last_instr[33] = '.';
+            s_dsh_last_instr[34] = '.';
+            s_dsh_last_instr[35] = '.';
+            s_dsh_last_instr[36] = '\0';
+        }
+    }
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        return;
+    }
+    nl_ov_toast("已投递，执行中…");
+    const bool card_open =
+        s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN) && s_skill_ui_active;
+    if (card_open && s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr && s_card_list) {
+        fill_list(); /* 列表或详情都会重画底栏/状态条 */
+    } else if (card_open) {
+        dsh_paint_status_strip();
+    }
 }

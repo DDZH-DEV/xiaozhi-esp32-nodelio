@@ -28,7 +28,7 @@ if "%DSH_BRIDGE_MODE%"=="" set DSH_BRIDGE_MODE=both
 REM Code hot reload: Node --watch. Off: set DSH_BRIDGE_HOT=0
 REM skill_hint watch: set DSH_BRIDGE_WATCH=1
 REM Host WS: set NODELIO_HOST_WS=wss://host/ws/dsh-bridge
-REM          set BRIDGE_TOKEN=...
+REM          set BRIDGE_TOKEN=xxx
 REM Or edit via http://127.0.0.1:PORT/config after start
 set "NODE_HOT="
 if /I not "%DSH_BRIDGE_HOT%"=="0" (
@@ -38,7 +38,7 @@ set "HINT_ARG="
 if "%DSH_BRIDGE_WATCH%"=="1" set "HINT_ARG=--watch"
 
 if not exist "node_modules\ws\package.json" (
-  echo [dsh-bridge] installing deps (ws)...
+  echo [dsh-bridge] installing deps ws...
   call npm install --no-fund --no-audit
   if errorlevel 1 (
     echo [dsh-bridge] npm install failed
@@ -48,9 +48,9 @@ if not exist "node_modules\ws\package.json" (
 
 echo [dsh-bridge] env defaults mode=%DSH_BRIDGE_MODE% host=%DSH_BRIDGE_HOST% port=%DSH_BRIDGE_PORT%
 echo [dsh-bridge] config UI: http://127.0.0.1:%DSH_BRIDGE_PORT%/config
-echo [dsh-bridge] config file: bridge-config.json (hot-apply on save)
+echo [dsh-bridge] config file: bridge-config.json - hot-apply on save
 if defined NODE_HOT (
-  echo [dsh-bridge] code hot-reload ON  (DSH_BRIDGE_HOT=0 to disable)
+  echo [dsh-bridge] code hot-reload ON - set DSH_BRIDGE_HOT=0 to disable
 ) else (
   echo [dsh-bridge] code hot-reload OFF
 )

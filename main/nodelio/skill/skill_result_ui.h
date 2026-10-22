@@ -55,6 +55,12 @@ bool nodelio_skill_try_dismiss_phrase(const char *text);
  */
 bool nodelio_skill_try_pick_phrase(const char *text);
 
+/**
+ * 续聊武装后语音派活已发出：进度卡切到「已投递/执行中」动画。
+ * instruction 可空；卡未开时为空操作。
+ */
+void nodelio_skill_dsh_on_dispatched(const char *instruction);
+
 #ifdef __cplusplus
 }
 #endif

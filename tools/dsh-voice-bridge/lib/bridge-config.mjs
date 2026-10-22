@@ -23,6 +23,11 @@ const DEFAULTS = {
   public_url: '',
   status_app_id: 'dsh.status',
   status_instance_id: '',
+  /* 新建会话（createAndStart）默认；空=目录第一个可用模型 */
+  default_model: '',
+  default_reasoning: 'on',
+  default_permission: 'danger-full-access',
+  default_agent_preset: 'standard',
 };
 
 /** @type {typeof DEFAULTS} */
@@ -55,6 +60,10 @@ function fromEnv() {
     public_url: (process.env.DSH_BRIDGE_PUBLIC_URL ?? '').replace(/\/$/, ''),
     status_app_id: process.env.DSH_STATUS_APP_ID ?? DEFAULTS.status_app_id,
     status_instance_id: process.env.DSH_STATUS_INSTANCE_ID ?? '',
+    default_model: (process.env.DSH_DEFAULT_MODEL ?? '').trim(),
+    default_reasoning: (process.env.DSH_DEFAULT_REASONING ?? DEFAULTS.default_reasoning).trim(),
+    default_permission: (process.env.DSH_DEFAULT_PERMISSION ?? DEFAULTS.default_permission).trim(),
+    default_agent_preset: (process.env.DSH_DEFAULT_AGENT_PRESET ?? DEFAULTS.default_agent_preset).trim(),
   };
 }
 
@@ -79,6 +88,12 @@ function sanitize(raw) {
     public_url: String(o.public_url || '').replace(/\/$/, '').trim(),
     status_app_id: String(o.status_app_id || 'dsh.status').trim() || 'dsh.status',
     status_instance_id: String(o.status_instance_id || '').trim(),
+    default_model: String(o.default_model || '').trim(),
+    default_reasoning: String(o.default_reasoning || DEFAULTS.default_reasoning).trim() || 'on',
+    default_permission:
+      String(o.default_permission || DEFAULTS.default_permission).trim() || 'danger-full-access',
+    default_agent_preset:
+      String(o.default_agent_preset || DEFAULTS.default_agent_preset).trim() || 'standard',
   };
 }
 

@@ -182,6 +182,40 @@
       </div>
 
       <div class="card">
+        <h2>新建会话默认（墙板派活无空闲会话时）</h2>
+        <p class="hint">DSH 要求 createAndStart 带模型+权限+Agent 模式；不配则用目录第一项。</p>
+        <label>default_model</label>
+        <select name="default_model" id="selModel">
+          <option value="">（自动：目录第一个可用）</option>
+        </select>
+        <div class="row">
+          <div>
+            <label>default_reasoning</label>
+            <select name="default_reasoning" id="selReasoning">
+              <option value="on">on / 开启</option>
+              <option value="off">off / 关闭</option>
+              <option value="high">high</option>
+            </select>
+          </div>
+          <div>
+            <label>default_permission</label>
+            <select name="default_permission" id="selPerm">
+              <option value="danger-full-access">danger-full-access</option>
+              <option value="workspace-write">workspace-write</option>
+              <option value="read-only">read-only</option>
+            </select>
+          </div>
+        </div>
+        <label>default_agent_preset</label>
+        <select name="default_agent_preset" id="selAgent">
+          <option value="standard">standard</option>
+          <option value="ptc">ptc</option>
+          <option value="minimal">minimal</option>
+          <option value="cordis">cordis</option>
+        </select>
+      </div>
+
+      <div class="card">
         <h2>其它</h2>
         <label>public_url（TTS/外链基址，可空）</label>
         <input name="public_url" placeholder="http://192.168.x.x:8790" />
@@ -214,6 +248,76 @@
       statusEl.className = kind || '';
     }
 
+    function ensureOption(sel, value, label) {
+      if (!value) return;
+      for (const o of sel.options) {
+        if (o.value === value) return;
+      }
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label || value;
+      sel.appendChild(opt);
+    }
+
+    async function loadCatalog(cfg) {
+      const selModel = document.getElementById('selModel');
+      const selPerm = document.getElementById('selPerm');
+      const selAgent = document.getElementById('selAgent');
+      const selReasoning = document.getElementById('selReasoning');
+      try {
+        const res = await fetch('/nodelio/dsh/catalog');
+        if (!res.ok) throw new Error('catalog HTTP ' + res.status);
+        const cat = await res.json();
+        const keepModel = selModel.value;
+        selModel.innerHTML = '<option value=\"\">（自动：目录第一个可用）</option>';
+        for (const m of cat.models || []) {
+          const opt = document.createElement('option');
+          opt.value = m.value;
+          opt.textContent = m.title || m.value;
+          selModel.appendChild(opt);
+        }
+        if (cfg.default_model) ensureOption(selModel, cfg.default_model, cfg.default_model);
+        selModel.value = cfg.default_model || keepModel || '';
+
+        const keepPerm = selPerm.value;
+        selPerm.innerHTML = '';
+        for (const p of cat.permissions || []) {
+          const opt = document.createElement('option');
+          opt.value = p.value;
+          opt.textContent = p.value + (p.title && p.title !== p.value ? ' · ' + p.title : '');
+          selPerm.appendChild(opt);
+        }
+        if (cfg.default_permission) ensureOption(selPerm, cfg.default_permission, cfg.default_permission);
+        selPerm.value = cfg.default_permission || keepPerm || 'danger-full-access';
+
+        const keepAgent = selAgent.value;
+        selAgent.innerHTML = '';
+        for (const a of cat.agent_presets || []) {
+          const opt = document.createElement('option');
+          opt.value = a.id;
+          opt.textContent = a.name || a.id;
+          selAgent.appendChild(opt);
+        }
+        if (!selAgent.options.length) {
+          for (const v of ['standard', 'ptc', 'minimal', 'cordis']) {
+            ensureOption(selAgent, v, v);
+          }
+        }
+        if (cfg.default_agent_preset) ensureOption(selAgent, cfg.default_agent_preset, cfg.default_agent_preset);
+        selAgent.value = cfg.default_agent_preset || keepAgent || 'standard';
+
+        if (cfg.default_reasoning) {
+          ensureOption(selReasoning, cfg.default_reasoning, cfg.default_reasoning);
+          selReasoning.value = cfg.default_reasoning;
+        }
+      } catch (e) {
+        console.warn(e);
+        if (cfg.default_model) ensureOption(selModel, cfg.default_model, cfg.default_model);
+        if (cfg.default_permission) ensureOption(selPerm, cfg.default_permission, cfg.default_permission);
+        if (cfg.default_agent_preset) ensureOption(selAgent, cfg.default_agent_preset, cfg.default_agent_preset);
+      }
+    }
+
     function fill(cfg) {
       for (const el of form.elements) {
         if (!el.name) continue;
@@ -224,6 +328,8 @@
           el.placeholder = cfg[el.name + '_set']
             ? '已设置（' + (cfg[el.name] || '••••') + '），留空保留'
             : '未设置';
+        } else if (el.tagName === 'SELECT') {
+          /* catalog 填充后再设 */
         } else if (cfg[el.name] !== undefined && cfg[el.name] !== null) {
           el.value = cfg[el.name];
         }
@@ -238,6 +344,7 @@
       onlineEl.textContent = cfg.runtime && cfg.runtime.host_ws_connected
         ? 'Host WS 已连接'
         : (cfg.runtime && cfg.runtime.host_ws_wanted ? 'Host WS 未连' : '仅 LAN');
+      return loadCatalog(cfg);
     }
 
     async function load() {
@@ -245,7 +352,7 @@
       const res = await fetch('/nodelio/dsh/config');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const cfg = await res.json();
-      fill(cfg);
+      await fill(cfg);
       setStatus('已加载', 'ok');
     }
 
@@ -267,7 +374,7 @@
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
-        fill(data.config || data);
+        await fill(data.config || data);
         let msg = '已保存并热应用';
         if (data.listen_changed) msg += ' · 监听地址已变，请重启桥';
         setStatus(msg, 'ok');

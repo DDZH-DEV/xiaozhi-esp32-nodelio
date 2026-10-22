@@ -31,8 +31,10 @@
 http://127.0.0.1:8790/config
 ```
 
-可改 mode、Host WS / token、边沿监视、HTTP hint 回落等。点「保存并应用」写入 `bridge-config.json` 并**热生效**（出站 WS 重连、监视开关）。  
+可改 mode、Host WS / token、边沿监视、HTTP hint 回落、**新建会话默认模型/权限/Agent 模式**等。点「保存并应用」写入 `bridge-config.json` 并**热生效**（出站 WS 重连、监视开关）。  
 **监听 host/port** 改完需重启进程。密钥类字段留空表示保留原值。样例见 `bridge-config.example.json`（真实 `bridge-config.json` 已 gitignore）。
+
+新建会话：DSH 的 `session.createAndStart` 要求 AA 侧已有模型；桥会按配置注入 `selections` + `agentPreset`。未配 `default_model` 时用目录第一个可用模型。有空闲会话时仍优先 `startTurn` 复用。
 
 API：`GET|PUT /nodelio/dsh/config`。
 
@@ -137,6 +139,7 @@ node dsh-task.mjs send "D:\xz25" "只回复一句话：测试通过。" --wait
 |------|------|------|
 | GET | `/nodelio/dsh/health` | 桥与 DSH 是否可达；含 `market_url` |
 | GET | `/nodelio/dsh/workspaces` | 默认工作区候选（session cwd + 本机存在目录） |
+| GET | `/nodelio/dsh/catalog` | 模型 / 权限 / Agent 模式（配置页下拉） |
 | GET | `/nodelio-dsh-market/marketplace.json` | 市场索引（包同前缀） |
 | POST | `/nodelio/dsh/task` | `{instruction, workspace?, session?}`；有 session 则对该会话 startTurn |
 | GET/POST | `/nodelio/dsh/status` | 无 workspace=工作区列表；有=会话列表；再有 session=详情 |

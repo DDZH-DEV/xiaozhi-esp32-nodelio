@@ -46,6 +46,7 @@ import {
   ensureExample,
   CONFIG_PATH,
 } from '../lib/bridge-config.mjs';
+import { listCreateCatalog, resolveCreateParams } from '../lib/dsh-create.mjs';
 
 const DSH_HOME = process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh');
 /** 本目录即市场根（marketplace.json + packages/） */
@@ -310,8 +311,8 @@ function dshResultFail(result) {
 
 function mapCreateFailSpoken(message) {
   const m = String(message || '');
-  if (/choose a model|select a model|选.*模型/i.test(m)) {
-    return '新建失败：请先在 Agents Anywhere 为该工作区选择模型，或把 APP 默认工作区改成已有任务的目录。';
+  if (/choose a model|select a model|选.*模型|permissions|Agent mode|agentPreset/i.test(m)) {
+    return '新建失败：请打开桥配置页选默认模型与权限，或把 APP 默认工作区改成已有空闲会话的目录。';
   }
   if (/INVALID_PARAMS/i.test(m)) {
     return '新建任务参数无效，请换工作区或检查 DSH 设置。';
@@ -848,7 +849,25 @@ async function handleTask(client, body) {
       logTask('startTurn ok', { session: target.externalSessionId });
     } else {
       created = true;
-      logTask('createAndStart', { cwd: workspace, forceNew });
+      let createOpts;
+      try {
+        createOpts = await resolveCreateParams(client, cfg());
+      } catch (e) {
+        logTask('resolveCreateParams fail', { err: e.message });
+        return errorEnvelope(
+          'dsh.task',
+          'config_missing',
+          e.message || '无法解析默认模型',
+          mapCreateFailSpoken(e.message),
+        );
+      }
+      logTask('createAndStart', {
+        cwd: workspace,
+        forceNew,
+        model: createOpts.resolved.model_title,
+        permission: createOpts.resolved.permission,
+        agent: createOpts.resolved.agent_preset,
+      });
       let createResult;
       try {
         createResult = await client.call('session.createAndStart', {
@@ -856,6 +875,8 @@ async function handleTask(client, body) {
           content: instruction,
           cwd: workspace,
           clientMessageId: crypto.randomUUID(),
+          selections: createOpts.selections,
+          agentPreset: createOpts.agentPreset,
         });
       } catch (e) {
         logTask('createAndStart throw', { err: e.message, code: e.code });
@@ -1319,6 +1340,8 @@ function startLanHttp() {
         send(response, 200, env);
       } else if (route === 'GET /nodelio/dsh/workspaces') {
         send(response, 200, await handleWorkspaces(client));
+      } else if (route === 'GET /nodelio/dsh/catalog') {
+        send(response, 200, await listCreateCatalog(client));
       } else if (route === 'POST /nodelio/dsh/task') {
         const body = await readBody(request);
         const env = await handleTask(client, body);
@@ -1361,6 +1384,7 @@ function startLanHttp() {
     }
     console.log('  GET  /nodelio/dsh/health');
     console.log('  GET/PUT /nodelio/dsh/config');
+    console.log('  GET /nodelio/dsh/catalog  (models / permissions for create)');
     console.log('  GET  /nodelio/dsh/workspaces');
     console.log('  GET/POST /nodelio/dsh/status  workspace=&session=（空=工作区列表）');
     console.log('  POST /nodelio/dsh/task    {"instruction","workspace?","session?"}');

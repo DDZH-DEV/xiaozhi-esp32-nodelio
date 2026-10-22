@@ -340,29 +340,35 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
     lv_obj_set_style_shadow_color(s_ai_drawer, UI_BG, 0);
     lv_obj_set_style_shadow_opa(s_ai_drawer, 100, 0);
     lv_obj_set_style_pad_left(s_ai_drawer, 14, 0);
-    lv_obj_set_style_pad_right(s_ai_drawer, 12, 0);
-    lv_obj_set_style_pad_top(s_ai_drawer, 10, 0);
+    lv_obj_set_style_pad_right(s_ai_drawer, 10, 0);
+    lv_obj_set_style_pad_top(s_ai_drawer, 8, 0);
     lv_obj_set_style_pad_bottom(s_ai_drawer, 12, 0);
     lv_obj_set_style_pad_row(s_ai_drawer, 6, 0);
     lv_obj_set_flex_flow(s_ai_drawer, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(s_ai_drawer, LV_OBJ_FLAG_SCROLLABLE);
+    /* 整卡可点：点空处也不穿透到下层设备卡 */
+    lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
 
-    /* Header：声波 + 状态 · 收起 */
+    /* Header：声波 + 状态 · 收起/关闭（44px 触控） */
     lv_obj_t *hdr = lv_obj_create(s_ai_drawer);
     lv_obj_remove_style_all(hdr);
-    lv_obj_set_size(hdr, lv_pct(100), 28);
+    lv_obj_set_size(hdr, lv_pct(100), UI_AI_DRAWER_HDR_H);
     lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *left_box = lv_obj_create(hdr);
     lv_obj_remove_style_all(left_box);
-    lv_obj_set_size(left_box, LV_SIZE_CONTENT, 24);
+    lv_obj_set_size(left_box, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(left_box, 1);
     lv_obj_set_flex_flow(left_box, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(left_box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(left_box, 10, 0);
+    lv_obj_set_style_pad_right(left_box, 8, 0);
     lv_obj_clear_flag(left_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(left_box, LV_OBJ_FLAG_CLICKABLE);
 
     for (int i = 0; i < 3; i++) {
         s_eq_bars[i] = lv_obj_create(left_box);
@@ -371,32 +377,35 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
         lv_obj_set_style_radius(s_eq_bars[i], 2, 0);
         lv_obj_set_style_bg_color(s_eq_bars[i], UI_ACCENT, 0);
         lv_obj_set_style_bg_opa(s_eq_bars[i], LV_OPA_COVER, 0);
+        lv_obj_clear_flag(s_eq_bars[i], LV_OBJ_FLAG_CLICKABLE);
     }
 
     s_ai_drawer_status = lv_label_create(left_box);
     nl_ov_set_font(s_ai_drawer_status);
     lv_label_set_text(s_ai_drawer_status, "小智在听…");
     lv_obj_set_style_text_color(s_ai_drawer_status, UI_INFO, 0);
+    lv_obj_clear_flag(s_ai_drawer_status, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *hdr_btns = lv_obj_create(hdr);
     lv_obj_remove_style_all(hdr_btns);
-    lv_obj_set_size(hdr_btns, LV_SIZE_CONTENT, 26);
+    lv_obj_set_size(hdr_btns, LV_SIZE_CONTENT, UI_AI_DRAWER_BTN_SZ);
     lv_obj_set_flex_flow(hdr_btns, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(hdr_btns, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(hdr_btns, 6, 0);
+    lv_obj_set_style_pad_column(hdr_btns, 8, 0);
     lv_obj_clear_flag(hdr_btns, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(hdr_btns, LV_OBJ_FLAG_CLICKABLE);
 
     auto make_hdr_btn = [](lv_obj_t *parent, const char *sym, lv_event_cb_t cb) -> lv_obj_t * {
         lv_obj_t *btn = lv_obj_create(parent);
         lv_obj_remove_style_all(btn);
-        lv_obj_set_size(btn, 36, 26);
-        lv_obj_set_style_radius(btn, 13, 0);
+        lv_obj_set_size(btn, UI_AI_DRAWER_BTN_SZ, UI_AI_DRAWER_BTN_SZ);
+        lv_obj_set_style_radius(btn, UI_AI_DRAWER_BTN_SZ / 2, 0);
         lv_obj_set_style_bg_color(btn, UI_CAPSULE_OFF, 0);
         lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
         lv_obj_set_style_translate_y(btn, 1, LV_STATE_PRESSED);
         lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_ext_click_area(btn, UI_EXT_CLICK);
+        lv_obj_set_ext_click_area(btn, 12);
         lv_obj_t *ic = lv_label_create(btn);
         lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
         lv_label_set_text(ic, sym);

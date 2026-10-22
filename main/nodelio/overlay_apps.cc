@@ -8,6 +8,7 @@
 #include "nodelio_http.h"
 #include "content_envelope.h"
 #include "panel_ui.h"
+#include "skill_result_ui.h"
 #include "skill_runtime.h"
 #include "wifi_provision.h"
 
@@ -640,6 +641,8 @@ bool nl_ov_apps_invoke_dsh_task(const char *instruction)
         snprintf(body, sizeof(body), "{\"instruction\":\"%s\"}", esc);
     }
     ESP_LOGI(TAG, "invoke dsh.task sid=%s body=%s", sid, body);
+    /* 续聊/派活发出瞬间：进度卡切「已投递」动画（HTTP 回包后会被真实列表覆盖） */
+    nodelio_skill_dsh_on_dispatched(esc);
     nl_ov_invoke_skill_async(sid, body);
     nodelio_panel_ui_clear_dsh_arm();
     return true;

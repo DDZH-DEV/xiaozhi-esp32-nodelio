@@ -11,5 +11,9 @@
   "panel_device_key": "",
   "public_url": "http://192.168.2.222:8790",
   "status_app_id": "dsh.status",
-  "status_instance_id": ""
+  "status_instance_id": "",
+  "default_model": "codearts/GLM-5.2",
+  "default_reasoning": "on",
+  "default_permission": "danger-full-access",
+  "default_agent_preset": "standard"
 }

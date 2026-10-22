@@ -98,8 +98,11 @@
 #define UI_TILE_OFF         lv_color_hex(UI_C_TILE_OFF)
 #define UI_TILE_SWITCH      lv_color_hex(UI_C_TILE_SWITCH)
 #define UI_TILE_SWITCH_OFF  lv_color_hex(UI_C_TILE_SWITCH_OFF)
+#define UI_TILE_SCENE       lv_color_hex(UI_C_TILE_SCENE)
 #define UI_TILE_SCENE_OFF   lv_color_hex(UI_C_TILE_SCENE_OFF)
+#define UI_TILE_GPIO        lv_color_hex(UI_C_TILE_GPIO)
 #define UI_TILE_GPIO_OFF    lv_color_hex(UI_C_TILE_GPIO_OFF)
+#define UI_TILE_PWM         lv_color_hex(UI_C_TILE_PWM)
 #define UI_TILE_PWM_OFF     lv_color_hex(UI_C_TILE_PWM_OFF)
 #define UI_TILE_ON_BORDER   lv_color_hex(UI_C_TILE_ON_BORDER)
 #define UI_TILE_OFF_BORDER  lv_color_hex(UI_C_TILE_OFF_BORDER)
@@ -132,10 +135,12 @@
 #define UI_BTN_H_SM         44
 /* 小智对话悬浮胶囊：收窄居中，正文保留最近 5 句；半透明以免挡设置项 */
 #define UI_AI_DRAWER_W         348
-#define UI_AI_DRAWER_H         188
+#define UI_AI_DRAWER_H         208 /* 含 48px 头栏（关闭/最小化可点） */
 #define UI_AI_DRAWER_COMPACT_W 296 /* 唤醒建链条：贴文案宽度 */
-#define UI_AI_DRAWER_COMPACT_H 56  /* 唤醒建链条：仅声波+标题 */
+#define UI_AI_DRAWER_COMPACT_H 72  /* 唤醒建链条：头栏按钮 44px */
 #define UI_AI_DRAWER_TEXT_H    120
+#define UI_AI_DRAWER_HDR_H     48  /* 头栏：对齐 44px 触控钮 */
+#define UI_AI_DRAWER_BTN_SZ    44  /* 最小化/关闭：≥44 防穿透下层卡 */
 #define UI_AI_DRAWER_BOTTOM    52
 #define UI_AI_DRAWER_BG_OPA    200 /* ~78%：背后设置项隐约可见 */
 #define UI_AI_MINI_SZ          52  /* 最小化圆钮（仅图标，无文字） */
