@@ -35,32 +35,60 @@ import {
   speakWorkspaceList,
 } from '../lib/tasks.mjs';
 import { synthesizeSpokenWav, ttsFilePath } from '../lib/tts.mjs';
+import { startHostWs } from '../lib/host-ws.mjs';
+import {
+  loadConfig,
+  getConfig,
+  getPublicConfig,
+  saveConfig,
+  onConfigChange,
+  watchConfigFile,
+  ensureExample,
+  CONFIG_PATH,
+} from '../lib/bridge-config.mjs';
 
 const DSH_HOME = process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh');
-const PORT = Number(readFlag('--port') ?? process.env.DSH_BRIDGE_PORT ?? 8790);
-const HOST = readFlag('--host') ?? process.env.DSH_BRIDGE_HOST ?? '0.0.0.0';
-const WATCH = process.argv.includes('--watch') || process.env.DSH_BRIDGE_WATCH === '1';
-const WATCH_MS = Number(process.env.DSH_BRIDGE_WATCH_MS ?? 8000);
-/** Host 推送 skill_hint：POST {base}/api/devices/{id}/panel/skill-hint */
-const HINT_BASE = (process.env.NODELIO_HOST_URL ?? '').replace(/\/$/, '');
-const HINT_DEVICE = process.env.NODELIO_PANEL_DEVICE_ID ?? '';
-const HINT_KEY = process.env.NODELIO_PANEL_DEVICE_KEY ?? '';
-const STATUS_APP = process.env.DSH_STATUS_APP_ID ?? 'dsh.status';
-const STATUS_INSTANCE = process.env.DSH_STATUS_INSTANCE_ID ?? '';
 /** 本目录即市场根（marketplace.json + packages/） */
 const MARKET_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const MARKET_PREFIX = '/nodelio-dsh-market';
+const PUBLIC_DIR = path.resolve(MARKET_ROOT, '..', 'public');
 
 function readFlag(name) {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
+/* CLI / 环境覆盖进 process.env，再 loadConfig（文件优先于默认，env 在 sanitize 里作底） */
+if (readFlag('--port')) process.env.DSH_BRIDGE_PORT = readFlag('--port');
+if (readFlag('--host')) process.env.DSH_BRIDGE_HOST = readFlag('--host');
+if (process.argv.includes('--watch')) process.env.DSH_BRIDGE_WATCH = '1';
+
+ensureExample();
+loadConfig();
+watchConfigFile();
+
+function cfg() {
+  return getConfig();
+}
+function wantLan() {
+  const m = cfg().mode;
+  return m === 'lan' || m === 'both';
+}
+function wantHostWs() {
+  const m = cfg().mode;
+  return m === 'host_ws' || m === 'both';
+}
+
+/** @type {ReturnType<typeof startHostWs> | null} */
+let hostWsClient = null;
+let watchTimer = null;
+let hostWsConnected = false;
+
 const newRequestId = () => 'req_' + crypto.randomBytes(8).toString('hex');
 const speak = (text) => ({ text: String(text ?? '').slice(0, 300), language: 'zh-CN' });
 
 function publicBaseFromRequest(request) {
-  const envBase = (process.env.DSH_BRIDGE_PUBLIC_URL ?? '').replace(/\/$/, '');
+  const envBase = (cfg().public_url || process.env.DSH_BRIDGE_PUBLIC_URL || '').replace(/\/$/, '');
   if (envBase) return envBase;
   const host = request?.headers?.host ?? '';
   /* Host 若是本机回环，面板拉不到音频 → 改用 LAN IP */
@@ -479,8 +507,9 @@ function tryServeMarket(request, response, pathname) {
 }
 
 function statusInvokeBase() {
-  const inv = { app_id: STATUS_APP };
-  if (STATUS_INSTANCE) inv.instance_id = STATUS_INSTANCE;
+  const c = cfg();
+  const inv = { app_id: c.status_app_id };
+  if (c.status_instance_id) inv.instance_id = c.status_instance_id;
   return inv;
 }
 
@@ -1055,11 +1084,25 @@ function send(response, status, payload) {
 const s_prev = new Map();
 
 async function postSkillHint(reason, sessionId) {
-  if (!HINT_BASE || !HINT_DEVICE || !HINT_KEY) return;
-  const url = `${HINT_BASE}/api/devices/${encodeURIComponent(HINT_DEVICE)}/panel/skill-hint`;
+  const c = cfg();
+  /* 优先经出站 WS hint（公网 Host 无需设备密钥 HTTP） */
+  if (hostWsClient) {
+    try {
+      hostWsClient.sendHint(reason, sessionId, {
+        app_id: c.status_app_id,
+        instance_id: c.status_instance_id || undefined,
+      });
+      console.log(`[watch] skill-hint via ws reason=${reason} session=${sessionId ?? '-'}`);
+      return;
+    } catch (e) {
+      console.warn(`[watch] skill-hint ws fail: ${e.message}`);
+    }
+  }
+  if (!c.host_url || !c.panel_device_id || !c.panel_device_key) return;
+  const url = `${c.host_url}/api/devices/${encodeURIComponent(c.panel_device_id)}/panel/skill-hint`;
   const body = JSON.stringify({
-    app_id: STATUS_APP,
-    instance_id: STATUS_INSTANCE || undefined,
+    app_id: c.status_app_id,
+    instance_id: c.status_instance_id || undefined,
     reason,
     session: sessionId || undefined,
   });
@@ -1068,7 +1111,7 @@ async function postSkillHint(reason, sessionId) {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'X-Device-Key': HINT_KEY,
+        'X-Device-Key': c.panel_device_key,
       },
       body,
       signal: AbortSignal.timeout(5000),
@@ -1081,6 +1124,55 @@ async function postSkillHint(reason, sessionId) {
   } catch (e) {
     console.warn(`[watch] skill-hint fail: ${e.message}`);
   }
+}
+
+function tryServeConfigUi(request, response, pathname) {
+  if (pathname === '/' || pathname === '/config' || pathname === '/config/') {
+    const htmlPath = path.join(PUBLIC_DIR, 'config.html');
+    if (!fs.existsSync(htmlPath)) {
+      send(response, 404, { error: 'config.html missing' });
+      return true;
+    }
+    const html = fs.readFileSync(htmlPath);
+    response.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'content-length': html.length,
+      'cache-control': 'no-store',
+    });
+    response.end(html);
+    return true;
+  }
+  return false;
+}
+
+async function handleConfigApi(request, response, method) {
+  if (method === 'GET') {
+    const pub = getPublicConfig();
+    pub.runtime = {
+      host_ws_wanted: wantHostWs() && Boolean(cfg().host_ws && cfg().bridge_token),
+      host_ws_connected: hostWsConnected,
+      watch_running: Boolean(watchTimer),
+    };
+    send(response, 200, pub);
+    return;
+  }
+  if (method === 'PUT' || method === 'POST') {
+    try {
+      const body = await readBody(request);
+      const { config, listen_changed } = saveConfig(body); /* emit → onConfigChange → applyRuntime */
+      const pub = getPublicConfig();
+      pub.runtime = {
+        host_ws_wanted: wantHostWs() && Boolean(config.host_ws && config.bridge_token),
+        host_ws_connected: hostWsConnected,
+        watch_running: Boolean(watchTimer),
+      };
+      send(response, 200, { ok: true, listen_changed, config: pub });
+    } catch (e) {
+      send(response, 400, { error: e.message });
+    }
+    return;
+  }
+  send(response, 405, { error: 'method not allowed' });
 }
 
 async function watchTick() {
@@ -1111,90 +1203,176 @@ async function watchTick() {
   }
 }
 
-const server = http.createServer(async (request, response) => {
-  const url = new URL(request.url, `http://${request.headers.host ?? 'localhost'}`);
-  const route = `${request.method} ${url.pathname}`;
-  console.log(`${new Date().toISOString()}  ${route}`);
+function stopWatch() {
+  if (watchTimer) {
+    clearInterval(watchTimer);
+    watchTimer = null;
+  }
+}
 
-  if (tryServeMarket(request, response, url.pathname)) return;
-  if (tryServeTts(request, response, url.pathname)) return;
-
-  if (route === 'GET /nodelio/dsh/health') {
-    send(response, 200, await handleHealth());
+function restartWatch() {
+  stopWatch();
+  const c = cfg();
+  if (!c.watch) {
+    console.log('[watch] off');
     return;
   }
+  if (!hostWsClient && !(c.host_url && c.panel_device_id && c.panel_device_key)) {
+    console.warn(
+      '[watch] 需 host_ws+token，或 host_url + panel_device_id + panel_device_key',
+    );
+  }
+  console.log(`[watch] every ${c.watch_ms}ms`);
+  watchTimer = setInterval(() => {
+    watchTick().catch(() => {});
+  }, c.watch_ms);
+}
 
-  let client;
-  try {
-    client = await connect({ namespace: 'nodelio-market' });
+function stopHostWs() {
+  hostWsConnected = false;
+  if (hostWsClient) {
+    try {
+      hostWsClient.stop();
+    } catch {
+      /* ignore */
+    }
+    hostWsClient = null;
+  }
+}
 
-    if (route === 'GET /nodelio/dsh/status') {
-      const env = await handleStatus(client, url.searchParams, request);
-      console.log(
-        `[dsh.http] GET status → ${env.status} items=${Array.isArray(env.content) ? env.content.length : 0}`,
-      );
-      send(response, 200, env);
-    } else if (route === 'POST /nodelio/dsh/status') {
-      const body = await readBody(request);
-      const env = await handleStatus(client, url.searchParams, request, body);
-      console.log(
-        `[dsh.http] POST status → ${env.status} items=${Array.isArray(env.content) ? env.content.length : 0}`,
-      );
-      send(response, 200, env);
-    } else if (route === 'GET /nodelio/dsh/workspaces') {
-      send(response, 200, await handleWorkspaces(client));
-    } else if (route === 'POST /nodelio/dsh/task') {
-      const body = await readBody(request);
-      const env = await handleTask(client, body);
-      console.log(
-        `[dsh.http] POST task → ${env.status}` +
-          (env.status === 'error'
-            ? ` code=${env.error?.code || '?'} msg=${String(env.error?.message || '').slice(0, 160)}`
-            : ` items=${Array.isArray(env.content) ? env.content.length : 0} title=${env.display?.title || '-'}`),
-      );
-      send(response, 200, env);
-    } else if (route === 'POST /nodelio/dsh/answer') {
-      send(response, 200, await handleAnswer(client, await readBody(request)));
+function restartHostWs() {
+  stopHostWs();
+  if (!wantHostWs()) {
+    console.log('[host-ws] mode excludes host_ws');
+    return;
+  }
+  const c = cfg();
+  if (!c.host_ws || !c.bridge_token) {
+    console.warn('[host-ws] 未配置 host_ws / bridge_token（可在 /config 填写）');
+    return;
+  }
+  hostWsClient = startHostWs({
+    wsUrl: c.host_ws,
+    token: c.bridge_token,
+    lanPort: c.listen_port,
+    panelDeviceId: c.panel_device_id,
+    version: '1.0.0',
+    onReady: () => {
+      hostWsConnected = true;
+      console.log('[host-ws] ready');
+    },
+    onClose: () => {
+      hostWsConnected = false;
+    },
+  });
+}
+
+/** 热应用：watch + host-ws（listen 不变） */
+function applyRuntime(source) {
+  console.log(`[config] apply runtime source=${source}`);
+  restartHostWs();
+  restartWatch();
+}
+
+onConfigChange((_c, meta) => {
+  applyRuntime(meta.source);
+});
+
+function startLanHttp() {
+  const c0 = cfg();
+  const listenHost = c0.mode === 'host_ws' ? '127.0.0.1' : c0.listen_host;
+  const PORT = c0.listen_port;
+  const server = http.createServer(async (request, response) => {
+    const url = new URL(request.url, `http://${request.headers.host ?? 'localhost'}`);
+    const route = `${request.method} ${url.pathname}`;
+    console.log(`${new Date().toISOString()}  ${route}`);
+
+    if (tryServeConfigUi(request, response, url.pathname)) return;
+    if (url.pathname === '/nodelio/dsh/config') {
+      await handleConfigApi(request, response, request.method);
+      return;
+    }
+    if (tryServeMarket(request, response, url.pathname)) return;
+    if (tryServeTts(request, response, url.pathname)) return;
+
+    if (route === 'GET /nodelio/dsh/health') {
+      send(response, 200, await handleHealth());
+      return;
+    }
+
+    let client;
+    try {
+      client = await connect({ namespace: 'nodelio-market' });
+
+      if (route === 'GET /nodelio/dsh/status') {
+        const env = await handleStatus(client, url.searchParams, request);
+        console.log(
+          `[dsh.http] GET status → ${env.status} items=${Array.isArray(env.content) ? env.content.length : 0}`,
+        );
+        send(response, 200, env);
+      } else if (route === 'POST /nodelio/dsh/status') {
+        const body = await readBody(request);
+        const env = await handleStatus(client, url.searchParams, request, body);
+        console.log(
+          `[dsh.http] POST status → ${env.status} items=${Array.isArray(env.content) ? env.content.length : 0}`,
+        );
+        send(response, 200, env);
+      } else if (route === 'GET /nodelio/dsh/workspaces') {
+        send(response, 200, await handleWorkspaces(client));
+      } else if (route === 'POST /nodelio/dsh/task') {
+        const body = await readBody(request);
+        const env = await handleTask(client, body);
+        console.log(
+          `[dsh.http] POST task → ${env.status}` +
+            (env.status === 'error'
+              ? ` code=${env.error?.code || '?'} msg=${String(env.error?.message || '').slice(0, 160)}`
+              : ` items=${Array.isArray(env.content) ? env.content.length : 0} title=${env.display?.title || '-'}`),
+        );
+        send(response, 200, env);
+      } else if (route === 'POST /nodelio/dsh/answer') {
+        send(response, 200, await handleAnswer(client, await readBody(request)));
+      } else {
+        send(response, 404, errorEnvelope('dsh.status', 'internal', `no route: ${route}`, '路径不对。'));
+      }
+    } catch (error) {
+      console.warn(`[dsh.http] ${route} exception: ${error.message}`);
+      const code = /ENOENT|ECONNREFUSED|endpoint not found/i.test(error.message)
+        ? 'upstream_error'
+        : 'internal';
+      send(response, 200, errorEnvelope('dsh.status', code, error.message, 'DSH 没响应，可能工作台没开。'));
+    } finally {
+      client?.close();
+    }
+  });
+
+  server.listen(PORT, listenHost, () => {
+    const lans = lanAddresses();
+    const mode = cfg().mode;
+    console.log(`nodelio DSH bridge mode=${mode} listening on http://${listenHost}:${PORT}`);
+    console.log(`  config UI  http://127.0.0.1:${PORT}/config`);
+    console.log(`  config file ${CONFIG_PATH}`);
+    if (listenHost === '0.0.0.0' || listenHost === '::') {
+      for (const ip of lans) {
+        console.log(`  LAN  http://${ip}:${PORT}`);
+        console.log(`  market http://${ip}:${PORT}${MARKET_PREFIX}/marketplace.json`);
+      }
     } else {
-      send(response, 404, errorEnvelope('dsh.status', 'internal', `no route: ${route}`, '路径不对。'));
+      console.log(`  market http://${listenHost}:${PORT}${MARKET_PREFIX}/marketplace.json`);
     }
-  } catch (error) {
-    console.warn(`[dsh.http] ${route} exception: ${error.message}`);
-    const code = /ENOENT|ECONNREFUSED|endpoint not found/i.test(error.message)
-      ? 'upstream_error'
-      : 'internal';
-    send(response, 200, errorEnvelope('dsh.status', code, error.message, 'DSH 没响应，可能工作台没开。'));
-  } finally {
-    client?.close();
-  }
-});
+    console.log('  GET  /nodelio/dsh/health');
+    console.log('  GET/PUT /nodelio/dsh/config');
+    console.log('  GET  /nodelio/dsh/workspaces');
+    console.log('  GET/POST /nodelio/dsh/status  workspace=&session=（空=工作区列表）');
+    console.log('  POST /nodelio/dsh/task    {"instruction","workspace?","session?"}');
+    console.log('  POST /nodelio/dsh/answer  {"session":"...","notice_id":"...","action":"allow"}');
+    console.log(`  GET  ${MARKET_PREFIX}/marketplace.json`);
+    applyRuntime('boot');
+  });
+}
 
-server.listen(PORT, HOST, () => {
-  const lans = lanAddresses();
-  console.log(`nodelio DSH bridge listening on http://${HOST}:${PORT}`);
-  if (HOST === '0.0.0.0' || HOST === '::') {
-    for (const ip of lans) {
-      console.log(`  LAN  http://${ip}:${PORT}`);
-      console.log(`  market http://${ip}:${PORT}${MARKET_PREFIX}/marketplace.json`);
-    }
-  } else {
-    console.log(`  market http://${HOST}:${PORT}${MARKET_PREFIX}/marketplace.json`);
-  }
-  console.log('  GET  /nodelio/dsh/health');
-  console.log('  GET  /nodelio/dsh/workspaces');
-  console.log('  GET/POST /nodelio/dsh/status  workspace=&session=（空=工作区列表）');
-  console.log('  POST /nodelio/dsh/task    {"instruction","workspace?","session?"}');
-  console.log('  POST /nodelio/dsh/answer  {"session":"...","notice_id":"...","action":"allow"}');
-  console.log(`  GET  ${MARKET_PREFIX}/marketplace.json`);
-  if (WATCH) {
-    if (!HINT_BASE || !HINT_DEVICE || !HINT_KEY) {
-      console.warn(
-        '[watch] set NODELIO_HOST_URL + NODELIO_PANEL_DEVICE_ID + NODELIO_PANEL_DEVICE_KEY to push skill_hint',
-      );
-    }
-    console.log(`[watch] every ${WATCH_MS}ms`);
-    setInterval(() => {
-      watchTick().catch(() => {});
-    }, WATCH_MS);
-  }
-});
+if (wantLan() || wantHostWs()) {
+  startLanHttp();
+} else {
+  console.error(`[dsh-bridge] unknown mode=${cfg().mode} (use lan|host_ws|both)`);
+  process.exit(1);
+}

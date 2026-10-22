@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DSH 桥配置</title>
+  <style>
+    :root {
+      --bg: #0c0f14;
+      --panel: #161b24;
+      --text: #e8ecf1;
+      --muted: #8b95a5;
+      --accent: #34c759;
+      --accent-dim: rgba(52, 199, 89, 0.18);
+      --danger: #ff6b6b;
+      --border: rgba(52, 199, 89, 0.35);
+      --input: #0f141c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(900px 420px at 10% -10%, rgba(52, 199, 89, 0.12), transparent 55%),
+        radial-gradient(700px 360px at 100% 0%, rgba(64, 120, 255, 0.08), transparent 50%),
+        var(--bg);
+      color: var(--text);
+    }
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 28px 18px 48px;
+    }
+    h1 {
+      font-size: 1.55rem;
+      font-weight: 650;
+      letter-spacing: 0.02em;
+      margin: 0 0 6px;
+    }
+    .sub { color: var(--muted); font-size: 0.92rem; margin-bottom: 22px; line-height: 1.45; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px 16px;
+      margin-bottom: 14px;
+    }
+    .card h2 {
+      font-size: 0.95rem;
+      margin: 0 0 12px;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    label {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin: 10px 0 4px;
+    }
+    input, select {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: var(--input);
+      color: var(--text);
+      font-size: 0.95rem;
+    }
+    input:focus, select:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-dim);
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    @media (max-width: 560px) { .row { grid-template-columns: 1fr; } }
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 12px;
+      color: var(--text);
+      font-size: 0.92rem;
+    }
+    .check input { width: auto; }
+    .hint { font-size: 0.78rem; color: var(--muted); margin-top: 6px; line-height: 1.4; }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+      align-items: center;
+    }
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 11px 20px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .primary { background: var(--accent); color: #06210c; }
+    .ghost {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,0.14);
+    }
+    #status {
+      font-size: 0.88rem;
+      color: var(--muted);
+      min-height: 1.2em;
+    }
+    #status.ok { color: var(--accent); }
+    #status.err { color: var(--danger); }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--accent-dim);
+      color: var(--accent);
+      font-size: 0.75rem;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+    code { font-size: 0.82em; color: #b8c4d4; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>DSH 桥配置 <span class="badge" id="online">…</span></h1>
+    <p class="sub">
+      改完点「保存并应用」：出站 WS / 边沿监视立即生效。
+      <strong>监听地址/端口</strong>需重启桥进程。配置文件 <code id="cfgPath">bridge-config.json</code>
+    </p>
+
+    <form id="form" autocomplete="off">
+      <div class="card">
+        <h2>运行模式</h2>
+        <label>mode</label>
+        <select name="mode">
+          <option value="both">both — LAN + 出站 Host WS</option>
+          <option value="lan">lan — 仅局域网 HTTP</option>
+          <option value="host_ws">host_ws — 本机回环 + 出站 WS</option>
+        </select>
+        <div class="row">
+          <div>
+            <label>listen_host（改后需重启）</label>
+            <input name="listen_host" placeholder="0.0.0.0" />
+          </div>
+          <div>
+            <label>listen_port（改后需重启）</label>
+            <input name="listen_port" type="number" min="1" max="65535" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>公网 Host 出站 WebSocket</h2>
+        <label>host_ws</label>
+        <input name="host_ws" placeholder="wss://your-host/ws/dsh-bridge" />
+        <label>bridge_token</label>
+        <input name="bridge_token" type="password" placeholder="留空则保留原值" />
+        <p class="hint" id="tokenHint"></p>
+        <label>panel_device_id（可选，绑定墙板）</label>
+        <input name="panel_device_id" placeholder="WP-…" />
+      </div>
+
+      <div class="card">
+        <h2>边沿推送 skill_hint</h2>
+        <label class="check"><input name="watch" type="checkbox" /> 启用监视（审批/完成推送）</label>
+        <label>watch_ms</label>
+        <input name="watch_ms" type="number" min="2000" step="500" />
+        <label>host_url（无 WS 时的 HTTP 回落）</label>
+        <input name="host_url" placeholder="http://127.0.0.1:8080" />
+        <label>panel_device_key（HTTP hint 用）</label>
+        <input name="panel_device_key" type="password" placeholder="留空则保留原值" />
+        <p class="hint" id="keyHint"></p>
+      </div>
+
+      <div class="card">
+        <h2>其它</h2>
+        <label>public_url（TTS/外链基址，可空）</label>
+        <input name="public_url" placeholder="http://192.168.x.x:8790" />
+        <div class="row">
+          <div>
+            <label>status_app_id</label>
+            <input name="status_app_id" />
+          </div>
+          <div>
+            <label>status_instance_id</label>
+            <input name="status_instance_id" />
+          </div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="primary">保存并应用</button>
+        <button type="button" class="ghost" id="btnReload">重新加载</button>
+        <span id="status"></span>
+      </div>
+    </form>
+  </main>
+  <script>
+    const form = document.getElementById('form');
+    const statusEl = document.getElementById('status');
+    const onlineEl = document.getElementById('online');
+
+    function setStatus(msg, kind) {
+      statusEl.textContent = msg || '';
+      statusEl.className = kind || '';
+    }
+
+    function fill(cfg) {
+      for (const el of form.elements) {
+        if (!el.name) continue;
+        if (el.type === 'checkbox') {
+          el.checked = Boolean(cfg[el.name]);
+        } else if (el.name === 'bridge_token' || el.name === 'panel_device_key') {
+          el.value = '';
+          el.placeholder = cfg[el.name + '_set']
+            ? '已设置（' + (cfg[el.name] || '••••') + '），留空保留'
+            : '未设置';
+        } else if (cfg[el.name] !== undefined && cfg[el.name] !== null) {
+          el.value = cfg[el.name];
+        }
+      }
+      document.getElementById('cfgPath').textContent = cfg.config_path || 'bridge-config.json';
+      document.getElementById('tokenHint').textContent = cfg.bridge_token_set
+        ? '当前已保存 token：' + cfg.bridge_token
+        : '尚未设置 bridge_token';
+      document.getElementById('keyHint').textContent = cfg.panel_device_key_set
+        ? '当前已保存 device key：' + cfg.panel_device_key
+        : 'HTTP hint 未设置 device key（有 host_ws 时可不用）';
+      onlineEl.textContent = cfg.runtime && cfg.runtime.host_ws_connected
+        ? 'Host WS 已连接'
+        : (cfg.runtime && cfg.runtime.host_ws_wanted ? 'Host WS 未连' : '仅 LAN');
+    }
+
+    async function load() {
+      setStatus('加载中…');
+      const res = await fetch('/nodelio/dsh/config');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const cfg = await res.json();
+      fill(cfg);
+      setStatus('已加载', 'ok');
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const body = {};
+      for (const el of form.elements) {
+        if (!el.name) continue;
+        if (el.type === 'checkbox') body[el.name] = el.checked;
+        else if (el.type === 'number') body[el.name] = el.value === '' ? undefined : Number(el.value);
+        else body[el.name] = el.value;
+      }
+      setStatus('保存中…');
+      try {
+        const res = await fetch('/nodelio/dsh/config', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+        fill(data.config || data);
+        let msg = '已保存并热应用';
+        if (data.listen_changed) msg += ' · 监听地址已变，请重启桥';
+        setStatus(msg, 'ok');
+      } catch (err) {
+        setStatus(err.message || String(err), 'err');
+      }
+    });
+
+    document.getElementById('btnReload').addEventListener('click', () => {
+      load().catch((e) => setStatus(e.message, 'err'));
+    });
+
+    load().catch((e) => setStatus(e.message, 'err'));
+    setInterval(() => {
+      fetch('/nodelio/dsh/config')
+        .then((r) => r.json())
+        .then((cfg) => {
+          onlineEl.textContent = cfg.runtime && cfg.runtime.host_ws_connected
+            ? 'Host WS 已连接'
+            : (cfg.runtime && cfg.runtime.host_ws_wanted ? 'Host WS 未连' : '仅 LAN');
+        })
+        .catch(() => {});
+    }, 5000);
+  </script>
+</body>
+</html>

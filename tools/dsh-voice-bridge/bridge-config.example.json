@@ -1,0 +1,15 @@
+{
+  "mode": "both",
+  "listen_host": "0.0.0.0",
+  "listen_port": 8790,
+  "watch": true,
+  "watch_ms": 8000,
+  "host_ws": "ws://192.168.2.222:8899/ws/dsh-bridge",
+  "bridge_token": "",
+  "panel_device_id": "",
+  "host_url": "http://192.168.2.222:8899",
+  "panel_device_key": "",
+  "public_url": "http://192.168.2.222:8790",
+  "status_app_id": "dsh.status",
+  "status_instance_id": ""
+}

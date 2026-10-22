@@ -9,13 +9,34 @@
 | 角色 | 干什么 |
 |------|--------|
 | 墙板 | 语音/触控 invoke；显示 list 卡；点允许/拒绝 |
-| Host | 安装市场包、代 invoke、MQTT `skill_hint` |
-| 本桥 `marketplace/server.mjs` | LAN Envelope 上游；调 DSH Desktop JSON-RPC |
+| Host | 安装市场包、代 invoke、MQTT `skill_hint`；公网拓扑下收桥出站 WS |
+| 本桥 | LAN HTTP Envelope 上游 + 可选出站 `host-ws`；调 DSH Desktop JSON-RPC |
 | DSH Desktop | 真正执行 |
 
 **禁止**把 DSH `authToken` 写入固件或市场包。
 
-## 家庭部署（最短路径）
+## 模式（`DSH_BRIDGE_MODE` / 配置页 `mode`）
+
+| 值 | 行为 |
+|----|------|
+| `both`（默认） | LAN 听 `0.0.0.0:8790` + 有 token 时出站连 Host |
+| `lan` | 仅 LAN HTTP（家庭 Host 同机/同网） |
+| `host_ws` | 本机仅 `127.0.0.1:8790`（供 WS 回环）+ 出站连公网 Host |
+
+## 配置页（推荐）
+
+桥启动后浏览器打开：
+
+```text
+http://127.0.0.1:8790/config
+```
+
+可改 mode、Host WS / token、边沿监视、HTTP hint 回落等。点「保存并应用」写入 `bridge-config.json` 并**热生效**（出站 WS 重连、监视开关）。  
+**监听 host/port** 改完需重启进程。密钥类字段留空表示保留原值。样例见 `bridge-config.example.json`（真实 `bridge-config.json` 已 gitignore）。
+
+API：`GET|PUT /nodelio/dsh/config`。
+
+## 家庭部署（最短路径 · LAN）
 
 ### 1. 启动桥
 
@@ -26,11 +47,11 @@ start-bridge.bat
 
 要求：DSH Desktop 已开且远程控制已登录（存在 `~/.agents-anywhere/dsh-bridge/endpoint.json`）。
 
-默认监听 `0.0.0.0:8790`。Host 与桥同机时，包内 `invoke.url` 用 `http://127.0.0.1:8790/...`；Host 在别的机器上则把包 URL 改成桥的 LAN IP 并重算 `package_sha256`。
+默认 `mode=both`，监听 `0.0.0.0:8790`。也可先开配置页填好再保存。Host 与桥同机时，包内 `invoke.url` 用 `http://127.0.0.1:8790/...`。
 
-**代码热更新**：默认开（Node `--watch`，监视 `marketplace/` + `lib/`）。改 `server.mjs` / 包 JSON 逻辑后自动重启；静态市场文件本就按请求读盘。关闭：`set DSH_BRIDGE_HOT=0`。
+**代码热更新**：默认开（Node `--watch`）。关闭：`set DSH_BRIDGE_HOT=0`。
 
-可选边沿推送（审批出现 / 任务完成；与热更新无关）：
+可选边沿推送（LAN 可用 HTTP hint；公网优先 WS hint）：
 
 ```bat
 set DSH_BRIDGE_WATCH=1
@@ -40,10 +61,39 @@ set NODELIO_PANEL_DEVICE_KEY=设备密钥
 start-bridge.bat
 ```
 
-### 2. Host
+### 2. Host（LAN）
 
 家庭 `on_prem`（默认）已自动允许私网出站，一般**不用**再设环境变量。  
 仅当 Host 是 `saas`、或被设了 `NODELIO_OUTBOUND_ALLOW_PRIVATE=0` 时，才需显式 `=1`，否则代理/安装拉 `192.168.*` 会报 `outbound blocked`。
+
+## 公网 Host（出站 WebSocket · 免穿透）
+
+Host 在云上、DSH 在家里时：**不要**给家里开入站端口。桥主动连 Host。
+
+1. APP 登录后签发桥 token（Owner）：
+
+```http
+POST /api/owner/bridge-token
+X-Owner: …
+X-Owner-Token: …
+{"label":"home-pc","panel_device_id":"可选墙板ID","replace_existing":true}
+```
+
+响应里的 `bridgeToken` **只出现一次**，写入 PC 环境变量。
+
+2. 启动桥：
+
+```bat
+set DSH_BRIDGE_MODE=both
+set NODELIO_HOST_WS=wss://你的公网Host/ws/dsh-bridge
+set BRIDGE_TOKEN=上一步的明文
+set DSH_BRIDGE_WATCH=1
+start-bridge.bat
+```
+
+`GET /api/owner/bridge-tokens` 的 `bridge_online` 为 true 即连上。此后墙板 `dsh.*` invoke 走 WS，Host **不必**能访问你家 `192.168.*`。
+
+插件/市场安装仍可先在 LAN 装好，或后续再做公网市场源（本阶段不做）。
 
 ### 3. APP
 

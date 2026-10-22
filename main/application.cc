@@ -994,6 +994,12 @@ void Application::InitializeProtocol() {
                              message.c_str(), pending_confirm_open_dsh_ ? 1 : 0,
                              IsCloudTtsSuppressed() ? 1 : 0);
                     suppress_cloud_tts_until_us_ = 0;
+                    /* 本地技能播报注入的 detect 回声：勿再旁路，交给云端 TTS */
+                    if (strncmp(message.c_str(), "请向用户简短播报", sizeof("请向用户简短播报") - 1) ==
+                        0) {
+                        ESP_LOGI(TAG, "stt local-route: skip self cloud-speak prompt");
+                        return;
+                    }
                     if (TryConfirmOpenDshFromStt(message.c_str())) {
                         ESP_LOGI(TAG, "stt local-route: confirm→dsh.status");
                         return;
@@ -1653,6 +1659,11 @@ void Application::HandleStateChangedEvent() {
             } else {
                 ConfigureWakeWordForListening();
             }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            if (!pending_cloud_speak_.empty()) {
+                Schedule([this]() { TryFlushPendingCloudSpeak(); });
+            }
+#endif
             break;
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
@@ -1884,31 +1895,75 @@ void Application::EndVoiceSessionAfterLocalSkill()
     }
 }
 
-void Application::PlaySpokenAfterLocalSkill(const char *audio_url)
+void Application::TryFlushPendingCloudSpeak()
 {
+    if (pending_cloud_speak_.empty() || !protocol_ || !protocol_->IsAudioChannelOpened()) {
+        return;
+    }
+    const auto st = GetDeviceState();
+    if (st != kDeviceStateListening && st != kDeviceStateSpeaking) {
+        return;
+    }
+    if (st == kDeviceStateSpeaking) {
+        AbortSpeaking(kAbortReasonNone);
+    }
+    std::string text = std::move(pending_cloud_speak_);
+    pending_cloud_speak_.clear();
+    ESP_LOGI(TAG, "cloud speak via listen detect (%u bytes)", (unsigned)text.size());
+    protocol_->SendWakeWordDetected(text);
+}
+
+void Application::PlaySpokenAfterLocalSkill(const char *text)
+{
+    /* 不用桥 WAV：改走小智云 TTS（与 MCP 返回 spoken 同音色） */
+    pending_spoken_notify_url_.clear();
     suppress_cloud_tts_until_us_ = 0;
     aborted_ = false;
     dsh_local_open_cooldown_until_us_ = esp_timer_get_time() + (int64_t)20000 * 1000;
-    pending_spoken_notify_url_.clear();
-    /* 技能卡/播报期间重置息屏计时，避免 CloseAudioChannel → goodbye 9s 黑屏 */
     Board::GetInstance().NoteUserActivity();
     Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-    if (audio_url && audio_url[0]) {
-        /* WAV→StartNotification 会 SuspendTransport 拆 MQTT；播完重连后再唤醒易 hello 超时 */
-        pending_spoken_notify_url_ = audio_url;
-        ESP_LOGI(TAG, "pending spoken notify url=%s", audio_url);
+
+    if (!text || !text[0]) {
+        ESP_LOGI(TAG, "spoken empty → end voice session");
         EndVoiceSessionAfterLocalSkill();
-        if (GetDeviceState() == kDeviceStateIdle && !pending_spoken_notify_url_.empty()) {
-            std::string url = std::move(pending_spoken_notify_url_);
-            pending_spoken_notify_url_.clear();
-            StartNotification(std::move(url), {});
-        }
         return;
     }
-    /* 纯文字：结束本轮语音回 Idle（勿 keep listening，否则云端继续闲聊+UDP 空转） */
-    ESP_LOGI(TAG, "spoken text-only → end voice session");
-    SuppressCloudTts(12000);
-    EndVoiceSessionAfterLocalSkill();
+    if (!protocol_ || !nodelio_xiaozhi_enabled()) {
+        ESP_LOGW(TAG, "spoken drop: no xiaozhi protocol");
+        EndVoiceSessionAfterLocalSkill();
+        return;
+    }
+
+    /* 短前缀：云端当用户句处理并 TTS 回复；勿塞长文（listen detect 有长度限制） */
+    std::string prompt = "请向用户简短播报：";
+    prompt += text;
+    if (prompt.size() > 220) {
+        prompt.resize(220);
+    }
+    pending_cloud_speak_ = std::move(prompt);
+    ESP_LOGI(TAG, "pending cloud speak");
+
+    const auto st = GetDeviceState();
+    if (st == kDeviceStateSpeaking) {
+        AbortSpeaking(kAbortReasonNone);
+    }
+    if (protocol_->IsAudioChannelOpened() &&
+        (st == kDeviceStateListening || st == kDeviceStateSpeaking)) {
+        Schedule([this]() { TryFlushPendingCloudSpeak(); });
+        return;
+    }
+    /* 本地开 DSH 常先关通道：再建链进聆听后 flush */
+    play_popup_on_listening_ = false;
+    if (st != kDeviceStateConnecting) {
+        SetDeviceState(kDeviceStateConnecting);
+    }
+    Schedule([this]() {
+        ContinueOpenAudioChannel(GetDefaultListeningMode());
+        if (!protocol_ || !protocol_->IsAudioChannelOpened()) {
+            ESP_LOGW(TAG, "cloud speak aborted: channel not open");
+            pending_cloud_speak_.clear();
+        }
+    });
 }
 
 void Application::LocalOpenDshStatus(const char *reason)

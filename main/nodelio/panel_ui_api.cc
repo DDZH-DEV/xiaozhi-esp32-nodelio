@@ -187,6 +187,7 @@ extern "C" void nodelio_panel_ui_announce_spoken(const char *text)
 
 extern "C" void nodelio_panel_ui_announce_spoken_ex(const char *text, const char *audio_url)
 {
+    (void)audio_url; /* 桥 WAV 生硬且挂 MQTT；统一小智云 TTS */
     if (!text || !text[0]) {
         return;
     }
@@ -194,8 +195,7 @@ extern "C" void nodelio_panel_ui_announce_spoken_ex(const char *text, const char
     if (!copy) {
         return;
     }
-    char *audio = (audio_url && audio_url[0]) ? strdup(audio_url) : nullptr;
-    Application::GetInstance().Schedule([copy, audio]() {
+    Application::GetInstance().Schedule([copy]() {
         auto &app = Application::GetInstance();
         auto *disp = Board::GetInstance().GetDisplay();
         if (disp) {
@@ -205,7 +205,8 @@ extern "C" void nodelio_panel_ui_announce_spoken_ex(const char *text, const char
             DisplayLockGuard lock(nl_ov_disp());
             if (lock) {
                 nodelio_overlay_on_chat_locked("助手", copy);
-                if (nl_ov_ai_session_active()) {
+                /* 技能卡打开时勿再弹 AI 抽屉；云 TTS 仍可播 */
+                if (nl_ov_ai_session_active() && !s_skill_ui_active) {
                     nodelio_overlay_show_chat();
                 }
             }
@@ -213,10 +214,9 @@ extern "C" void nodelio_panel_ui_announce_spoken_ex(const char *text, const char
         char tip[64];
         snprintf(tip, sizeof(tip), "%.56s", copy);
         nl_ov_toast(tip);
-        ESP_LOGI(TAG, "announce_spoken audio=%s", audio ? audio : "(none)");
-        app.PlaySpokenAfterLocalSkill(audio);
+        ESP_LOGI(TAG, "announce_spoken → xiaozhi cloud tts");
+        app.PlaySpokenAfterLocalSkill(copy);
         free(copy);
-        free(audio);
     });
 }
 

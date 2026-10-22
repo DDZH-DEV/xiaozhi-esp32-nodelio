@@ -144,10 +144,10 @@ public:
     /** 本地技能完成：清抑制、关语音通道回 Idle，恢复唤醒。 */
     void EndVoiceSessionAfterLocalSkill();
     /**
-     * 本地摘要播报。有 audio_url → Idle 后 StartNotification（会挂起 MQTT，慎用）；
-     * 无 url → toast + 结束本轮语音回 Idle（禁止 keep listening 让云端继续闲聊）。
+     * 本地技能摘要：走小智云 TTS（listen detect），不用桥侧 WAV（生硬且会挂 MQTT）。
+     * text 为空则仅结束本轮语音回 Idle。
      */
-    void PlaySpokenAfterLocalSkill(const char *audio_url);
+    void PlaySpokenAfterLocalSkill(const char *text);
 #endif
     
     /**
@@ -194,7 +194,9 @@ private:
     bool TryConfirmOpenDshFromStt(const char *text);
     void LocalOpenDshStatus(const char *reason);
     int64_t dsh_local_open_cooldown_until_us_ = 0; /* 本地已开列表，忽略云端否认再开 */
-    std::string pending_spoken_notify_url_; /* Idle 后播报的 HTTP 音频 */
+    std::string pending_spoken_notify_url_; /* Idle 后播报的 HTTP 音频（遗留；技能摘要改走云 TTS） */
+    std::string pending_cloud_speak_;       /* 待 listen detect 交给小智云朗读 */
+    void TryFlushPendingCloudSpeak();
 #endif
     TaskHandle_t activation_task_handle_ = nullptr;
 

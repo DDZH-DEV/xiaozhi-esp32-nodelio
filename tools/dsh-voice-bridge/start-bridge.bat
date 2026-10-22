@@ -22,9 +22,14 @@ if errorlevel 1 (
 REM Default: LAN listen. Override: set DSH_BRIDGE_HOST=127.0.0.1
 if "%DSH_BRIDGE_HOST%"=="" set DSH_BRIDGE_HOST=0.0.0.0
 if "%DSH_BRIDGE_PORT%"=="" set DSH_BRIDGE_PORT=8790
+REM lan | host_ws | both (default both)
+if "%DSH_BRIDGE_MODE%"=="" set DSH_BRIDGE_MODE=both
 
-REM 代码热更新（Node --watch）：改 marketplace/、lib/ 自动重启。关：set DSH_BRIDGE_HOT=0
-REM 技能边沿推送（server --watch）：set DSH_BRIDGE_WATCH=1 + NODELIO_HOST_URL / DEVICE_ID / DEVICE_KEY
+REM Code hot reload: Node --watch. Off: set DSH_BRIDGE_HOT=0
+REM skill_hint watch: set DSH_BRIDGE_WATCH=1
+REM Host WS: set NODELIO_HOST_WS=wss://host/ws/dsh-bridge
+REM          set BRIDGE_TOKEN=...
+REM Or edit via http://127.0.0.1:PORT/config after start
 set "NODE_HOT="
 if /I not "%DSH_BRIDGE_HOT%"=="0" (
   set "NODE_HOT=--watch --watch-path=marketplace --watch-path=lib --watch-preserve-output"
@@ -32,13 +37,27 @@ if /I not "%DSH_BRIDGE_HOT%"=="0" (
 set "HINT_ARG="
 if "%DSH_BRIDGE_WATCH%"=="1" set "HINT_ARG=--watch"
 
-echo [dsh-bridge] host=%DSH_BRIDGE_HOST% port=%DSH_BRIDGE_PORT%
+if not exist "node_modules\ws\package.json" (
+  echo [dsh-bridge] installing deps (ws)...
+  call npm install --no-fund --no-audit
+  if errorlevel 1 (
+    echo [dsh-bridge] npm install failed
+    exit /b 1
+  )
+)
+
+echo [dsh-bridge] env defaults mode=%DSH_BRIDGE_MODE% host=%DSH_BRIDGE_HOST% port=%DSH_BRIDGE_PORT%
+echo [dsh-bridge] config UI: http://127.0.0.1:%DSH_BRIDGE_PORT%/config
+echo [dsh-bridge] config file: bridge-config.json (hot-apply on save)
 if defined NODE_HOT (
-  echo [dsh-bridge] hot-reload ON  ^(DSH_BRIDGE_HOT=0 to disable^)
+  echo [dsh-bridge] code hot-reload ON  (DSH_BRIDGE_HOT=0 to disable)
 ) else (
-  echo [dsh-bridge] hot-reload OFF
+  echo [dsh-bridge] code hot-reload OFF
 )
 if defined HINT_ARG echo [dsh-bridge] skill_hint watch ON
+if not "%NODELIO_HOST_WS%"=="" if not "%BRIDGE_TOKEN%"=="" (
+  echo [dsh-bridge] host-ws ON  %NODELIO_HOST_WS%
+)
 
 node %NODE_HOT% marketplace\server.mjs --host %DSH_BRIDGE_HOST% --port %DSH_BRIDGE_PORT% %HINT_ARG%
 exit /b %ERRORLEVEL%

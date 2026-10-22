@@ -61,10 +61,11 @@ void nodelio_panel_ui_play_cue(int cue);
 void nodelio_panel_ui_toast_defer(const char *text);
 
 /**
- * 技能摘要上屏；可选 audio_url（桥侧 MP3）在结束语音会话回 Idle 后 HTTP 播报。
- * 云端 listen detect 不能传长文本。MCP invoke 返回值仍可由模型直接播报。
+ * 技能摘要上屏 + 小智云 TTS 播报（listen detect；不用桥侧 WAV）。
+ * spoken 宜短（≤约 200 字节）。MCP invoke 返回值仍可由模型直接播报。
  */
 void nodelio_panel_ui_announce_spoken(const char *text);
+/** audio_url 已忽略（保留签名兼容）；一律走小智云 TTS。 */
 void nodelio_panel_ui_announce_spoken_ex(const char *text, const char *audio_url);
 
 /**

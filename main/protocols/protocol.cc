@@ -73,10 +73,21 @@ void Protocol::SendAbortSpeaking(AbortReason reason) {
 }
 
 void Protocol::SendWakeWordDetected(const std::string& wake_word) {
-    std::string json = "{\"session_id\":\"" + session_id_ +
-                       "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" + wake_word +
-                       "\"}";
-    SendText(json);
+    /* cJSON 转义：本地技能播报可能含引号/反斜杠 */
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return;
+    }
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "listen");
+    cJSON_AddStringToObject(root, "state", "detect");
+    cJSON_AddStringToObject(root, "text", wake_word.c_str());
+    char *printed = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (printed) {
+        SendText(printed);
+        cJSON_free(printed);
+    }
 }
 
 void Protocol::SendStartListening(ListeningMode mode) {

@@ -3,3 +3,7 @@ node_modules/
 package.json
 package-lock.json
 .tts-cache/
+bridge-config.json
+_bridge_out.txt
+_bridge_err.txt
+
