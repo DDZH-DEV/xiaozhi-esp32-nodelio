@@ -85,6 +85,45 @@ function coerceWatch(v) {
   return v === true || v === 1 || v === '1' || v === 'true';
 }
 
+/**
+ * APP 一键复制常是「host_ws=…\\nbridge_token=hex」；贴进单行 input 会变成空格串，
+ * 整段被当成 token → Host 401。从任意字段拆出真值。
+ */
+export function parseCredBlob(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return { host_ws: '', token: '' };
+  let host_ws = '';
+  let token = '';
+  const mWs = s.match(/host_ws\s*[=:]\s*(\S+)/i);
+  if (mWs) host_ws = String(mWs[1] || '').trim().replace(/[,;]+$/, '');
+  const mTok = s.match(/bridge_token\s*[=:]\s*([A-Fa-f0-9]{32,})/i);
+  if (mTok) token = String(mTok[1] || '').trim();
+  if (!token && /^[A-Fa-f0-9]{48,}$/.test(s.replace(/\s+/g, ''))) {
+    token = s.replace(/\s+/g, '');
+  }
+  return { host_ws, token };
+}
+
+function looksLikeCredBlob(s) {
+  const t = String(s || '');
+  return /host_ws\s*[=:]/i.test(t) || /bridge_token\s*[=:]/i.test(t);
+}
+
+function peelCredFields(hostWsIn, tokenIn) {
+  let host_ws = String(hostWsIn || '').trim();
+  let bridge_token = String(tokenIn || '').trim();
+  const fromTok = parseCredBlob(bridge_token);
+  const fromWs = parseCredBlob(host_ws);
+  if (fromTok.token) bridge_token = fromTok.token;
+  else if (looksLikeCredBlob(bridge_token)) bridge_token = '';
+  if (fromTok.host_ws) host_ws = fromTok.host_ws;
+  if (fromWs.host_ws && (!host_ws || looksLikeCredBlob(host_ws))) host_ws = fromWs.host_ws;
+  if (fromWs.token && (!bridge_token || looksLikeCredBlob(String(tokenIn || '')))) {
+    bridge_token = fromWs.token;
+  }
+  return { host_ws, bridge_token };
+}
+
 function sanitize(raw) {
   const e = fromEnv();
   const file = raw && typeof raw === 'object' ? raw : null;
@@ -93,6 +132,15 @@ function sanitize(raw) {
   if (mode !== 'lan' && mode !== 'host_ws' && mode !== 'both') mode = 'both';
   const port = Number(o.listen_port);
   const watchMs = Number(o.watch_ms);
+  const peeled = peelCredFields(o.host_ws, o.bridge_token);
+  const peeledBlob =
+    looksLikeCredBlob(o.bridge_token) ||
+    looksLikeCredBlob(o.host_ws) ||
+    (peeled.bridge_token && peeled.bridge_token !== String(o.bridge_token || '').trim());
+  if (peeledBlob && peeled.bridge_token) {
+    console.warn('[config] 已从粘贴串拆出 bridge_token / host_ws（勿把整段剪贴板当 token）');
+  }
+  const oForWatch = { ...o, ...peeled };
   let watch;
   if (Object.prototype.hasOwnProperty.call(e, 'watch')) {
     watch = coerceWatch(e.watch);
@@ -100,7 +148,7 @@ function sanitize(raw) {
     watch = coerceWatch(file.watch);
   } else {
     /* 有 Host 凭证时默认开 watch，免手设 DSH_BRIDGE_WATCH=1 */
-    watch = hasHintCreds(o);
+    watch = hasHintCreds(oForWatch);
   }
   return {
     mode,
@@ -108,8 +156,8 @@ function sanitize(raw) {
     listen_port: Number.isFinite(port) && port > 0 && port < 65536 ? Math.floor(port) : 8790,
     watch,
     watch_ms: Number.isFinite(watchMs) && watchMs >= 2000 ? Math.floor(watchMs) : 8000,
-    host_ws: String(o.host_ws || '').trim(),
-    bridge_token: String(o.bridge_token || '').trim(),
+    host_ws: peeled.host_ws,
+    bridge_token: peeled.bridge_token,
     panel_device_id: String(o.panel_device_id || '').trim(),
     host_url: String(o.host_url || '').replace(/\/$/, '').trim(),
     panel_device_key: String(o.panel_device_key || '').trim(),
@@ -176,7 +224,29 @@ export function onConfigChange(fn) {
 
 export function loadConfig() {
   const file = readFileSilent();
+  const prevTok = file ? String(file.bridge_token || '') : '';
+  const prevWs = file ? String(file.host_ws || '') : '';
   current = sanitize(file);
+  /* 磁盘上若是整段剪贴板，写回纯 token，并通知热重连 */
+  if (
+    file &&
+    (looksLikeCredBlob(prevTok) || looksLikeCredBlob(prevWs)) &&
+    current.bridge_token &&
+    current.bridge_token !== prevTok
+  ) {
+    writing = true;
+    try {
+      fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(current, null, 2)}\n`, 'utf8');
+      console.warn(`[config] 已纠正 bridge-config.json 中的 bridge_token`);
+    } catch (e) {
+      console.warn(`[config] 写回纠正失败: ${e.message}`);
+    } finally {
+      setTimeout(() => {
+        writing = false;
+      }, 200);
+    }
+    emit('load-fix');
+  }
   return getConfig();
 }
 

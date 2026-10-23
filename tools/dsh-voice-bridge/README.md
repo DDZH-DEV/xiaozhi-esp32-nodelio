@@ -72,36 +72,17 @@ start-bridge.bat
 
 Host 在云上、DSH 在家里时：**不要**给家里开入站端口。桥主动连 Host。
 
-1. APP 登录后签发桥 token（Owner）：
+1. 手机 APP（已登录、已连上 Host）→ **设置 → 账号偏好 → 生成桥凭证** → 复制。
+2. 电脑桥 `http://127.0.0.1:8790/config`：粘贴 `host_ws` + `bridge_token` → 保存并应用。
+3. 角标「Host WS 已连接」后即可装 `dsh.*` / 派活。Host **不必**能访问家里 `192.168.*`。
 
-```http
-POST /api/owner/bridge-token
-X-Owner: …
-X-Owner-Token: …
-{"label":"home-pc","panel_device_id":"可选墙板ID","replace_existing":true}
-```
-
-响应里的 `bridgeToken` **只出现一次**，写入 PC 环境变量。
-
-2. 启动桥：
-
-```bat
-set DSH_BRIDGE_MODE=both
-set NODELIO_HOST_WS=wss://你的公网Host/ws/dsh-bridge
-set BRIDGE_TOKEN=上一步的明文
-set DSH_BRIDGE_WATCH=1
-start-bridge.bat
-```
-
-`GET /api/owner/bridge-tokens` 的 `bridge_online` 为 true 即连上。此后墙板 `dsh.*` invoke 走 WS，Host **不必**能访问你家 `192.168.*`。
-
-插件/市场安装仍可先在 LAN 装好，或后续再做公网市场源（本阶段不做）。
+（高级）桥配置页也可填 Owner 会话代签；或环境变量 `BRIDGE_TOKEN`。）
 
 ### 3. APP
 
-1. 添加市场源（**优先走桥，免拷静态**）：
-   `http://<桥LAN>:8790/nodelio-dsh-market/marketplace.json`  
-   （桥启动日志会打印；`GET /nodelio/dsh/health` 的 `market_url` 也是这条。索引里的 `package_url` 会改写成指向本桥的绝对地址。市场路径已开 CORS，H5 可直连。）
+1. 添加市场源（二选一）：
+   - **公网 / 蜂窝推荐**：设置 → 市场源 →「家里 DSH」（需桥已在线；URL 为 `nodelio-dsh://marketplace.json`，Host 经 WS `fetch` 拉包）
+   - **同网 LAN**：`http://<桥LAN>:8790/nodelio-dsh-market/marketplace.json`（桥日志 / `health.market_url`；H5 可直连）
 2. 安装 `dsh.task` / `dsh.status` / `dsh.answer`（`dsh.answer` 仍须安装，但**不进墙板应用列表**，只给进度卡审批按钮用）
 3. 在「DSH 派活」配置 **默认工作区**（如 `D:\xz25`）
 4. 可选钉选到首页
@@ -119,7 +100,7 @@ start-bridge.bat
 | 看末轮全文 | **点会话行** → 滚动纯文本（换行保留；图/表/代码收成文字）；顶栏刷新回列表 |
 | 强制新建会话 | 「让它新建会话 + 要做的事」 |
 | 裸说「派活」 | 只提示口令，不报缺参数 |
-| 审批 | 二元：进度卡「允许 / 拒绝」；单题提问：点开任务 → 点「选择」（多题仍请在电脑答） |
+| 审批 | 二元：进度卡「允许 / 拒绝」；提问（每题都有选项，含多题）：点开任务 → 逐题「选择」，桥攒齐后一次提交；含填空题仍请在电脑答 |
 | 刷新 | 点顶栏刷新 / 再说「查看任务」；开 `DSH_BRIDGE_WATCH=1` 可在完成/审批时 MQTT 推一次 |
 
 **前提**：APP 给「DSH 派活」配好默认工作区（无武装时回落；打开进度时优先选中该区）；桥与 DSH Desktop 在跑。  
@@ -154,7 +135,7 @@ node dsh-task.mjs send "D:\xz25" "只回复一句话：测试通过。" --wait
 - 点会话行 → `session` 详情 `body` 纯文本；刷新清 `detail_body` 重回列表
 - `default_workspace`：派活无武装时回落；打开进度时优先选中该 chip
 - 「续聊」本地 `arm` + 开麦；武装后下一句可裸说；无武装仍用「让它…」；`arm` 不打桥
-- `spoken.audio`：进度列表**不下发**；详情按句读切段连续播（最多 6 段）
+- `spoken.audio`：进度列表**不下发**；详情仅当技能配置 `detail_tts=1` 且非静默轮询时按句读切段连续播（最多 6 段）；默认关闭以免详情 10s 刷新反复 TTS
 - TTS：默认 `DSH_TTS_ENGINE=auto` → 优先微软 Edge 神经声（需 `pip install edge-tts`，音色 `DSH_TTS_VOICE` 默认 `zh-CN-XiaoxiaoNeural`）；否则 Windows SAPI 中文声。强制：`edge` / `sapi`
 - `ttl_sec=0` 列表不自动关；`session.steer` 本机 unsupported
 - Host 家庭须允许私网出站

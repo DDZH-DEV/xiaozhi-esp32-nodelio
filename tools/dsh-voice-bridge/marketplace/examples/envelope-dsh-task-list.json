@@ -27,7 +27,7 @@
     "card_type": "list",
     "title": "D:\\xz25",
     "preferred_surface": "card",
-    "density": "comfortable",
+    "density": "normal",
     "max_items": 5,
     "ttl_sec": 30
   },

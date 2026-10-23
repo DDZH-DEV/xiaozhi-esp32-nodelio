@@ -63,7 +63,7 @@
     "default_display": {
       "card_type": "list",
       "preferred_surface": "card",
-      "density": "comfortable",
+      "density": "normal",
       "max_items": 5
     }
   },

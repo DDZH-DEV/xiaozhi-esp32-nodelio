@@ -160,13 +160,40 @@
 
       <div class="card">
         <h2>公网 Host 出站 WebSocket</h2>
-        <label>host_ws</label>
-        <input name="host_ws" placeholder="wss://your-host/ws/dsh-bridge" />
+        <label>host_ws（NodeLio 服务端地址，不是本桥）</label>
+        <input name="host_ws" placeholder="ws://192.168.2.241:8899/ws/dsh-bridge" />
+        <p class="hint">
+          填<strong>跑 nodelio-server 的那台</strong>（APP 里配置的服务器），路径必须是
+          <code>/ws/dsh-bridge</code>（前面<strong>不要</strong>加 <code>/api</code>）。
+          例：服务端 <code>http://192.168.2.241:8899</code> →
+          <code>ws://192.168.2.241:8899/ws/dsh-bridge</code>。
+          本机只跑桥时不要填 127.0.0.1:8790。
+        </p>
         <label>bridge_token</label>
-        <input name="bridge_token" type="password" placeholder="留空则保留原值" />
+        <input name="bridge_token" type="password" placeholder="只贴十六进制 token，或整段 APP 剪贴板（会自动拆）" />
         <p class="hint" id="tokenHint"></p>
+        <p class="hint">
+          <strong>推荐</strong>：APP「生成桥凭证」→「复制 token」→ 只贴进本框。
+          若误把整段 <code>host_ws=… bridge_token=…</code> 贴进来，保存时会自动拆开。
+          日志 <code>401</code>=token 不对；<code>404</code>=路径多写了 <code>/api</code>。
+        </p>
         <label>panel_device_id（可选，绑定墙板）</label>
         <input name="panel_device_id" placeholder="WP-…" />
+
+        <details style="margin-top:16px">
+          <summary style="cursor:pointer;color:var(--muted);font-size:0.85rem">高级：本机用 Owner 会话代申请</summary>
+          <p class="hint">
+            一般不必用。若你已有 APP 的 Owner Token，可在此代签（不会写入配置文件）。
+          </p>
+          <label>Owner</label>
+          <input id="claimOwner" autocomplete="username" placeholder="Owner ID" />
+          <label>Owner Token</label>
+          <input id="claimOwnerToken" type="password" autocomplete="off" placeholder="会话 Token" />
+          <div class="actions" style="margin-top:12px">
+            <button type="button" class="ghost" id="btnClaimToken">代申请并连接</button>
+          </div>
+          <p class="hint" id="claimHint"></p>
+        </details>
       </div>
 
       <div class="card">
@@ -356,8 +383,24 @@
       setStatus('已加载', 'ok');
     }
 
+    function peelPasteFields() {
+      const tokEl = form.elements.bridge_token;
+      const wsEl = form.elements.host_ws;
+      const raw = String((tokEl && tokEl.value) || '') + '\n' + String((wsEl && wsEl.value) || '');
+      if (!/host_ws\s*[=:]/i.test(raw) && !/bridge_token\s*[=:]/i.test(raw)) return;
+      const mWs = raw.match(/host_ws\s*[=:]\s*(\S+)/i);
+      const mTok = raw.match(/bridge_token\s*[=:]\s*([A-Fa-f0-9]{32,})/i);
+      if (mWs && wsEl) wsEl.value = mWs[1].replace(/[,;]+$/, '');
+      if (mTok && tokEl) tokEl.value = mTok[1];
+      setStatus('已从粘贴串拆出 host_ws / bridge_token', 'ok');
+    }
+    form.elements.bridge_token.addEventListener('paste', () => setTimeout(peelPasteFields, 0));
+    form.elements.bridge_token.addEventListener('change', peelPasteFields);
+    form.elements.host_ws.addEventListener('paste', () => setTimeout(peelPasteFields, 0));
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
+      peelPasteFields();
       const body = {};
       for (const el of form.elements) {
         if (!el.name) continue;
@@ -385,6 +428,44 @@
 
     document.getElementById('btnReload').addEventListener('click', () => {
       load().catch((e) => setStatus(e.message, 'err'));
+    });
+
+    document.getElementById('btnClaimToken').addEventListener('click', async () => {
+      const claimHint = document.getElementById('claimHint');
+      const owner = document.getElementById('claimOwner').value.trim();
+      const owner_token = document.getElementById('claimOwnerToken').value.trim();
+      const host_ws = form.elements.host_ws.value.trim();
+      const host_url = form.elements.host_url.value.trim();
+      const panel_device_id = form.elements.panel_device_id.value.trim();
+      claimHint.textContent = '正在向 Host 申请…';
+      claimHint.style.color = '';
+      setStatus('申请 bridge_token…');
+      try {
+        const res = await fetch('/nodelio/dsh/claim-bridge-token', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            owner,
+            owner_token,
+            host_ws: host_ws || undefined,
+            host_url: host_url || undefined,
+            panel_device_id: panel_device_id || undefined,
+            replace_existing: true,
+            label: 'home-pc',
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+        document.getElementById('claimOwnerToken').value = '';
+        await fill(data.config || {});
+        claimHint.textContent = data.hint || '已申请并写入';
+        claimHint.style.color = 'var(--accent)';
+        setStatus('bridge_token 已写入，出站 WS 热应用中', 'ok');
+      } catch (err) {
+        claimHint.textContent = err.message || String(err);
+        claimHint.style.color = 'var(--danger)';
+        setStatus(err.message || String(err), 'err');
+      }
     });
 
     load().catch((e) => setStatus(e.message, 'err'));

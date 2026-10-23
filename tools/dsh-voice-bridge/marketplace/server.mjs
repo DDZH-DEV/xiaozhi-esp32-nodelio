@@ -112,6 +112,43 @@ async function speakWithAudio(text, request) {
   return speakWithAudioParts(text, request, 1);
 }
 
+/** 1/true/yes/on → true；缺省 false（详情 TTS 默认关，避免轮询卡顿）。 */
+function truthyFlag(v) {
+  if (v === true || v === 1) return true;
+  if (typeof v === 'number') return v !== 0;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    return s === '1' || s === 'true' || s === 'yes' || s === 'on' || s === 'y';
+  }
+  return false;
+}
+
+/** 技能配置 detail_tts：打开详情时是否合成 WAV。 */
+function wantDetailTts(body = {}, query) {
+  const raw =
+    (body && body.detail_tts != null ? body.detail_tts : null) ??
+    (query && typeof query.get === 'function' ? query.get('detail_tts') : null);
+  return truthyFlag(raw);
+}
+
+/** 墙板静默轮询：只刷新正文，不合成 TTS。 */
+function isSilentRefresh(body = {}, query) {
+  const raw =
+    (body && body.silent != null ? body.silent : null) ??
+    (query && typeof query.get === 'function' ? query.get('silent') : null);
+  return truthyFlag(raw);
+}
+
+/**
+ * 详情 spoken：仅 detail_tts=1 且非 silent 时合成多段音频；否则纯文本（省 Edge/SAPI）。
+ */
+async function speakDetail(text, request, body = {}, query) {
+  if (!wantDetailTts(body, query) || isSilentRefresh(body, query)) {
+    return speak(text);
+  }
+  return speakWithAudioParts(text, request, 6);
+}
+
 /** 多段：按句读切分；spoken.audio.url=首段，urls=[…] 连续播。 */
 async function speakWithAudioParts(text, request, maxChunks = 6) {
   const parts = chunkSpokenText(text, TTS_TEXT_MAX, maxChunks);
@@ -177,7 +214,7 @@ function errorEnvelope(appId, code, message, spokenText) {
       card_type: 'list',
       title: 'DSH',
       preferred_surface: 'card',
-      density: 'comfortable',
+      density: 'normal',
       max_items: 3,
       ttl_sec: 8,
     },
@@ -240,10 +277,61 @@ function inputRequestQuestions(notice) {
     (a) => String(a.actionId || a.id || '') === 'submit' && a.input,
   );
   const questions = submit?.input?.uiSchema?.questions;
-  return Array.isArray(questions) ? questions : [];
+  if (!Array.isArray(questions)) return [];
+  return questions.map((q, i) => ({
+    ...q,
+    id: String(q?.id || `q${i}`).slice(0, 32),
+  }));
 }
 
-/** 多题 / 无选项：纯文本（详情 body）；单题有选项走列表点选 */
+function questionHasOptions(q) {
+  return Array.isArray(q?.options) && q.options.length > 0;
+}
+
+/** 每题都有可点选项时，墙板可逐题选完再一次性 submit */
+function canPickInputRequest(notice) {
+  const qs = inputRequestQuestions(notice);
+  return qs.length > 0 && qs.every((q) => questionHasOptions(q) && String(q.id || ''));
+}
+
+/** session+notice → 已选 answers；多题向导用，答完才 RPC */
+const inputAnswerDrafts = new Map();
+const INPUT_DRAFT_TTL_MS = 30 * 60 * 1000;
+
+function draftKey(sid, nid) {
+  return `${String(sid || '').slice(0, 128)}::${String(nid || '').slice(0, 128)}`;
+}
+
+function getInputDraft(sid, nid) {
+  const k = draftKey(sid, nid);
+  const cur = inputAnswerDrafts.get(k);
+  if (!cur) return {};
+  if (Date.now() - (cur.at || 0) > INPUT_DRAFT_TTL_MS) {
+    inputAnswerDrafts.delete(k);
+    return {};
+  }
+  return { ...(cur.answers || {}) };
+}
+
+function setInputDraft(sid, nid, answers) {
+  inputAnswerDrafts.set(draftKey(sid, nid), { answers: { ...answers }, at: Date.now() });
+}
+
+function clearInputDraft(sid, nid) {
+  inputAnswerDrafts.delete(draftKey(sid, nid));
+}
+
+function nextPickableQuestion(notice, answers) {
+  const answered = answers && typeof answers === 'object' ? answers : {};
+  for (const q of inputRequestQuestions(notice)) {
+    const qid = String(q.id || '');
+    if (!qid || answered[qid]) continue;
+    if (questionHasOptions(q)) return q;
+  }
+  return null;
+}
+
+/** 无法点选时：纯文本详情；可点选时详情走 choiceRows，不走本函数 */
 function formatInputRequestPlain(notice) {
   const questions = inputRequestQuestions(notice);
   if (questions.length === 0) {
@@ -267,42 +355,52 @@ function formatInputRequestPlain(notice) {
     blocks.push(lines.join('\n'));
   }
   blocks.push(
-    questions.length > 1
-      ? '本题含多问，请在电脑 DSH 弹窗里答完提交。'
-      : '请在电脑 DSH 弹窗里点选提交。',
+    canPickInputRequest(notice)
+      ? '请点开任务，在墙板上逐题点选。'
+      : questions.length > 1
+        ? '本题含无法点选的提问，请在电脑 DSH 弹窗里答完提交。'
+        : '请在电脑 DSH 弹窗里点选提交。',
   );
   return blocks.join('\n\n').slice(0, 6000);
 }
 
-function inputRequestSpoken(notice) {
-  const q0 = inputRequestQuestions(notice)[0];
-  const prompt = String(q0?.prompt || q0?.question || notice?.title || '').trim();
-  if (prompt) return `需要你回答：${prompt}`.slice(0, 400);
-  return '有问题需要你回答。';
+function inputRequestSpoken(notice, answers = {}) {
+  const q = nextPickableQuestion(notice, answers) || inputRequestQuestions(notice)[0];
+  const prompt = String(q?.prompt || q?.question || notice?.title || '').trim();
+  const qs = inputRequestQuestions(notice);
+  const idx = q ? qs.findIndex((x) => x.id === q.id) : 0;
+  const step =
+    qs.length > 1 && idx >= 0 ? `第${idx + 1}题，共${qs.length}题。` : '';
+  if (prompt) return `${step}需要你回答：${prompt}`.slice(0, 400);
+  return `${step}有问题需要你回答。`.slice(0, 400);
 }
 
 /**
- * 单题 + 选项 → 列表行，每行「选择」→ dsh.answer submit。
- * 参数用 qid/oid 压缩，避免 params_json 256 上限。
+ * 当前未答题 + 选项 → 列表行，每行「选择」→ dsh.answer submit(qid+oid)。
+ * 多题：桥端草稿攒齐后再 RPC；answers 为已选草稿。
  */
-function inputRequestChoiceRows(session, notice) {
+function inputRequestChoiceRows(session, notice, answers = {}) {
+  if (!canPickInputRequest(notice)) return null;
   const questions = inputRequestQuestions(notice);
-  if (questions.length !== 1) return null;
-  const q = questions[0];
+  const q = nextPickableQuestion(notice, answers);
+  if (!q) return null;
   const opts = Array.isArray(q.options) ? q.options : [];
-  if (opts.length === 0) return null;
-  const sid = session.externalSessionId.slice(0, 128);
+  const sid = String(session.externalSessionId || '').slice(0, 128);
   const nid = noticeIdOf(notice);
   const qid = String(q.id || '').slice(0, 32);
   if (!nid || !qid) return null;
-  const header = String(q.header || '请选择').trim().slice(0, 96);
+  const qIndex = questions.findIndex((x) => x.id === qid);
+  const step =
+    questions.length > 1 ? `（${Math.max(1, qIndex + 1)}/${questions.length}）` : '';
+  const header = `${String(q.header || '请选择').trim()}${step}`.slice(0, 96);
   const prompt = String(q.prompt || q.question || '').trim().slice(0, 120);
+  const doneN = Object.keys(answers || {}).length;
   const rows = [
     {
       type: 'list_item',
       id: `q_${qid}`.slice(0, 64),
       title: header,
-      subtitle: prompt || '点下面一项作答',
+      subtitle: (doneN > 0 ? `已选${doneN}题 · ` : '') + (prompt || '点下面一项作答'),
     },
   ];
   opts.slice(0, 8).forEach((o, i) => {
@@ -336,6 +434,79 @@ function inputRequestChoiceRows(session, notice) {
   return rows;
 }
 
+function noticeHasCancel(notice) {
+  const actions = Array.isArray(notice?.actions) ? notice.actions : [];
+  return actions.some((a) => String(a.actionId || a.id || '').toLowerCase() === 'cancel');
+}
+
+function cancelNoticeAction(sid, nid) {
+  return {
+    id: 'cancel_task',
+    title: '取消',
+    run: 'invoke',
+    invoke: {
+      app_id: 'dsh.answer',
+      params: {
+        session: String(sid || '').slice(0, 128),
+        notice_id: String(nid || '').slice(0, 128),
+        action: 'cancel',
+      },
+    },
+  };
+}
+
+function choiceRowsEnvelope(session, notice, answers, filters, askTitle, spokenText) {
+  const choiceRows = inputRequestChoiceRows(session, notice, answers);
+  if (!choiceRows) return null;
+  const cwd = String(session.cwd ?? '').slice(0, 200);
+  const sid = String(session.externalSessionId || '').slice(0, 128);
+  const nid = noticeIdOf(notice);
+  if (nid && noticeHasCancel(notice)) {
+    choiceRows.push({
+      type: 'list_item',
+      id: 'cancel_notice',
+      title: '取消本次任务',
+      subtitle: '关掉这次提问，不再等待确认',
+      actions: [cancelNoticeAction(sid, nid)],
+    });
+  }
+  choiceRows.push({
+    type: 'list_item',
+    id: 'back_list',
+    title: '← 返回任务列表',
+    subtitle: '不答题，回到进度列表（任务仍待确认）',
+    actions: [
+      {
+        id: 'back',
+        title: '返回',
+        run: 'invoke',
+        invoke: {
+          ...statusInvokeBase(),
+          params: { workspace: cwd },
+        },
+      },
+    ],
+  });
+  const qs = inputRequestQuestions(notice);
+  const q = nextPickableQuestion(notice, answers);
+  const qIndex = q ? qs.findIndex((x) => x.id === q.id) : 0;
+  const stepTitle =
+    qs.length > 1 ? `请选择 ${Math.max(1, qIndex + 1)}/${qs.length}` : '请选择';
+  return {
+    schema_version: 1,
+    request_id: newRequestId(),
+    app_id: 'dsh.status',
+    status: 'ok',
+    content: choiceRows,
+    display: {
+      ...statusDisplay(stepTitle, filters, 10),
+      title: String(askTitle || stepTitle).slice(0, 32),
+      ttl_sec: 120,
+    },
+    spoken: speak(String(spokenText || inputRequestSpoken(notice, answers)).slice(0, 400)),
+  };
+}
+
 /** list_item + 审批时带 run:invoke → dsh.answer；提问类不下发假「允许/拒绝」 */
 function taskRow(session, state, folded, notices) {
   const st = state?.status ?? 'unknown';
@@ -344,9 +515,9 @@ function taskRow(session, state, folded, notices) {
   const kind = needsYou ? classifyNotice(notice) : null;
   let subtitle = displayTaskSubtitle(st, folded, needsYou);
   if (kind === 'input_request') {
-    const qs = inputRequestQuestions(notice);
-    const canPick = qs.length === 1 && Array.isArray(qs[0]?.options) && qs[0].options.length > 0;
-    subtitle = canPick ? '等你确认 · 点开选择' : '等你确认 · 请在电脑上选择';
+    subtitle = canPickInputRequest(notice)
+      ? '等你确认 · 点开选择'
+      : '等你确认 · 请在电脑上选择';
   } else if (kind === 'approval') {
     subtitle = '等你确认 · 点允许或拒绝';
   }
@@ -357,8 +528,8 @@ function taskRow(session, state, folded, notices) {
     subtitle: subtitle.slice(0, 120),
   };
   const nid = noticeIdOf(notice);
+  const sid = session.externalSessionId.slice(0, 128);
   if (kind === 'approval' && nid) {
-    const sid = session.externalSessionId.slice(0, 128);
     const invokeBase = { app_id: 'dsh.answer' };
     row.actions = [
       {
@@ -374,6 +545,9 @@ function taskRow(session, state, folded, notices) {
         invoke: { ...invokeBase, params: { session: sid, notice_id: nid, action: 'deny' } },
       },
     ];
+  } else if (kind === 'input_request' && nid && noticeHasCancel(notice)) {
+    /* 列表/纯文本详情：可直接取消本次提问 */
+    row.actions = [cancelNoticeAction(sid, nid)];
   }
   return row;
 }
@@ -699,7 +873,7 @@ function listDisplay(title, maxItems = 8) {
     card_type: 'list',
     title,
     preferred_surface: 'card',
-    density: 'comfortable',
+    density: 'normal',
     max_items: maxItems,
     /* 墙板无操作超时关卡，避免常亮挡息屏；固件对 dsh 亦有 120s 兜底 */
     ttl_sec: 120,
@@ -851,57 +1025,38 @@ async function handleStatus(client, query, request, body = {}) {
     const nKind = classifyNotice(notice);
     const ask = displayTaskTitle(t.session, t.folded);
 
-    /* 单题多选：列表点「选择」提交（无 body，避免进纯文本详情） */
-    if (nKind === 'input_request') {
-      const choiceRows = inputRequestChoiceRows(t.session, notice);
-      if (choiceRows) {
-        const cwd = String(t.session.cwd ?? '').slice(0, 200);
-        choiceRows.push({
-          type: 'list_item',
-          id: 'back_list',
-          title: '← 返回任务列表',
-          subtitle: '不答题，回到进度列表',
-          actions: [
-            {
-              id: 'back',
-              title: '返回',
-              run: 'invoke',
-              invoke: {
-                ...statusInvokeBase(),
-                params: { workspace: cwd },
-              },
-            },
-          ],
-        });
-        return {
-          schema_version: 1,
-          request_id: newRequestId(),
-          app_id: 'dsh.status',
-          status: 'ok',
-          content: choiceRows,
-          display: {
-            ...statusDisplay('请选择', filters, 10),
-            title: String(ask || '请选择').slice(0, 32),
-            ttl_sec: 120,
-          },
-          spoken: await speakWithAudioParts(inputRequestSpoken(notice), request, 6),
-        };
+    /* 可点选提问（含多题）：列表点「选择」；多题由桥草稿攒齐再 RPC */
+    if (nKind === 'input_request' && canPickInputRequest(notice)) {
+      const sid = String(t.session.externalSessionId || '').slice(0, 128);
+      const nid = noticeIdOf(notice);
+      const draft = getInputDraft(sid, nid);
+      const env = choiceRowsEnvelope(
+        t.session,
+        notice,
+        draft,
+        filters,
+        ask,
+        inputRequestSpoken(notice, draft),
+      );
+      if (env) {
+        env.spoken = await speakDetail(inputRequestSpoken(notice, draft), request, body, query);
+        return env;
       }
     }
 
     const row = sessionRowWithArm(t.session, t.state, t.folded, t.notices);
-    let body = '';
+    let detailBody = '';
     let spokenText = '';
     if (nKind === 'input_request') {
-      body = formatInputRequestPlain(notice);
+      detailBody = formatInputRequestPlain(notice);
       spokenText = inputRequestSpoken(notice);
     } else {
-      body = lastReplyPlain(t.folded).slice(0, 6000);
-      spokenText = body
-        ? `末轮：${body.replace(/\s+/g, ' ').trim()}`
+      detailBody = lastReplyPlain(t.folded).slice(0, 6000);
+      spokenText = detailBody
+        ? `末轮：${detailBody.replace(/\s+/g, ' ').trim()}`
         : '暂无文字回复';
     }
-    if (body) row.body = body;
+    if (detailBody) row.body = detailBody;
     else row.body = '（本会话还没有可展示的文字回复）';
     return {
       schema_version: 1,
@@ -914,7 +1069,7 @@ async function handleStatus(client, query, request, body = {}) {
         title: String(ask || '会话详情').slice(0, 32),
         ttl_sec: 120,
       },
-      spoken: await speakWithAudioParts(spokenText, request, 6),
+      spoken: await speakDetail(spokenText, request, body, query),
     };
   }
 
@@ -1285,19 +1440,20 @@ async function handleAnswer(client, body) {
     noticeId,
     actionId: action,
   };
-  /* DSH bridge-next：提问答案在 inputData，不是 input */
+  /* DSH bridge-next：提问答案在 inputData；多题先攒草稿，齐了再 RPC */
   if (action === 'submit') {
     let answers = null;
     if (body.answers && typeof body.answers === 'object') {
-      answers = body.answers;
+      answers = { ...body.answers };
     } else {
       const qid = typeof body.qid === 'string' ? body.qid.trim() : '';
       const oid = typeof body.oid === 'string' ? body.oid.trim() : '';
       if (qid && oid) {
-        answers = { [qid]: { optionIds: [oid] } };
+        const draft = getInputDraft(session.externalSessionId, noticeId);
+        answers = { ...draft, [qid]: { optionIds: [oid] } };
       }
     }
-    if (!answers) {
+    if (!answers || Object.keys(answers).length === 0) {
       return errorEnvelope(
         'dsh.answer',
         'config_missing',
@@ -1305,7 +1461,52 @@ async function handleAnswer(client, body) {
         '缺少选项信息。',
       );
     }
+
+    let notice = null;
+    try {
+      const doc = await client.call('session.getNotices', {
+        externalSessionId: session.externalSessionId,
+      });
+      const list = Array.isArray(doc?.notices) ? doc.notices : [];
+      notice =
+        list.find((n) => noticeIdOf(n) === noticeId) ||
+        primaryNotice(list);
+    } catch {
+      notice = null;
+    }
+
+    if (notice && canPickInputRequest(notice)) {
+      const nextQ = nextPickableQuestion(notice, answers);
+      if (nextQ) {
+        setInputDraft(session.externalSessionId, noticeId, answers);
+        const wsDoc = await handleWorkspaces(client).catch(() => ({ workspaces: [] }));
+        const wsList = statusWorkspaceList(wsDoc.workspaces ?? [], '');
+        const cwd = String(session.cwd || '');
+        const filters = workspaceFilters(wsList, cwd);
+        const ask = displayTaskTitle(session, foldFromDisk(session));
+        const env = choiceRowsEnvelope(
+          session,
+          notice,
+          answers,
+          filters,
+          ask,
+          inputRequestSpoken(notice, answers),
+        );
+        if (env) {
+          console.log(
+            `[dsh.answer] draft ${Object.keys(answers).length}/${inputRequestQuestions(notice).length} next=${nextQ.id}`,
+          );
+          return env;
+        }
+      }
+    }
+
+    clearInputDraft(session.externalSessionId, noticeId);
     payload.inputData = { answers };
+  }
+
+  if (action === 'cancel' || action === 'deny' || action === 'allow') {
+    clearInputDraft(session.externalSessionId, noticeId);
   }
 
   try {
@@ -1466,28 +1667,143 @@ function tryServeConfigUi(request, response, pathname) {
   return false;
 }
 
+function configRuntimePub(extra = {}) {
+  const pub = getPublicConfig();
+  pub.runtime = {
+    host_ws_wanted: wantHostWs() && Boolean(cfg().host_ws && cfg().bridge_token),
+    host_ws_connected: hostWsConnected,
+    watch_running: Boolean(watchTimer),
+    ...extra,
+  };
+  return pub;
+}
+
+/** host_ws → http(s) 基址；或规范化 host_url */
+function hostHttpBase(hostUrl, hostWs) {
+  const hu = String(hostUrl || '').trim().replace(/\/$/, '');
+  if (hu) return hu;
+  const ws = String(hostWs || '').trim();
+  if (!ws) return '';
+  try {
+    const u = new URL(ws);
+    const scheme = u.protocol === 'wss:' ? 'https:' : 'http:';
+    return `${scheme}//${u.host}`;
+  } catch {
+    return '';
+  }
+}
+
+function hostWsFromHttp(hostUrl) {
+  try {
+    const u = new URL(String(hostUrl || '').trim());
+    const scheme = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${scheme}//${u.host}/ws/dsh-bridge`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 用 APP 登录后的 Owner 会话向 Host 申请 bridge_token（明文不落盘 Owner Token）。
+ * POST { owner, owner_token, host_url?, host_ws?, panel_device_id?, label?, replace_existing? }
+ */
+async function handleClaimBridgeToken(request, response) {
+  try {
+    const body = await readBody(request);
+    const owner = String(body.owner || '').trim();
+    const ownerToken = String(body.owner_token || body.ownerToken || '').trim();
+    if (!owner || !ownerToken) {
+      send(response, 400, { error: '请填写 Owner 与 Owner Token（APP 登录后本地 storage）' });
+      return;
+    }
+    const c = cfg();
+    let hostUrl = hostHttpBase(body.host_url || body.hostUrl, body.host_ws || body.hostWs || c.host_ws);
+    if (!hostUrl) {
+      hostUrl = hostHttpBase(c.host_url, c.host_ws);
+    }
+    if (!hostUrl) {
+      send(response, 400, { error: '请先填 host_ws 或 host_url（指向 NodeLio Host）' });
+      return;
+    }
+    let hostWs = String(body.host_ws || body.hostWs || c.host_ws || '').trim();
+    if (!hostWs) {
+      hostWs = hostWsFromHttp(hostUrl);
+    }
+    const panel = String(body.panel_device_id || body.panelDeviceId || c.panel_device_id || '').trim();
+    const label = String(body.label || 'home-pc').trim() || 'home-pc';
+    const replace =
+      body.replace_existing === true ||
+      body.replace_existing === 1 ||
+      body.replaceExisting === true ||
+      body.replace_existing == null; /* 默认替换旧 token，避免列表堆积 */
+
+    const claimUrl = `${hostUrl}/api/owner/bridge-token`;
+    console.log(`[config] claim bridge-token host=${hostUrl} owner=${owner}`);
+    const res = await fetch(claimUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-Owner': owner,
+        'X-Owner-Token': ownerToken,
+      },
+      body: JSON.stringify({
+        label,
+        panel_device_id: panel || undefined,
+        replace_existing: replace,
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const text = await res.text();
+    let doc;
+    try {
+      doc = JSON.parse(text);
+    } catch {
+      send(response, 502, { error: `Host 回包非 JSON HTTP ${res.status}` });
+      return;
+    }
+    if (!res.ok) {
+      const msg = doc.error || doc.message || doc.code || `HTTP ${res.status}`;
+      send(response, res.status >= 400 && res.status < 600 ? res.status : 502, {
+        error: String(msg),
+      });
+      return;
+    }
+    const token = String(doc.bridgeToken || doc.bridge_token || '').trim();
+    if (!token) {
+      send(response, 502, { error: 'Host 未返回 bridgeToken' });
+      return;
+    }
+    const patch = {
+      bridge_token: token,
+      host_url: hostUrl,
+      host_ws: hostWs,
+    };
+    if (panel) patch.panel_device_id = panel;
+    const { config, listen_changed } = saveConfig(patch);
+    const pub = configRuntimePub();
+    send(response, 200, {
+      ok: true,
+      listen_changed,
+      bridge_token_id: doc.id,
+      hint: doc.hint || '已写入 bridge_token 并热应用出站 WS',
+      config: pub,
+    });
+  } catch (e) {
+    console.warn(`[config] claim fail: ${e.message}`);
+    send(response, 502, { error: e.message || String(e) });
+  }
+}
+
 async function handleConfigApi(request, response, method) {
   if (method === 'GET') {
-    const pub = getPublicConfig();
-    pub.runtime = {
-      host_ws_wanted: wantHostWs() && Boolean(cfg().host_ws && cfg().bridge_token),
-      host_ws_connected: hostWsConnected,
-      watch_running: Boolean(watchTimer),
-    };
-    send(response, 200, pub);
+    send(response, 200, configRuntimePub());
     return;
   }
   if (method === 'PUT' || method === 'POST') {
     try {
       const body = await readBody(request);
       const { config, listen_changed } = saveConfig(body); /* emit → onConfigChange → applyRuntime */
-      const pub = getPublicConfig();
-      pub.runtime = {
-        host_ws_wanted: wantHostWs() && Boolean(config.host_ws && config.bridge_token),
-        host_ws_connected: hostWsConnected,
-        watch_running: Boolean(watchTimer),
-      };
-      send(response, 200, { ok: true, listen_changed, config: pub });
+      send(response, 200, { ok: true, listen_changed, config: configRuntimePub() });
     } catch (e) {
       send(response, 400, { error: e.message });
     }
@@ -1589,6 +1905,7 @@ function restartHostWs() {
     token: c.bridge_token,
     lanPort: c.listen_port,
     publicUrl: c.public_url || '',
+    marketRoot: MARKET_ROOT,
     panelDeviceId: c.panel_device_id,
     version: '1.0.0',
     onReady: () => {
@@ -1624,6 +1941,10 @@ function startLanHttp() {
       if (tryServeConfigUi(request, response, url.pathname)) return;
       if (url.pathname === '/nodelio/dsh/config') {
         await handleConfigApi(request, response, request.method);
+        return;
+      }
+      if (url.pathname === '/nodelio/dsh/claim-bridge-token' && request.method === 'POST') {
+        await handleClaimBridgeToken(request, response);
         return;
       }
       if (tryServeMarket(request, response, url.pathname)) return;

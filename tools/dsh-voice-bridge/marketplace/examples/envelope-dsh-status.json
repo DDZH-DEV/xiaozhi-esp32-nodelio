@@ -49,7 +49,7 @@
     "card_type": "list",
     "title": "DSH 任务",
     "preferred_surface": "card",
-    "density": "comfortable",
+    "density": "normal",
     "max_items": 10,
     "ttl_sec": 0,
     "filters": [

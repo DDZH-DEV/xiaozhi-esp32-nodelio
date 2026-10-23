@@ -16,7 +16,15 @@
   "fallback": { "card_type": "plain_result" },
   "config_schema": {
     "type": "object",
-    "properties": {},
+    "properties": {
+      "detail_tts": {
+        "type": "string",
+        "title": "详情页语音播报",
+        "enum": ["0", "1"],
+        "default": "0",
+        "description": "打开会话详情时是否合成并播放末轮回复；关闭可避免详情轮询时桥端反复 TTS 卡顿。默认关闭。"
+      }
+    },
     "required": []
   },
   "input_schema": {
@@ -47,7 +55,7 @@
     "default_display": {
       "card_type": "list",
       "preferred_surface": "card",
-      "density": "comfortable",
+      "density": "normal",
       "max_items": 5
     }
   },
