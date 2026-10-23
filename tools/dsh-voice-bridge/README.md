@@ -124,7 +124,7 @@ node dsh-task.mjs send "D:\xz25" "只回复一句话：测试通过。" --wait
 | GET | `/nodelio-dsh-market/marketplace.json` | 市场索引（包同前缀） |
 | POST | `/nodelio/dsh/task` | `{instruction, workspace?, session?}`；有 session 则对该会话 startTurn |
 | GET/POST | `/nodelio/dsh/status` | 无 workspace=工作区列表；有=会话列表；再有 session=详情 |
-| POST | `/nodelio/dsh/answer` | allow / deny |
+| POST | `/nodelio/dsh/answer` | allow / deny / cancel（deny·cancel 会 `session.interrupt` 停本轮） |
 
 ## 已知限制
 

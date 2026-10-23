@@ -442,7 +442,7 @@ function noticeHasCancel(notice) {
 function cancelNoticeAction(sid, nid) {
   return {
     id: 'cancel_task',
-    title: '取消',
+    title: '取消并停止',
     run: 'invoke',
     invoke: {
       app_id: 'dsh.answer',
@@ -465,8 +465,8 @@ function choiceRowsEnvelope(session, notice, answers, filters, askTitle, spokenT
     choiceRows.push({
       type: 'list_item',
       id: 'cancel_notice',
-      title: '取消本次任务',
-      subtitle: '关掉这次提问，不再等待确认',
+      title: '取消并停止',
+      subtitle: '关掉提问并中断本轮会话',
       actions: [cancelNoticeAction(sid, nid)],
     });
   }
@@ -1509,21 +1509,51 @@ async function handleAnswer(client, body) {
     clearInputDraft(session.externalSessionId, noticeId);
   }
 
+  /* 取消/拒绝：先应答 notice，再 interrupt，否则回合会继续跑 */
+  const stopTurn = action === 'cancel' || action === 'deny';
+  let respondOk = false;
   try {
     await client.call('session.respondInteraction', payload);
+    respondOk = true;
   } catch (e) {
     if (isDshOfflineError(e)) {
       return offlineEnvelope('dsh.answer');
     }
-    const msg = String(e?.message || e).slice(0, 200);
-    return errorEnvelope('dsh.answer', 'invoke_failed', msg, msg || '提交失败。');
+    if (!stopTurn) {
+      const msg = String(e?.message || e).slice(0, 200);
+      return errorEnvelope('dsh.answer', 'invoke_failed', msg, msg || '提交失败。');
+    }
+    console.warn(
+      `[dsh.answer] respondInteraction failed action=${action}: ${String(e?.message || e).slice(0, 160)}`,
+    );
+  }
+
+  if (stopTurn) {
+    try {
+      await client.call('session.interrupt', {
+        sessionId: session.sessionId,
+        reason: action === 'cancel' ? 'voice-cancel' : 'voice-deny',
+      });
+      console.log(`[dsh.answer] interrupted session=${session.externalSessionId} after ${action}`);
+    } catch (e) {
+      if (isDshOfflineError(e)) {
+        return offlineEnvelope('dsh.answer');
+      }
+      if (!respondOk) {
+        const msg = String(e?.message || e).slice(0, 200);
+        return errorEnvelope('dsh.answer', 'invoke_failed', msg, msg || '停止失败。');
+      }
+      console.warn(
+        `[dsh.answer] interrupt failed after ${action}: ${String(e?.message || e).slice(0, 160)}`,
+      );
+    }
   }
 
   const ack =
     action === 'deny'
-      ? '已拒绝。'
+      ? '已拒绝并停止。'
       : action === 'cancel'
-        ? '已取消。'
+        ? '已取消并停止。'
         : action === 'submit'
           ? '已提交。'
           : '已允许。';

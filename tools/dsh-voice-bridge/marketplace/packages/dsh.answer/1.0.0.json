@@ -3,7 +3,7 @@
   "app_id": "dsh.answer",
   "version": "1.0.0",
   "name": "DSH 确认",
-  "description": "内部动作：二元审批 allow/deny，或单题提问 submit(qid+oid)。须带 session + notice_id；不要从应用列表打开。",
+  "description": "内部动作：allow/deny/cancel（cancel 与 deny 会 interrupt 本轮）、或 submit(qid+oid)。须带 session + notice_id；不要从应用列表打开。",
   "publisher": {
     "name": "NodeLio",
     "contact": "https://github.com/DDZH-DEV/nodelio-protocol/issues"
