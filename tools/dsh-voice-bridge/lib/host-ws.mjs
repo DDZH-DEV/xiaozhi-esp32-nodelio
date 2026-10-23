@@ -10,6 +10,7 @@ import { WebSocket } from 'ws';
  * @param {string} opts.wsUrl  wss://host/ws/dsh-bridge 或 ws://...
  * @param {string} opts.token  BRIDGE_TOKEN
  * @param {number} opts.lanPort 本机桥 HTTP 端口
+ * @param {string} [opts.publicUrl] 面板可达基址（TTS URL / 回环改走 LAN）
  * @param {string} [opts.bridgeId]
  * @param {string} [opts.panelDeviceId]
  * @param {string} [opts.version]
@@ -38,7 +39,9 @@ export function startHostWs(opts) {
   let reconnectTimer;
   let backoffMs = 1000;
 
-  const lanBase = `http://127.0.0.1:${lanPort}`;
+  /* 回环 Host 会让 TTS publicBase 误判；优先用 opts.publicUrl（配置 public_url） */
+  const lanBase = (opts.publicUrl && String(opts.publicUrl).replace(/\/$/, '')) ||
+    `http://127.0.0.1:${lanPort}`;
 
   function send(obj) {
     if (ws && ws.readyState === WebSocket.OPEN) {

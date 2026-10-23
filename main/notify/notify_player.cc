@@ -347,6 +347,7 @@ void NotifyPlayer::WorkerTask() {
     }
 
     bool success = false;
+    ESP_LOGI(TAG, "notify GET %s", audio_url.c_str());
     auto http = Board::GetInstance().GetNetwork()->CreateHttp(0);
     if (http) {
         http->SetTimeout(kHttpTimeoutMs);
@@ -391,6 +392,9 @@ void NotifyPlayer::WorkerTask() {
             }
             ESP_LOGI(TAG, "HTTP %d redirect hop=%d", status_code, hop + 1);
             url = next;
+        }
+        if (!opened_ok || status_code < 200 || status_code >= 300) {
+            ESP_LOGE(TAG, "notify HTTP failed status=%d url=%s", status_code, url.c_str());
         }
         if (opened_ok && status_code >= 200 && status_code < 300 && !IsCancelled(playback_id)) {
             const std::string ctype = http->GetResponseHeader("Content-Type");
@@ -608,7 +612,7 @@ bool NotifyPlayer::PlayWav(Http* http, uint32_t playback_id, const uint8_t* firs
         data_sz = all.size() - data_off;
     }
 
-    nodelio_offline_cmd_shield_up();
+    /* 短 WAV TTS：勿 shield 占满内部 DRAM（会饿死 HTTP/WiFi 缓冲，表现为连上 8790 却无声） */
     const int out_rate = Board::GetInstance().GetAudioCodec()->output_sample_rate();
     esp_ae_rate_cvt_handle_t resampler = nullptr;
     auto close_rs = [&]() {
@@ -616,7 +620,6 @@ bool NotifyPlayer::PlayWav(Http* http, uint32_t playback_id, const uint8_t* firs
             esp_ae_rate_cvt_close(resampler);
             resampler = nullptr;
         }
-        nodelio_offline_cmd_finish_playback_dram(dram_epoch_);
     };
 
     const uint8_t* raw = all.data() + data_off;

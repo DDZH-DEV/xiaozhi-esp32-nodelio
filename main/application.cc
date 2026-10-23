@@ -830,13 +830,24 @@ void Application::InitializeProtocol() {
             SetDeviceState(kDeviceStateIdle);
 #endif
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-            /* 听歌 / 本地播报 / 技能卡仍开：勿 MAX_MODEM，也勿 goodbye 9s 息屏 */
-            const bool keep_awake = nodelio_media_is_playing() || nodelio_media_resume_after_voice() ||
+            /* 听歌 / 本地播报：勿 MAX_MODEM，也勿 goodbye 短息屏。
+             * 技能卡仍开 ≠ 用户活动：息屏后省电断 MQTT 会进本回调，若 NoteActivity/
+             * PERFORMANCE→WakeUp 会「刚灭又亮」。技能卡只跳过 goodbye，不重置 idle。 */
+            const bool media_busy = nodelio_media_is_playing() || nodelio_media_resume_after_voice() ||
                                     notify_player_.IsBusy() || GetDeviceState() == kDeviceStateNotifying ||
-                                    nodelio_skill_result_is_visible() || !pending_spoken_notify_url_.empty();
-            if (keep_awake) {
+                                    !pending_spoken_notify_url_.empty();
+            const bool skill_up = nodelio_skill_result_is_visible();
+            const bool asleep = board.IsInSleepMode();
+            if (media_busy) {
                 board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-                board.NoteUserActivity();
+                if (!asleep) {
+                    board.NoteUserActivity();
+                }
+            } else if (skill_up) {
+                /* 技能卡残留：不 PERFORMANCE/NoteActivity（否则 MQTT 撕建链反复推迟息屏）；
+                 * 也不 RequestGoodbyeSleep，交给空闲计时自然灭屏。 */
+                ESP_LOGI(TAG, "audio channel closed skill_up asleep=%d — skip wake/goodbye",
+                         asleep ? 1 : 0);
             } else {
                 board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
                 board.RequestGoodbyeSleep();
@@ -1004,6 +1015,12 @@ void Application::InitializeProtocol() {
                         ESP_LOGI(TAG, "stt local-route: confirm→dsh.status");
                         return;
                     }
+                    /* DSH 卡选条须先于 open_app：「打开第一个」否则被当成应用名并 suppress 云端 */
+                    if (nodelio_skill_try_pick_phrase(message.c_str())) {
+                        ESP_LOGI(TAG, "stt local-route: dsh pick");
+                        SuppressCloudTts(3000);
+                        return;
+                    }
                     /* 本机口令旁路：切页/曲库等可保持会话；DSH/重启/配网结束语音 */
                     bool end_session = false;
                     if (nodelio_offline_try_system_phrase(message.c_str(), &end_session)) {
@@ -1016,12 +1033,6 @@ void Application::InitializeProtocol() {
                                 protocol_->CloseAudioChannel();
                             }
                         }
-                        return;
-                    }
-                    /* DSH 卡：第几个工作区/任务 */
-                    if (nodelio_skill_try_pick_phrase(message.c_str())) {
-                        ESP_LOGI(TAG, "stt local-route: dsh pick");
-                        SuppressCloudTts(3000);
                         return;
                     }
                     /* 关闭电台/播客/曲库…：本地先收弹窗；云端可再确认，勿只靠 goto_page */
@@ -1621,8 +1632,10 @@ void Application::HandleStateChangedEvent() {
             if (!pending_spoken_notify_url_.empty()) {
                 std::string url = std::move(pending_spoken_notify_url_);
                 pending_spoken_notify_url_.clear();
-                ESP_LOGI(TAG, "idle → play spoken notify");
-                StartNotification(std::move(url), {});
+                const bool cont = spoken_notify_continue_;
+                spoken_notify_continue_ = false;
+                ESP_LOGI(TAG, "idle → play spoken notify cont=%d", cont ? 1 : 0);
+                StartNotification(std::move(url), {}, {}, !cont);
             }
 #endif
             break;
@@ -1728,7 +1741,7 @@ void Application::ConfigureWakeWordForListening() {
 }
 
 void Application::StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles,
-                                    std::string device_key) {
+                                    std::string device_key, bool play_popup) {
     if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy()) {
         ESP_LOGW(TAG, "Ignoring notify message while device is busy");
         return;
@@ -1755,7 +1768,9 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
     if (playback_id == 0) {
         playback_id = ++notification_playback_id_;
     }
-    audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+    if (play_popup) {
+        audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+    }
 
     bool started = notify_player_.Start(
         std::move(audio_url), std::move(subtitles), playback_id,
@@ -1836,6 +1851,14 @@ void Application::HandleNotificationFinished(uint32_t playback_id, bool success)
         }
         return;
     }
+    /* DSH 多段 spoken：先回 Idle 再播下一段（无 popup） */
+    if (success && !spoken_notify_queue_.empty()) {
+        StopNotification();
+        Schedule([this]() { PlayNextSpokenNotify(); });
+        return;
+    }
+    spoken_notify_queue_.clear();
+    spoken_notify_continue_ = false;
 #endif
     StopNotification();
 }
@@ -1913,57 +1936,115 @@ void Application::TryFlushPendingCloudSpeak()
     protocol_->SendWakeWordDetected(text);
 }
 
-void Application::PlaySpokenAfterLocalSkill(const char *text)
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+static bool spoken_tts_url_ok(const char *audio_url)
 {
-    /* 不用桥 WAV：改走小智云 TTS（与 MCP 返回 spoken 同音色） */
-    pending_spoken_notify_url_.clear();
+    if (!audio_url || !audio_url[0]) {
+        return false;
+    }
+    const char *p = strstr(audio_url, "/nodelio/dsh/tts/");
+    const char *base = p ? p + sizeof("/nodelio/dsh/tts/") - 1 : nullptr;
+    if (!base || !base[0]) {
+        return false;
+    }
+    /* 文件名：{hex16}.wav|mp3（edge-tts→mp3，sapi→wav）；扩展名不参与 hex 校验 */
+    const char *q = base;
+    while (*q && *q != '?' && *q != '#') {
+        ++q;
+    }
+    const char *dot = nullptr;
+    for (const char *c = base; c < q; ++c) {
+        if (*c == '.') {
+            if (dot) {
+                return false;
+            }
+            dot = c;
+            break;
+        }
+        const bool hex = (*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f') ||
+                         (*c >= 'A' && *c <= 'F');
+        if (!hex) {
+            return false;
+        }
+    }
+    if (!dot || dot == base) {
+        return false;
+    }
+    const size_t stem = (size_t)(dot - base);
+    if (stem < 8 || stem > 32) {
+        return false;
+    }
+    return (q - dot == 4 && dot[1] == 'w' && dot[2] == 'a' && dot[3] == 'v') ||
+           (q - dot == 4 && (dot[1] == 'm' || dot[1] == 'M') && (dot[2] == 'p' || dot[2] == 'P') &&
+            dot[3] == '3');
+}
+
+bool Application::PlayNextSpokenNotify()
+{
+    if (spoken_notify_queue_.empty()) {
+        spoken_notify_continue_ = false;
+        return false;
+    }
+    std::string url = std::move(spoken_notify_queue_.front());
+    spoken_notify_queue_.pop_front();
+    spoken_notify_continue_ = true;
+    ESP_LOGI(TAG, "spoken notify continue %s remain=%u", url.c_str(),
+             (unsigned)spoken_notify_queue_.size());
+    if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy()) {
+        pending_spoken_notify_url_ = std::move(url);
+        return true;
+    }
+    StartNotification(std::move(url), {}, {}, false);
+    return true;
+}
+#endif
+
+void Application::PlaySpokenAfterLocalSkill(const char *text, const char *audio_url)
+{
+    const char *one[1] = {audio_url};
+    PlaySpokenPlaylistAfterLocalSkill(text, audio_url && audio_url[0] ? one : nullptr,
+                                      audio_url && audio_url[0] ? 1 : 0);
+}
+
+void Application::PlaySpokenPlaylistAfterLocalSkill(const char *text, const char *const *urls, int n)
+{
+    /* 云 listen.detect 只接受唤醒词，勿再塞「请播报：…」 */
+    pending_cloud_speak_.clear();
     suppress_cloud_tts_until_us_ = 0;
     aborted_ = false;
+    spoken_notify_queue_.clear();
+    spoken_notify_continue_ = false;
     dsh_local_open_cooldown_until_us_ = esp_timer_get_time() + (int64_t)20000 * 1000;
     Board::GetInstance().NoteUserActivity();
     Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+    (void)text;
 
-    if (!text || !text[0]) {
-        ESP_LOGI(TAG, "spoken empty → end voice session");
-        EndVoiceSessionAfterLocalSkill();
-        return;
-    }
-    if (!protocol_ || !nodelio_xiaozhi_enabled()) {
-        ESP_LOGW(TAG, "spoken drop: no xiaozhi protocol");
-        EndVoiceSessionAfterLocalSkill();
-        return;
-    }
-
-    /* 短前缀：云端当用户句处理并 TTS 回复；勿塞长文（listen detect 有长度限制） */
-    std::string prompt = "请向用户简短播报：";
-    prompt += text;
-    if (prompt.size() > 220) {
-        prompt.resize(220);
-    }
-    pending_cloud_speak_ = std::move(prompt);
-    ESP_LOGI(TAG, "pending cloud speak");
-
-    const auto st = GetDeviceState();
-    if (st == kDeviceStateSpeaking) {
-        AbortSpeaking(kAbortReasonNone);
-    }
-    if (protocol_->IsAudioChannelOpened() &&
-        (st == kDeviceStateListening || st == kDeviceStateSpeaking)) {
-        Schedule([this]() { TryFlushPendingCloudSpeak(); });
-        return;
-    }
-    /* 本地开 DSH 常先关通道：再建链进聆听后 flush */
-    play_popup_on_listening_ = false;
-    if (st != kDeviceStateConnecting) {
-        SetDeviceState(kDeviceStateConnecting);
-    }
-    Schedule([this]() {
-        ContinueOpenAudioChannel(GetDefaultListeningMode());
-        if (!protocol_ || !protocol_->IsAudioChannelOpened()) {
-            ESP_LOGW(TAG, "cloud speak aborted: channel not open");
-            pending_cloud_speak_.clear();
+    std::vector<std::string> good;
+    for (int i = 0; i < n && urls; i++) {
+        if (spoken_tts_url_ok(urls[i])) {
+            good.emplace_back(urls[i]);
+        } else if (urls[i] && urls[i][0]) {
+            ESP_LOGW(TAG, "spoken notify skip bad url=%s", urls[i]);
         }
-    });
+    }
+    if (good.empty()) {
+        ESP_LOGI(TAG, "spoken text-only (no bridge wav)");
+        EndVoiceSessionAfterLocalSkill();
+        return;
+    }
+    for (size_t i = 1; i < good.size(); i++) {
+        spoken_notify_queue_.push_back(good[i]);
+    }
+    pending_spoken_notify_url_ = good[0];
+    ESP_LOGI(TAG, "spoken notify playlist n=%u first=%s", (unsigned)good.size(),
+             pending_spoken_notify_url_.c_str());
+    if (GetDeviceState() == kDeviceStateIdle && !notify_player_.IsBusy()) {
+        std::string url = std::move(pending_spoken_notify_url_);
+        pending_spoken_notify_url_.clear();
+        StartNotification(std::move(url), {}, {}, true);
+        return;
+    }
+    EndVoiceSessionAfterLocalSkill();
 }
 
 void Application::LocalOpenDshStatus(const char *reason)

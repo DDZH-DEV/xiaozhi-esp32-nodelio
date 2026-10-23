@@ -13,6 +13,7 @@
 #include "application.h"
 #include "board.h"
 #include "display.h"
+#include "offline_cmd.h"
 
 #include <cJSON.h>
 #include <esp_heap_caps.h>
@@ -61,6 +62,8 @@ LV_FONT_DECLARE(font_material_symbols_20_4);
 /* 云端回源拉正文最多约 8s，默认 HTTP 读超时 2.5s 会在状态行到达前断开 */
 #define NEWS_HTTP_IO_MS 12000
 #define NEWS_TASK_STACK 10240
+/* 服务端 dsh.status 桥超时 20s；面板须略长，否则等桥时 SO_RCVTIMEO 先断 → recv=0「加载失败」 */
+#define DSH_HTTP_IO_MS 22000
 /* 任务详情页静默拉最新末轮；仅亮屏+停留详情时跑，省电 */
 #define DSH_DETAIL_POLL_MS 10000
 
@@ -70,7 +73,9 @@ static lv_obj_t *s_filter_bar;
 static lv_obj_t *s_dsh_status;      /* 续聊/执行中状态条：EQ + 文案 */
 static lv_obj_t *s_dsh_status_lbl;
 static lv_obj_t *s_dsh_eq[3];
+static lv_obj_t *s_dsh_confirm_bar; /* 续聊待确认：发送 / 取消 */
 static lv_obj_t *s_dsh_detail_bar;  /* 详情底栏：续聊悬浮，不随正文滚走 */
+static char s_dsh_pending_preview[96] = {0};
 static lv_obj_t *s_card_list;
 static lv_obj_t *s_card_title;
 static lv_obj_t *s_card_sub;
@@ -101,6 +106,7 @@ static dsh_ui_phase_t s_dsh_phase = DSH_UI_IDLE;
 static char s_dsh_focus_sess[80];
 static char s_dsh_focus_ws[200];
 static char s_dsh_last_instr[96];
+static int64_t s_dsh_dispatched_us; /* DISPATCHED 起算，约 25s 内保留乐观态 */
 static bool s_minimized;
 static bool s_ui_closing;
 static uint32_t s_close_gen;
@@ -247,12 +253,18 @@ static void clear_ttl(void)
     s_ttl_tmr = nullptr;
 }
 
+/** DSH 无 ttl 时默认 120s 无操作关卡（省电）；桥可下发更大/更小 ttl_sec */
+#define DSH_IDLE_TTL_SEC_DEFAULT 120
+static void on_ttl(lv_timer_t *t);
+static void restart_skill_ttl(void);
+
 static void dsh_fetch_detail(const char *ws, const char *sess, bool silent);
 static void on_dsh_detail_poll(lv_timer_t *t);
 static void fill_list(void);
 static void anim_eq_height(void *var, int32_t v);
 static void anim_border_opa(void *var, int32_t v);
 static bool dsh_subtitle_is_running(const char *sub);
+static bool dsh_subtitle_needs_you(const char *sub);
 
 static bool dsh_is_detail_view(void)
 {
@@ -441,6 +453,14 @@ static void start_dsh_status_anims(void)
     start_dsh_row_pulses();
 }
 
+static void dsh_hide_confirm_bar(void)
+{
+    if (s_dsh_confirm_bar) {
+        lv_obj_add_flag(s_dsh_confirm_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_height(s_dsh_confirm_bar, 0);
+    }
+}
+
 static void dsh_clear_ui_phase(void)
 {
     stop_dsh_status_anims();
@@ -448,11 +468,14 @@ static void dsh_clear_ui_phase(void)
     s_dsh_focus_sess[0] = '\0';
     s_dsh_focus_ws[0] = '\0';
     s_dsh_last_instr[0] = '\0';
+    s_dsh_pending_preview[0] = '\0';
     s_dsh_focus_row = nullptr;
+    s_dsh_dispatched_us = 0;
     if (s_dsh_status) {
         lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_height(s_dsh_status, 0);
     }
+    dsh_hide_confirm_bar();
 }
 
 static void dsh_paint_status_strip(void)
@@ -465,6 +488,7 @@ static void dsh_paint_status_strip(void)
         stop_dsh_eq_anims();
         lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_height(s_dsh_status, 0);
+        dsh_hide_confirm_bar();
         start_dsh_row_pulses();
         return;
     }
@@ -473,6 +497,7 @@ static void dsh_paint_status_strip(void)
     uint32_t pill = UI_C_TILE_SWITCH;
     uint32_t bar = UI_C_ACCENT_SOFT;
     const char *txt = "续聊中 · 请直接说指令";
+    const bool pending = s_dsh_pending_preview[0] != '\0' && s_dsh_phase == DSH_UI_ARMED;
     if (s_dsh_phase == DSH_UI_DISPATCHED) {
         pill = UI_C_TILE_PWM;
         bar = UI_C_INFO;
@@ -481,8 +506,21 @@ static void dsh_paint_status_strip(void)
             snprintf(buf, sizeof(buf), "已投递 · %s", s_dsh_last_instr);
             txt = buf;
         } else {
-            txt = "已投递 · 执行中 · 点刷新看进度";
+            txt = "已投递 · 执行中";
         }
+        dsh_hide_confirm_bar();
+    } else if (pending) {
+        pill = UI_C_TILE_GPIO;
+        bar = UI_C_WARN;
+        static char pbuf[120];
+        snprintf(pbuf, sizeof(pbuf), "待确认 · %s", s_dsh_pending_preview);
+        txt = pbuf;
+        if (s_dsh_confirm_bar) {
+            lv_obj_clear_flag(s_dsh_confirm_bar, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_height(s_dsh_confirm_bar, 44);
+        }
+    } else {
+        dsh_hide_confirm_bar();
     }
     lv_obj_set_style_bg_color(s_dsh_status, lv_color_hex(pill), 0);
     for (int i = 0; i < 3; i++) {
@@ -493,15 +531,19 @@ static void dsh_paint_status_strip(void)
     lv_label_set_text(s_dsh_status_lbl, txt);
     lv_obj_set_style_text_color(s_dsh_status_lbl, UI_TEXT, 0);
     if (s_card_sub) {
-        lv_label_set_text(s_card_sub,
-                          s_dsh_phase == DSH_UI_ARMED ? "续聊中 · 直接说 · 勿点别处卡片"
-                                                     : "已投递 · 等回复 · 点刷新更新");
+        if (pending) {
+            lv_label_set_text(s_card_sub, "待确认 · 说「是」发送 · 「不用」取消");
+        } else {
+            lv_label_set_text(s_card_sub,
+                              s_dsh_phase == DSH_UI_ARMED ? "续聊中 · 直接说 · 点「取消」退出"
+                                                         : "已投递 · 等回复");
+        }
         lv_obj_set_style_text_color(s_card_sub, lv_color_hex(bar), 0);
     }
     start_dsh_status_anims();
 }
 
-/** 续聊焦点=绿；已投递/远端「正在用」=青（UI_INFO），边框呼吸区分空闲卡 */
+/** 续聊焦点=绿；执行中=青；等你确认=琥珀 */
 static void dsh_style_list_row(lv_obj_t *row, int track_idx, lv_obj_t *idx_pod, lv_obj_t *artist_lbl,
                                const char *artist)
 {
@@ -510,33 +552,45 @@ static void dsh_style_list_row(lv_obj_t *row, int track_idx, lv_obj_t *idx_pod, 
     }
     const bool focus = dsh_track_is_focus(track_idx);
     const bool running = dsh_subtitle_is_running(artist);
-    if (!focus && !running) {
+    const bool needs_you = dsh_subtitle_needs_you(artist);
+    if (!focus && !running && !needs_you) {
         return;
     }
     const bool dispatched = focus && s_dsh_phase == DSH_UI_DISPATCHED;
     const bool armed = focus && s_dsh_phase == DSH_UI_ARMED;
-    /* 焦点武装用绿；其余工作态（投递 / 远端执行中）用青 */
-    const bool work_cyan = dispatched || (!armed && running);
+    /* 优先级：武装绿 > 待确认琥珀 > 投递/执行中青 */
+    const bool work_amber = !armed && needs_you;
+    const bool work_cyan = !armed && !work_amber && (dispatched || running);
     if (focus) {
         s_dsh_focus_row = row;
     }
     lv_obj_set_style_border_width(row, 2, 0);
-    lv_obj_set_style_border_color(row, work_cyan ? UI_INFO : UI_ACCENT, 0);
+    lv_obj_set_style_border_color(row, work_amber ? UI_WARN : (work_cyan ? UI_INFO : UI_ACCENT), 0);
     lv_obj_set_style_border_opa(row, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(row, work_cyan ? UI_TILE_PWM : UI_TILE_SWITCH, 0);
+    lv_obj_set_style_bg_color(row, work_amber ? UI_TILE_GPIO : (work_cyan ? UI_TILE_PWM : UI_TILE_SWITCH),
+                              0);
     if (idx_pod) {
-        lv_obj_set_style_bg_color(idx_pod, work_cyan ? UI_CAPSULE_PWM : UI_CAPSULE_ON, 0);
+        lv_obj_set_style_bg_color(idx_pod,
+                                  work_amber ? UI_CAPSULE_GPIO
+                                             : (work_cyan ? UI_CAPSULE_PWM : UI_CAPSULE_ON),
+                                  0);
         lv_obj_t *ic = lv_obj_get_child(idx_pod, 0);
         if (ic) {
             lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
-            lv_label_set_text(ic, work_cyan ? MATERIAL_SYMBOLS_PROGRESS_ACTIVITY
-                                            : MATERIAL_SYMBOLS_MIC);
+            lv_label_set_text(ic, armed ? MATERIAL_SYMBOLS_MIC : MATERIAL_SYMBOLS_PROGRESS_ACTIVITY);
             lv_obj_set_style_text_color(ic, UI_ON_TILE, 0);
         }
     }
     if (artist_lbl && armed) {
-        lv_label_set_text(artist_lbl, "续聊中 · 开麦等待你的指令");
-        lv_obj_set_style_text_color(artist_lbl, UI_ACCENT_SOFT, 0);
+        if (s_dsh_pending_preview[0]) {
+            char line[128];
+            snprintf(line, sizeof(line), "待确认 · %s", s_dsh_pending_preview);
+            lv_label_set_text(artist_lbl, line);
+            lv_obj_set_style_text_color(artist_lbl, UI_WARN, 0);
+        } else {
+            lv_label_set_text(artist_lbl, "续聊中 · 开麦等待你的指令");
+            lv_obj_set_style_text_color(artist_lbl, UI_ACCENT_SOFT, 0);
+        }
     } else if (artist_lbl && dispatched) {
         if (s_dsh_last_instr[0]) {
             char line[128];
@@ -546,6 +600,8 @@ static void dsh_style_list_row(lv_obj_t *row, int track_idx, lv_obj_t *idx_pod, 
             lv_label_set_text(artist_lbl, "已投递 · 正在执行…");
         }
         lv_obj_set_style_text_color(artist_lbl, UI_INFO, 0);
+    } else if (artist_lbl && needs_you) {
+        lv_obj_set_style_text_color(artist_lbl, UI_WARN, 0);
     } else if (artist_lbl && running) {
         lv_obj_set_style_text_color(artist_lbl, UI_INFO, 0);
     }
@@ -565,11 +621,10 @@ static void dsh_enter_armed(const char *ws, const char *sess)
     if (sess && sess[0]) {
         snprintf(s_dsh_focus_sess, sizeof(s_dsh_focus_sess), "%s", sess);
     }
-    /* 列表/详情已在：重填高亮与底栏续聊态 */
-    if (s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr && s_card_list) {
-        fill_list();
-    } else {
-        dsh_paint_status_strip();
+    /* 勿同步 fill_list：语音回调在 main 上，整表重建 + scroll_to_view 会撑爆 IDLE0 WDT */
+    dsh_paint_status_strip();
+    if (s_card_sub && s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr) {
+        lv_label_set_text(s_card_sub, "续聊中 · 直接说指令");
     }
 }
 
@@ -618,12 +673,28 @@ static void on_ttl(lv_timer_t *t)
         close_list_keep_player();
         return;
     }
-    /* DSH/新闻等 list：ttl 仅缓存建议，勿自动关（用户还在看） */
-    if (strcmp(s_env->card_type, "list") == 0) {
-        ESP_LOGI(TAG, "ttl expired — keep list card open");
+    /* DSH/新闻等 list：超时关卡，否则占屏无法息屏 */
+    ESP_LOGI(TAG, "ttl expired — close card app=%s", s_env->app_id);
+    nodelio_skill_result_hide();
+}
+
+static void restart_skill_ttl(void)
+{
+    clear_ttl();
+    if (!s_env) {
         return;
     }
-    nodelio_skill_result_hide();
+    int ttl = s_env->ttl_sec;
+    if (ttl <= 0 && strstr(s_env->app_id, "dsh") != nullptr) {
+        ttl = DSH_IDLE_TTL_SEC_DEFAULT;
+    }
+    if (ttl <= 0) {
+        return;
+    }
+    s_ttl_tmr = lv_timer_create(on_ttl, (uint32_t)ttl * 1000, nullptr);
+    if (s_ttl_tmr) {
+        lv_timer_set_repeat_count(s_ttl_tmr, 1);
+    }
 }
 
 static void fill_list(void);
@@ -791,8 +862,8 @@ static void dsh_refresh_list(void)
                 } else {
                     resp[0] = '\0';
                     int status = 0;
-                    esp_err_t err =
-                        nodelio_http_post_json_ms(url, a->cfg.device_key, body, &status, resp, cap - 1, 12000);
+                    esp_err_t err = nodelio_http_post_json_ms(url, a->cfg.device_key, body, &status, resp,
+                                                              cap - 1, DSH_HTTP_IO_MS);
                     if (err == ESP_OK && resp[0] && (status == 200 || status == 201)) {
                         nodelio_skill_deliver_json(&a->cfg, resp, false, nullptr, 0);
                     } else {
@@ -1251,8 +1322,8 @@ static void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
                 } else {
                     resp[0] = '\0';
                     int status = 0;
-                    esp_err_t err =
-                        nodelio_http_post_json_ms(url, a->cfg.device_key, body, &status, resp, cap - 1, 12000);
+                    esp_err_t err = nodelio_http_post_json_ms(url, a->cfg.device_key, body, &status, resp,
+                                                              cap - 1, DSH_HTTP_IO_MS);
                     if (err == ESP_OK && resp[0] && (status == 200 || status == 201)) {
                         /* 静默轮询：用户已回列表/收起则丢弃，避免把详情又顶回来 */
                         const bool still =
@@ -1264,9 +1335,51 @@ static void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
                             char spoken[NL_ENV_SPOKEN];
                             spoken[0] = '\0';
                             nodelio_skill_deliver_json(&a->cfg, resp, false, spoken, sizeof(spoken));
-                            /* 首次打开详情播报；定时刷新不念 */
-                            if (!a->silent && spoken[0]) {
-                                nodelio_panel_ui_announce_spoken(spoken);
+                            /* 首次打开：有桥 TTS 则播；续聊武装也播（点开详情就是要听回复）。
+                             * 勿仅靠 spoken 文本：服务端可能只带 spoken.audio.urls。 */
+                            if (!a->silent) {
+                                struct UrlPack {
+                                    char urls[NL_ENV_SPOKEN_AUDIO_MAX][NL_ENV_URL];
+                                    int n;
+                                };
+                                auto *pack = static_cast<UrlPack *>(calloc(1, sizeof(UrlPack)));
+                                const char *spoken_src =
+                                    spoken[0] ? spoken
+                                              : (s_env && s_env->display_title[0] ? s_env->display_title
+                                                                                 : "详情");
+                                char *sp = strdup(spoken_src);
+                                if (sp && pack) {
+                                    pack->n = nodelio_skill_last_spoken_audio_urls(
+                                        pack->urls, NL_ENV_SPOKEN_AUDIO_MAX);
+                                    ESP_LOGI(TAG, "detail TTS schedule n=%d spoken=%d armed=%d",
+                                             pack->n, spoken[0] ? 1 : 0,
+                                             nodelio_panel_ui_dsh_is_armed() ? 1 : 0);
+                                    Application::GetInstance().Schedule([sp, pack]() {
+                                        if (pack->n > 0) {
+                                            nodelio_offline_cmd_yield_for_cloud_audio();
+                                            const size_t dram = heap_caps_get_largest_free_block(
+                                                MALLOC_CAP_INTERNAL);
+                                            if (dram >= 24 * 1024) {
+                                                ESP_LOGI(TAG, "detail TTS playlist n=%d dram=%u",
+                                                         pack->n, (unsigned)dram);
+                                                nodelio_panel_ui_announce_spoken_playlist(
+                                                    sp, pack->urls, pack->n);
+                                            } else {
+                                                ESP_LOGW(TAG, "detail TTS skip dram=%u → toast",
+                                                         (unsigned)dram);
+                                                nodelio_panel_ui_toast_defer(sp);
+                                            }
+                                        } else if (sp[0]) {
+                                            ESP_LOGW(TAG, "detail TTS no wav → toast only");
+                                            nodelio_panel_ui_announce_spoken(sp);
+                                        }
+                                        free(sp);
+                                        free(pack);
+                                    });
+                                } else {
+                                    free(sp);
+                                    free(pack);
+                                }
                             }
                         }
                     } else if (!a->silent) {
@@ -1296,6 +1409,8 @@ static void dsh_fetch_session_detail(int track_idx)
     char ws[200] = {0};
     char sess[80] = {0};
     dsh_extract_arm(&s_env->tracks[track_idx], ws, sizeof(ws), sess, sizeof(sess));
+    Board::GetInstance().NoteUserActivity();
+    restart_skill_ttl();
     dsh_fetch_detail(ws, sess, false);
 }
 
@@ -1321,24 +1436,54 @@ static void run_invoke_action(const nl_env_invoke_action_t *ia)
             }
             cJSON_Delete(root);
         }
+        /* 已续聊同一会话：再点＝取消 */
+        if (s_dsh_phase == DSH_UI_ARMED && sess_buf[0] && s_dsh_focus_sess[0] &&
+            strcmp(sess_buf, s_dsh_focus_sess) == 0) {
+            nodelio_panel_ui_clear_dsh_arm();
+            dsh_clear_ui_phase();
+            nl_ov_toast("已取消续聊");
+            dsh_paint_status_strip();
+            if (s_card_sub && s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr &&
+                s_env->track_n > 0) {
+                char sub[72];
+                snprintf(sub, sizeof(sub), "共 %d 条 · 点卡片看回复 · 「续聊」开麦", s_env->track_n);
+                lv_label_set_text(s_card_sub, sub);
+            }
+            return;
+        }
         nodelio_panel_ui_arm_dsh(ws_buf[0] ? ws_buf : nullptr, sess_buf[0] ? sess_buf : nullptr);
+        Board::GetInstance().NoteUserActivity();
+        restart_skill_ttl();
         /* 续聊：只 toast + 开麦。禁止 announce_spoken——纯文字会 EndVoiceSession，立刻把刚开的麦掐掉 */
         const bool card_open =
             s_skill_ui_active && s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN);
         if (sess_buf[0]) {
-            nl_ov_toast(card_open ? "请直接说要做的事" : "已续聊，请直接说要做的事");
+            nl_ov_toast(card_open ? "请说指令，发送前会确认" : "已续聊，请说指令（发送前确认）");
             dsh_enter_armed(ws_buf, sess_buf);
         } else if (ws_buf[0]) {
-            nl_ov_toast("已选工作区，请直接说");
+            nl_ov_toast("已选工作区，请说指令（发送前确认）");
             dsh_enter_armed(ws_buf, nullptr);
         } else {
-            nl_ov_toast("请直接说要做的事");
+            nl_ov_toast("请说指令，发送前会确认");
         }
-        /* 卡已开：留在详情/列表开麦。minimize 会清 skill_ui_active，再 show_chat 会弹 AI 抽屉成双窗 */
-        if (!card_open) {
-            minimize_to_fab();
+        /* 续聊下发任务 = 自由说 → 必须云端 ASR（STT 再走本地 armed→dsh.task）。
+         * 本地 MultiNet 只有固定口令，听不懂「帮我提交版本」这类指令。
+         * DRAM 紧时先收成悬浮球再开麦，避免技能卡占堆导致 MQTT hello 超时。 */
+        const size_t dram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        if (!card_open || dram_largest < 32 * 1024) {
+            if (card_open) {
+                ESP_LOGW(TAG, "dsh arm minimize for cloud ASR dram_largest=%u",
+                         (unsigned)dram_largest);
+                minimize_to_fab();
+                nl_ov_toast("已收起列表，请直接说要做的事");
+            } else {
+                minimize_to_fab();
+            }
         }
-        nodelio_overlay_show_chat();
+        Application::GetInstance().Schedule([]() {
+            nodelio_offline_cmd_yield_for_cloud_audio();
+            nodelio_overlay_show_chat();
+        });
         return;
     }
     const char *skill = ia->instance_id[0] ? ia->instance_id : ia->app_id;
@@ -1497,6 +1642,11 @@ static void on_filter_chip(lv_event_t *e)
     if (f->selected) {
         return;
     }
+    /* 换工作区：取消续聊武装，避免派错会话 */
+    if (nodelio_panel_ui_dsh_is_armed() || s_dsh_phase != DSH_UI_IDLE) {
+        nodelio_panel_ui_clear_dsh_arm();
+        dsh_clear_ui_phase();
+    }
     invoke_filter_workspace(f);
 }
 
@@ -1542,16 +1692,7 @@ static void fill_filters(void)
         lv_label_set_text(lbl, f->title[0] ? f->title : "?");
         lv_obj_set_style_text_color(lbl, f->selected ? UI_TEXT : UI_TEXT_SUB, 0);
     }
-    /* 滚到选中项 */
-    for (int i = 0; i < s_env->filter_n; i++) {
-        if (s_env->filters[i].selected) {
-            lv_obj_t *ch = lv_obj_get_child(s_filter_bar, i);
-            if (ch) {
-                lv_obj_scroll_to_view(ch, LV_ANIM_OFF);
-            }
-            break;
-        }
-    }
+    /* 不在此处 scroll_to_view：会强制整树 layout，语音/主循环路径易触发 task_wdt */
 }
 
 bool nodelio_skill_try_pick_phrase(const char *text)
@@ -1596,21 +1737,10 @@ bool nodelio_skill_try_pick_phrase(const char *text)
         return true;
     }
     const int ti = selectable[ord - 1];
-    const nl_env_track_t *tr = &s_env->tracks[ti];
-    if (tr->invoke_n <= 0) {
-        nl_ov_toast("该项不可选");
-        return true;
-    }
-    /* 会话优先「续聊」(arm)；否则第一个 action */
-    int prefer = 0;
-    for (int ai = 0; ai < tr->invoke_n; ai++) {
-        if (strstr(tr->invokes[ai].title, "续聊") != nullptr) {
-            prefer = ai;
-            break;
-        }
-    }
-    ESP_LOGI(TAG, "dsh pick ord=%d track=%d action=%s", ord, ti, tr->invokes[prefer].title);
-    run_invoke_action(&tr->invokes[prefer]);
+    /* 「第 N 个」→ 打开详情看回复；续聊请说「续聊」或点按钮（避免误武装 + 主线程重建卡死） */
+    ESP_LOGI(TAG, "dsh pick ord=%d track=%d → detail", ord, ti);
+    nl_ov_toast("打开详情");
+    dsh_fetch_session_detail(ti);
     return true;
 }
 
@@ -2389,6 +2519,50 @@ static void ensure_card(void)
     lv_label_set_long_mode(s_dsh_status_lbl, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s_dsh_status_lbl, lv_pct(100));
 
+    s_dsh_confirm_bar = lv_obj_create(s_card);
+    lv_obj_remove_style_all(s_dsh_confirm_bar);
+    lv_obj_set_width(s_dsh_confirm_bar, lv_pct(100));
+    lv_obj_set_height(s_dsh_confirm_bar, 0);
+    lv_obj_set_style_pad_column(s_dsh_confirm_bar, 10, 0);
+    lv_obj_set_style_pad_ver(s_dsh_confirm_bar, 4, 0);
+    lv_obj_set_flex_flow(s_dsh_confirm_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_dsh_confirm_bar, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(s_dsh_confirm_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_dsh_confirm_bar, LV_OBJ_FLAG_HIDDEN);
+    {
+        lv_obj_t *send_btn =
+            make_text_action_btn(s_dsh_confirm_bar, "发送",
+                                 [](lv_event_t *e) {
+                                     if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+                                         nodelio_panel_ui_dsh_confirm_accept();
+                                     }
+                                 },
+                                 nullptr);
+        if (send_btn) {
+            lv_obj_set_style_bg_color(send_btn, UI_ACCENT, 0);
+            lv_obj_set_flex_grow(send_btn, 1);
+            lv_obj_set_height(send_btn, 36);
+        }
+        lv_obj_t *cancel_btn =
+            make_text_action_btn(s_dsh_confirm_bar, "取消",
+                                 [](lv_event_t *e) {
+                                     if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+                                         nodelio_panel_ui_dsh_confirm_reject();
+                                     }
+                                 },
+                                 nullptr);
+        if (cancel_btn) {
+            lv_obj_set_style_bg_color(cancel_btn, UI_CAPSULE_OFF, 0);
+            lv_obj_t *cl = lv_obj_get_child(cancel_btn, 0);
+            if (cl) {
+                lv_obj_set_style_text_color(cl, UI_TEXT_SUB, 0);
+            }
+            lv_obj_set_flex_grow(cancel_btn, 1);
+            lv_obj_set_height(cancel_btn, 36);
+        }
+    }
+
     s_card_list = lv_obj_create(s_card);
     lv_obj_remove_style_all(s_card_list);
     lv_obj_set_width(s_card_list, lv_pct(100));
@@ -2579,11 +2753,37 @@ static bool dsh_subtitle_is_running(const char *sub)
            strstr(sub, "执行中") != nullptr;
 }
 
-/** 详情页：执行中 → 顶状态条 EQ；空闲则按续聊 phase 画 */
+static bool dsh_subtitle_needs_you(const char *sub)
+{
+    if (!sub || !sub[0]) {
+        return false;
+    }
+    return strstr(sub, "等你确认") != nullptr;
+}
+
+/** 焦点会话在新列表中的副标题；无焦点返回 nullptr */
+static const char *dsh_focus_track_artist(void)
+{
+    if (!s_env || !s_dsh_focus_sess[0]) {
+        return nullptr;
+    }
+    for (int i = 0; i < s_env->track_n; i++) {
+        char ws[200] = {0};
+        char sess[80] = {0};
+        dsh_extract_arm(&s_env->tracks[i], ws, sizeof(ws), sess, sizeof(sess));
+        if (sess[0] && strcmp(sess, s_dsh_focus_sess) == 0) {
+            return s_env->tracks[i].artist;
+        }
+    }
+    return nullptr;
+}
+
+/** 详情页：执行中/待确认 → 顶状态条 EQ；空闲则按续聊 phase 画 */
 static void dsh_detail_paint_running(const char *subtitle)
 {
-    const bool running =
-        s_dsh_phase == DSH_UI_DISPATCHED || s_dsh_phase == DSH_UI_ARMED || dsh_subtitle_is_running(subtitle);
+    const bool needs_you = dsh_subtitle_needs_you(subtitle);
+    const bool running = s_dsh_phase == DSH_UI_DISPATCHED || s_dsh_phase == DSH_UI_ARMED ||
+                         dsh_subtitle_is_running(subtitle) || needs_you;
     if (!running) {
         if (s_dsh_phase == DSH_UI_IDLE) {
             stop_dsh_status_anims();
@@ -2608,6 +2808,10 @@ static void dsh_detail_paint_running(const char *subtitle)
         pill = UI_C_TILE_SWITCH;
         bar = UI_C_ACCENT_SOFT;
         txt = "续聊中 · 请直接说指令";
+    } else if (needs_you) {
+        pill = UI_C_TILE_GPIO;
+        bar = UI_C_WARN;
+        txt = subtitle && subtitle[0] ? subtitle : "等你确认";
     } else if (s_dsh_phase == DSH_UI_DISPATCHED && s_dsh_last_instr[0]) {
         static char buf[120];
         snprintf(buf, sizeof(buf), "已投递 · %s", s_dsh_last_instr);
@@ -2624,8 +2828,13 @@ static void dsh_detail_paint_running(const char *subtitle)
     lv_label_set_text(s_dsh_status_lbl, txt);
     lv_obj_set_style_text_color(s_dsh_status_lbl, UI_TEXT, 0);
     if (s_card_sub) {
-        lv_label_set_text(s_card_sub, s_dsh_phase == DSH_UI_ARMED ? "续聊中 · 直接说 · 底栏可返回"
-                                                                  : "执行中 · 底栏可返回列表");
+        if (s_dsh_phase == DSH_UI_ARMED) {
+            lv_label_set_text(s_card_sub, "续聊中 · 直接说 · 底栏可取消");
+        } else if (needs_you) {
+            lv_label_set_text(s_card_sub, "待你确认 · 底栏可返回列表");
+        } else {
+            lv_label_set_text(s_card_sub, "执行中 · 底栏可返回列表");
+        }
         lv_obj_set_style_text_color(s_card_sub, lv_color_hex(bar), 0);
     }
     start_dsh_status_anims();
@@ -2651,12 +2860,21 @@ static void fill_dsh_detail(void)
 
     const char *artist =
         (s_env->track_n > 0 && s_env->tracks[0].artist[0]) ? s_env->tracks[0].artist : "";
-    const bool running = dsh_subtitle_is_running(artist) || s_dsh_phase != DSH_UI_IDLE;
+    const bool needs_you = dsh_subtitle_needs_you(artist);
+    const bool running =
+        dsh_subtitle_is_running(artist) || needs_you || s_dsh_phase != DSH_UI_IDLE;
 
     if (s_card_sub) {
-        lv_label_set_text(s_card_sub, running ? "执行中 · 底栏可返回列表"
-                                              : "上滑阅读 · 底栏返回列表 / 续聊");
-        lv_obj_set_style_text_color(s_card_sub, running ? UI_INFO : UI_TEXT_MUTED, 0);
+        if (needs_you) {
+            lv_label_set_text(s_card_sub, "待你确认 · 底栏可返回列表");
+            lv_obj_set_style_text_color(s_card_sub, UI_WARN, 0);
+        } else if (running) {
+            lv_label_set_text(s_card_sub, "执行中 · 底栏可返回列表");
+            lv_obj_set_style_text_color(s_card_sub, UI_INFO, 0);
+        } else {
+            lv_label_set_text(s_card_sub, "上滑阅读 · 底栏返回列表 / 续聊");
+            lv_obj_set_style_text_color(s_card_sub, UI_TEXT_MUTED, 0);
+        }
     }
 
     if (s_env->track_n > 0 && s_env->tracks[0].title[0]) {
@@ -2667,8 +2885,8 @@ static void fill_dsh_detail(void)
         lv_label_set_long_mode(ttl, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(ttl, UI_TEXT, 0);
     }
-    if (artist[0] && !dsh_subtitle_is_running(artist)) {
-        /* 空闲字幕仍放正文上；执行中改走顶状态条，避免重复 */
+    if (artist[0] && !dsh_subtitle_is_running(artist) && !dsh_subtitle_needs_you(artist)) {
+        /* 空闲字幕仍放正文上；执行中/待确认改走顶状态条，避免重复 */
         lv_obj_t *sub = lv_label_create(s_card_list);
         nl_ov_set_font(sub);
         lv_label_set_text(sub, artist);
@@ -2709,11 +2927,12 @@ static void fill_dsh_detail(void)
                 lv_color_t btn_bg = UI_ACCENT;
                 if (strstr(btn_title, "续聊") != nullptr) {
                     if (s_dsh_phase == DSH_UI_ARMED) {
-                        btn_title = "聆听中";
+                        btn_title = "取消";
                         btn_bg = UI_WARN;
-                    } else if (s_dsh_phase == DSH_UI_DISPATCHED || dsh_subtitle_is_running(artist)) {
-                        btn_title = "执行中";
-                        btn_bg = UI_INFO;
+                    } else if (s_dsh_phase == DSH_UI_DISPATCHED || dsh_subtitle_is_running(artist) ||
+                               dsh_subtitle_needs_you(artist)) {
+                        btn_title = dsh_subtitle_needs_you(artist) ? "待确认" : "执行中";
+                        btn_bg = dsh_subtitle_needs_you(artist) ? UI_WARN : UI_INFO;
                     }
                 }
                 lv_obj_t *ab =
@@ -2980,7 +3199,7 @@ static void fill_list(void)
                 lv_color_t btn_bg = UI_ACCENT;
                 if (dsh_track_is_focus(i) && strstr(btn_title, "续聊") != nullptr) {
                     if (s_dsh_phase == DSH_UI_ARMED) {
-                        btn_title = "聆听中";
+                        btn_title = "取消";
                         btn_bg = UI_WARN;
                         restyle = true;
                     } else if (s_dsh_phase == DSH_UI_DISPATCHED) {
@@ -3100,6 +3319,7 @@ void nodelio_skill_result_hide(void)
     stop_dsh_detail_poll();
     s_dsh_detail_ws[0] = '\0';
     s_dsh_detail_sess[0] = '\0';
+    nodelio_panel_ui_clear_dsh_arm();
     DisplayLockGuard lock(nl_ov_disp());
     if (!lock) {
         s_dsh_phase = DSH_UI_IDLE;
@@ -3107,6 +3327,7 @@ void nodelio_skill_result_hide(void)
         s_dsh_focus_ws[0] = '\0';
         s_dsh_last_instr[0] = '\0';
         s_dsh_focus_row = nullptr;
+        s_dsh_dispatched_us = 0;
         return;
     }
     dsh_clear_ui_phase();
@@ -3139,8 +3360,12 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content
     if (!env) {
         return;
     }
-    /* 弹卡即算用户活动，避免随后 goodbye 息屏把列表盖掉 */
-    Board::GetInstance().NoteUserActivity();
+    /* 仅「新弹开」算用户活动。静默刷新若也 NoteActivity，详情 10s 轮询会永久挡息屏 */
+    const bool was_open =
+        s_skill_ui_active && s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN) && !s_minimized;
+    if (!was_open) {
+        Board::GetInstance().NoteUserActivity();
+    }
     if (cfg) {
         s_skill_cfg = *cfg;
     }
@@ -3197,14 +3422,32 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content
     *s_env = *env;
     s_env->detail_body = owned_detail;
     s_have_env = true;
-    /* 新 Envelope 覆盖续聊乐观态（LVGL 清动画放进锁内） */
-    const bool clear_dsh_ui = strstr(s_env->app_id, "dsh") != nullptr;
-    if (clear_dsh_ui) {
-        s_dsh_phase = DSH_UI_IDLE;
-        s_dsh_focus_sess[0] = '\0';
-        s_dsh_focus_ws[0] = '\0';
-        s_dsh_last_instr[0] = '\0';
-        s_dsh_focus_row = nullptr;
+    /* DSH：勿无清 DISPATCHED/ARMED；远端已 running/attention 或超时再清 */
+    const bool is_dsh = strstr(s_env->app_id, "dsh") != nullptr;
+    bool clear_dsh_ui = false;
+    if (is_dsh) {
+        if (s_dsh_phase == DSH_UI_ARMED) {
+            /* 续聊武装保留到超时/取消 */
+        } else if (s_dsh_phase == DSH_UI_DISPATCHED) {
+            const char *art = dsh_focus_track_artist();
+            const bool confirmed =
+                dsh_subtitle_is_running(art) || dsh_subtitle_needs_you(art);
+            const int64_t age =
+                s_dsh_dispatched_us > 0 ? (esp_timer_get_time() - s_dsh_dispatched_us) : 0;
+            if (confirmed || age > 25 * 1000000LL) {
+                clear_dsh_ui = true;
+            }
+        } else {
+            clear_dsh_ui = true;
+        }
+        if (clear_dsh_ui) {
+            s_dsh_phase = DSH_UI_IDLE;
+            s_dsh_focus_sess[0] = '\0';
+            s_dsh_focus_ws[0] = '\0';
+            s_dsh_last_instr[0] = '\0';
+            s_dsh_focus_row = nullptr;
+            s_dsh_dispatched_us = 0;
+        }
     }
     s_list_page = 0;
     s_play_idx = -1;
@@ -3294,12 +3537,9 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content
     raise_skill_layers();
     ensure_chrome_order();
 
-    clear_ttl();
-    if (s_env->ttl_sec > 0) {
-        s_ttl_tmr = lv_timer_create(on_ttl, (uint32_t)s_env->ttl_sec * 1000, nullptr);
-        if (s_ttl_tmr) {
-            lv_timer_set_repeat_count(s_ttl_tmr, 1);
-        }
+    /* 已开卡静默刷新：勿重置 ttl，否则永远关不掉 */
+    if (!card_already_open) {
+        restart_skill_ttl();
     }
 
     if (auto_play_first && nodelio_caps_has_media() && s_env->track_n > 0 &&
@@ -3393,6 +3633,39 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
     ensure_chrome_order();
 }
 
+void nodelio_skill_dsh_on_confirm_pending(const char *instruction)
+{
+    s_dsh_pending_preview[0] = '\0';
+    if (instruction && instruction[0]) {
+        snprintf(s_dsh_pending_preview, sizeof(s_dsh_pending_preview), "%s", instruction);
+        const size_t n = strlen(s_dsh_pending_preview);
+        if (n > 40) {
+            s_dsh_pending_preview[37] = '.';
+            s_dsh_pending_preview[38] = '.';
+            s_dsh_pending_preview[39] = '.';
+            s_dsh_pending_preview[40] = '\0';
+        }
+        if (s_dsh_phase == DSH_UI_IDLE) {
+            s_dsh_phase = DSH_UI_ARMED;
+        }
+    }
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        return;
+    }
+    /* 续聊时常收成 FAB；确认时展开，才能看见「发送/取消」 */
+    if (s_dsh_pending_preview[0] && s_minimized) {
+        expand_from_fab();
+    }
+    const bool card_open =
+        s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN) && s_skill_ui_active;
+    if (card_open && s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr && s_card_list) {
+        fill_list();
+    } else {
+        dsh_paint_status_strip();
+    }
+}
+
 void nodelio_skill_dsh_on_dispatched(const char *instruction)
 {
     if (s_dsh_phase == DSH_UI_IDLE && !s_dsh_focus_sess[0]) {
@@ -3408,6 +3681,7 @@ void nodelio_skill_dsh_on_dispatched(const char *instruction)
     }
     /* 无续聊焦点时仍 toast，避免「说了没反应」 */
     s_dsh_phase = DSH_UI_DISPATCHED;
+    s_dsh_dispatched_us = esp_timer_get_time();
     s_dsh_last_instr[0] = '\0';
     if (instruction && instruction[0]) {
         snprintf(s_dsh_last_instr, sizeof(s_dsh_last_instr), "%s", instruction);
@@ -3430,5 +3704,22 @@ void nodelio_skill_dsh_on_dispatched(const char *instruction)
         fill_list(); /* 列表或详情都会重画底栏/状态条 */
     } else if (card_open) {
         dsh_paint_status_strip();
+    }
+}
+
+void nodelio_skill_dsh_on_arm_cleared(void)
+{
+    if (s_dsh_phase != DSH_UI_ARMED && s_dsh_phase != DSH_UI_DISPATCHED) {
+        return;
+    }
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        dsh_clear_ui_phase();
+        return;
+    }
+    dsh_clear_ui_phase();
+    if (s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr && s_card_list &&
+        s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
+        fill_list();
     }
 }

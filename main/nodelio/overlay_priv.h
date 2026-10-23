@@ -7,6 +7,7 @@
 
 #include "display.h"
 
+#include <cJSON.h>
 #include <esp_err.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -223,6 +224,10 @@ void nl_ov_apps_set_visible(bool on);
 /** 有本地缓存则只画列表；无缓存才拉网。 */
 void nl_ov_apps_ensure(void);
 void nl_ov_apps_refresh(void);
+/** 从 GET /skills 或 /bootstrap 的 JSON root 写入已装列表并落盘 */
+void nl_ov_apps_ingest_skills_root(const cJSON *root);
+/** 从同上 JSON 写入首页钉选 */
+void nl_ov_home_skills_ingest_skills_root(const cJSON *root);
 /** 应用列表可滚对象；页隐藏或不可滚时返回 NULL */
 lv_obj_t *nl_ov_apps_scroll_obj(void);
 void nl_ov_close_settings_detail(void);
@@ -233,6 +238,8 @@ bool nl_ov_apps_open_by_query(const char *query);
 
 /** 派活：invoke dsh.task + instruction；空指令只提示不请求 */
 bool nl_ov_apps_invoke_dsh_task(const char *instruction);
+/** 拉 dsh.status；session 非空则直开详情，否则刷新进度列表（workspace 可空） */
+void nl_ov_apps_invoke_dsh_status(const char *workspace, const char *session);
 
 /* —— ai drawer —— */
 void nl_ov_create_ai_drawer(lv_obj_t *parent);

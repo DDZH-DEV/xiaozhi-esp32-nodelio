@@ -130,6 +130,13 @@ esp_err_t nodelio_layout_fetch(const nodelio_nvs_config_t *cfg, int known_versio
 esp_err_t nodelio_snapshot_fetch(const nodelio_nvs_config_t *cfg);
 
 /**
+ * GET …/panel/bootstrap：一枪 layout+snapshot+skills（并刷 last_seen）。
+ * 旧服 404 时返回 ESP_ERR_NOT_FOUND，调用方回退分拆接口。
+ */
+esp_err_t nodelio_bootstrap_fetch(const nodelio_nvs_config_t *cfg, int known_version,
+                                  nodelio_panel_layout_t *out_layout, bool *out_layout_changed);
+
+/**
  * POST …/panel/command。
  * value_str：开关用 "ON"/"OFF"/"TOGGLE"；PWM 用数字字符串；情景可空（用 bind.name）。
  * 返回 HTTP 状态码到 *http_status（可 NULL）；503→ESP_ERR_INVALID_STATE 供 UI 回滚。
@@ -138,11 +145,14 @@ esp_err_t nodelio_panel_command(const nodelio_nvs_config_t *cfg, const char *wid
                                 const nl_bind_t *bind, const char *value_str, int *http_status);
 
 /**
- * 起后台 kick 任务；若尚未成功过云端同步则同步拉 layout+snapshot 一次。
+ * 起后台 kick 任务；若尚未成功过云端同步则同步拉 bootstrap（layout+snapshot+skills）一次。
  * 策略：开机一次 + MQTT 推送（power snapshot ≥60s 限频；status force 不限）+ 设置页手动刷新；
- * 无定时轮询；语音会话中延后。应在 register 成功之后调用。
+ * 无定时轮询；语音会话中延后。旧服无 bootstrap 时回退 layout+snapshot。应在 register 成功之后调用。
  */
 esp_err_t nodelio_layout_start_poll(const nodelio_nvs_config_t *cfg);
+
+/** 开机云端 bootstrap/layout+snapshot 是否已成功过一次（失败后须重试，勿只靠重启）。 */
+bool nodelio_layout_cloud_ready(void);
 
 /**
  * 立即拉一次 layout + snapshot（设置页「刷新布局」，不受限频）。

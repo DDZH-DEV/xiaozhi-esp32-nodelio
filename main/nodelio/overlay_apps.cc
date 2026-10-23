@@ -91,12 +91,14 @@ static void render_list(void)
     if (s_item_n <= 0) {
         return;
     }
+    /* 与设置页一致：半宽两列 */
+    const int pad_x = 16;
+    const int tile_w = (LV_HOR_RES - pad_x * 2 - UI_GAP) / 2;
     for (int i = 0; i < s_item_n; i++) {
         const nl_app_item *it = &s_items[i];
         lv_obj_t *row = lv_obj_create(s_list);
         lv_obj_remove_style_all(row);
-        lv_obj_set_width(row, lv_pct(100));
-        lv_obj_set_height(row, 68);
+        lv_obj_set_size(row, tile_w, UI_SETTINGS_TILE_H);
         lv_obj_set_style_bg_color(row, UI_SURFACE, 0);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(row, UI_RADIUS_MD, 0);
@@ -104,12 +106,13 @@ static void render_list(void)
         lv_obj_set_style_border_color(row, UI_TILE_OFF_BORDER, 0);
         lv_obj_set_style_border_opa(row, LV_OPA_80, 0);
         lv_obj_set_style_pad_hor(row, 10, 0);
-        lv_obj_set_style_pad_column(row, 10, 0);
+        lv_obj_set_style_pad_column(row, 8, 0);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         if (it->enabled) {
             lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(row, 6);
             lv_obj_set_style_bg_color(row, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
             lv_obj_set_style_translate_y(row, 1, LV_STATE_PRESSED);
             lv_obj_add_event_cb(
@@ -193,9 +196,10 @@ static void render_list(void)
                                         spoken[0] = '\0';
                                         nodelio_skill_deliver_json(a->cfg, resp, false, spoken,
                                                                    sizeof(spoken));
-                                        /* DSH：只用文字 toast，禁止桥 WAV（会挂起 MQTT 导致再唤醒 hello 超时） */
+                                        /* DSH 列表：无 spoken.audio 仅 toast；详情 WAV 另走 announce_ex */
                                         if (strstr(a->id, "dsh") != nullptr && spoken[0]) {
-                                            nodelio_panel_ui_announce_spoken(spoken);
+                                            const char *au = nodelio_skill_last_spoken_audio_url();
+                                            nodelio_panel_ui_announce_spoken_ex(spoken, au);
                                         }
                                     } else if (err != ESP_OK || status == 0 || !resp[0]) {
                                         nodelio_panel_ui_toast_defer("服务器无响应");
@@ -244,19 +248,21 @@ static void render_list(void)
         lv_label_set_text(title, it->name[0] ? it->name : it->id);
         lv_obj_set_style_text_color(title, UI_TEXT, 0);
         lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(title, 250);
+        lv_obj_set_width(title, lv_pct(100));
         lv_obj_t *sub = lv_label_create(txt);
         nl_ov_set_font(sub);
-        lv_label_set_text(sub, it->desc[0] ? it->desc : "点按打开");
-        lv_obj_set_style_text_color(sub, UI_TEXT_MUTED, 0);
+        if (!it->enabled) {
+            lv_label_set_text(sub, "不可用");
+            lv_obj_set_style_text_color(sub, UI_TEXT_MUTED, 0);
+        } else if (it->desc[0]) {
+            lv_label_set_text(sub, it->desc);
+            lv_obj_set_style_text_color(sub, UI_TEXT_MUTED, 0);
+        } else {
+            lv_label_set_text(sub, "可用");
+            lv_obj_set_style_text_color(sub, UI_ACCENT_SOFT, 0);
+        }
         lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(sub, 250);
-
-        lv_obj_t *badge = lv_label_create(row);
-        nl_ov_set_font(badge);
-        lv_label_set_text(badge, it->enabled ? "可用" : "不可用");
-        lv_obj_set_style_text_color(badge, it->enabled ? UI_ACCENT_SOFT : UI_TEXT_MUTED, 0);
-        lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_width(sub, lv_pct(100));
     }
 }
 
@@ -338,34 +344,119 @@ static void load_disk_cache(void)
 static void apply_snap(nl_app_snap *snap)
 {
     Application::GetInstance().Schedule([snap]() {
-        DisplayLockGuard lock(nl_ov_disp());
         s_loading = false;
-        if (!lock) {
-            free(snap);
-            return;
-        }
         if (snap->err[0]) {
-            if (!s_have_list) {
-                s_item_n = 0;
-                set_hint(snap->err);
-                render_list();
-            } else {
-                nl_ov_toast(snap->err);
+            DisplayLockGuard lock(nl_ov_disp());
+            if (lock) {
+                if (!s_have_list) {
+                    s_item_n = 0;
+                    set_hint(snap->err);
+                    render_list();
+                } else {
+                    nl_ov_toast(snap->err);
+                }
             }
             free(snap);
             return;
         }
+        /* 先落盘再刷 UI：MQTT skills 推送时应用页可能未显示，锁失败也不能丢缓存 */
         s_item_n = snap->n;
         if (s_item_n > APP_MAX) {
             s_item_n = APP_MAX;
         }
         memcpy(s_items, snap->items, sizeof(nl_app_item) * (size_t)s_item_n);
         s_have_list = true;
-        set_hint(s_item_n > 0 ? "点按打开" : "暂无已安装应用");
-        render_list();
         persist_list();
-        /* 钉选可能变化：首页下次 ensure 再拉 */
         nl_ov_home_skills_invalidate();
+        {
+            DisplayLockGuard lock(nl_ov_disp());
+            if (lock) {
+                set_hint(s_item_n > 0 ? "点按打开" : "暂无已安装应用");
+                render_list();
+            }
+        }
+        free(snap);
+    });
+}
+
+static void fill_snap_from_skills_root(const cJSON *root, nl_app_snap *snap)
+{
+    if (!root || !snap) {
+        return;
+    }
+    const cJSON *skills = cJSON_GetObjectItemCaseSensitive(root, "skills");
+    if (cJSON_IsArray(skills)) {
+        const cJSON *it = nullptr;
+        cJSON_ArrayForEach(it, skills) {
+            if (snap->n >= APP_MAX) {
+                break;
+            }
+            nl_app_item *row = &snap->items[snap->n];
+            copy_field(row->id, sizeof(row->id), it, "skillId");
+            if (!row->id[0]) {
+                copy_field(row->id, sizeof(row->id), it, "instanceId");
+            }
+            if (!row->id[0] || skill_is_button_only(row->id)) {
+                continue;
+            }
+            copy_field(row->name, sizeof(row->name), it, "name");
+            copy_field(row->desc, sizeof(row->desc), it, "description");
+            const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
+            row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
+            snap->n++;
+        }
+    }
+    /* skills 截断/异常时回退瘦身 apps[] */
+    if (snap->n == 0) {
+        const cJSON *apps = cJSON_GetObjectItemCaseSensitive(root, "apps");
+        if (cJSON_IsArray(apps)) {
+            const cJSON *it = nullptr;
+            cJSON_ArrayForEach(it, apps) {
+                if (snap->n >= APP_MAX) {
+                    break;
+                }
+                nl_app_item *row = &snap->items[snap->n];
+                copy_field(row->id, sizeof(row->id), it, "instance_id");
+                if (!row->id[0]) {
+                    copy_field(row->id, sizeof(row->id), it, "app_id");
+                }
+                if (!row->id[0] || skill_is_button_only(row->id)) {
+                    continue;
+                }
+                copy_field(row->name, sizeof(row->name), it, "name");
+                copy_field(row->desc, sizeof(row->desc), it, "summary");
+                const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
+                row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
+                snap->n++;
+            }
+        }
+    }
+}
+
+void nl_ov_apps_ingest_skills_root(const cJSON *root)
+{
+    if (!root) {
+        return;
+    }
+    auto *snap = static_cast<nl_app_snap *>(calloc(1, sizeof(nl_app_snap)));
+    if (!snap) {
+        return;
+    }
+    fill_snap_from_skills_root(root, snap);
+    /* 同步落盘；UI 延后。不 invalidate 钉选——bootstrap 会紧接着 ingest pins */
+    s_item_n = snap->n > APP_MAX ? APP_MAX : snap->n;
+    if (s_item_n > 0) {
+        memcpy(s_items, snap->items, sizeof(nl_app_item) * (size_t)s_item_n);
+    }
+    s_have_list = true;
+    persist_list();
+    Application::GetInstance().Schedule([snap]() {
+        s_loading = false;
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            set_hint(s_item_n > 0 ? "点按打开" : "暂无已安装应用");
+            render_list();
+        }
         free(snap);
     });
 }
@@ -391,7 +482,8 @@ void nl_ov_apps_ensure(void)
 
 void nl_ov_apps_refresh(void)
 {
-    if (!s_page || s_loading) {
+    /* 不依赖 s_page：云端装/卸推 skills 时也要拉清单并 persist，否则重启仍读旧缓存 */
+    if (s_loading) {
         return;
     }
     if (!s_cfg.server_url[0] || !s_cfg.device_id[0]) {
@@ -467,53 +559,7 @@ void nl_ov_apps_refresh(void)
                         snprintf(snap->err, sizeof(snap->err), "列表过大");
                         ESP_LOGW(TAG, "list skills JSON parse fail len=%u", (unsigned)strlen(buf));
                     } else {
-                        const cJSON *skills = cJSON_GetObjectItemCaseSensitive(root, "skills");
-                        if (cJSON_IsArray(skills)) {
-                            const cJSON *it = nullptr;
-                            cJSON_ArrayForEach(it, skills) {
-                                if (snap->n >= APP_MAX) {
-                                    break;
-                                }
-                                nl_app_item *row = &snap->items[snap->n];
-                                copy_field(row->id, sizeof(row->id), it, "skillId");
-                                if (!row->id[0]) {
-                                    copy_field(row->id, sizeof(row->id), it, "instanceId");
-                                }
-                                if (!row->id[0] || skill_is_button_only(row->id)) {
-                                    continue;
-                                }
-                                copy_field(row->name, sizeof(row->name), it, "name");
-                                copy_field(row->desc, sizeof(row->desc), it, "description");
-                                const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
-                                row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
-                                snap->n++;
-                            }
-                        }
-                        /* skills 截断/异常时回退瘦身 apps[] */
-                        if (snap->n == 0) {
-                            const cJSON *apps = cJSON_GetObjectItemCaseSensitive(root, "apps");
-                            if (cJSON_IsArray(apps)) {
-                                const cJSON *it = nullptr;
-                                cJSON_ArrayForEach(it, apps) {
-                                    if (snap->n >= APP_MAX) {
-                                        break;
-                                    }
-                                    nl_app_item *row = &snap->items[snap->n];
-                                    copy_field(row->id, sizeof(row->id), it, "instance_id");
-                                    if (!row->id[0]) {
-                                        copy_field(row->id, sizeof(row->id), it, "app_id");
-                                    }
-                                    if (!row->id[0] || skill_is_button_only(row->id)) {
-                                        continue;
-                                    }
-                                    copy_field(row->name, sizeof(row->name), it, "name");
-                                    copy_field(row->desc, sizeof(row->desc), it, "summary");
-                                    const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
-                                    row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
-                                    snap->n++;
-                                }
-                            }
-                        }
+                        fill_snap_from_skills_root(root, snap);
                         cJSON_Delete(root);
                     }
                 }
@@ -582,6 +628,51 @@ static const char *find_installed_app_id(const char *app_key, bool prefer_status
     return fallback;
 }
 
+void nl_ov_apps_invoke_dsh_status(const char *workspace, const char *session)
+{
+    const char *sid = find_installed_app_id("dsh.status", true);
+    if (!sid) {
+        sid = "com.nodelio.dsh::dsh.status";
+    }
+    char ws_esc[220];
+    char sess_esc[160];
+    size_t wi = 0;
+    ws_esc[0] = '\0';
+    if (workspace && workspace[0]) {
+        for (const char *p = workspace; *p && wi + 2 < sizeof(ws_esc); ++p) {
+            if (*p == '\\' || *p == '"') {
+                ws_esc[wi++] = '\\';
+            }
+            ws_esc[wi++] = *p;
+        }
+        ws_esc[wi] = '\0';
+    }
+    sess_esc[0] = '\0';
+    if (session && session[0]) {
+        size_t si = 0;
+        for (const char *p = session; *p && si + 2 < sizeof(sess_esc); ++p) {
+            if (*p == '\\' || *p == '"') {
+                sess_esc[si++] = '\\';
+            }
+            sess_esc[si++] = *p;
+        }
+        sess_esc[si] = '\0';
+    }
+    /* ws_esc≤219 + sess_esc≤159 + 外壳 30 → ≤408 */
+    char body[420];
+    if (ws_esc[0] && sess_esc[0]) {
+        snprintf(body, sizeof(body), "{\"workspace\":\"%s\",\"session\":\"%s\"}", ws_esc, sess_esc);
+    } else if (sess_esc[0]) {
+        snprintf(body, sizeof(body), "{\"session\":\"%s\"}", sess_esc);
+    } else if (ws_esc[0]) {
+        snprintf(body, sizeof(body), "{\"workspace\":\"%s\"}", ws_esc);
+    } else {
+        snprintf(body, sizeof(body), "{}");
+    }
+    ESP_LOGI(TAG, "invoke dsh.status sid=%s body=%s", sid, body);
+    nl_ov_invoke_skill_async(sid, body);
+}
+
 bool nl_ov_apps_invoke_dsh_task(const char *instruction)
 {
     if (!instruction || !instruction[0]) {
@@ -643,7 +734,33 @@ bool nl_ov_apps_invoke_dsh_task(const char *instruction)
     ESP_LOGI(TAG, "invoke dsh.task sid=%s body=%s", sid, body);
     /* 续聊/派活发出瞬间：进度卡切「已投递」动画（HTTP 回包后会被真实列表覆盖） */
     nodelio_skill_dsh_on_dispatched(esc);
+    /* 保存工作区：task 回包后链式拉 status（arm 即将清空） */
+    char chain_ws[200];
+    snprintf(chain_ws, sizeof(chain_ws), "%s", ws);
     nl_ov_invoke_skill_async(sid, body);
+    /* 链式进度：稍后再拉，避免与 task 回包竞态盖掉 */
+    struct chain_arg {
+        char ws[200];
+    };
+    auto *ca = static_cast<chain_arg *>(malloc(sizeof(chain_arg)));
+    if (ca) {
+        snprintf(ca->ws, sizeof(ca->ws), "%s", chain_ws);
+        constexpr uint32_t kStack = 4096 / sizeof(StackType_t);
+        if (xTaskCreateWithCaps(
+                [](void *p) {
+                    auto *a = static_cast<chain_arg *>(p);
+                    vTaskDelay(pdMS_TO_TICKS(1200));
+                    nl_ov_apps_invoke_dsh_status(a->ws[0] ? a->ws : nullptr, nullptr);
+                    free(a);
+                    vTaskDeleteWithCaps(nullptr);
+                },
+                "nl_dsh_chain", kStack, ca, 2, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+            free(ca);
+            nl_ov_apps_invoke_dsh_status(chain_ws[0] ? chain_ws : nullptr, nullptr);
+        }
+    } else {
+        nl_ov_apps_invoke_dsh_status(chain_ws[0] ? chain_ws : nullptr, nullptr);
+    }
     nodelio_panel_ui_clear_dsh_arm();
     return true;
 }
@@ -760,34 +877,6 @@ void nl_ov_build_apps(void)
     lv_obj_add_flag(s_page, LV_OBJ_FLAG_HIDDEN);
     load_disk_cache();
 
-    lv_obj_t *hdr = lv_obj_create(s_page);
-    lv_obj_remove_style_all(hdr);
-    lv_obj_set_width(hdr, lv_pct(100));
-    lv_obj_set_height(hdr, 40);
-    lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *title = lv_label_create(hdr);
-    nl_ov_set_font(title);
-    lv_label_set_text(title, "已安装应用");
-    lv_obj_set_style_text_color(title, UI_TEXT, 0);
-
-    lv_obj_t *ref = lv_obj_create(hdr);
-    lv_obj_remove_style_all(ref);
-    lv_obj_set_size(ref, 36, 36);
-    lv_obj_set_style_radius(ref, 18, 0);
-    lv_obj_set_style_bg_color(ref, UI_CAPSULE_OFF, 0);
-    lv_obj_set_style_bg_opa(ref, LV_OPA_COVER, 0);
-    lv_obj_add_flag(ref, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(ref, 8);
-    lv_obj_add_event_cb(ref, [](lv_event_t *) { nl_ov_apps_refresh(); }, LV_EVENT_CLICKED, nullptr);
-    lv_obj_t *ric = lv_label_create(ref);
-    lv_obj_set_style_text_font(ric, &font_material_symbols_20_4, 0);
-    lv_label_set_text(ric, MATERIAL_SYMBOLS_REFRESH);
-    lv_obj_set_style_text_color(ric, UI_ACCENT_SOFT, 0);
-    lv_obj_center(ric);
-
     s_hint = lv_label_create(s_page);
     nl_ov_set_font(s_hint);
     lv_label_set_text(s_hint, "");
@@ -798,9 +887,39 @@ void nl_ov_build_apps(void)
     lv_obj_remove_style_all(s_list);
     lv_obj_set_width(s_list, lv_pct(100));
     lv_obj_set_flex_grow(s_list, 1);
-    lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(s_list, 8, 0);
+    lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(s_list, UI_GAP, 0);
+    lv_obj_set_style_pad_column(s_list, UI_GAP, 0);
+    lv_obj_set_style_pad_bottom(s_list, 56, 0); /* 避让右下刷新 FAB */
     lv_obj_add_flag(s_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_OFF);
+
+    /* 右下角浮动刷新 */
+    lv_obj_t *ref = lv_obj_create(s_page);
+    lv_obj_remove_style_all(ref);
+    lv_obj_set_size(ref, 48, 48);
+    lv_obj_set_style_radius(ref, 24, 0);
+    lv_obj_set_style_bg_color(ref, UI_SURFACE, 0);
+    lv_obj_set_style_bg_opa(ref, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ref, 2, 0);
+    lv_obj_set_style_border_color(ref, UI_ACCENT, 0);
+    lv_obj_set_style_border_opa(ref, 200, 0);
+    lv_obj_set_style_shadow_width(ref, 14, 0);
+    lv_obj_set_style_shadow_opa(ref, LV_OPA_40, 0);
+    lv_obj_set_style_shadow_color(ref, UI_ACCENT, 0);
+    lv_obj_set_style_bg_color(ref, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_translate_y(ref, 1, LV_STATE_PRESSED);
+    lv_obj_add_flag(ref, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_FLOATING |
+                                         LV_OBJ_FLAG_IGNORE_LAYOUT));
+    lv_obj_set_ext_click_area(ref, 10);
+    lv_obj_align(ref, LV_ALIGN_BOTTOM_RIGHT, -2, -2);
+    lv_obj_add_event_cb(ref, [](lv_event_t *) { nl_ov_apps_refresh(); }, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *ric = lv_label_create(ref);
+    lv_obj_set_style_text_font(ric, &font_material_symbols_20_4, 0);
+    lv_label_set_text(ric, MATERIAL_SYMBOLS_REFRESH);
+    lv_obj_set_style_text_color(ric, UI_ACCENT_SOFT, 0);
+    lv_obj_center(ric);
+    lv_obj_move_foreground(ref);
 }

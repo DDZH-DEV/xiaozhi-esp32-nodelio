@@ -14,6 +14,8 @@
 static const char *TAG = "nl_skill";
 
 static char s_last_spoken_audio[NL_ENV_URL];
+static int s_last_spoken_audio_n;
+static char s_last_spoken_audios[NL_ENV_SPOKEN_AUDIO_MAX][NL_ENV_URL];
 
 bool nodelio_skill_id_is_music(const char *skill_id)
 {
@@ -74,11 +76,12 @@ void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *jso
     const bool ok = strcmp(env->status, "ok") == 0;
     const bool play = ok && caps && (env->auto_play || auto_play_first);
     ESP_LOGI(TAG,
-             "deliver play=%d env_ap=%d force=%d caps=%d ok=%d card=%s app=%s tracks=%d url0=%d title=%s",
+             "deliver play=%d env_ap=%d force=%d caps=%d ok=%d card=%s app=%s tracks=%d url0=%d "
+             "spoken_wav=%d title=%s",
              play ? 1 : 0, env->auto_play ? 1 : 0, auto_play_first ? 1 : 0, caps ? 1 : 0, ok ? 1 : 0,
              env->card_type[0] ? env->card_type : "-", env->app_id[0] ? env->app_id : "-",
              env->track_n, (env->track_n > 0 && env->tracks[0].playback_url[0]) ? 1 : 0,
-             env->display_title[0] ? env->display_title : "-");
+             env->spoken_audio_url[0] ? 1 : 0, env->display_title[0] ? env->display_title : "-");
     nodelio_skill_result_show(cfg, env, play);
 
     if (spoken_out && spoken_len) {
@@ -86,8 +89,23 @@ void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *jso
     }
     /* 供本地 open_app 播报；MCP 路径只取 spoken 文本交模型，勿在此 EndVoiceSession */
     s_last_spoken_audio[0] = '\0';
-    if (env->spoken_audio_url[0]) {
+    s_last_spoken_audio_n = 0;
+    for (int i = 0; i < NL_ENV_SPOKEN_AUDIO_MAX; i++) {
+        s_last_spoken_audios[i][0] = '\0';
+    }
+    if (env->spoken_audio_n > 0) {
+        s_last_spoken_audio_n =
+            env->spoken_audio_n < NL_ENV_SPOKEN_AUDIO_MAX ? env->spoken_audio_n : NL_ENV_SPOKEN_AUDIO_MAX;
+        for (int i = 0; i < s_last_spoken_audio_n; i++) {
+            snprintf(s_last_spoken_audios[i], sizeof(s_last_spoken_audios[i]), "%s",
+                     env->spoken_audio_urls[i]);
+        }
+        snprintf(s_last_spoken_audio, sizeof(s_last_spoken_audio), "%s", s_last_spoken_audios[0]);
+    } else if (env->spoken_audio_url[0]) {
         snprintf(s_last_spoken_audio, sizeof(s_last_spoken_audio), "%s", env->spoken_audio_url);
+        snprintf(s_last_spoken_audios[0], sizeof(s_last_spoken_audios[0]), "%s",
+                 env->spoken_audio_url);
+        s_last_spoken_audio_n = 1;
     }
     /* detail_body 已由 show 深拷走；此处释放解析侧副本 */
     if (env->detail_body) {
@@ -100,4 +118,23 @@ void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *jso
 const char *nodelio_skill_last_spoken_audio_url(void)
 {
     return s_last_spoken_audio[0] ? s_last_spoken_audio : NULL;
+}
+
+int nodelio_skill_last_spoken_audio_urls(char (*urls)[NL_ENV_URL], int max_n)
+{
+    if (!urls || max_n <= 0) {
+        return 0;
+    }
+    int n = s_last_spoken_audio_n;
+    if (n > max_n) {
+        n = max_n;
+    }
+    if (n > NL_ENV_SPOKEN_AUDIO_MAX) {
+        n = NL_ENV_SPOKEN_AUDIO_MAX;
+    }
+    for (int i = 0; i < n; i++) {
+        memcpy(urls[i], s_last_spoken_audios[i], NL_ENV_URL);
+        urls[i][NL_ENV_URL - 1] = '\0';
+    }
+    return n;
 }

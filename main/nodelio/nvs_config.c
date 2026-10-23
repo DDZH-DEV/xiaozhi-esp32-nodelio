@@ -3,6 +3,7 @@
 #include <nvs.h>
 #include <nvs_flash.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 /* LVGL 任务栈在 PSRAM：禁 cache 读 flash 时不可用 → 回调内禁止 nvs_load/save */
@@ -540,4 +541,125 @@ void nodelio_nvs_clear_mqtt(nodelio_nvs_config_t *cfg)
 bool nodelio_nvs_has_wifi(const nodelio_nvs_config_t *cfg)
 {
     return cfg && cfg->wifi_ssid[0] != '\0';
+}
+
+static nodelio_conn_hist_t s_conn_hist;
+static bool s_conn_hist_ok;
+static const char *CONN_HIST_KEY = "conn_hist";
+
+void nodelio_conn_hist_cache_get(nodelio_conn_hist_t *out)
+{
+    if (!out) {
+        return;
+    }
+    if (s_conn_hist_ok) {
+        *out = s_conn_hist;
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+}
+
+void nodelio_conn_hist_cache_put(const nodelio_conn_hist_t *in)
+{
+    if (!in) {
+        return;
+    }
+    s_conn_hist = *in;
+    s_conn_hist_ok = true;
+}
+
+esp_err_t nodelio_conn_hist_load(nodelio_conn_hist_t *out)
+{
+    nodelio_conn_hist_t tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NODELIO_NVS_NS, NVS_READONLY, &h);
+    if (err != ESP_OK) {
+        if (out) {
+            *out = tmp;
+        }
+        s_conn_hist = tmp;
+        s_conn_hist_ok = true;
+        return err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
+    }
+    size_t len = sizeof(tmp);
+    err = nvs_get_blob(h, CONN_HIST_KEY, &tmp, &len);
+    nvs_close(h);
+    if (err != ESP_OK || len < sizeof(uint8_t)) {
+        memset(&tmp, 0, sizeof(tmp));
+    } else if (tmp.n > NODELIO_CONN_HIST_MAX) {
+        tmp.n = NODELIO_CONN_HIST_MAX;
+    }
+    s_conn_hist = tmp;
+    s_conn_hist_ok = true;
+    if (out) {
+        *out = tmp;
+    }
+    return ESP_OK;
+}
+
+esp_err_t nodelio_conn_hist_save(const nodelio_conn_hist_t *in)
+{
+    if (!in) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    nodelio_conn_hist_t tmp = *in;
+    if (tmp.n > NODELIO_CONN_HIST_MAX) {
+        tmp.n = NODELIO_CONN_HIST_MAX;
+    }
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NODELIO_NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_blob(h, CONN_HIST_KEY, &tmp, sizeof(tmp));
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    if (err == ESP_OK) {
+        s_conn_hist = tmp;
+        s_conn_hist_ok = true;
+    }
+    return err;
+}
+
+void nodelio_conn_hist_push(nodelio_conn_hist_t *h, bool https, const char *host, const char *port,
+                            const char *owner)
+{
+    if (!h || !host || !host[0]) {
+        return;
+    }
+    const char *p = (port && port[0]) ? port : "8899";
+    const char *o = owner ? owner : "";
+    int found = -1;
+    for (int i = 0; i < (int)h->n && i < NODELIO_CONN_HIST_MAX; i++) {
+        if ((h->e[i].https ? 1 : 0) == (https ? 1 : 0) && strcmp(h->e[i].host, host) == 0 &&
+            strcmp(h->e[i].port, p) == 0) {
+            found = i;
+            break;
+        }
+    }
+    nodelio_conn_hist_entry_t ent;
+    memset(&ent, 0, sizeof(ent));
+    snprintf(ent.host, sizeof(ent.host), "%s", host);
+    snprintf(ent.port, sizeof(ent.port), "%s", p);
+    snprintf(ent.owner, sizeof(ent.owner), "%s", o);
+    ent.https = https ? 1 : 0;
+    if (found >= 0) {
+        for (int i = found; i > 0; i--) {
+            h->e[i] = h->e[i - 1];
+        }
+        h->e[0] = ent;
+        return;
+    }
+    uint8_t n = h->n;
+    if (n < NODELIO_CONN_HIST_MAX) {
+        n++;
+    }
+    for (int i = (int)n - 1; i > 0; i--) {
+        h->e[i] = h->e[i - 1];
+    }
+    h->e[0] = ent;
+    h->n = n;
 }

@@ -48,11 +48,16 @@ void nodelio_panel_ui_toast(const char *text);
 /** MQTT kind=skills：invalidate 已装清单后再拉一次（无市场轮询）. */
 void nodelio_panel_ui_skills_changed(void);
 
+/** bootstrap /skills 响应：同步写入已装列表与钉选（可无 UI 锁）；随后 Schedule 刷 UI. */
+void nodelio_panel_ui_apply_skills_http_body(const char *json);
+
 /**
  * MQTT kind=skill_hint：按 app_id / instance_id 触发一次技能 invoke（拉最新 Envelope）。
+ * reason：needs_you / completed（可空）；session：有则直开该会话详情。
  * 仅事件驱动；禁止在固件侧轮询。
  */
-void nodelio_panel_ui_skill_hint(const char *app_or_instance_id);
+void nodelio_panel_ui_skill_hint(const char *app_or_instance_id, const char *reason,
+                                 const char *session);
 
 /** 本地口令提示音（主任务播 OGG）；0=听令 1=成功 2=失败 */
 void nodelio_panel_ui_play_cue(int cue);
@@ -61,12 +66,15 @@ void nodelio_panel_ui_play_cue(int cue);
 void nodelio_panel_ui_toast_defer(const char *text);
 
 /**
- * 技能摘要上屏 + 小智云 TTS 播报（listen detect；不用桥侧 WAV）。
- * spoken 宜短（≤约 200 字节）。MCP invoke 返回值仍可由模型直接播报。
+ * 技能摘要上屏 + toast；有 audio_url（桥 SAPI WAV）则 Idle 后 HTTP 播报。
+ * 云 listen.detect 不可朗读正文。MCP 路径仍可由模型直接播报。
  */
 void nodelio_panel_ui_announce_spoken(const char *text);
-/** audio_url 已忽略（保留签名兼容）；一律走小智云 TTS。 */
+/** audio_url 非空 → StartNotification；否则仅 toast/上屏。 */
 void nodelio_panel_ui_announce_spoken_ex(const char *text, const char *audio_url);
+/** 多段 WAV 连续播（urls[0..n)）；n≤0 则退回 toast。 */
+void nodelio_panel_ui_announce_spoken_playlist(const char *text, const char (*urls)[320], int n);
+/* urls 行宽与 NL_ENV_URL(320) 一致 */
 
 /**
  * 语音状态写入助手页预埋区（开机已建好的定宽标签，只改字不改布局）.
@@ -215,6 +223,22 @@ bool nodelio_panel_ui_open_app(const char *name_or_id);
  * 若已 arm 工作区/会话，body 会带上 workspace/session。
  */
 bool nodelio_panel_ui_dsh_task(const char *instruction);
+
+/**
+ * 续聊武装后：先缓存 instruction，屏上确认后再 dsh.task。
+ * 说「是/好」或点「发送」→ 投递；「不用/取消」或点「取消」→ 丢弃并继续开麦。
+ */
+bool nodelio_panel_ui_dsh_confirm_send(const char *instruction);
+/**
+ * STT 处理待确认句。
+ * @return 0 未处理；1 已确认发送（可结束语音）；2 取消/改口（保持开麦）。
+ */
+int nodelio_panel_ui_dsh_try_confirm_send(const char *stt);
+void nodelio_panel_ui_dsh_confirm_accept(void);
+void nodelio_panel_ui_dsh_confirm_reject(void);
+bool nodelio_panel_ui_dsh_has_pending_send(void);
+/** 读待确认指令（可空）；无则 dst 置空串。 */
+void nodelio_panel_ui_dsh_get_pending_send(char *dst, size_t dst_len);
 
 /** 列表「派活/续聊」：武装下次「让它…」或武装直说（可空）。 */
 void nodelio_panel_ui_arm_dsh(const char *workspace, const char *session);

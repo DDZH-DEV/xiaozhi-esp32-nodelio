@@ -216,7 +216,8 @@ export function displayTaskTitle(session, folded) {
 export function displayTaskSubtitle(liveStatus, folded, needsYou) {
   const f = folded ?? {};
   if (needsYou) {
-    return clip('等你确认 · 点允许或拒绝', 120);
+    /* 具体文案由 taskRow 按 notice 类型覆盖（审批≠多选提问） */
+    return clip('等你确认', 120);
   }
   const st = String(liveStatus ?? '');
   if (st === 'running' || f.running) {

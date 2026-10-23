@@ -82,6 +82,8 @@ public:
     virtual void SetPowerSaveLevel(PowerSaveLevel level) = 0;
     /** 触控/按键交互时重置息屏计时（默认空操作）。 */
     virtual void NoteUserActivity() {}
+    /** 墙板背光已灭（PowerSaveTimer 息屏中）；默认 false。 */
+    virtual bool IsInSleepMode() const { return false; }
     /** 运行时更新空闲息屏秒数（墙板省电设置）；默认空操作。 */
     virtual void SetIdleSleepSeconds(int seconds) { (void)seconds; }
     /** 运行时更新空闲断网秒数（墙板，与息屏独立）；默认空操作。 */

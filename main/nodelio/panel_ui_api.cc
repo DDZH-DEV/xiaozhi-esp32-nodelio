@@ -15,6 +15,7 @@
 #include "offline_cmd.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
+#include "skill_result_ui.h"
 #include "ssid_manager.h"
 #include "system_info.h"
 #include "ui_theme.h"
@@ -46,6 +47,7 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <strings.h>
 
 #define TAG "nl_pui"
@@ -187,36 +189,70 @@ extern "C" void nodelio_panel_ui_announce_spoken(const char *text)
 
 extern "C" void nodelio_panel_ui_announce_spoken_ex(const char *text, const char *audio_url)
 {
-    (void)audio_url; /* 桥 WAV 生硬且挂 MQTT；统一小智云 TTS */
-    if (!text || !text[0]) {
+    if (audio_url && audio_url[0]) {
+        char one[320];
+        snprintf(one, sizeof(one), "%s", audio_url);
+        const char (*rows)[320] = reinterpret_cast<const char (*)[320]>(&one);
+        nodelio_panel_ui_announce_spoken_playlist(text, rows, 1);
         return;
     }
-    char *copy = strdup(text);
+    nodelio_panel_ui_announce_spoken_playlist(text, nullptr, 0);
+}
+
+extern "C" void nodelio_panel_ui_announce_spoken_playlist(const char *text, const char (*urls)[320],
+                                                          int n)
+{
+    if ((!text || !text[0]) && n <= 0) {
+        return;
+    }
+    char *copy = (text && text[0]) ? strdup(text) : strdup("");
     if (!copy) {
         return;
     }
-    Application::GetInstance().Schedule([copy]() {
+    char (*url_copy)[320] = nullptr;
+    int url_n = 0;
+    if (urls && n > 0) {
+        url_n = n > 6 ? 6 : n;
+        url_copy = static_cast<char (*)[320]>(calloc((size_t)url_n, sizeof(*url_copy)));
+        if (url_copy) {
+            for (int i = 0; i < url_n; i++) {
+                snprintf(url_copy[i], 320, "%s", urls[i]);
+            }
+        } else {
+            url_n = 0;
+        }
+    }
+    Application::GetInstance().Schedule([copy, url_copy, url_n]() {
         auto &app = Application::GetInstance();
         auto *disp = Board::GetInstance().GetDisplay();
-        if (disp) {
+        if (disp && copy[0]) {
             disp->SetChatMessage("assistant", copy);
         }
-        {
+        if (copy[0]) {
             DisplayLockGuard lock(nl_ov_disp());
             if (lock) {
                 nodelio_overlay_on_chat_locked("助手", copy);
-                /* 技能卡打开时勿再弹 AI 抽屉；云 TTS 仍可播 */
                 if (nl_ov_ai_session_active() && !s_skill_ui_active) {
                     nodelio_overlay_show_chat();
                 }
             }
+            char tip[64];
+            snprintf(tip, sizeof(tip), "%.56s", copy);
+            nl_ov_toast(tip);
         }
-        char tip[64];
-        snprintf(tip, sizeof(tip), "%.56s", copy);
-        nl_ov_toast(tip);
-        ESP_LOGI(TAG, "announce_spoken → xiaozhi cloud tts");
-        app.PlaySpokenAfterLocalSkill(copy);
+        if (url_copy && url_n > 0) {
+            const char *ptrs[6] = {};
+            for (int i = 0; i < url_n && i < 6; i++) {
+                ptrs[i] = url_copy[i];
+            }
+            ESP_LOGI(TAG, "announce_spoken → bridge wav playlist n=%d", url_n);
+            app.PlaySpokenPlaylistAfterLocalSkill(copy, ptrs, url_n);
+        } else {
+            ESP_LOGI(TAG, "announce_spoken → toast only");
+            app.PlaySpokenAfterLocalSkill(copy, nullptr);
+        }
         free(copy);
+        free(url_copy);
     });
 }
 
@@ -229,10 +265,58 @@ extern "C" void nodelio_panel_ui_skills_changed(void)
     });
 }
 
-extern "C" void nodelio_panel_ui_skill_hint(const char *app_or_instance_id)
+extern "C" void nodelio_panel_ui_apply_skills_http_body(const char *json)
 {
-    /* 复用 open_app：按名/id 找到已装技能并 invoke 一次（事件驱动，无轮询） */
-    (void)nodelio_panel_ui_open_app(app_or_instance_id);
+    if (!json || !json[0]) {
+        return;
+    }
+    cJSON *root = cJSON_Parse(json);
+    if (!root) {
+        ESP_LOGW(TAG, "apply skills body parse fail");
+        return;
+    }
+    nl_ov_apps_ingest_skills_root(root);
+    nl_ov_home_skills_ingest_skills_root(root);
+    cJSON_Delete(root);
+}
+
+extern "C" void nodelio_panel_ui_skill_hint(const char *app_or_instance_id, const char *reason,
+                                            const char *session)
+{
+    char *id_copy = nullptr;
+    char *reason_copy = nullptr;
+    char *sess_copy = nullptr;
+    if (app_or_instance_id && app_or_instance_id[0]) {
+        id_copy = strdup(app_or_instance_id);
+    }
+    if (reason && reason[0]) {
+        reason_copy = strdup(reason);
+    }
+    if (session && session[0]) {
+        sess_copy = strdup(session);
+    }
+    Application::GetInstance().Schedule([id_copy, reason_copy, sess_copy]() {
+        if (reason_copy && strcmp(reason_copy, "needs_you") == 0) {
+            nl_ov_toast("有任务等你确认");
+        } else if (reason_copy && strcmp(reason_copy, "completed") == 0) {
+            nl_ov_toast("有任务已完成");
+        }
+        /* 有 session → 直开详情；否则刷新进度列表 */
+        if (sess_copy && sess_copy[0]) {
+            nl_ov_apps_invoke_dsh_status(nullptr, sess_copy);
+        } else if (id_copy && id_copy[0]) {
+            if (strstr(id_copy, "dsh") != nullptr) {
+                nl_ov_apps_invoke_dsh_status(nullptr, nullptr);
+            } else {
+                (void)nodelio_panel_ui_open_app(id_copy);
+            }
+        } else {
+            nl_ov_apps_invoke_dsh_status(nullptr, nullptr);
+        }
+        free(id_copy);
+        free(reason_copy);
+        free(sess_copy);
+    });
 }
 
 extern "C" void nodelio_panel_ui_play_cue(int cue)
@@ -576,6 +660,104 @@ extern "C" bool nodelio_panel_ui_open_app(const char *name_or_id)
 
 static char s_dsh_arm_ws[200];
 static char s_dsh_arm_sess[80];
+static char s_dsh_pending_instr[200];
+static esp_timer_handle_t s_dsh_arm_timer;
+
+static void dsh_pending_clear(void)
+{
+    s_dsh_pending_instr[0] = '\0';
+    nodelio_skill_dsh_on_confirm_pending(nullptr);
+}
+
+static void dsh_arm_timer_stop(void)
+{
+    if (s_dsh_arm_timer) {
+        esp_timer_stop(s_dsh_arm_timer);
+    }
+}
+
+/** 剥标点后的短肯定/否定（与打开 DSH 确认同口径）。 */
+static void dsh_norm_stt(const char *text, char *buf, size_t buf_len)
+{
+    if (!buf || buf_len == 0) {
+        return;
+    }
+    buf[0] = '\0';
+    if (!text) {
+        return;
+    }
+    size_t n = 0;
+    for (const char *p = text; *p && n + 1 < buf_len; ++p) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '.' || c == '?' || c == '!' || c == ',' || c == ' ' || c == '\t') {
+            continue;
+        }
+        if ((c == 0xE3 && (unsigned char)p[1] == 0x80 &&
+             ((unsigned char)p[2] == 0x82 || (unsigned char)p[2] == 0x81)) ||
+            (c == 0xEF && (unsigned char)p[1] == 0xBC &&
+             ((unsigned char)p[2] == 0x9F || (unsigned char)p[2] == 0x81 ||
+              (unsigned char)p[2] == 0x8C))) {
+            p += 2;
+            continue;
+        }
+        buf[n++] = *p;
+    }
+    buf[n] = '\0';
+}
+
+static bool dsh_stt_is_yes(const char *norm)
+{
+    if (!norm || !norm[0]) {
+        return false;
+    }
+    return strcmp(norm, "是的") == 0 || strcmp(norm, "是") == 0 || strcmp(norm, "好的") == 0 ||
+           strcmp(norm, "好") == 0 || strcmp(norm, "嗯") == 0 || strcmp(norm, "行") == 0 ||
+           strcmp(norm, "可以") == 0 || strcmp(norm, "对") == 0 || strcmp(norm, "要") == 0 ||
+           strcmp(norm, "发送") == 0 || strcmp(norm, "确认") == 0 || strcmp(norm, "发吧") == 0 ||
+           strcmp(norm, "发") == 0 || strstr(norm, "发送吧") != nullptr;
+}
+
+static bool dsh_stt_is_no(const char *norm)
+{
+    if (!norm || !norm[0]) {
+        return false;
+    }
+    return strcmp(norm, "不") == 0 || strcmp(norm, "不用") == 0 || strcmp(norm, "不要") == 0 ||
+           strcmp(norm, "算了") == 0 || strcmp(norm, "取消") == 0 || strcmp(norm, "重说") == 0 ||
+           strstr(norm, "不用了") != nullptr || strstr(norm, "重新说") != nullptr;
+}
+
+static void dsh_arm_timeout_cb(void *arg)
+{
+    (void)arg;
+    Application::GetInstance().Schedule([]() {
+        if (!nodelio_panel_ui_dsh_is_armed()) {
+            return;
+        }
+        nodelio_panel_ui_clear_dsh_arm();
+        nodelio_skill_dsh_on_arm_cleared();
+        nl_ov_toast("续聊已超时取消");
+    });
+}
+
+static void dsh_arm_timer_restart(void)
+{
+    if (!s_dsh_arm_timer) {
+        const esp_timer_create_args_t args = {
+            .callback = &dsh_arm_timeout_cb,
+            .arg = nullptr,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "dsh_arm",
+            .skip_unhandled_events = true,
+        };
+        if (esp_timer_create(&args, &s_dsh_arm_timer) != ESP_OK) {
+            s_dsh_arm_timer = nullptr;
+            return;
+        }
+    }
+    esp_timer_stop(s_dsh_arm_timer);
+    esp_timer_start_once(s_dsh_arm_timer, 60 * 1000000ULL);
+}
 
 extern "C" void nodelio_panel_ui_arm_dsh(const char *workspace, const char *session)
 {
@@ -588,12 +770,15 @@ extern "C" void nodelio_panel_ui_arm_dsh(const char *workspace, const char *sess
         snprintf(s_dsh_arm_sess, sizeof(s_dsh_arm_sess), "%s", session);
     }
     ESP_LOGI(TAG, "arm dsh ws='%s' sess='%s'", s_dsh_arm_ws, s_dsh_arm_sess);
+    dsh_arm_timer_restart();
 }
 
 extern "C" void nodelio_panel_ui_clear_dsh_arm(void)
 {
+    dsh_arm_timer_stop();
     s_dsh_arm_ws[0] = '\0';
     s_dsh_arm_sess[0] = '\0';
+    dsh_pending_clear();
 }
 
 extern "C" bool nodelio_panel_ui_dsh_is_armed(void)
@@ -610,6 +795,19 @@ extern "C" void nodelio_panel_ui_get_dsh_arm(char *workspace, size_t ws_len, cha
     if (session && sess_len) {
         snprintf(session, sess_len, "%s", s_dsh_arm_sess);
     }
+}
+
+extern "C" bool nodelio_panel_ui_dsh_has_pending_send(void)
+{
+    return s_dsh_pending_instr[0] != '\0';
+}
+
+extern "C" void nodelio_panel_ui_dsh_get_pending_send(char *dst, size_t dst_len)
+{
+    if (!dst || dst_len == 0) {
+        return;
+    }
+    snprintf(dst, dst_len, "%s", s_dsh_pending_instr);
 }
 
 extern "C" bool nodelio_panel_ui_dsh_task(const char *instruction)
@@ -630,6 +828,95 @@ extern "C" bool nodelio_panel_ui_dsh_task(const char *instruction)
         free(copy);
     });
     return true;
+}
+
+extern "C" bool nodelio_panel_ui_dsh_confirm_send(const char *instruction)
+{
+    if (!instruction || !instruction[0]) {
+        return false;
+    }
+    if (!nodelio_panel_ui_dsh_is_armed()) {
+        /* 无武装则直接派活（「让它…」路径） */
+        return nodelio_panel_ui_dsh_task(instruction);
+    }
+    snprintf(s_dsh_pending_instr, sizeof(s_dsh_pending_instr), "%s", instruction);
+    dsh_arm_timer_restart();
+    Board::GetInstance().NoteUserActivity();
+    /* toast 只预览前缀，完整句在状态条 / pending（勿用 %s 拷满长串，躲 -Wformat-truncation） */
+    char toast[128];
+    static const char kPrefix[] = "确认发送？";
+    const size_t pre_len = sizeof(kPrefix) - 1;
+    memcpy(toast, kPrefix, pre_len);
+    const size_t room = sizeof(toast) - pre_len - 1;
+    const size_t n = strnlen(s_dsh_pending_instr, room);
+    memcpy(toast + pre_len, s_dsh_pending_instr, n);
+    toast[pre_len + n] = '\0';
+    Application::GetInstance().Schedule([toast_copy = std::string(toast),
+                                         instr = std::string(s_dsh_pending_instr)]() {
+        nl_ov_toast(toast_copy.c_str());
+        nodelio_skill_dsh_on_confirm_pending(instr.c_str());
+    });
+    ESP_LOGI(TAG, "dsh confirm pending '%s'", s_dsh_pending_instr);
+    return true;
+}
+
+extern "C" void nodelio_panel_ui_dsh_confirm_accept(void)
+{
+    if (!s_dsh_pending_instr[0]) {
+        return;
+    }
+    char instr[200];
+    snprintf(instr, sizeof(instr), "%s", s_dsh_pending_instr);
+    s_dsh_pending_instr[0] = '\0';
+    ESP_LOGI(TAG, "dsh confirm accept '%s'", instr);
+    Board::GetInstance().NoteUserActivity();
+    /* 统一丢到主任务：收确认条 + 投递（避免 LVGL 回调里嵌套 DisplayLock） */
+    Application::GetInstance().Schedule([instr_copy = std::string(instr)]() {
+        nodelio_skill_dsh_on_confirm_pending(nullptr);
+        if (!nodelio_overlay_visible()) {
+            nodelio_overlay_show(false);
+        }
+        (void)nl_ov_apps_invoke_dsh_task(instr_copy.c_str());
+    });
+}
+
+extern "C" void nodelio_panel_ui_dsh_confirm_reject(void)
+{
+    if (!s_dsh_pending_instr[0]) {
+        return;
+    }
+    ESP_LOGI(TAG, "dsh confirm reject '%s'", s_dsh_pending_instr);
+    s_dsh_pending_instr[0] = '\0';
+    dsh_arm_timer_restart();
+    Board::GetInstance().NoteUserActivity();
+    Application::GetInstance().Schedule([]() {
+        nl_ov_toast("已取消，请重新说");
+        nodelio_skill_dsh_on_confirm_pending(nullptr);
+    });
+}
+
+extern "C" int nodelio_panel_ui_dsh_try_confirm_send(const char *stt)
+{
+    if (!s_dsh_pending_instr[0] || !stt || !stt[0]) {
+        return 0;
+    }
+    char norm[64];
+    dsh_norm_stt(stt, norm, sizeof(norm));
+    if (dsh_stt_is_yes(norm)) {
+        nodelio_panel_ui_dsh_confirm_accept();
+        return 1;
+    }
+    if (dsh_stt_is_no(norm)) {
+        nodelio_panel_ui_dsh_confirm_reject();
+        return 2;
+    }
+    /* 其它话当作改口：整句替换待确认内容 */
+    if (strlen(norm) >= 2) {
+        ESP_LOGI(TAG, "dsh confirm replace → '%s'", stt);
+        (void)nodelio_panel_ui_dsh_confirm_send(stt);
+        return 2;
+    }
+    return 0;
 }
 
 extern "C" void nodelio_panel_ui_snapshot_begin(void)

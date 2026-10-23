@@ -1,5 +1,6 @@
 #pragma once
 
+#include "content_envelope.h"
 #include "nvs_config.h"
 
 #include <stdbool.h>
@@ -21,6 +22,8 @@ void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *jso
 
 /** 最近一次 deliver 的 spoken.audio.url（无则 NULL）；供本地 announce 播报。 */
 const char *nodelio_skill_last_spoken_audio_url(void);
+/** 连续播报：写入 urls[0..n)，最多 max_n；返回段数。 */
+int nodelio_skill_last_spoken_audio_urls(char (*urls)[NL_ENV_URL], int max_n);
 
 #ifdef __cplusplus
 }

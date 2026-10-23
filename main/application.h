@@ -144,10 +144,12 @@ public:
     /** 本地技能完成：清抑制、关语音通道回 Idle，恢复唤醒。 */
     void EndVoiceSessionAfterLocalSkill();
     /**
-     * 本地技能摘要：走小智云 TTS（listen detect），不用桥侧 WAV（生硬且会挂 MQTT）。
-     * text 为空则仅结束本轮语音回 Idle。
+     * 本地技能摘要播报。云端 listen.detect 仅唤醒词，不可朗读正文。
+     * 有 audio_url（桥 SAPI WAV）→ Idle 后 StartNotification；无 URL → 仅 toast/上屏。
      */
-    void PlaySpokenAfterLocalSkill(const char *text);
+    void PlaySpokenAfterLocalSkill(const char *text, const char *audio_url = nullptr);
+    /** 多段 WAV 连续播；urls[0] 先播，其余入队。 */
+    void PlaySpokenPlaylistAfterLocalSkill(const char *text, const char *const *urls, int n);
 #endif
     
     /**
@@ -194,9 +196,12 @@ private:
     bool TryConfirmOpenDshFromStt(const char *text);
     void LocalOpenDshStatus(const char *reason);
     int64_t dsh_local_open_cooldown_until_us_ = 0; /* 本地已开列表，忽略云端否认再开 */
-    std::string pending_spoken_notify_url_; /* Idle 后播报的 HTTP 音频（遗留；技能摘要改走云 TTS） */
-    std::string pending_cloud_speak_;       /* 待 listen detect 交给小智云朗读 */
+    std::string pending_spoken_notify_url_; /* Idle 后播报的桥 WAV（spoken.audio.url） */
+    std::deque<std::string> spoken_notify_queue_; /* 连续播剩余段 */
+    bool spoken_notify_continue_ = false;         /* 接下一段时不弹 OGG */
+    std::string pending_cloud_speak_;             /* 遗留；勿再用于技能正文 TTS */
     void TryFlushPendingCloudSpeak();
+    bool PlayNextSpokenNotify();
 #endif
     TaskHandle_t activation_task_handle_ = nullptr;
 
@@ -216,7 +221,7 @@ private:
     void StartListeningAudio();
     void ConfigureWakeWordForListening();
     void StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles,
-                           std::string device_key = {});
+                           std::string device_key = {}, bool play_popup = true);
     void StopNotification();
     void HandleNotificationFinished(uint32_t playback_id, bool success);
 

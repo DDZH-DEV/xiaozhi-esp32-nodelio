@@ -900,10 +900,26 @@ static int utf8_approx_chars(const char *q)
     return n;
 }
 
+/** 「第一个 / 第2个」是列表选条，不是应用名；open_app 异步恒 true 会误吞并 suppress TTS */
+static bool looks_like_list_ordinal(const char *q)
+{
+    if (!q || !q[0]) {
+        return false;
+    }
+    if (strstr(q, "第") == NULL) {
+        return false;
+    }
+    return strstr(q, "个") != NULL || strstr(q, "条") != NULL || strstr(q, "项") != NULL ||
+           strstr(q, "首") != NULL || strstr(q, "份") != NULL;
+}
+
 /** 抽取到的应用名是否像口令（拒「失败了，你再试一下」这类整句） */
 static bool app_query_plausible(const char *q)
 {
     if (!q || !q[0]) {
+        return false;
+    }
+    if (looks_like_list_ordinal(q)) {
         return false;
     }
     if (strstr(q, "失败") || strstr(q, "再试") || strstr(q, "试试") || strstr(q, "一下") ||
@@ -1073,6 +1089,10 @@ static bool try_dsh_dispatch_phrase(const char *phrase)
         return nodelio_panel_ui_dsh_task(NULL);
     }
     ESP_LOGI(TAG, "dsh dispatch instruction='%s'", instr);
+    /* 续聊武装中：与裸说同一路径，先确认再发 */
+    if (nodelio_panel_ui_dsh_is_armed()) {
+        return nodelio_panel_ui_dsh_confirm_send(instr);
+    }
     return nodelio_panel_ui_dsh_task(instr);
 }
 
@@ -1187,6 +1207,17 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session)
         ESP_LOGI(TAG, "system phrase: empty");
         return false;
     }
+    /* 续聊待确认：是→发送 / 不用→取消 / 其它→改口重确认 */
+    if (nodelio_panel_ui_dsh_has_pending_send()) {
+        const int conf = nodelio_panel_ui_dsh_try_confirm_send(phrase);
+        if (conf != 0) {
+            ESP_LOGI(TAG, "system phrase: dsh confirm handled rc=%d", conf);
+            if (end_session) {
+                *end_session = (conf == 1);
+            }
+            return true;
+        }
+    }
     int cmd = phrase_to_cmd_id(phrase);
     ESP_LOGI(TAG, "system phrase try phrase='%s' cmd=%d(%s)", phrase, cmd,
              nodelio_offline_cmd_zh(cmd));
@@ -1205,26 +1236,28 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session)
         /* 开启/关闭省电等 set_pref：end_session 保持 false，会话不退下 */
         return nodelio_offline_cmd_dispatch(NULL, cmd, NULL) == ESP_OK;
     }
-    /* 「让它…」派活：须在 open_app「派活」之前；派活后由技能卡收尾，本轮可退会话 */
+    /* 「让它…」派活：须在 open_app「派活」之前；续聊武装时走确认，保持开麦 */
     if (try_dsh_dispatch_phrase(phrase)) {
-        ESP_LOGI(TAG, "system phrase: dsh.task dispatch hit");
+        ESP_LOGI(TAG, "system phrase: dsh.task dispatch hit pending=%d",
+                 nodelio_panel_ui_dsh_has_pending_send() ? 1 : 0);
         if (end_session) {
-            *end_session = true;
+            *end_session = !nodelio_panel_ui_dsh_has_pending_send();
         }
         return true;
     }
-    /* 点「续聊」武装后：下一句无需「让它」前缀，整句当 instruction */
+    /* 点「续聊」武装后：下一句无需「让它」前缀 → 先确认再发送 */
     if (nodelio_panel_ui_dsh_is_armed()) {
         char instr[200];
         strip_app_query(instr, sizeof(instr), phrase);
         if (instr[0] && phrase_to_cmd_id(phrase) == 0 &&
             strstr(instr, "打开") == NULL && strstr(instr, "关闭") == NULL &&
             strstr(instr, "查看任务") == NULL) {
-            ESP_LOGI(TAG, "system phrase: armed bare → dsh.task '%s'", instr);
+            ESP_LOGI(TAG, "system phrase: armed bare → confirm '%s'", instr);
+            /* 保持会话，等「是/不用」或点发送/取消 */
             if (end_session) {
-                *end_session = true;
+                *end_session = false;
             }
-            return nodelio_panel_ui_dsh_task(instr);
+            return nodelio_panel_ui_dsh_confirm_send(instr);
         }
     }
     /* 「打开曲库」等：phrase_to_cmd_id 会落到 LIGHT_ON，这里再抢一次应用 */

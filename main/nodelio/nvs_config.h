@@ -62,6 +62,26 @@ esp_err_t nodelio_nvs_clear(void);
 /** 仅更新 RAM 镜像（LVGL 安全）；随后应由主任务 nodelio_nvs_save。 */
 void nodelio_nvs_cache_put(const nodelio_nvs_config_t *in);
 void nodelio_nvs_cache_get(nodelio_nvs_config_t *out);
+
+/** 连接页「服务器」历史（主机/端口/协议/绑定码），最多 6 条，MRU。 */
+#define NODELIO_CONN_HIST_MAX 6
+typedef struct {
+    char host[96];
+    char port[8];
+    char owner[64];
+    uint8_t https; /* 1=https */
+} nodelio_conn_hist_entry_t;
+typedef struct {
+    nodelio_conn_hist_entry_t e[NODELIO_CONN_HIST_MAX];
+    uint8_t n;
+} nodelio_conn_hist_t;
+void nodelio_conn_hist_cache_get(nodelio_conn_hist_t *out);
+void nodelio_conn_hist_cache_put(const nodelio_conn_hist_t *in);
+esp_err_t nodelio_conn_hist_load(nodelio_conn_hist_t *out);
+esp_err_t nodelio_conn_hist_save(const nodelio_conn_hist_t *in);
+/** 去重后插入队首；host 空则忽略。 */
+void nodelio_conn_hist_push(nodelio_conn_hist_t *h, bool https, const char *host, const char *port,
+                            const char *owner);
 /** Drop broker credentials (keep device_id/key); call when server_url changes. */
 void nodelio_nvs_clear_mqtt(nodelio_nvs_config_t *cfg);
 bool nodelio_nvs_has_wifi(const nodelio_nvs_config_t *cfg);

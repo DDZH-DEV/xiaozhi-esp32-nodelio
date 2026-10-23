@@ -561,10 +561,14 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
      * SILA 开音频瞬间 DRAM 更紧，单页必须更小（多页 nextCursor）。 */
     int max_payload_size = 4500;
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 与 MqttProtocol::SendText MCP 阈值对齐：外层 session/mcp 包装后再发。
+     * largest≈25KB 时旧 cap=900 → 整包≈903B 仍被非 MCP 阈值（≥800）误杀。 */
     const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    if (largest < 32 * 1024) {
-        max_payload_size = 900; /* 约 1～2 个短描述工具 */
-    } else if (largest < 48 * 1024) {
+    if (largest < 20 * 1024) {
+        max_payload_size = 400;
+    } else if (largest < 28 * 1024) {
+        max_payload_size = 900; /* 包装后通常 <1200，MCP 放行至 1400 */
+    } else if (largest < 40 * 1024) {
         max_payload_size = 1400;
     } else {
         max_payload_size = 2000;

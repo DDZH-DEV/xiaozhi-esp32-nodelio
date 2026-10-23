@@ -654,52 +654,9 @@ esp_err_t nodelio_panel_command(const nodelio_nvs_config_t *cfg, const char *wid
     return ESP_FAIL;
 }
 
-esp_err_t nodelio_snapshot_fetch(const nodelio_nvs_config_t *cfg)
+/** 应用 snapshot.devices[]（或根级 devices[]）；返回设备条数. */
+static int snapshot_apply_devices(const cJSON *devices)
 {
-    if (!cfg || cfg->server_url[0] == '\0' || cfg->device_id[0] == '\0' || cfg->device_key[0] == '\0') {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    char base[160];
-    nl_url_strip_base(cfg->server_url, base, sizeof(base));
-    char url[256];
-    snprintf(url, sizeof(url), "%s/api/devices/%s/panel/snapshot", base, cfg->device_id);
-
-    const int cap = 16 * 1024;
-    char *body = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!body) {
-        body = malloc(cap);
-    }
-    if (!body) {
-        return ESP_ERR_NO_MEM;
-    }
-    body[0] = '\0';
-    int status = 0;
-    esp_err_t err = nodelio_http_get(url, cfg->device_key, NULL, &status, body, cap);
-
-    if (err != ESP_OK || status != 200) {
-        ESP_LOGW(TAG, "GET snapshot fail err=%s http=%d", esp_err_to_name(err), status);
-        free(body);
-        return err != ESP_OK ? err : ESP_FAIL;
-    }
-
-    /* cJSON 已钩 PSRAM；AFE 后内部常 <4KB，勿用 12KB 门槛直接放弃 */
-    ensure_cjson_psram_hooks();
-    cJSON *root = cJSON_Parse(body);
-    if (!root) {
-        char snip[96];
-        size_t n = strlen(body);
-        if (n >= sizeof(snip)) {
-            n = sizeof(snip) - 1;
-        }
-        memcpy(snip, body, n);
-        snip[n] = '\0';
-        ESP_LOGW(TAG, "snapshot JSON parse fail len=%u snip=%s", (unsigned)strlen(body), snip);
-        free(body);
-        return ESP_FAIL;
-    }
-    free(body);
-    const cJSON *devices = cJSON_GetObjectItemCaseSensitive(root, "devices");
     int n = cJSON_IsArray(devices) ? cJSON_GetArraySize(devices) : 0;
     int online_n = 0;
     nodelio_panel_ui_snapshot_begin();
@@ -761,8 +718,186 @@ esp_err_t nodelio_snapshot_fetch(const nodelio_nvs_config_t *cfg)
     /* DIOL：snapshot 后同网探测覆盖 online/通道态 */
     nodelio_diol_probe_all_from_cache();
     ESP_LOGI(TAG, "snapshot devices=%d online=%d", n, online_n);
+    return n;
+}
+
+static void bootstrap_apply_skills(const cJSON *root)
+{
+    if (!root) {
+        return;
+    }
+    cJSON *slim = cJSON_CreateObject();
+    if (!slim) {
+        return;
+    }
+    cJSON *sk = cJSON_GetObjectItemCaseSensitive((cJSON *)root, "skills");
+    cJSON *ap = cJSON_GetObjectItemCaseSensitive((cJSON *)root, "apps");
+    if (sk) {
+        cJSON_AddItemReferenceToObject(slim, "skills", sk);
+    }
+    if (ap) {
+        cJSON_AddItemReferenceToObject(slim, "apps", ap);
+    }
+    char *printed = cJSON_PrintUnformatted(slim);
+    cJSON_Delete(slim);
+    if (!printed) {
+        return;
+    }
+    nodelio_panel_ui_apply_skills_http_body(printed);
+    cJSON_free(printed);
+}
+
+static void bootstrap_cache_layout(int version, const cJSON *layout_obj)
+{
+    if (!layout_obj || version <= 0) {
+        return;
+    }
+    cJSON *cache_obj = cJSON_CreateObject();
+    if (!cache_obj) {
+        return;
+    }
+    cJSON_AddNumberToObject(cache_obj, "layoutVersion", version);
+    cJSON *dup = cJSON_Duplicate(layout_obj, 1);
+    if (!dup) {
+        cJSON_Delete(cache_obj);
+        return;
+    }
+    cJSON_AddItemToObject(cache_obj, "layout", dup);
+    char *printed = cJSON_PrintUnformatted(cache_obj);
+    cJSON_Delete(cache_obj);
+    if (!printed) {
+        return;
+    }
+    (void)nodelio_layout_cache_save(version, printed, strlen(printed));
+    cJSON_free(printed);
+}
+
+esp_err_t nodelio_snapshot_fetch(const nodelio_nvs_config_t *cfg)
+{
+    if (!cfg || cfg->server_url[0] == '\0' || cfg->device_id[0] == '\0' || cfg->device_key[0] == '\0') {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char base[160];
+    nl_url_strip_base(cfg->server_url, base, sizeof(base));
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/devices/%s/panel/snapshot", base, cfg->device_id);
+
+    const int cap = 16 * 1024;
+    char *body = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!body) {
+        body = malloc(cap);
+    }
+    if (!body) {
+        return ESP_ERR_NO_MEM;
+    }
+    body[0] = '\0';
+    int status = 0;
+    esp_err_t err = nodelio_http_get(url, cfg->device_key, NULL, &status, body, cap);
+
+    if (err != ESP_OK || status != 200) {
+        ESP_LOGW(TAG, "GET snapshot fail err=%s http=%d", esp_err_to_name(err), status);
+        free(body);
+        return err != ESP_OK ? err : ESP_FAIL;
+    }
+
+    /* cJSON 已钩 PSRAM；AFE 后内部常 <4KB，勿用 12KB 门槛直接放弃 */
+    ensure_cjson_psram_hooks();
+    cJSON *root = cJSON_Parse(body);
+    if (!root) {
+        char snip[96];
+        size_t n = strlen(body);
+        if (n >= sizeof(snip)) {
+            n = sizeof(snip) - 1;
+        }
+        memcpy(snip, body, n);
+        snip[n] = '\0';
+        ESP_LOGW(TAG, "snapshot JSON parse fail len=%u snip=%s", (unsigned)strlen(body), snip);
+        free(body);
+        return ESP_FAIL;
+    }
+    free(body);
+    (void)snapshot_apply_devices(cJSON_GetObjectItemCaseSensitive(root, "devices"));
     cJSON_Delete(root);
     return ESP_OK;
+}
+
+esp_err_t nodelio_bootstrap_fetch(const nodelio_nvs_config_t *cfg, int known_version,
+                                  nodelio_panel_layout_t *out_layout, bool *out_layout_changed)
+{
+    if (out_layout_changed) {
+        *out_layout_changed = false;
+    }
+    if (!cfg || !out_layout || cfg->server_url[0] == '\0' || cfg->device_id[0] == '\0' ||
+        cfg->device_key[0] == '\0') {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char base[160];
+    nl_url_strip_base(cfg->server_url, base, sizeof(base));
+    char url[280];
+    snprintf(url, sizeof(url), "%s/api/devices/%s/panel/bootstrap", base, cfg->device_id);
+
+    const int cap = 48 * 1024;
+    char *body = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!body) {
+        body = malloc(cap);
+    }
+    if (!body) {
+        return ESP_ERR_NO_MEM;
+    }
+    body[0] = '\0';
+    int status = 0;
+    esp_err_t err = nodelio_http_get(url, cfg->device_key, NULL, &status, body, cap);
+    if (status == 404) {
+        free(body);
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (err != ESP_OK || status != 200) {
+        ESP_LOGW(TAG, "GET bootstrap fail err=%s http=%d", esp_err_to_name(err), status);
+        free(body);
+        return err != ESP_OK ? err : ESP_FAIL;
+    }
+
+    ensure_cjson_psram_hooks();
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!root) {
+        ESP_LOGW(TAG, "bootstrap JSON parse fail");
+        return ESP_FAIL;
+    }
+
+    int outer_ver = json_int(root, "layoutVersion", 0);
+    const cJSON *layout = cJSON_GetObjectItemCaseSensitive(root, "layout");
+    if (cJSON_IsObject(layout)) {
+        parse_layout_object(layout, outer_ver, out_layout);
+    } else if (cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(root, "pages"))) {
+        parse_layout_object(root, outer_ver, out_layout);
+    } else {
+        ESP_LOGW(TAG, "bootstrap missing layout");
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+
+    bool changed = !(known_version > 0 && out_layout->layout_version == known_version);
+    if (out_layout_changed) {
+        *out_layout_changed = changed;
+    }
+    if (changed) {
+        bootstrap_cache_layout(out_layout->layout_version, layout);
+    }
+
+    const cJSON *snap = cJSON_GetObjectItemCaseSensitive(root, "snapshot");
+    const cJSON *devices = snap ? cJSON_GetObjectItemCaseSensitive(snap, "devices") : NULL;
+    if (!devices) {
+        devices = cJSON_GetObjectItemCaseSensitive(root, "devices");
+    }
+    (void)snapshot_apply_devices(devices);
+    bootstrap_apply_skills(root);
+
+    ESP_LOGI(TAG, "bootstrap ok v%d layout_%s", out_layout->layout_version, changed ? "new" : "same");
+    cJSON_Delete(root);
+    return changed ? ESP_OK : ESP_ERR_NOT_FINISHED;
 }
 
 /** @return 1=全量 sync（手动/layout 推送），0=只 snapshot（MQTT） */
@@ -840,7 +975,36 @@ static void layout_do_sync(nodelio_panel_layout_t *layout, bool toast_result)
         }
         return;
     }
-    esp_err_t err = nodelio_layout_fetch(&s_cfg, s_applied_version, layout);
+
+    /* 优先一枪 bootstrap（layout+snapshot+skills+heartbeat）；旧服 404 再分拆 */
+    bool layout_changed = false;
+    esp_err_t err = nodelio_bootstrap_fetch(&s_cfg, s_applied_version, layout, &layout_changed);
+    if (err == ESP_OK || err == ESP_ERR_NOT_FINISHED) {
+        if (err == ESP_OK && layout_changed) {
+            s_applied_version = layout->layout_version;
+            nodelio_layout_render(layout);
+            if (toast_result) {
+                char msg[32];
+                snprintf(msg, sizeof(msg), "已刷新 v%d", s_applied_version);
+                nodelio_panel_ui_toast(msg);
+            }
+        } else {
+            ESP_LOGD(TAG, "bootstrap layout unchanged v%d", s_applied_version);
+            if (toast_result) {
+                char msg[32];
+                snprintf(msg, sizeof(msg), "已是最新 v%d", s_applied_version > 0 ? s_applied_version : 0);
+                nodelio_panel_ui_toast(msg);
+            }
+        }
+        s_last_snapshot_ms = esp_timer_get_time() / 1000;
+        s_boot_cloud_done = true;
+        return;
+    }
+    if (err != ESP_ERR_NOT_FOUND) {
+        ESP_LOGW(TAG, "bootstrap: %s — fallback split GET", esp_err_to_name(err));
+    }
+
+    err = nodelio_layout_fetch(&s_cfg, s_applied_version, layout);
     if (err == ESP_OK) {
         s_applied_version = layout->layout_version;
         nodelio_layout_render(layout);
@@ -933,6 +1097,11 @@ void nodelio_layout_request_snapshot_force(void)
 {
     s_snapshot_force = true;
     s_snapshot_kick = true;
+}
+
+bool nodelio_layout_cloud_ready(void)
+{
+    return s_boot_cloud_done;
 }
 
 esp_err_t nodelio_layout_start_poll(const nodelio_nvs_config_t *cfg)

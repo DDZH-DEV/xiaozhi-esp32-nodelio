@@ -61,6 +61,12 @@ bool nodelio_skill_try_pick_phrase(const char *text);
  */
 void nodelio_skill_dsh_on_dispatched(const char *instruction);
 
+/** 续聊待确认发送：instruction 非空显示预览+发送/取消；空则收起确认条。 */
+void nodelio_skill_dsh_on_confirm_pending(const char *instruction);
+
+/** arm 超时/用户取消续聊：进度卡回 IDLE。 */
+void nodelio_skill_dsh_on_arm_cleared(void);
+
 #ifdef __cplusplus
 }
 #endif

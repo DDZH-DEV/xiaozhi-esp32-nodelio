@@ -45,12 +45,21 @@ function envBool(v, fallback) {
   return fallback;
 }
 
+function hasHintCreds(o) {
+  const wsOk = Boolean(String(o.host_ws || '').trim() && String(o.bridge_token || '').trim());
+  const httpOk = Boolean(
+    String(o.host_url || '').trim() &&
+      String(o.panel_device_id || '').trim() &&
+      String(o.panel_device_key || '').trim(),
+  );
+  return wsOk || httpOk;
+}
+
 function fromEnv() {
-  return {
+  const out = {
     mode: String(process.env.DSH_BRIDGE_MODE ?? DEFAULTS.mode).toLowerCase(),
     listen_host: process.env.DSH_BRIDGE_HOST ?? DEFAULTS.listen_host,
     listen_port: Number(process.env.DSH_BRIDGE_PORT ?? DEFAULTS.listen_port) || 8790,
-    watch: envBool(process.env.DSH_BRIDGE_WATCH, DEFAULTS.watch),
     watch_ms: Number(process.env.DSH_BRIDGE_WATCH_MS ?? DEFAULTS.watch_ms) || 8000,
     host_ws: (process.env.NODELIO_HOST_WS ?? '').trim(),
     bridge_token: (process.env.BRIDGE_TOKEN ?? '').trim(),
@@ -65,20 +74,39 @@ function fromEnv() {
     default_permission: (process.env.DSH_DEFAULT_PERMISSION ?? DEFAULTS.default_permission).trim(),
     default_agent_preset: (process.env.DSH_DEFAULT_AGENT_PRESET ?? DEFAULTS.default_agent_preset).trim(),
   };
+  /* 仅当环境变量显式设置时覆盖 watch；未设则交 sanitize 按凭证默认 */
+  if (process.env.DSH_BRIDGE_WATCH !== undefined && process.env.DSH_BRIDGE_WATCH !== '') {
+    out.watch = envBool(process.env.DSH_BRIDGE_WATCH, false);
+  }
+  return out;
+}
+
+function coerceWatch(v) {
+  return v === true || v === 1 || v === '1' || v === 'true';
 }
 
 function sanitize(raw) {
   const e = fromEnv();
-  const o = { ...DEFAULTS, ...e, ...(raw && typeof raw === 'object' ? raw : {}) };
+  const file = raw && typeof raw === 'object' ? raw : null;
+  const o = { ...DEFAULTS, ...e, ...(file || {}) };
   let mode = String(o.mode || 'both').toLowerCase();
   if (mode !== 'lan' && mode !== 'host_ws' && mode !== 'both') mode = 'both';
   const port = Number(o.listen_port);
   const watchMs = Number(o.watch_ms);
+  let watch;
+  if (Object.prototype.hasOwnProperty.call(e, 'watch')) {
+    watch = coerceWatch(e.watch);
+  } else if (file && Object.prototype.hasOwnProperty.call(file, 'watch')) {
+    watch = coerceWatch(file.watch);
+  } else {
+    /* 有 Host 凭证时默认开 watch，免手设 DSH_BRIDGE_WATCH=1 */
+    watch = hasHintCreds(o);
+  }
   return {
     mode,
     listen_host: String(o.listen_host || '0.0.0.0').trim() || '0.0.0.0',
     listen_port: Number.isFinite(port) && port > 0 && port < 65536 ? Math.floor(port) : 8790,
-    watch: o.watch === true || o.watch === 1 || o.watch === '1' || o.watch === 'true',
+    watch,
     watch_ms: Number.isFinite(watchMs) && watchMs >= 2000 ? Math.floor(watchMs) : 8000,
     host_ws: String(o.host_ws || '').trim(),
     bridge_token: String(o.bridge_token || '').trim(),

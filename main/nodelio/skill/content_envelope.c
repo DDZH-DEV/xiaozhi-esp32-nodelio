@@ -278,13 +278,44 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
 
     const cJSON *spoken = cJSON_GetObjectItemCaseSensitive(root, "spoken");
     out->spoken_audio_url[0] = '\0';
+    out->spoken_audio_n = 0;
+    for (int i = 0; i < NL_ENV_SPOKEN_AUDIO_MAX; i++) {
+        out->spoken_audio_urls[i][0] = '\0';
+    }
     if (cJSON_IsObject(spoken)) {
         copy_str(out->spoken, sizeof(out->spoken), spoken, "text");
         const cJSON *audio = cJSON_GetObjectItemCaseSensitive(spoken, "audio");
         if (cJSON_IsObject(audio)) {
             copy_str(out->spoken_audio_url, sizeof(out->spoken_audio_url), audio, "url");
+            const cJSON *urls = cJSON_GetObjectItemCaseSensitive(audio, "urls");
+            if (cJSON_IsArray(urls)) {
+                const cJSON *u;
+                cJSON_ArrayForEach(u, urls)
+                {
+                    if (!cJSON_IsString(u) || !u->valuestring || !u->valuestring[0]) {
+                        continue;
+                    }
+                    if (out->spoken_audio_n >= NL_ENV_SPOKEN_AUDIO_MAX) {
+                        break;
+                    }
+                    snprintf(out->spoken_audio_urls[out->spoken_audio_n], NL_ENV_URL, "%s",
+                             u->valuestring);
+                    out->spoken_audio_n++;
+                }
+            }
+            if (out->spoken_audio_n == 0 && out->spoken_audio_url[0]) {
+                snprintf(out->spoken_audio_urls[0], NL_ENV_URL, "%s", out->spoken_audio_url);
+                out->spoken_audio_n = 1;
+            } else if (out->spoken_audio_n > 0 && !out->spoken_audio_url[0]) {
+                snprintf(out->spoken_audio_url, sizeof(out->spoken_audio_url), "%s",
+                         out->spoken_audio_urls[0]);
+            }
         } else {
             copy_str(out->spoken_audio_url, sizeof(out->spoken_audio_url), spoken, "audio_url");
+            if (out->spoken_audio_url[0]) {
+                snprintf(out->spoken_audio_urls[0], NL_ENV_URL, "%s", out->spoken_audio_url);
+                out->spoken_audio_n = 1;
+            }
         }
     } else if (cJSON_IsString(spoken) && spoken->valuestring) {
         snprintf(out->spoken, sizeof(out->spoken), "%s", spoken->valuestring);

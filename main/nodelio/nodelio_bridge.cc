@@ -138,6 +138,99 @@ static void ensure_hb_task(void)
     s_hb_task = true;
 }
 
+/**
+ * 有 IP 时补齐 register / layout / mqtt / hb。
+ * 开机首轮失败（无 IP / 服务器未起）后必须可再走这里，不能只靠重启。
+ */
+static void bring_up_cloud_if_needed(void)
+{
+    if (s_cfg.server_url[0] == '\0' || s_cfg.owner[0] == '\0') {
+        return;
+    }
+    if (nodelio_wifi_is_asleep() || !nodelio_wifi_has_ip()) {
+        return;
+    }
+    const bool need_reg =
+        s_cfg.mqtt_server[0] == '\0' || s_cfg.device_key[0] == '\0' || s_cfg.device_id[0] == '\0';
+    if (need_reg) {
+        esp_err_t reg = nodelio_device_register(&s_cfg);
+        if (reg != ESP_OK) {
+            ESP_LOGW(TAG, "cloud register: %s", esp_err_to_name(reg));
+            return;
+        }
+        (void)nodelio_nvs_save(&s_cfg);
+        ensure_hb_task();
+    }
+    if (!nodelio_layout_cloud_ready()) {
+        ESP_LOGI(TAG, "cloud layout pending — start_poll");
+        esp_err_t ly = nodelio_layout_start_poll(&s_cfg);
+        if (ly != ESP_OK) {
+            ESP_LOGW(TAG, "layout poll: %s", esp_err_to_name(ly));
+        }
+    }
+    if (!nodelio_mqtt_panel_connected()) {
+        esp_err_t mq = nodelio_mqtt_panel_start(&s_cfg);
+        if (mq != ESP_OK) {
+            ESP_LOGW(TAG, "mqtt: %s", esp_err_to_name(mq));
+        }
+    }
+    esp_err_t hb = nodelio_device_heartbeat(&s_cfg);
+    if (hb != ESP_OK) {
+        ESP_LOGW(TAG, "cloud heartbeat: %s", esp_err_to_name(hb));
+    }
+    bool wifi_ok = nodelio_wifi_is_connected();
+    nodelio_panel_ui_set_status(wifi_ok, nodelio_layout_cloud_ready() || nodelio_mqtt_panel_connected(),
+                                "v0");
+}
+
+static bool s_deferred_cloud;
+static void deferred_cloud_task(void *arg)
+{
+    (void)arg;
+    uint32_t delay_ms = 2000;
+    for (int i = 0; i < 48; i++) { /* ~15min 内退避重试 */
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+        if (nodelio_layout_cloud_ready() && nodelio_mqtt_panel_connected()) {
+            ESP_LOGI(TAG, "deferred cloud done");
+            break;
+        }
+        if (nodelio_wifi_is_asleep()) {
+            continue;
+        }
+        if (!nodelio_wifi_has_ip() && !nodelio_wifi_wait_ip(15000)) {
+            ESP_LOGW(TAG, "deferred cloud: still no IP (try %d)", i + 1);
+            if (delay_ms < 20000) {
+                delay_ms += 2000;
+            }
+            continue;
+        }
+        ESP_LOGI(TAG, "deferred cloud bring-up try %d", i + 1);
+        bring_up_cloud_if_needed();
+        if (nodelio_layout_cloud_ready()) {
+            Application::GetInstance().Schedule([]() { nodelio_panel_ui_skills_changed(); });
+            break;
+        }
+        if (delay_ms < 20000) {
+            delay_ms += 2000;
+        }
+    }
+    s_deferred_cloud = false;
+    vTaskDelete(nullptr);
+}
+
+static void ensure_deferred_cloud(void)
+{
+    if (s_deferred_cloud || nodelio_layout_cloud_ready()) {
+        return;
+    }
+    s_deferred_cloud = true;
+    /* register + layout HTTP，栈须 ≥ nl_start / pwr */
+    if (xTaskCreate(deferred_cloud_task, "nl_cloud", 12288, nullptr, 4, nullptr) != pdPASS) {
+        s_deferred_cloud = false;
+        ESP_LOGW(TAG, "deferred cloud task create fail");
+    }
+}
+
 static void pwr_task(void *arg)
 {
     (void)arg;
@@ -168,6 +261,7 @@ static void pwr_task(void *arg)
         /* 等 Got IP（含关联时间）；勿先 wait L2 再短等 DHCP，易在重认证窗口耗尽 */
         if (!nodelio_wifi_wait_ip(30000)) {
             ESP_LOGW(TAG, "WiFi not up — skip hb/mqtt");
+            ensure_deferred_cloud();
             continue;
         }
 
@@ -178,23 +272,9 @@ static void pwr_task(void *arg)
             nodelio_panel_ui_skills_changed();
         });
 
-        /* 仅缺 broker 时再 register（换 server 已清 mqtt）；已有则直接连 */
-        if (s_cfg.mqtt_server[0] == '\0') {
-            esp_err_t reg = nodelio_device_register(&s_cfg);
-            if (reg != ESP_OK) {
-                ESP_LOGW(TAG, "wake register: %s — skip mqtt until provisioned", esp_err_to_name(reg));
-                continue;
-            }
-            (void)nodelio_nvs_save(&s_cfg);
-            (void)nodelio_layout_start_poll(&s_cfg);
-        }
-        esp_err_t mq = nodelio_mqtt_panel_start(&s_cfg);
-        if (mq != ESP_OK) {
-            ESP_LOGW(TAG, "mqtt: %s", esp_err_to_name(mq));
-        }
-        esp_err_t hb = nodelio_device_heartbeat(&s_cfg);
-        if (hb != ESP_OK) {
-            ESP_LOGW(TAG, "wake heartbeat: %s", esp_err_to_name(hb));
+        bring_up_cloud_if_needed();
+        if (!nodelio_layout_cloud_ready()) {
+            ensure_deferred_cloud();
         }
     }
 }
@@ -292,25 +372,28 @@ static esp_err_t start_client(void)
     /* 勿 SetPowerSaveLevel(PERFORMANCE)：会 WakeUp + 打乱小智刚设的 LOW_POWER 时序 */
     wait_if_busy_talking(60000);
     (void)esp_wifi_set_ps(WIFI_PS_NONE);
-    if (!nodelio_wifi_has_ip() && !nodelio_wifi_wait_ip(5000)) {
-        ESP_LOGW(TAG, "no IP before register — skip cloud bring-up");
+    if (!nodelio_wifi_has_ip() && !nodelio_wifi_wait_ip(8000)) {
+        ESP_LOGW(TAG, "no IP before register — defer cloud bring-up");
+        s_cfg = cfg;
         s_started = true;
         s_starting = false;
+        ensure_pwr_task();
+        ensure_deferred_cloud(); /* DHCP/服务器稍后就绪时补 register+layout，勿卡死「初始化中」 */
         return ESP_ERR_INVALID_STATE;
     }
 
     bool cloud = false;
     err = nodelio_device_register(&cfg);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "register: %s — keep local UI + power save (no cloud)",
+        ESP_LOGW(TAG, "register: %s — keep local UI, defer cloud retry",
                  esp_err_to_name(err));
         s_cfg = cfg;
-        /* 标 started，避免反复 HTTP 打关着的 server；息屏断网仍可用 */
         s_started = true;
         s_starting = false;
         nodelio_mqtt_panel_stop();
         bool wifi_ok = nodelio_wifi_is_connected();
         nodelio_panel_ui_set_status(wifi_ok, false, "v0");
+        ensure_deferred_cloud();
         return err;
     }
     (void)nodelio_nvs_save(&cfg);
@@ -354,10 +437,16 @@ static esp_err_t start_client(void)
     s_started = true;
     s_starting = false;
     bool wifi_ok = nodelio_wifi_is_connected();
-    nodelio_panel_ui_set_status(wifi_ok, cloud || nodelio_mqtt_panel_connected(), "v0");
+    cloud = cloud || nodelio_layout_cloud_ready() || nodelio_mqtt_panel_connected();
+    nodelio_panel_ui_set_status(wifi_ok, cloud, "v0");
+    if (!nodelio_layout_cloud_ready()) {
+        ESP_LOGW(TAG, "boot cloud layout not ready — defer retry");
+        ensure_deferred_cloud();
+    }
     nodelio_log_heap("panel up");
-    ESP_LOGI(TAG, "NodeLio panel up device_id=%s server=%s reg_ok=1 mqtt=%s", cfg.device_id,
-             cfg.server_url, nodelio_mqtt_panel_connected() ? "up" : "down");
+    ESP_LOGI(TAG, "NodeLio panel up device_id=%s server=%s reg_ok=1 mqtt=%s cloud=%d", cfg.device_id,
+             cfg.server_url, nodelio_mqtt_panel_connected() ? "up" : "down",
+             nodelio_layout_cloud_ready() ? 1 : 0);
     return ESP_OK;
 }
 

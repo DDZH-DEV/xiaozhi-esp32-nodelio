@@ -72,7 +72,7 @@ static void handle_notify_payload(const char *data, int len)
         schedule_kick(false);
         return;
     }
-    char tmp[320];
+    char tmp[480];
     int n = len < (int)sizeof(tmp) - 1 ? len : (int)sizeof(tmp) - 1;
     memcpy(tmp, data, (size_t)n);
     tmp[n] = '\0';
@@ -93,6 +93,8 @@ static void handle_notify_payload(const char *data, int len)
         /* PC 桥边沿：needs_you / completed → 单次 invoke，无轮询 */
         const cJSON *inst = cJSON_GetObjectItemCaseSensitive(root, "instance_id");
         const cJSON *app = cJSON_GetObjectItemCaseSensitive(root, "app_id");
+        const cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
+        const cJSON *session = cJSON_GetObjectItemCaseSensitive(root, "session");
         const char *id = nullptr;
         if (cJSON_IsString(inst) && inst->valuestring && inst->valuestring[0]) {
             id = inst->valuestring;
@@ -100,7 +102,9 @@ static void handle_notify_payload(const char *data, int len)
             id = app->valuestring;
         }
         if (id) {
-            nodelio_panel_ui_skill_hint(id);
+            nodelio_panel_ui_skill_hint(
+                id, cJSON_IsString(reason) ? reason->valuestring : nullptr,
+                cJSON_IsString(session) ? session->valuestring : nullptr);
         }
     } else if (cJSON_IsString(kind) && kind->valuestring &&
                strcmp(kind->valuestring, "countdown") == 0) {

@@ -73,6 +73,7 @@ private:
     PowerSaveTimer* power_save_timer_ = nullptr;
     esp_lcd_touch_handle_t touch_ = nullptr;
     esp_timer_handle_t touch_wake_timer_ = nullptr;
+    uint8_t touch_wake_hits_ = 0; /* 息屏触摸去抖：连续命中次数 */
 
     void InitializePowerSaveTimer() {
         /* 空闲息屏（背光灭）与空闲断网时刻独立；秒数来自 NVS */
@@ -144,6 +145,7 @@ private:
         if (!touch_ || touch_wake_timer_) {
             return;
         }
+        touch_wake_hits_ = 0;
         esp_timer_create_args_t args = {
             .callback = [](void* arg) {
                 auto* self = static_cast<Sila86Board*>(arg);
@@ -154,7 +156,13 @@ private:
                 esp_lcd_touch_point_data_t pt = {};
                 uint8_t cnt = 0;
                 if (esp_lcd_touch_get_data(self->touch_, &pt, &cnt, 1) == ESP_OK && cnt > 0) {
-                    self->power_save_timer_->NoteActivity();
+                    /* 连续两拍（~160ms）才唤醒，滤毛刺/悬空误触 */
+                    if (++self->touch_wake_hits_ >= 2) {
+                        self->touch_wake_hits_ = 0;
+                        self->power_save_timer_->NoteActivity();
+                    }
+                } else {
+                    self->touch_wake_hits_ = 0;
                 }
             },
             .arg = this,
@@ -165,7 +173,7 @@ private:
         if (esp_timer_create(&args, &touch_wake_timer_) != ESP_OK) {
             return;
         }
-        /* 息屏触控轮询 80ms：捕获率 100%（人手轻触约 80-150ms），单次 I2C 读坐标耗时 <0.1ms，几乎不增功耗 */
+        /* 息屏触控轮询 80ms：人手轻触约 80-150ms；去抖后需约 160ms 实触 */
         esp_timer_start_periodic(touch_wake_timer_, 80 * 1000);
     }
 
@@ -382,7 +390,23 @@ public:
             }
         }
         if (level != PowerSaveLevel::LOW_POWER && power_save_timer_) {
+#if CONFIG_NODELIO_PANEL
+            /* 已息屏时：仅语音态才亮屏。否则息屏断 MQTT / 后台建链的 PERFORMANCE
+             * 会立刻 WakeUp，表现为「刚灭又亮、断网又拉网」。 */
+            if (power_save_timer_->IsInSleepMode()) {
+                DeviceState st = Application::GetInstance().GetDeviceState();
+                if (st == kDeviceStateConnecting || st == kDeviceStateListening ||
+                    st == kDeviceStateSpeaking || st == kDeviceStateNotifying) {
+                    power_save_timer_->WakeUp();
+                } else {
+                    ESP_LOGI(TAG, "PERFORMANCE while asleep state=%d — keep screen off", (int)st);
+                }
+            } else {
+                power_save_timer_->WakeUp();
+            }
+#else
             power_save_timer_->WakeUp();
+#endif
         }
         WifiBoard::SetPowerSaveLevel(level);
 #if !CONFIG_NODELIO_PANEL
@@ -398,6 +422,10 @@ public:
         if (power_save_timer_) {
             power_save_timer_->NoteActivity();
         }
+    }
+
+    virtual bool IsInSleepMode() const override {
+        return power_save_timer_ && power_save_timer_->IsInSleepMode();
     }
 
     virtual void SetIdleSleepSeconds(int seconds) override {

@@ -34,7 +34,7 @@ import {
   speakStatusList,
   speakWorkspaceList,
 } from '../lib/tasks.mjs';
-import { synthesizeSpokenWav, ttsFilePath } from '../lib/tts.mjs';
+import { chunkSpokenText, synthesizeSpoken, ttsFilePath, TTS_TEXT_MAX } from '../lib/tts.mjs';
 import { startHostWs } from '../lib/host-ws.mjs';
 import {
   loadConfig,
@@ -88,37 +88,58 @@ let hostWsConnected = false;
 const newRequestId = () => 'req_' + crypto.randomBytes(8).toString('hex');
 const speak = (text) => ({ text: String(text ?? '').slice(0, 300), language: 'zh-CN' });
 
+function listenPort() {
+  return cfg().listen_port || 8790;
+}
+
 function publicBaseFromRequest(request) {
   const envBase = (cfg().public_url || process.env.DSH_BRIDGE_PUBLIC_URL || '').replace(/\/$/, '');
   if (envBase) return envBase;
+  const port = listenPort();
   const host = request?.headers?.host ?? '';
   /* Host 若是本机回环，面板拉不到音频 → 改用 LAN IP */
   if (host && !/^(localhost|127\.0\.0\.1)(:|$)/i.test(host)) {
     return `http://${host}`;
   }
   const lans = lanAddresses();
-  if (lans[0]) return `http://${lans[0]}:${PORT}`;
+  if (lans[0]) return `http://${lans[0]}:${port}`;
   if (host) return `http://${host}`;
-  return `http://127.0.0.1:${PORT}`;
+  return `http://127.0.0.1:${port}`;
 }
 
-/** 文本 + 可选本机 WAV（SAPI；面板 Idle 后 HTTP 播报）. */
+/** 文本 + 可选本机音频（Edge 神经声 / SAPI；面板 Idle 后 HTTP 播报）. */
 async function speakWithAudio(text, request) {
-  const spoken = speak(text);
+  return speakWithAudioParts(text, request, 1);
+}
+
+/** 多段：按句读切分；spoken.audio.url=首段，urls=[…] 连续播。 */
+async function speakWithAudioParts(text, request, maxChunks = 6) {
+  const parts = chunkSpokenText(text, TTS_TEXT_MAX, maxChunks);
+  const spoken = speak(parts.join('') || text);
+  if (parts.length === 0) return spoken;
+  const base = publicBaseFromRequest(request);
+  const urls = [];
+  let mime = 'audio/wav';
   try {
-    const t0 = Date.now();
-    const name = await synthesizeSpokenWav(spoken.text);
-    if (name) {
-      spoken.audio = {
-        url: `${publicBaseFromRequest(request)}/nodelio/dsh/tts/${name}`,
-        mime: 'audio/wav',
-      };
-      console.log(`[tts] ok ${name} ${Date.now() - t0}ms url=${spoken.audio.url}`);
-    } else {
-      console.warn('[tts] synthesize returned null (text-only)');
+    for (let i = 0; i < parts.length; i++) {
+      const t0 = Date.now();
+      const r = await synthesizeSpoken(parts[i]);
+      if (!r?.name) {
+        console.warn(`[tts] part ${i} null`);
+        continue;
+      }
+      mime = r.mime || mime;
+      const url = `${base}/nodelio/dsh/tts/${r.name}`;
+      urls.push(url);
+      console.log(
+        `[tts] ok part=${i + 1}/${parts.length} ${r.name} ${Date.now() - t0}ms len=${[...parts[i]].length}`,
+      );
     }
   } catch (e) {
     console.warn(`[tts] fail: ${e.message}`);
+  }
+  if (urls.length > 0) {
+    spoken.audio = { url: urls[0], urls, mime };
   }
   return spoken;
 }
@@ -183,36 +204,176 @@ function resolveWorkspace(body) {
   return null;
 }
 
-/** list_item + 审批时带 run:invoke → dsh.answer */
+/** 首条 open notice；无则 null */
+function primaryNotice(notices) {
+  if (!Array.isArray(notices) || notices.length === 0) return null;
+  return notices.find((n) => String(n.status || 'open') === 'open') ?? notices[0];
+}
+
+/**
+ * DSH notice 两类：
+ * - approval：二元允许/拒绝（actionId allow|deny|approve|reject）
+ * - input_request：ask_user_question 多选/填空（submit+schema），墙板不能装成允许/拒绝
+ */
+function classifyNotice(notice) {
+  if (!notice) return null;
+  const itype = String(notice.interactionType || '');
+  if (itype === 'input_request') return 'input_request';
+  const actions = Array.isArray(notice.actions) ? notice.actions : [];
+  const ids = actions.map((a) => String(a.actionId || a.id || '').toLowerCase());
+  if (ids.some((id) => id === 'allow' || id === 'deny' || id === 'approve' || id === 'reject')) {
+    return 'approval';
+  }
+  if (ids.includes('submit') || notice.source?.component === 'dsh.ask_user_question') {
+    return 'input_request';
+  }
+  if (itype === 'approval' || itype === 'permission') return 'approval';
+  return actions.length ? 'approval' : null;
+}
+
+function noticeIdOf(notice) {
+  return String(notice?.id ?? notice?.noticeId ?? '').slice(0, 128);
+}
+
+function inputRequestQuestions(notice) {
+  const submit = (notice?.actions || []).find(
+    (a) => String(a.actionId || a.id || '') === 'submit' && a.input,
+  );
+  const questions = submit?.input?.uiSchema?.questions;
+  return Array.isArray(questions) ? questions : [];
+}
+
+/** 多题 / 无选项：纯文本（详情 body）；单题有选项走列表点选 */
+function formatInputRequestPlain(notice) {
+  const questions = inputRequestQuestions(notice);
+  if (questions.length === 0) {
+    const t = String(notice?.title || '').trim();
+    return t ? `${t}\n\n请在电脑 DSH 里回答。` : '';
+  }
+  const blocks = [];
+  for (const q of questions) {
+    const header = String(q.header || '').trim();
+    const prompt = String(q.prompt || q.question || '').trim();
+    const lines = [];
+    if (header) lines.push(`【${header}】`);
+    if (prompt) lines.push(prompt);
+    const opts = Array.isArray(q.options) ? q.options : [];
+    opts.forEach((o, i) => {
+      const label = String(o.label || o.id || '').trim();
+      const desc = String(o.description || '').trim();
+      lines.push(desc ? `${i + 1}. ${label} — ${desc}` : `${i + 1}. ${label}`);
+    });
+    if (q.allowCustom) lines.push(`${opts.length + 1}. （可在电脑输入自定义回答）`);
+    blocks.push(lines.join('\n'));
+  }
+  blocks.push(
+    questions.length > 1
+      ? '本题含多问，请在电脑 DSH 弹窗里答完提交。'
+      : '请在电脑 DSH 弹窗里点选提交。',
+  );
+  return blocks.join('\n\n').slice(0, 6000);
+}
+
+function inputRequestSpoken(notice) {
+  const q0 = inputRequestQuestions(notice)[0];
+  const prompt = String(q0?.prompt || q0?.question || notice?.title || '').trim();
+  if (prompt) return `需要你回答：${prompt}`.slice(0, 400);
+  return '有问题需要你回答。';
+}
+
+/**
+ * 单题 + 选项 → 列表行，每行「选择」→ dsh.answer submit。
+ * 参数用 qid/oid 压缩，避免 params_json 256 上限。
+ */
+function inputRequestChoiceRows(session, notice) {
+  const questions = inputRequestQuestions(notice);
+  if (questions.length !== 1) return null;
+  const q = questions[0];
+  const opts = Array.isArray(q.options) ? q.options : [];
+  if (opts.length === 0) return null;
+  const sid = session.externalSessionId.slice(0, 128);
+  const nid = noticeIdOf(notice);
+  const qid = String(q.id || '').slice(0, 32);
+  if (!nid || !qid) return null;
+  const header = String(q.header || '请选择').trim().slice(0, 96);
+  const prompt = String(q.prompt || q.question || '').trim().slice(0, 120);
+  const rows = [
+    {
+      type: 'list_item',
+      id: `q_${qid}`.slice(0, 64),
+      title: header,
+      subtitle: prompt || '点下面一项作答',
+    },
+  ];
+  opts.slice(0, 8).forEach((o, i) => {
+    const oid = String(o.id || `o_${i}`).slice(0, 16);
+    const label = String(o.label || oid).trim();
+    const desc = String(o.description || '').trim();
+    rows.push({
+      type: 'list_item',
+      id: `${qid}_${oid}`.slice(0, 64),
+      title: `${i + 1}. ${label}`.slice(0, 96),
+      subtitle: (desc || '点选此项').slice(0, 120),
+      actions: [
+        {
+          id: `pick_${oid}`.slice(0, 24),
+          title: '选择',
+          run: 'invoke',
+          invoke: {
+            app_id: 'dsh.answer',
+            params: {
+              session: sid,
+              notice_id: nid,
+              action: 'submit',
+              qid,
+              oid,
+            },
+          },
+        },
+      ],
+    });
+  });
+  return rows;
+}
+
+/** list_item + 审批时带 run:invoke → dsh.answer；提问类不下发假「允许/拒绝」 */
 function taskRow(session, state, folded, notices) {
   const st = state?.status ?? 'unknown';
   const needsYou = ATTENTION.has(st);
+  const notice = primaryNotice(notices);
+  const kind = needsYou ? classifyNotice(notice) : null;
+  let subtitle = displayTaskSubtitle(st, folded, needsYou);
+  if (kind === 'input_request') {
+    const qs = inputRequestQuestions(notice);
+    const canPick = qs.length === 1 && Array.isArray(qs[0]?.options) && qs[0].options.length > 0;
+    subtitle = canPick ? '等你确认 · 点开选择' : '等你确认 · 请在电脑上选择';
+  } else if (kind === 'approval') {
+    subtitle = '等你确认 · 点允许或拒绝';
+  }
   const row = {
     type: 'list_item',
     id: session.externalSessionId.slice(0, 128),
     title: displayTaskTitle(session, folded).slice(0, 96),
-    subtitle: displayTaskSubtitle(st, folded, needsYou).slice(0, 120),
+    subtitle: subtitle.slice(0, 120),
   };
-  if (ATTENTION.has(st) && Array.isArray(notices) && notices.length > 0) {
-    const nid = String(notices[0].id ?? notices[0].noticeId ?? '').slice(0, 128);
-    if (nid) {
-      const sid = session.externalSessionId.slice(0, 128);
-      const invokeBase = { app_id: 'dsh.answer' };
-      row.actions = [
-        {
-          id: 'allow',
-          title: '允许',
-          run: 'invoke',
-          invoke: { ...invokeBase, params: { session: sid, notice_id: nid, action: 'allow' } },
-        },
-        {
-          id: 'deny',
-          title: '拒绝',
-          run: 'invoke',
-          invoke: { ...invokeBase, params: { session: sid, notice_id: nid, action: 'deny' } },
-        },
-      ];
-    }
+  const nid = noticeIdOf(notice);
+  if (kind === 'approval' && nid) {
+    const sid = session.externalSessionId.slice(0, 128);
+    const invokeBase = { app_id: 'dsh.answer' };
+    row.actions = [
+      {
+        id: 'allow',
+        title: '允许',
+        run: 'invoke',
+        invoke: { ...invokeBase, params: { session: sid, notice_id: nid, action: 'allow' } },
+      },
+      {
+        id: 'deny',
+        title: '拒绝',
+        run: 'invoke',
+        invoke: { ...invokeBase, params: { session: sid, notice_id: nid, action: 'deny' } },
+      },
+    ];
   }
   return row;
 }
@@ -253,13 +414,14 @@ async function handleHealth() {
     detail = e.message?.slice(0, 120) ?? 'unreachable';
   }
   const lans = lanAddresses();
-  const publicHost = lans[0] ? `${lans[0]}:${PORT}` : `127.0.0.1:${PORT}`;
+  const port = listenPort();
+  const publicHost = lans[0] ? `${lans[0]}:${port}` : `127.0.0.1:${port}`;
   return {
     ok: true,
     dsh,
     detail,
-    host: HOST,
-    port: PORT,
+    host: cfg().listen_host || '0.0.0.0',
+    port,
     lan: lans,
     market_url: `http://${publicHost}${MARKET_PREFIX}/marketplace.json`,
   };
@@ -407,7 +569,7 @@ async function handleWorkspaces(client) {
 
 /** 请求 Host → 绝对基址（APP 加源 / Host 拉包用） */
 function requestBase(request) {
-  const host = String(request.headers.host ?? '').trim() || `127.0.0.1:${PORT}`;
+  const host = String(request.headers.host ?? '').trim() || `127.0.0.1:${listenPort()}`;
   return `http://${host}`;
 }
 
@@ -521,7 +683,8 @@ function listDisplay(title, maxItems = 8) {
     preferred_surface: 'card',
     density: 'comfortable',
     max_items: maxItems,
-    ttl_sec: 0,
+    /* 墙板无操作超时关卡，避免常亮挡息屏；固件对 dsh 亦有 120s 兜底 */
+    ttl_sec: 120,
   };
 }
 
@@ -575,10 +738,14 @@ function statusDisplay(title, filters, maxItems = 10) {
   return { ...listDisplay(title, maxItems), filters: filters ?? [] };
 }
 
-/** 会话行：有审批优先允许/拒绝；否则续聊 arm */
+/** 会话行：二元审批→允许/拒绝；提问挂起不加续聊；其余→续聊 arm */
 function sessionRowWithArm(session, state, folded, notices) {
   const row = taskRow(session, state, folded, notices);
   if (row.actions && row.actions.length > 0) return row;
+  const st = state?.status ?? 'unknown';
+  if (ATTENTION.has(st) && classifyNotice(primaryNotice(notices)) === 'input_request') {
+    return row;
+  }
   const sid = session.externalSessionId.slice(0, 128);
   const cwd = String(session.cwd ?? '').slice(0, 200);
   row.actions = [
@@ -662,11 +829,62 @@ async function handleStatus(client, query, request, body = {}) {
     }
     const detailed = [await readTask(client, pool[0])];
     const t = detailed[0];
+    const notice = primaryNotice(t.notices);
+    const nKind = classifyNotice(notice);
+    const ask = displayTaskTitle(t.session, t.folded);
+
+    /* 单题多选：列表点「选择」提交（无 body，避免进纯文本详情） */
+    if (nKind === 'input_request') {
+      const choiceRows = inputRequestChoiceRows(t.session, notice);
+      if (choiceRows) {
+        const cwd = String(t.session.cwd ?? '').slice(0, 200);
+        choiceRows.push({
+          type: 'list_item',
+          id: 'back_list',
+          title: '← 返回任务列表',
+          subtitle: '不答题，回到进度列表',
+          actions: [
+            {
+              id: 'back',
+              title: '返回',
+              run: 'invoke',
+              invoke: {
+                ...statusInvokeBase(),
+                params: { workspace: cwd },
+              },
+            },
+          ],
+        });
+        return {
+          schema_version: 1,
+          request_id: newRequestId(),
+          app_id: 'dsh.status',
+          status: 'ok',
+          content: choiceRows,
+          display: {
+            ...statusDisplay('请选择', filters, 10),
+            title: String(ask || '请选择').slice(0, 32),
+            ttl_sec: 120,
+          },
+          spoken: await speakWithAudioParts(inputRequestSpoken(notice), request, 6),
+        };
+      }
+    }
+
     const row = sessionRowWithArm(t.session, t.state, t.folded, t.notices);
-    const body = lastReplyPlain(t.folded).slice(0, 6000);
+    let body = '';
+    let spokenText = '';
+    if (nKind === 'input_request') {
+      body = formatInputRequestPlain(notice);
+      spokenText = inputRequestSpoken(notice);
+    } else {
+      body = lastReplyPlain(t.folded).slice(0, 6000);
+      spokenText = body
+        ? `末轮：${body.replace(/\s+/g, ' ').trim()}`
+        : '暂无文字回复';
+    }
     if (body) row.body = body;
     else row.body = '（本会话还没有可展示的文字回复）';
-    const ask = displayTaskTitle(t.session, t.folded);
     return {
       schema_version: 1,
       request_id: newRequestId(),
@@ -676,9 +894,9 @@ async function handleStatus(client, query, request, body = {}) {
       display: {
         ...statusDisplay('会话详情', filters, 1),
         title: String(ask || '会话详情').slice(0, 32),
-        ttl_sec: 0,
+        ttl_sec: 120,
       },
-      spoken: speak(body ? '已打开末轮回复。' : '这条还没有文字回复。'),
+      spoken: await speakWithAudioParts(spokenText, request, 6),
     };
   }
 
@@ -967,9 +1185,7 @@ async function handleTask(client, body) {
     if (isTarget) {
       row.title = instruction.slice(0, 96);
       row.subtitle = clipTaskSub(
-        created
-          ? `新建并投递 · ${leaf} · 点刷新看进度`
-          : `刚投递到本会话 · ${leaf} · 点刷新看进度`,
+        created ? `新建并投递 · ${leaf}` : `刚投递到本会话 · ${leaf}`,
       );
     }
     content.push(row);
@@ -991,26 +1207,19 @@ async function handleTask(client, body) {
   });
 
   const spokenText = sessionRef
-    ? `已发给${leaf}里选中的会话。点刷新看进度，或说查看任务。`
+    ? `已发给${leaf}里选中的会话。可说续聊或查看详情。`
     : created
-      ? `已在${leaf}新建第${ord || 1}个会话并开始。点刷新看进度。`
-      : `已投到${leaf}第${ord || 1}个会话。要指定会话请先点续聊；新建请说新建会话加指令。`;
+      ? `已在${leaf}新建第${ord || 1}个会话并开始。可说续聊或查看详情。`
+      : `已投到${leaf}第${ord || 1}个会话。可说续聊或查看详情。`;
 
+  /* 回包对齐 dsh.status 进度卡，墙板无需再点刷新换皮 */
   return {
     schema_version: 1,
     request_id: newRequestId(),
-    app_id: 'dsh.task',
+    app_id: 'dsh.status',
     status: 'ok',
     content,
-    display: {
-      card_type: 'list',
-      title: `DSH · ${leaf}`.slice(0, 32),
-      preferred_surface: 'card',
-      density: 'comfortable',
-      max_items: 5,
-      ttl_sec: 0,
-      filters,
-    },
+    display: statusDisplay(`DSH 任务`, filters, 10),
     spoken: speak(spokenText),
   };
 }
@@ -1022,7 +1231,15 @@ function clipTaskSub(s) {
 async function handleAnswer(client, body) {
   const sessionRef = typeof body.session === 'string' ? body.session : '';
   const noticeId = typeof body.notice_id === 'string' ? body.notice_id : '';
-  const action = body.action === 'deny' ? 'deny' : 'allow';
+  const rawAction = typeof body.action === 'string' ? body.action.trim().toLowerCase() : 'allow';
+  const action =
+    rawAction === 'deny' || rawAction === 'reject'
+      ? 'deny'
+      : rawAction === 'cancel'
+        ? 'cancel'
+        : rawAction === 'submit'
+          ? 'submit'
+          : 'allow';
 
   if (!sessionRef || !noticeId) {
     return errorEnvelope('dsh.answer', 'config_missing', '需要 session 与 notice_id。', '缺少确认信息。');
@@ -1036,11 +1253,63 @@ async function handleAnswer(client, body) {
     return errorEnvelope('dsh.answer', 'not_installed', '找不到该任务。', '找不到这个任务。');
   }
 
-  await client.call('session.respondInteraction', {
+  const payload = {
     sessionId: session.sessionId,
     noticeId,
     actionId: action,
-  });
+  };
+  /* DSH bridge-next：提问答案在 inputData，不是 input */
+  if (action === 'submit') {
+    let answers = null;
+    if (body.answers && typeof body.answers === 'object') {
+      answers = body.answers;
+    } else {
+      const qid = typeof body.qid === 'string' ? body.qid.trim() : '';
+      const oid = typeof body.oid === 'string' ? body.oid.trim() : '';
+      if (qid && oid) {
+        answers = { [qid]: { optionIds: [oid] } };
+      }
+    }
+    if (!answers) {
+      return errorEnvelope(
+        'dsh.answer',
+        'config_missing',
+        '提交需要 qid+oid 或 answers。',
+        '缺少选项信息。',
+      );
+    }
+    payload.inputData = { answers };
+  }
+
+  try {
+    await client.call('session.respondInteraction', payload);
+  } catch (e) {
+    const msg = String(e?.message || e).slice(0, 200);
+    return errorEnvelope('dsh.answer', 'invoke_failed', msg, msg || '提交失败。');
+  }
+
+  const ack =
+    action === 'deny'
+      ? '已拒绝。'
+      : action === 'cancel'
+        ? '已取消。'
+        : action === 'submit'
+          ? '已提交。'
+          : '已允许。';
+
+  /* 提交后回进度列表，墙板无需再刷 */
+  try {
+    const cwd = String(session.cwd || '');
+    const statusEnv = await handleStatus(client, new URLSearchParams(), null, {
+      workspace: cwd,
+    });
+    if (statusEnv && statusEnv.status === 'ok') {
+      statusEnv.spoken = speak(ack);
+      return statusEnv;
+    }
+  } catch {
+    /* fall through plain ack */
+  }
 
   return {
     schema_version: 1,
@@ -1051,7 +1320,7 @@ async function handleAnswer(client, body) {
       {
         type: 'text',
         id: 'ack',
-        text: action === 'allow' ? '已允许。' : '已拒绝。',
+        text: ack,
         markdown: false,
       },
     ],
@@ -1062,7 +1331,7 @@ async function handleAnswer(client, body) {
       density: 'compact',
       max_items: 1,
     },
-    spoken: speak(action === 'allow' ? '已允许。' : '已拒绝。'),
+    spoken: speak(ack),
   };
 }
 
@@ -1103,6 +1372,7 @@ function send(response, status, payload) {
 
 /** 边沿：needs_you / completed → Host MQTT skill_hint */
 const s_prev = new Map();
+let s_watch_seeded = false;
 
 async function postSkillHint(reason, sessionId) {
   const c = cfg();
@@ -1201,6 +1471,7 @@ async function watchTick() {
   try {
     client = await connect({ namespace: 'nodelio-watch' });
     const { sessions } = await client.call('session.list', {});
+    const seeding = !s_watch_seeded;
     for (const session of sessions.slice(0, 24)) {
       const state = await client
         .call('session.getState', { externalSessionId: session.externalSessionId })
@@ -1209,6 +1480,13 @@ async function watchTick() {
       const id = session.externalSessionId;
       const prev = s_prev.get(id);
       s_prev.set(id, st);
+      if (seeding) {
+        /* 基线写入后：对已在 waiting 的会话补一次 needs_you，避免启动瞬间漏推 */
+        if (ATTENTION.has(st)) {
+          await postSkillHint('needs_you', id);
+        }
+        continue;
+      }
       if (!prev) continue;
       if (!ATTENTION.has(prev) && ATTENTION.has(st)) {
         await postSkillHint('needs_you', id);
@@ -1217,6 +1495,7 @@ async function watchTick() {
         await postSkillHint('completed', id);
       }
     }
+    s_watch_seeded = true;
   } catch (e) {
     console.warn(`[watch] ${e.message}`);
   } finally {
@@ -1233,6 +1512,8 @@ function stopWatch() {
 
 function restartWatch() {
   stopWatch();
+  s_prev.clear();
+  s_watch_seeded = false;
   const c = cfg();
   if (!c.watch) {
     console.log('[watch] off');
@@ -1244,6 +1525,7 @@ function restartWatch() {
     );
   }
   console.log(`[watch] every ${c.watch_ms}ms`);
+  watchTick().catch(() => {});
   watchTimer = setInterval(() => {
     watchTick().catch(() => {});
   }, c.watch_ms);
@@ -1276,6 +1558,7 @@ function restartHostWs() {
     wsUrl: c.host_ws,
     token: c.bridge_token,
     lanPort: c.listen_port,
+    publicUrl: c.public_url || '',
     panelDeviceId: c.panel_device_id,
     version: '1.0.0',
     onReady: () => {
@@ -1307,64 +1590,74 @@ function startLanHttp() {
     const url = new URL(request.url, `http://${request.headers.host ?? 'localhost'}`);
     const route = `${request.method} ${url.pathname}`;
     console.log(`${new Date().toISOString()}  ${route}`);
-
-    if (tryServeConfigUi(request, response, url.pathname)) return;
-    if (url.pathname === '/nodelio/dsh/config') {
-      await handleConfigApi(request, response, request.method);
-      return;
-    }
-    if (tryServeMarket(request, response, url.pathname)) return;
-    if (tryServeTts(request, response, url.pathname)) return;
-
-    if (route === 'GET /nodelio/dsh/health') {
-      send(response, 200, await handleHealth());
-      return;
-    }
-
-    let client;
     try {
-      client = await connect({ namespace: 'nodelio-market' });
+      if (tryServeConfigUi(request, response, url.pathname)) return;
+      if (url.pathname === '/nodelio/dsh/config') {
+        await handleConfigApi(request, response, request.method);
+        return;
+      }
+      if (tryServeMarket(request, response, url.pathname)) return;
+      if (tryServeTts(request, response, url.pathname)) return;
 
-      if (route === 'GET /nodelio/dsh/status') {
-        const env = await handleStatus(client, url.searchParams, request);
-        console.log(
-          `[dsh.http] GET status → ${env.status} items=${Array.isArray(env.content) ? env.content.length : 0}`,
-        );
-        send(response, 200, env);
-      } else if (route === 'POST /nodelio/dsh/status') {
-        const body = await readBody(request);
-        const env = await handleStatus(client, url.searchParams, request, body);
-        console.log(
-          `[dsh.http] POST status → ${env.status} items=${Array.isArray(env.content) ? env.content.length : 0}`,
-        );
-        send(response, 200, env);
-      } else if (route === 'GET /nodelio/dsh/workspaces') {
-        send(response, 200, await handleWorkspaces(client));
-      } else if (route === 'GET /nodelio/dsh/catalog') {
-        send(response, 200, await listCreateCatalog(client));
-      } else if (route === 'POST /nodelio/dsh/task') {
-        const body = await readBody(request);
-        const env = await handleTask(client, body);
-        console.log(
-          `[dsh.http] POST task → ${env.status}` +
-            (env.status === 'error'
-              ? ` code=${env.error?.code || '?'} msg=${String(env.error?.message || '').slice(0, 160)}`
-              : ` items=${Array.isArray(env.content) ? env.content.length : 0} title=${env.display?.title || '-'}`),
-        );
-        send(response, 200, env);
-      } else if (route === 'POST /nodelio/dsh/answer') {
-        send(response, 200, await handleAnswer(client, await readBody(request)));
-      } else {
-        send(response, 404, errorEnvelope('dsh.status', 'internal', `no route: ${route}`, '路径不对。'));
+      if (route === 'GET /nodelio/dsh/health') {
+        send(response, 200, await handleHealth());
+        return;
+      }
+
+      let client;
+      try {
+        client = await connect({ namespace: 'nodelio-market' });
+
+        if (route === 'GET /nodelio/dsh/status') {
+          const env = await handleStatus(client, url.searchParams, request);
+          console.log(
+            `[dsh.http] GET status → ${env.status} items=${Array.isArray(env.content) ? env.content.length : 0}`,
+          );
+          send(response, 200, env);
+        } else if (route === 'POST /nodelio/dsh/status') {
+          const body = await readBody(request);
+          const env = await handleStatus(client, url.searchParams, request, body);
+          const wav = env?.spoken?.audio?.url ? String(env.spoken.audio.url).slice(0, 96) : '';
+          console.log(
+            `[dsh.http] POST status → ${env.status} items=${Array.isArray(env.content) ? env.content.length : 0}` +
+              ` session=${body?.session ? '1' : '0'} wav=${wav ? '1' : '0'}${wav ? ` ${wav}` : ''}`,
+          );
+          send(response, 200, env);
+        } else if (route === 'GET /nodelio/dsh/workspaces') {
+          send(response, 200, await handleWorkspaces(client));
+        } else if (route === 'GET /nodelio/dsh/catalog') {
+          send(response, 200, await listCreateCatalog(client));
+        } else if (route === 'POST /nodelio/dsh/task') {
+          const body = await readBody(request);
+          const env = await handleTask(client, body);
+          console.log(
+            `[dsh.http] POST task → ${env.status}` +
+              (env.status === 'error'
+                ? ` code=${env.error?.code || '?'} msg=${String(env.error?.message || '').slice(0, 160)}`
+                : ` items=${Array.isArray(env.content) ? env.content.length : 0} title=${env.display?.title || '-'}`),
+          );
+          send(response, 200, env);
+        } else if (route === 'POST /nodelio/dsh/answer') {
+          send(response, 200, await handleAnswer(client, await readBody(request)));
+        } else {
+          send(response, 404, errorEnvelope('dsh.status', 'internal', `no route: ${route}`, '路径不对。'));
+        }
+      } catch (error) {
+        console.warn(`[dsh.http] ${route} exception: ${error.message}`);
+        const code = /ENOENT|ECONNREFUSED|endpoint not found/i.test(error.message)
+          ? 'upstream_error'
+          : 'internal';
+        send(response, 200, errorEnvelope('dsh.status', code, error.message, 'DSH 没响应，可能工作台没开。'));
+      } finally {
+        client?.close();
       }
     } catch (error) {
-      console.warn(`[dsh.http] ${route} exception: ${error.message}`);
-      const code = /ENOENT|ECONNREFUSED|endpoint not found/i.test(error.message)
-        ? 'upstream_error'
-        : 'internal';
-      send(response, 200, errorEnvelope('dsh.status', code, error.message, 'DSH 没响应，可能工作台没开。'));
-    } finally {
-      client?.close();
+      console.warn(`[dsh.http] ${route} fatal: ${error.message}`);
+      try {
+        send(response, 500, errorEnvelope('dsh.status', 'internal', error.message, '桥内部错误。'));
+      } catch {
+        /* ignore */
+      }
     }
   });
 

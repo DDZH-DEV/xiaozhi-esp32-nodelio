@@ -31,7 +31,8 @@ LV_FONT_DECLARE(font_material_symbols_20_4);
 #define HOME_SKILL_MAX 6
 #define HOME_SKILL_STRIP_H 76
 /* DSH：instruction + workspace + session；原 192 会截断路径 */
-#define HOME_INVOKE_BODY_MAX 384
+/* dsh.task/status：ws_esc≈220 + sess_esc≈160 + JSON 外壳 ≥408；对齐 overlay_apps body[544] */
+#define HOME_INVOKE_BODY_MAX 544
 
 struct nl_home_skill {
     char id[72];
@@ -128,7 +129,11 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
         char id[72];
         char body[HOME_INVOKE_BODY_MAX];
     };
-    auto *arg = static_cast<invoke_arg *>(malloc(sizeof(invoke_arg)));
+    auto *arg = static_cast<invoke_arg *>(
+        heap_caps_malloc(sizeof(invoke_arg), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!arg) {
+        arg = static_cast<invoke_arg *>(malloc(sizeof(invoke_arg)));
+    }
     if (!arg) {
         nl_ov_toast("内存不足");
         return;
@@ -173,7 +178,9 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
                         char spoken[NL_ENV_SPOKEN];
                         spoken[0] = '\0';
                         nodelio_skill_deliver_json(&a->cfg, resp, false, spoken, sizeof(spoken));
-                        if (strstr(a->id, "dsh") != nullptr && spoken[0]) {
+                        /* 续聊武装中勿 TTS：会掐麦；且叠 MQTT hello 易超时 */
+                        if (strstr(a->id, "dsh") != nullptr && spoken[0] &&
+                            !nodelio_panel_ui_dsh_is_armed()) {
                             nodelio_panel_ui_announce_spoken(spoken);
                         }
                     } else if (err != ESP_OK || status == 0 || !resp[0]) {
@@ -551,6 +558,43 @@ static void apply_pins_and_refill(nl_home_skill *items, int n)
             nl_ov_fill_home();
         }
     });
+}
+
+void nl_ov_home_skills_ingest_skills_root(const cJSON *root)
+{
+    if (!root) {
+        return;
+    }
+    auto *items = static_cast<nl_home_skill *>(calloc(HOME_SKILL_MAX, sizeof(nl_home_skill)));
+    if (!items) {
+        return;
+    }
+    int n = 0;
+    const cJSON *skills = cJSON_GetObjectItemCaseSensitive(root, "skills");
+    if (cJSON_IsArray(skills)) {
+        const cJSON *it = nullptr;
+        cJSON_ArrayForEach(it, skills) {
+            if (n >= HOME_SKILL_MAX) {
+                break;
+            }
+            const cJSON *pin = cJSON_GetObjectItemCaseSensitive(it, "pinned");
+            if (!cJSON_IsTrue(pin)) {
+                continue;
+            }
+            nl_home_skill *row = &items[n];
+            copy_json_field(row->id, sizeof(row->id), it, "skillId");
+            if (!row->id[0] || strstr(row->id, "dsh.answer") != nullptr) {
+                continue;
+            }
+            copy_json_field(row->name, sizeof(row->name), it, "name");
+            store_default_invoke(row->body, sizeof(row->body), it);
+            const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
+            row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
+            n++;
+        }
+    }
+    s_fetching = false;
+    apply_pins_and_refill(items, n);
 }
 
 void nl_ov_home_skills_ensure_fetched(void)

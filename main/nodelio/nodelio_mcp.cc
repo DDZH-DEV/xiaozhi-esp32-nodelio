@@ -1049,12 +1049,9 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.nodelio.open_app",
-        "打开本机已装 NodeLio 应用（唯一正确入口）。"
-        "听歌/放歌/来点音乐/曲库→name=曲库；电台/播客/新闻/天气/空气/每日一句同理。"
-        "任务/进度/DSH→name=查看任务或 DSH进度（同步返回摘要，请原文念给用户）。"
-        "禁止改用云端 search_music/play_music 等非本机工具；不要说找不到而不调用。"
-        "name=曲库/音乐/新闻/天气/电台/播客/空气/每日一句/"
-        "DSH派活/DSH进度/DSH任务/任务情况/任务应用 或 app_id。",
+        "打开已装应用。听歌/曲库→name=曲库；电台/播客/新闻/天气同理。"
+        "任务/DSH进度→name=查看任务（返回摘要请原文念）。禁云端 play_music。"
+        "name=曲库/音乐/新闻/天气/电台/播客/空气/每日一句/DSH派活/查看任务 或 app_id。",
         PropertyList({Property("name", kPropertyTypeString)}),
         [](const PropertyList &properties) -> ToolResult {
             std::string name = properties["name"].value<std::string>();
@@ -1236,14 +1233,10 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.skill.invoke",
-        "调用已装技能。skill_id 须用完整 id：music.search / radio.stations / podcast.latest / "
-        "news.latest / weather.today / air.now / quote.daily / dsh.status / dsh.task"
-        "（短写 radio/music/dsh 固件会归一）。"
-        "用户问任务/进度/DSH 在干嘛→dsh.status，把返回摘要念给用户；"
-        "派活→dsh.task 且 params 含 instruction。"
-        "听歌/放歌/打开曲库必须 self.nodelio.open_app(name=曲库)，禁止云端 search_music/play_music。"
-        "电台/播客同理用 open_app。曲库 keyword 空=自动播；有什么歌=只列表。"
-        "列表已开随便放→transport op=play。",
+        "调技能。skill_id=music.search|radio.stations|podcast.latest|news.latest|"
+        "weather.today|air.now|quote.daily|dsh.status|dsh.task（短写会归一）。"
+        "听歌须 open_app(曲库)；任务进度→dsh.status；派活→dsh.task+instruction；"
+        "列表已开随便放→transport play。",
         PropertyList({
             Property("skill_id", kPropertyTypeString, ""),
             Property("params", kPropertyTypeString, ""),

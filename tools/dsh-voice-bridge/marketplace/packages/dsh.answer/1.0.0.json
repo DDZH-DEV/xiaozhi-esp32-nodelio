@@ -3,7 +3,7 @@
   "app_id": "dsh.answer",
   "version": "1.0.0",
   "name": "DSH 确认",
-  "description": "内部动作：只供进度卡「允许/拒绝」按钮调用。须带 session + notice_id；不要从应用列表或首页打开。",
+  "description": "内部动作：二元审批 allow/deny，或单题提问 submit(qid+oid)。须带 session + notice_id；不要从应用列表打开。",
   "publisher": {
     "name": "NodeLio",
     "contact": "https://github.com/DDZH-DEV/nodelio-protocol/issues"
@@ -36,9 +36,23 @@
       "action": {
         "type": "string",
         "title": "决定",
-        "enum": ["allow", "deny"],
+        "enum": ["allow", "deny", "submit", "cancel"],
         "default": "allow",
         "ui_hint": "select"
+      },
+      "qid": {
+        "type": "string",
+        "title": "问题 ID",
+        "description": "action=submit 时：input_request 的 question id",
+        "maxLength": 32,
+        "ui_hint": "text"
+      },
+      "oid": {
+        "type": "string",
+        "title": "选项 ID",
+        "description": "action=submit 时：option id（如 o_0）",
+        "maxLength": 16,
+        "ui_hint": "text"
       }
     },
     "required": ["session", "notice_id"]

@@ -22,9 +22,9 @@ extern "C" {
 #define NL_ENV_FILTER_MAX 8
 #define NL_ENV_FILTER_TITLE 24
 #define NL_ENV_WS_PATH 160 /* filter.workspace；点选时再拼 params */
-#define NL_ENV_PARAMS 256 /* DSH arm: workspace path + session id */
+#define NL_ENV_PARAMS 384 /* DSH arm / answer(submit qid+oid)；勿截断 notice_id */
 
-/** list_item 上 run:invoke 按钮（最多 2 个，如允许/拒绝）. */
+/** list_item 上 run:invoke 按钮（最多 2 个，如允许/拒绝；提问选项每行 1 个「选择」）. */
 typedef struct {
     char id[24];
     char title[24];
@@ -72,7 +72,10 @@ typedef struct {
     char preferred_surface[24];
     char density[16]; /* compact | comfortable；缺省空=按 card_type */
     char spoken[NL_ENV_SPOKEN];
-    char spoken_audio_url[NL_ENV_URL]; /* spoken.audio.url，可选 HTTP MP3/Ogg */
+    char spoken_audio_url[NL_ENV_URL]; /* spoken.audio.url，首段；兼容旧包 */
+#define NL_ENV_SPOKEN_AUDIO_MAX 6
+    int spoken_audio_n; /* spoken.audio.urls 段数；0 则仅用 spoken_audio_url */
+    char spoken_audio_urls[NL_ENV_SPOKEN_AUDIO_MAX][NL_ENV_URL];
     char error_message[NL_ENV_SPOKEN];
     int ttl_sec;
     int track_n;

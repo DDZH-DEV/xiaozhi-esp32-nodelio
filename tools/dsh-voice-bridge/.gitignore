@@ -6,4 +6,6 @@ package-lock.json
 bridge-config.json
 _bridge_out.txt
 _bridge_err.txt
+_bridge_stdout.log
+_bridge_stderr.log
 
