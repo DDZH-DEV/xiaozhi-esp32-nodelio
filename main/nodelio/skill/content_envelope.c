@@ -20,6 +20,28 @@ static void copy_str(char *dst, size_t dst_len, const cJSON *obj, const char *ke
     }
 }
 
+/** 去掉 # / 全角＃，避免中文 TTS 念「井号」。原地改写。 */
+static void strip_hash_marks(char *s)
+{
+    if (!s || !s[0]) {
+        return;
+    }
+    unsigned char *w = (unsigned char *)s;
+    for (const unsigned char *p = (const unsigned char *)s; *p;) {
+        if (*p == '#') {
+            p++;
+            continue;
+        }
+        /* U+FF03 ＃ = EF BC 83 */
+        if (p[0] == 0xEF && p[1] == 0xBC && p[2] == 0x83) {
+            p += 3;
+            continue;
+        }
+        *w++ = *p++;
+    }
+    *w = '\0';
+}
+
 static void degrade_card_type(nl_content_envelope_t *out)
 {
     if (out->card_type[0] == '\0') {
@@ -320,6 +342,11 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
     } else if (cJSON_IsString(spoken) && spoken->valuestring) {
         snprintf(out->spoken, sizeof(out->spoken), "%s", spoken->valuestring);
     }
+    /* DSH 标题常带 #N；中文 TTS / 云端「原文念」会念「井号」。屏上 title 仍可带 #。
+     * 桥侧 WAV 若已按带 # 文案合成，需桥在 TTS 前去 #；此处只清 spoken.text。 */
+    if (out->spoken[0] && strstr(out->app_id, "dsh") != NULL) {
+        strip_hash_marks(out->spoken);
+    }
 
     const bool allow_play = nodelio_caps_has("media.play_local");
     int limit = nodelio_caps_max_list_items();
@@ -428,6 +455,9 @@ void nodelio_envelope_spoken_summary(const nl_content_envelope_t *env, char *buf
     }
     if (env->spoken[0]) {
         snprintf(buf, buf_len, "%s", env->spoken);
+        if (strstr(env->app_id, "dsh") != NULL) {
+            strip_hash_marks(buf);
+        }
         return;
     }
     if (strcmp(env->status, "ok") != 0) {
@@ -443,8 +473,13 @@ void nodelio_envelope_spoken_summary(const nl_content_envelope_t *env, char *buf
         return;
     }
     if (env->track_n == 1) {
-        snprintf(buf, buf_len, "找到《%s》%s%s", env->tracks[0].title,
-                 env->tracks[0].artist[0] ? " - " : "", env->tracks[0].artist);
+        char title[NL_ENV_TITLE];
+        snprintf(title, sizeof(title), "%s", env->tracks[0].title);
+        if (strstr(env->app_id, "dsh") != NULL) {
+            strip_hash_marks(title);
+        }
+        snprintf(buf, buf_len, "找到《%s》%s%s", title, env->tracks[0].artist[0] ? " - " : "",
+                 env->tracks[0].artist);
         return;
     }
     /* 多列几首给 LLM/语音，避免只说「有N首」却报不出歌名 */
@@ -452,9 +487,14 @@ void nodelio_envelope_spoken_summary(const nl_content_envelope_t *env, char *buf
     size_t off = 0;
     names[0] = '\0';
     int n_show = env->track_n < 5 ? env->track_n : 5;
+    const bool dsh = strstr(env->app_id, "dsh") != NULL;
     for (int i = 0; i < n_show; i++) {
-        int w = snprintf(names + off, sizeof(names) - off, "%s《%s》", i ? "、" : "",
-                         env->tracks[i].title);
+        char title[NL_ENV_TITLE];
+        snprintf(title, sizeof(title), "%s", env->tracks[i].title);
+        if (dsh) {
+            strip_hash_marks(title);
+        }
+        int w = snprintf(names + off, sizeof(names) - off, "%s《%s》", i ? "、" : "", title);
         if (w <= 0 || (size_t)w >= sizeof(names) - off) {
             break;
         }

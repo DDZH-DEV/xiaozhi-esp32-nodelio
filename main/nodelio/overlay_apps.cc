@@ -82,11 +82,30 @@ static void set_hint(const char *text)
     lv_obj_clear_flag(s_hint, LV_OBJ_FLAG_HIDDEN);
 }
 
+static bool apps_list_eq(const nl_app_item *items, int n)
+{
+    if (n != s_item_n) {
+        return false;
+    }
+    for (int i = 0; i < n; i++) {
+        if (items[i].enabled != s_items[i].enabled) {
+            return false;
+        }
+        if (strcmp(items[i].id, s_items[i].id) != 0 || strcmp(items[i].name, s_items[i].name) != 0 ||
+            strcmp(items[i].desc, s_items[i].desc) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static void render_list(void)
 {
     if (!s_list) {
         return;
     }
+    /* 重建前记下滚动位置，避免刷新后跳顶/闪一下像闪屏 */
+    const lv_coord_t keep_y = lv_obj_get_scroll_y(s_list);
     lv_obj_clean(s_list);
     if (s_item_n <= 0) {
         return;
@@ -239,8 +258,9 @@ static void render_list(void)
         lv_obj_t *txt = lv_obj_create(row);
         lv_obj_remove_style_all(txt);
         lv_obj_set_flex_grow(txt, 1);
-        lv_obj_set_height(txt, LV_SIZE_CONTENT);
+        lv_obj_set_height(txt, lv_pct(100));
         lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(txt, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
         lv_obj_set_style_pad_row(txt, 2, 0);
         lv_obj_clear_flag(txt, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_t *title = lv_label_create(txt);
@@ -249,6 +269,9 @@ static void render_list(void)
         lv_obj_set_style_text_color(title, UI_TEXT, 0);
         lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
         lv_obj_set_width(title, lv_pct(100));
+        const lv_font_t *card_font = lv_obj_get_style_text_font(title, LV_PART_MAIN);
+        const int32_t line_h = card_font ? lv_font_get_line_height(card_font) : 16;
+        lv_obj_set_height(title, line_h);
         lv_obj_t *sub = lv_label_create(txt);
         nl_ov_set_font(sub);
         if (!it->enabled) {
@@ -261,8 +284,14 @@ static void render_list(void)
             lv_label_set_text(sub, "可用");
             lv_obj_set_style_text_color(sub, UI_ACCENT_SOFT, 0);
         }
+        /* 标题 1 行 + 描述 2 行打点；超长省略，不挤成第三行标题 */
         lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
         lv_obj_set_width(sub, lv_pct(100));
+        lv_obj_set_height(sub, line_h * 2);
+    }
+    if (keep_y > 0) {
+        lv_obj_update_layout(s_list);
+        lv_obj_scroll_to_y(s_list, keep_y, LV_ANIM_OFF);
     }
 }
 
@@ -359,12 +388,21 @@ static void apply_snap(nl_app_snap *snap)
             free(snap);
             return;
         }
-        /* 先落盘再刷 UI：MQTT skills 推送时应用页可能未显示，锁失败也不能丢缓存 */
-        s_item_n = snap->n;
-        if (s_item_n > APP_MAX) {
-            s_item_n = APP_MAX;
+        const int n = snap->n > APP_MAX ? APP_MAX : snap->n;
+        /* 清单未变：不 clean/重建、不反复写 NVS（否则刷新必闪屏 + NVS 空间告警） */
+        if (s_have_list && apps_list_eq(snap->items, n)) {
+            DisplayLockGuard lock(nl_ov_disp());
+            if (lock) {
+                set_hint(s_item_n > 0 ? "点按打开" : "暂无已安装应用");
+            }
+            free(snap);
+            return;
         }
-        memcpy(s_items, snap->items, sizeof(nl_app_item) * (size_t)s_item_n);
+        /* 先落盘再刷 UI：MQTT skills 推送时应用页可能未显示，锁失败也不能丢缓存 */
+        s_item_n = n;
+        if (s_item_n > 0) {
+            memcpy(s_items, snap->items, sizeof(nl_app_item) * (size_t)s_item_n);
+        }
         s_have_list = true;
         persist_list();
         nl_ov_home_skills_invalidate();
@@ -443,19 +481,29 @@ void nl_ov_apps_ingest_skills_root(const cJSON *root)
         return;
     }
     fill_snap_from_skills_root(root, snap);
-    /* 同步落盘；UI 延后。不 invalidate 钉选——bootstrap 会紧接着 ingest pins */
-    s_item_n = snap->n > APP_MAX ? APP_MAX : snap->n;
-    if (s_item_n > 0) {
-        memcpy(s_items, snap->items, sizeof(nl_app_item) * (size_t)s_item_n);
+    const int n = snap->n > APP_MAX ? APP_MAX : snap->n;
+    const bool same = s_have_list && apps_list_eq(snap->items, n);
+    if (!same) {
+        /* 同步落盘；UI 延后。不 invalidate 钉选——bootstrap 会紧接着 ingest pins */
+        s_item_n = n;
+        if (s_item_n > 0) {
+            memcpy(s_items, snap->items, sizeof(nl_app_item) * (size_t)s_item_n);
+        } else {
+            s_item_n = 0;
+        }
+        s_have_list = true;
+        persist_list();
+    } else {
+        s_have_list = true;
     }
-    s_have_list = true;
-    persist_list();
-    Application::GetInstance().Schedule([snap]() {
+    Application::GetInstance().Schedule([snap, same]() {
         s_loading = false;
         DisplayLockGuard lock(nl_ov_disp());
         if (lock) {
             set_hint(s_item_n > 0 ? "点按打开" : "暂无已安装应用");
-            render_list();
+            if (!same) {
+                render_list();
+            }
         }
         free(snap);
     });

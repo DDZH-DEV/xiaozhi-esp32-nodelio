@@ -1302,10 +1302,19 @@ static void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
                 char sess_esc[160];
                 json_escape_str(ws_esc, sizeof(ws_esc), a->ws);
                 json_escape_str(sess_esc, sizeof(sess_esc), a->sess);
-                char body[640];
+                /* silent：定时刷新，桥端跳过 TTS；detail_tts 由 Host 从技能配置注入 */
+                char body[680];
                 if (ws_esc[0]) {
-                    snprintf(body, sizeof(body), "{\"workspace\":\"%s\",\"session\":\"%s\"}", ws_esc,
-                             sess_esc);
+                    if (a->silent) {
+                        snprintf(body, sizeof(body),
+                                 "{\"workspace\":\"%s\",\"session\":\"%s\",\"silent\":true}", ws_esc,
+                                 sess_esc);
+                    } else {
+                        snprintf(body, sizeof(body), "{\"workspace\":\"%s\",\"session\":\"%s\"}",
+                                 ws_esc, sess_esc);
+                    }
+                } else if (a->silent) {
+                    snprintf(body, sizeof(body), "{\"session\":\"%s\",\"silent\":true}", sess_esc);
                 } else {
                     snprintf(body, sizeof(body), "{\"session\":\"%s\"}", sess_esc);
                 }
@@ -1348,6 +1357,21 @@ static void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
                                               : (s_env && s_env->display_title[0] ? s_env->display_title
                                                                                  : "详情");
                                 char *sp = strdup(spoken_src);
+                                if (sp) {
+                                    /* 详情回退 display_title 常带 #N；去掉以免 toast/摘要念「井号」 */
+                                    for (char *q = sp; *q;) {
+                                        if (*q == '#') {
+                                            memmove(q, q + 1, strlen(q + 1) + 1);
+                                            continue;
+                                        }
+                                        if ((unsigned char)q[0] == 0xEF && (unsigned char)q[1] == 0xBC &&
+                                            (unsigned char)q[2] == 0x83) {
+                                            memmove(q, q + 3, strlen(q + 3) + 1);
+                                            continue;
+                                        }
+                                        q++;
+                                    }
+                                }
                                 if (sp && pack) {
                                     pack->n = nodelio_skill_last_spoken_audio_urls(
                                         pack->urls, NL_ENV_SPOKEN_AUDIO_MAX);
@@ -1468,16 +1492,15 @@ static void run_invoke_action(const nl_env_invoke_action_t *ia)
         }
         /* 续聊下发任务 = 自由说 → 必须云端 ASR（STT 再走本地 armed→dsh.task）。
          * 本地 MultiNet 只有固定口令，听不懂「帮我提交版本」这类指令。
-         * DRAM 紧时先收成悬浮球再开麦，避免技能卡占堆导致 MQTT hello 超时。 */
-        const size_t dram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-        if (!card_open || dram_largest < 32 * 1024) {
-            if (card_open) {
-                ESP_LOGW(TAG, "dsh arm minimize for cloud ASR dram_largest=%u",
+         * 列表/详情已打开时保持卡片：收成悬浮球会被当成「没点到续聊、整卡缩小」。
+         * 仅无卡时收起，给云端 ASR 腾一点内部堆。 */
+        if (!card_open) {
+            minimize_to_fab();
+        } else {
+            const size_t dram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+            if (dram_largest < 32 * 1024) {
+                ESP_LOGW(TAG, "dsh arm keep card open, low dram_largest=%u",
                          (unsigned)dram_largest);
-                minimize_to_fab();
-                nl_ov_toast("已收起列表，请直接说要做的事");
-            } else {
-                minimize_to_fab();
             }
         }
         Application::GetInstance().Schedule([]() {
@@ -2781,6 +2804,18 @@ static const char *dsh_focus_track_artist(void)
 /** 详情页：执行中/待确认 → 顶状态条 EQ；空闲则按续聊 phase 画 */
 static void dsh_detail_paint_running(const char *subtitle)
 {
+    /* 与列表同一套：待确认必须出「发送/取消」。详情原先只画续聊态，确认条被吃掉 */
+    const bool pending = s_dsh_pending_preview[0] != '\0' && s_dsh_phase == DSH_UI_ARMED;
+    if (pending) {
+        dsh_paint_status_strip();
+        /* 底栏与确认条叠两套取消，待确认时只留发送/取消 */
+        if (s_dsh_detail_bar) {
+            lv_obj_add_flag(s_dsh_detail_bar, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_height(s_dsh_detail_bar, 0);
+        }
+        return;
+    }
+    dsh_hide_confirm_bar();
     const bool needs_you = dsh_subtitle_needs_you(subtitle);
     const bool running = s_dsh_phase == DSH_UI_DISPATCHED || s_dsh_phase == DSH_UI_ARMED ||
                          dsh_subtitle_is_running(subtitle) || needs_you;
@@ -3146,9 +3181,11 @@ static void fill_list(void)
             lv_obj_t *txt = lv_obj_create(row);
             lv_obj_remove_style_all(txt);
             lv_obj_set_flex_grow(txt, 1);
-            lv_obj_set_height(txt, LV_SIZE_CONTENT);
+            /* 撑满行高，主轴居中：天气等单行副文不会顶在上沿 */
+            lv_obj_set_height(txt, lv_pct(100));
             lv_obj_set_style_min_width(txt, 0, 0);
             lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(txt, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
             lv_obj_set_style_pad_row(txt, comfortable ? 3 : 1, 0);
             lv_obj_set_style_clip_corner(txt, true, 0);
             lv_obj_clear_flag(txt, LV_OBJ_FLAG_CLICKABLE);
@@ -3175,13 +3212,11 @@ static void fill_list(void)
             }
             lv_obj_set_style_text_color(a, UI_TEXT_MUTED, 0);
             lv_obj_set_width(a, lv_pct(100));
-            if (comfortable) {
-                lv_label_set_long_mode(a, LV_LABEL_LONG_WRAP);
-                lv_obj_set_height(a, line_h * 2);
-            } else {
-                lv_label_set_long_mode(a, LV_LABEL_LONG_DOT);
-                lv_obj_set_height(a, line_h);
-            }
+            /* DSH 副文可能两行；天气/空气等单行。勿用 WRAP——限高后会硬裁无省略号 */
+            lv_label_set_long_mode(a, LV_LABEL_LONG_DOT);
+            const bool sub_two_lines =
+                comfortable && s_env->app_id[0] && strstr(s_env->app_id, "dsh") != nullptr;
+            lv_obj_set_height(a, sub_two_lines ? (line_h * 2) : line_h);
 
             if (can_play && s_env->tracks[i].playback_url[0]) {
                 const char *icon = (i == s_play_idx) ? MATERIAL_SYMBOLS_PAUSE : MATERIAL_SYMBOLS_PLAY_ARROW;

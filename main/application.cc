@@ -1035,10 +1035,20 @@ void Application::InitializeProtocol() {
                         }
                         return;
                     }
-                    /* 关闭电台/播客/曲库…：本地先收弹窗；云端可再确认，勿只靠 goto_page */
+                    /* 关闭电台/播客/曲库…：本地先收弹窗。云端常跟「拜拜」并结束会话；
+                     * 若只 suppress 仍停 Listening，唤醒词不开、上行也不再出字 → 假死。 */
                     if (nodelio_skill_try_dismiss_phrase(message.c_str())) {
-                        ESP_LOGI(TAG, "stt local-route: skill dismiss");
+                        ESP_LOGI(TAG, "stt local-route: skill dismiss → idle");
                         SuppressCloudTts(3000);
+                        if (protocol_ && protocol_->IsAudioChannelOpened()) {
+                            protocol_->CloseAudioChannel();
+                        } else {
+                            const auto st = GetDeviceState();
+                            if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
+                                st == kDeviceStateConnecting) {
+                                SetDeviceState(kDeviceStateIdle);
+                            }
+                        }
                         return;
                     }
                     ESP_LOGI(TAG, "stt local-route: miss → cloud continues");

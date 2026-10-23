@@ -38,7 +38,7 @@ static StackType_t *s_hb_stack;
 static StaticTask_t s_hb_tcb;
 static constexpr uint32_t kHbStackBytes = 10240;
 
-/* 服务端 WALL_PANEL 离线窗口 ≥90s（再连续两轮 5s）。须小于该窗口，单次 POST 失败仍能在下一次刷 last_seen。 */
+/* 服务端 WALL_PANEL 离线窗口 ≥180s（再连续两轮 5s）。须小于该窗口，单次 POST 失败仍能在下一次刷 last_seen。 */
 static constexpr uint32_t kHeartbeatPeriodMs = 30000;
 
 enum { PWR_SLEEP = 0, PWR_WAKE = 1 };
