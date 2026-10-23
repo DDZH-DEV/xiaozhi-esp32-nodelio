@@ -482,6 +482,24 @@ function mapCreateFailSpoken(message) {
   return `派活失败：${m.slice(0, 120)}`;
 }
 
+/**
+ * DSH 桥连不上（端点过期/未监听）→ 专用 dsh_offline 错误码。
+ * 面板拿到明确中文提示，而不是裸 ECONNREFUSED 文本。
+ */
+function isDshOfflineError(error) {
+  const m = String(error?.message || '');
+  return /ECONNREFUSED|ECONNRESET|ENOENT|endpoint not found/i.test(m);
+}
+
+const DSH_OFFLINE_MESSAGE = '电脑 DSH 工作台未启动，桥连不上。请到电脑上打开 DSH Desktop 后再试。';
+const DSH_OFFLINE_SPOKEN = 'DSH 工作台没开，请到电脑上打开后再试。';
+
+function offlineEnvelope(appId) {
+  const env = errorEnvelope(appId, 'dsh_offline', DSH_OFFLINE_MESSAGE, DSH_OFFLINE_SPOKEN);
+  env.error.retryable = true; /* 工作台打开后立即恢复，允许面板重试 */
+  return env;
+}
+
 function logTask(msg, extra) {
   const tail = extra != null ? ` ${typeof extra === 'string' ? extra : JSON.stringify(extra)}` : '';
   console.log(`[dsh.task] ${msg}${tail}`);
@@ -1000,6 +1018,9 @@ async function handleTask(client, body) {
       });
     } catch (e) {
       logTask('startTurn throw', { err: e.message, code: e.code });
+      if (isDshOfflineError(e)) {
+        return offlineEnvelope('dsh.task');
+      }
       return errorEnvelope(
         'dsh.task',
         'upstream_error',
@@ -1052,6 +1073,9 @@ async function handleTask(client, body) {
         });
       } catch (e) {
         logTask('startTurn throw', { err: e.message, code: e.code });
+        if (isDshOfflineError(e)) {
+          return offlineEnvelope('dsh.task');
+        }
         return errorEnvelope(
           'dsh.task',
           'upstream_error',
@@ -1098,6 +1122,9 @@ async function handleTask(client, body) {
         });
       } catch (e) {
         logTask('createAndStart throw', { err: e.message, code: e.code });
+        if (isDshOfflineError(e)) {
+          return offlineEnvelope('dsh.task');
+        }
         return errorEnvelope(
           'dsh.task',
           'upstream_error',
@@ -1284,6 +1311,9 @@ async function handleAnswer(client, body) {
   try {
     await client.call('session.respondInteraction', payload);
   } catch (e) {
+    if (isDshOfflineError(e)) {
+      return offlineEnvelope('dsh.answer');
+    }
     const msg = String(e?.message || e).slice(0, 200);
     return errorEnvelope('dsh.answer', 'invoke_failed', msg, msg || '提交失败。');
   }
@@ -1644,10 +1674,15 @@ function startLanHttp() {
         }
       } catch (error) {
         console.warn(`[dsh.http] ${route} exception: ${error.message}`);
-        const code = /ENOENT|ECONNREFUSED|endpoint not found/i.test(error.message)
-          ? 'upstream_error'
-          : 'internal';
-        send(response, 200, errorEnvelope('dsh.status', code, error.message, 'DSH 没响应，可能工作台没开。'));
+        if (isDshOfflineError(error)) {
+          send(response, 200, offlineEnvelope('dsh.status'));
+        } else {
+          send(
+            response,
+            200,
+            errorEnvelope('dsh.status', 'internal', error.message, 'DSH 调用出错，请稍后再试。'),
+          );
+        }
       } finally {
         client?.close();
       }
