@@ -1702,8 +1702,10 @@ void Application::HandleStateChangedEvent() {
             break;
         case kDeviceStateNotifying:
             display->SetStatus(Lang::Strings::SPEAKING);
-            /* 播歌时麦克风继续跑唤醒词。认出唤醒词后才 pause_for_voice，不会一开监听就停歌。 */
-            audio_service_.EnableWakeWordDetection(true);
+            /* 须关 voice processing + 唤醒 AFE：HTTP 点歌开声瞬间若仍 feed，
+             * AFE(FEED) ring 会堆满并抢核，听感就是前几秒「跳一下」。点停靠 UI。 */
+            audio_service_.EnableVoiceProcessing(false);
+            audio_service_.EnableWakeWordDetection(false);
             break;
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableVoiceProcessing(false);
@@ -1774,6 +1776,12 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
     }
 
     audio_service_.ResetDecoder();
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 先挂 MQTT 再开 HTTP：避免在途 Opus 与首包抢队列；再清一次解码器 */
+    MarkTransportSuspended(true);
+    SuspendTransport();
+    audio_service_.ResetDecoder();
+#endif
     uint32_t playback_id = ++notification_playback_id_;
     if (playback_id == 0) {
         playback_id = ++notification_playback_id_;
@@ -1801,24 +1809,21 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
         StopNotification();
         return;
     }
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-    /* 拉流时挂起小智 MQTT：禁 TLS 重连抢内部堆（mbedtls_ssl_setup / esp-aes OOM）。
-     * 唤醒进云前 EnsureNetReady / ResumeTransport 会再拉起。 */
-    MarkTransportSuspended(true);
-    SuspendTransport();
-#endif
 }
 
 void Application::StopNotification() {
     DeviceState st = GetDeviceState();
     notify_player_.Stop();
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-    /* 关技能弹窗会 media_stop→这里。聆听/说话中并非 HTTP 播歌时，
-     * 若 ResetDecoder 并 EnableVoiceProcessing(true)，随后 Speaking→Listening
-     * 见处理器已在跑就跳过 SendStartListening：麦开着但云端不再出字，聆听态唤醒词也不开。 */
+    /* 关技能弹窗会 media_stop→这里。聆听/说话中勿 ResetDecoder / EnableVoiceProcessing，
+     * 否则 Speaking→Listening 见处理器已在跑会跳过 SendStartListening。
+     * 但仍须解除播歌时的 transport suspend，否则 MQTT 假死。 */
     if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
         st == kDeviceStateConnecting) {
-        ESP_LOGW(TAG, "skip StopNotification during voice (state=%d)", (int)st);
+        ESP_LOGW(TAG, "StopNotification voice-safe (state=%d): resume transport only",
+                 (int)st);
+        MarkTransportSuspended(false);
+        ResumeTransport();
         return;
     }
 #endif
@@ -2445,7 +2450,9 @@ bool Application::PlayHttpAudio(std::string audio_url, std::string device_key) {
         ESP_LOGW(TAG, "PlayHttpAudio ignored while busy");
         return false;
     }
-    StartNotification(std::move(audio_url), std::vector<NotifySubtitle>{}, std::move(device_key));
+    /* 点歌勿弹 OGG_POPUP：会往 Opus 解码队列塞包，与 MP3 PCM 抢开头，刷 ESP_OPUS_DEC */
+    StartNotification(std::move(audio_url), std::vector<NotifySubtitle>{}, std::move(device_key),
+                      false);
     return GetDeviceState() == kDeviceStateNotifying;
 }
 

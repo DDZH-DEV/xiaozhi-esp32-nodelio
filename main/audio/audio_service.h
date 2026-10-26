@@ -39,7 +39,9 @@
 
 #define OPUS_FRAME_DURATION_MS 60
 #define MAX_ENCODE_TASKS_IN_QUEUE 2
-#define MAX_PLAYBACK_TASKS_IN_QUEUE 2
+/* 点歌 MP3 批约 2s。开播瞬间 MQTT/DRAM/重采样抢CPU，需盖住前几秒 underrun。
+ * 4 格×2s≈8s；云 Opus 帧 60ms，多 1 格只多约 60ms 播完延迟。 */
+#define MAX_PLAYBACK_TASKS_IN_QUEUE 4
 #define MAX_DECODE_PACKETS_IN_QUEUE (1200 / OPUS_FRAME_DURATION_MS)
 #define MAX_SEND_PACKETS_IN_QUEUE (2400 / OPUS_FRAME_DURATION_MS)
 #define AUDIO_TESTING_MAX_DURATION_MS 10000
@@ -63,7 +65,7 @@
      : (duration_ms) == 80  ? ESP_OPUS_ENC_FRAME_DURATION_80_MS  \
      : (duration_ms) == 100 ? ESP_OPUS_ENC_FRAME_DURATION_100_MS \
      : (duration_ms) == 120 ? ESP_OPUS_ENC_FRAME_DURATION_120_MS \
-                            : -1)
+                            : ESP_OPUS_ENC_FRAME_DURATION_60_MS)
 
 #define AS_OPUS_ENC_CONFIG()                                                                   \
     {                                                                                          \
@@ -146,10 +148,16 @@ public:
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
     /** 已是单声道 PCM（采样率须等于 codec 输出）。播放队列满时阻塞，ResetDecoder 后返回 false。 */
     bool EnqueuePlaybackPcm(std::vector<int16_t> pcm, uint32_t playback_id, uint32_t media_position_ms);
+    /** 非阻塞入队。成功则清空 pcm；队列满返回 false 且 full=true，pcm 原样保留。 */
+    bool TryEnqueuePlaybackPcm(std::vector<int16_t>& pcm, uint32_t playback_id,
+                               uint32_t media_position_ms, bool* full);
+    bool PlaybackQueueHasRoom() const;
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
     void PlaySound(const std::string_view& sound);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
     void ResetDecoder();
+    /** Ogg OpusHead pre-skip：丢掉编码器延迟对应的开头采样，去掉每首歌开头怪声 */
+    void ArmOpusPreSkip48k(uint32_t pre_skip_48k);
     void SetModelsList(srmodel_list_t* models_list);
     srmodel_list_t* GetModelsList() const { return models_list_; }
 
@@ -172,7 +180,11 @@ private:
     int encoder_outbuf_size_ = 0;
     int decoder_sample_rate_ = 0;
     int decoder_duration_ms_ = OPUS_FRAME_DURATION_MS;
+    int decoder_frame_us_ = 0;
     int decoder_frame_size_ = 0;
+    /** Ogg OpusHead pre-skip（48k 刻度）；解码后按输出采样率丢弃开头毛刺 */
+    uint32_t opus_preskip_48k_ = 0;
+    uint32_t opus_preskip_remain_ = 0;
     DebugStatistics debug_statistics_;
     int64_t last_encode_drop_log_time_ = 0;
     srmodel_list_t* models_list_ = nullptr;
@@ -183,7 +195,7 @@ private:
     TaskHandle_t audio_input_task_handle_ = nullptr;
     TaskHandle_t audio_output_task_handle_ = nullptr;
     TaskHandle_t opus_codec_task_handle_ = nullptr;
-    std::mutex audio_queue_mutex_;
+    mutable std::mutex audio_queue_mutex_;
     std::condition_variable audio_queue_cv_;
     // Testing records up to AUDIO_TESTING_MAX_DURATION_MS, then swaps into the
     // decode queue. Both queues must share this capacity so swap() is valid.
@@ -222,6 +234,7 @@ private:
     void PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t>&& pcm);
     bool InitializeAudioEngine();
     void SetDecodeSampleRate(int sample_rate, int frame_duration);
+    void SetDecodeSampleRate(int sample_rate, int frame_us, int frame_count);
     void CheckAndUpdateAudioPowerState();
     bool IsPlaybackDrainedLocked() const;
     bool MarkPlaybackDrainedLocked();

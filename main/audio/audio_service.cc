@@ -9,13 +9,48 @@
         .perf_type = ESP_AE_RATE_CVT_PERF_TYPE_SPEED,                                        \
     }
 
-#define OPUS_DEC_CFG(_sample_rate, _frame_duration_ms)                                     \
-    (esp_opus_dec_cfg_t) {                                                                 \
-        .sample_rate = (uint32_t)(_sample_rate), .channel = ESP_AUDIO_MONO,                \
-        .frame_duration =                                                                  \
-            (esp_opus_dec_frame_duration_t)AS_OPUS_GET_FRAME_DRU_ENUM(_frame_duration_ms), \
-        .self_delimited = false,                                                           \
+/* 帧长用 INVALID：音乐 Ogg 包 TOC 常混 2.5/5/10/20ms，写死再建解码器会整段 skip。 */
+#define OPUS_DEC_CFG(_sample_rate)                                                   \
+    (esp_opus_dec_cfg_t) {                                                           \
+        .sample_rate = (uint32_t)(_sample_rate), .channel = ESP_AUDIO_MONO,           \
+        .frame_duration = ESP_OPUS_DEC_FRAME_DURATION_INVALID, .self_delimited = false, \
     }
+
+static bool OpusTocTiming(const uint8_t* data, size_t size, int* frame_us, int* frame_count) {
+    if (data == nullptr || size == 0 || frame_us == nullptr || frame_count == nullptr) {
+        return false;
+    }
+    const uint8_t toc = data[0];
+    const uint8_t config = toc >> 3;
+    if (config < 12) {
+        static constexpr int kSilk[] = {10000, 20000, 40000, 60000};
+        *frame_us = kSilk[config & 0x03];
+    } else if (config < 16) {
+        *frame_us = (config & 0x01) ? 20000 : 10000;
+    } else {
+        static constexpr int kCelt[] = {2500, 5000, 10000, 20000};
+        *frame_us = kCelt[config & 0x03];
+    }
+    switch (toc & 0x03) {
+        case 0:
+            *frame_count = 1;
+            break;
+        case 1:
+        case 2:
+            *frame_count = 2;
+            break;
+        default:
+            if (size < 2) {
+                return false;
+            }
+            *frame_count = data[1] & 0x3f;
+            if (*frame_count == 0) {
+                *frame_count = 1;
+            }
+            break;
+    }
+    return *frame_us > 0;
+}
 
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4 || CONFIG_IDF_TARGET_ESP32S31
 #include "engines/afe_audio_engine.h"
@@ -49,8 +84,7 @@ void AudioService::Initialize(AudioCodec* codec) {
     codec_ = codec;
     codec_->Start();
 
-    esp_opus_dec_cfg_t opus_dec_cfg =
-        OPUS_DEC_CFG(codec->output_sample_rate(), OPUS_FRAME_DURATION_MS);
+    esp_opus_dec_cfg_t opus_dec_cfg = OPUS_DEC_CFG(codec->output_sample_rate());
     auto ret = esp_opus_dec_open(&opus_dec_cfg, sizeof(esp_opus_dec_cfg_t), &opus_decoder_);
     if (opus_decoder_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create audio decoder, error code: %d", ret);
@@ -420,7 +454,14 @@ void AudioService::OpusCodecTask() {
             task.playback_id = packet->playback_id;
             task.media_position_ms = packet->media_position_ms;
 
-            SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
+            int toc_frame_us = 20000;
+            int toc_frames = 1;
+            if (!OpusTocTiming(packet->payload.data(), packet->payload.size(), &toc_frame_us,
+                               &toc_frames)) {
+                toc_frame_us = packet->frame_duration > 0 ? packet->frame_duration * 1000 : 20000;
+                toc_frames = 1;
+            }
+            SetDecodeSampleRate(packet->sample_rate, toc_frame_us, toc_frames);
             bool decoded = false;
             if (opus_decoder_ != nullptr) {
                 task.pcm.resize(decoder_frame_size_);
@@ -438,11 +479,41 @@ void AudioService::OpusCodecTask() {
                 esp_audio_dec_info_t dec_info = {};
                 std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
                 auto ret = esp_opus_dec_decode(opus_decoder_, &raw, &out_frame, &dec_info);
+                if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
+                    const size_t need =
+                        (size_t)decoder_sample_rate_ * (size_t)toc_frame_us * (size_t)toc_frames /
+                            1000000u +
+                        (size_t)decoder_sample_rate_ / 50u;
+                    task.pcm.resize(need);
+                    out_frame.buffer = (uint8_t*)(task.pcm.data());
+                    out_frame.len = (uint32_t)(task.pcm.size() * sizeof(int16_t));
+                    out_frame.decoded_size = 0;
+                    raw.consumed = 0;
+                    ret = esp_opus_dec_decode(opus_decoder_, &raw, &out_frame, &dec_info);
+                }
                 decoder_lock.unlock();
                 if (ret == ESP_AUDIO_ERR_OK) {
                     task.pcm.resize(out_frame.decoded_size / sizeof(int16_t));
-                    if (decoder_sample_rate_ != codec_->output_sample_rate() &&
-                        output_resampler_ != nullptr) {
+                    /* OpusHead pre-skip：按解码采样率折算后丢掉开头（每首 Ogg 开头怪声） */
+                    if (opus_preskip_48k_ > 0 && opus_preskip_remain_ == 0 &&
+                        decoder_sample_rate_ > 0) {
+                        opus_preskip_remain_ = static_cast<uint32_t>(
+                            (static_cast<uint64_t>(opus_preskip_48k_) *
+                             static_cast<uint32_t>(decoder_sample_rate_)) /
+                            48000u);
+                        opus_preskip_48k_ = 0;
+                    }
+                    if (opus_preskip_remain_ > 0 && !task.pcm.empty()) {
+                        const size_t drop =
+                            task.pcm.size() < opus_preskip_remain_ ? task.pcm.size()
+                                                                   : (size_t)opus_preskip_remain_;
+                        task.pcm.erase(task.pcm.begin(), task.pcm.begin() + static_cast<long>(drop));
+                        opus_preskip_remain_ -= static_cast<uint32_t>(drop);
+                    }
+                    if (task.pcm.empty()) {
+                        decoded = false;
+                    } else if (decoder_sample_rate_ != codec_->output_sample_rate() &&
+                               output_resampler_ != nullptr) {
                         uint32_t target_size = 0;
                         esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, task.pcm.size(),
                                                                &target_size);
@@ -453,10 +524,13 @@ void AudioService::OpusCodecTask() {
                                                 &actual_output);
                         resampled.resize(actual_output);
                         task.pcm = std::move(resampled);
+                        decoded = true;
+                    } else {
+                        decoded = true;
                     }
-                    decoded = true;
                 } else {
-                    ESP_LOGE(TAG, "Failed to decode audio after resize, error code: %d", ret);
+                    ESP_LOGW(TAG, "skip opus packet len=%u err=%d toc=%uus×%d",
+                             (unsigned)packet->payload.size(), (int)ret, toc_frame_us, toc_frames);
                 }
             } else {
                 ESP_LOGE(TAG, "Audio decoder is not configured");
@@ -544,7 +618,37 @@ void AudioService::OpusCodecTask() {
 }
 
 void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
-    if (decoder_sample_rate_ == sample_rate && decoder_duration_ms_ == frame_duration) {
+    // 兼容旧调用：frame_duration 当作单帧毫秒
+    int frame_us = frame_duration > 0 ? frame_duration * 1000 : 20000;
+    if (frame_duration == 3) {
+        frame_us = 2500; // demuxer 对 2.5ms 的近似
+    }
+    SetDecodeSampleRate(sample_rate, frame_us, 1);
+}
+
+void AudioService::SetDecodeSampleRate(int sample_rate, int frame_us, int frame_count) {
+    if (frame_us <= 0) {
+        frame_us = 20000;
+    }
+    if (frame_count <= 0) {
+        frame_count = 1;
+    }
+    /* INVALID 帧长：PCM 按文档按 60ms 计；缓冲再按本包 TOC 扩到 ≤120ms */
+    int packet_ms = (frame_us * frame_count + 500) / 1000;
+    if (packet_ms < 60) {
+        packet_ms = 60;
+    }
+    if (packet_ms > 120) {
+        packet_ms = 120;
+    }
+    /* 只随采样率重建；勿因 TOC 帧长变化反复 open/close（音乐 Ogg 会炸） */
+    if (decoder_sample_rate_ == sample_rate && opus_decoder_ != nullptr) {
+        decoder_duration_ms_ = packet_ms;
+        decoder_frame_us_ = frame_us;
+        decoder_frame_size_ = decoder_sample_rate_ / 1000 * packet_ms;
+        if (decoder_frame_size_ < 1) {
+            decoder_frame_size_ = decoder_sample_rate_ / 50;
+        }
         return;
     }
     std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
@@ -553,15 +657,19 @@ void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
         opus_decoder_ = nullptr;
     }
     decoder_lock.unlock();
-    esp_opus_dec_cfg_t opus_dec_cfg = OPUS_DEC_CFG(sample_rate, frame_duration);
+    esp_opus_dec_cfg_t opus_dec_cfg = OPUS_DEC_CFG(sample_rate);
     auto ret = esp_opus_dec_open(&opus_dec_cfg, sizeof(esp_opus_dec_cfg_t), &opus_decoder_);
     if (opus_decoder_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create audio decoder, error code: %d", ret);
         return;
     }
     decoder_sample_rate_ = sample_rate;
-    decoder_duration_ms_ = frame_duration;
-    decoder_frame_size_ = decoder_sample_rate_ / 1000 * frame_duration;
+    decoder_duration_ms_ = packet_ms;
+    decoder_frame_us_ = frame_us;
+    decoder_frame_size_ = decoder_sample_rate_ / 1000 * packet_ms;
+    if (decoder_frame_size_ < 1) {
+        decoder_frame_size_ = decoder_sample_rate_ / 50; // ≥20ms
+    }
 
     auto codec = Board::GetInstance().GetAudioCodec();
     if (decoder_sample_rate_ != codec->output_sample_rate()) {
@@ -667,6 +775,46 @@ bool AudioService::EnqueuePlaybackPcm(std::vector<int16_t> pcm, uint32_t playbac
     }
     audio_queue_cv_.notify_all();
     return true;
+}
+
+bool AudioService::TryEnqueuePlaybackPcm(std::vector<int16_t>& pcm, uint32_t playback_id,
+                                         uint32_t media_position_ms, bool* full) {
+    if (full) {
+        *full = false;
+    }
+    if (pcm.empty()) {
+        return true;
+    }
+    std::unique_lock<std::mutex> lock(audio_queue_mutex_);
+    if (service_stopped_.load()) {
+        return false;
+    }
+    if (audio_playback_queue_.size() >= MAX_PLAYBACK_TASKS_IN_QUEUE) {
+        if (full) {
+            *full = true;
+        }
+        return false;
+    }
+    AudioTask task;
+    task.type = kAudioTaskTypeDecodeToPlaybackQueue;
+    task.pcm = std::move(pcm);
+    task.playback_id = playback_id;
+    task.media_position_ms = media_position_ms;
+    playback_drained_notified_ = false;
+    if (!audio_playback_queue_.push_back(std::move(task))) {
+        pcm = std::move(task.pcm);
+        if (full) {
+            *full = true;
+        }
+        return false;
+    }
+    audio_queue_cv_.notify_all();
+    return true;
+}
+
+bool AudioService::PlaybackQueueHasRoom() const {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    return audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE;
 }
 
 std::unique_ptr<AudioStreamPacket> AudioService::PopPacketFromSendQueue() {
@@ -862,6 +1010,12 @@ bool AudioService::IsPlaybackIdle() {
     return IsPlaybackDrainedLocked();
 }
 
+void AudioService::ArmOpusPreSkip48k(uint32_t pre_skip_48k)
+{
+    opus_preskip_48k_ = pre_skip_48k;
+    opus_preskip_remain_ = 0;
+}
+
 void AudioService::ResetDecoder() {
     bool notify_drained = false;
     {
@@ -876,6 +1030,8 @@ void AudioService::ResetDecoder() {
         audio_decode_queue_.clear();
         audio_playback_queue_.clear();
         audio_testing_queue_.clear();
+        opus_preskip_48k_ = 0;
+        opus_preskip_remain_ = 0;
         notify_drained = MarkPlaybackDrainedLocked();
         audio_queue_cv_.notify_all();
     }

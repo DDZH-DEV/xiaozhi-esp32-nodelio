@@ -362,9 +362,9 @@ static void media_worker(void *arg)
             const size_t intern = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
             ESP_LOGI(TAG, "before play dma_largest=%u internal_free=%u", (unsigned)dma,
                      (unsigned)intern);
-            if (dma < 8192) {
-                ESP_LOGW(TAG, "DMA low, wait 500ms");
-                vTaskDelay(pdMS_TO_TICKS(500));
+            if (dma < 12288) {
+                ESP_LOGW(TAG, "DMA low, wait 800ms");
+                vTaskDelay(pdMS_TO_TICKS(800));
             }
         }
 

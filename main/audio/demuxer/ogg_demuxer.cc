@@ -13,7 +13,8 @@ void OggDemuxer::Reset()
         .head_seen = false,
         .tags_seen = false,
         .mono = false,
-        .sample_rate = 48000
+        .sample_rate = 48000,
+        .pre_skip_48k = 0,
     };
 
     has_error_ = false;
@@ -71,11 +72,19 @@ int OggDemuxer::GetOpusPacketDurationMs(const uint8_t* data, size_t size) {
             break;
     }
 
-    const int packet_duration_us = frame_duration_us * frame_count;
-    if (frame_count == 0 || packet_duration_us > 120000 || packet_duration_us % 1000 != 0) {
+    if (frame_count <= 0) {
+        frame_count = 1;
+    }
+    int packet_duration_us = frame_duration_us * frame_count;
+    if (packet_duration_us <= 0) {
         return -1;
     }
-    return packet_duration_us / 1000;
+    // Opus 单包上限 120ms；超限多半是 TOC 误读，仍给进度用上限，交给解码侧跳过。
+    if (packet_duration_us > 120000) {
+        packet_duration_us = 120000;
+    }
+    // Nearest ms for media-position (2.5ms → 3ms).
+    return (packet_duration_us + 500) / 1000;
 }
 
 bool OggDemuxer::Finish() const {
@@ -298,6 +307,9 @@ size_t OggDemuxer::Process(const uint8_t* data, size_t size)
                                 opus_info_.head_seen = true;
                                 if (ctx_.packet_len >= 19) {
                                     opus_info_.mono = ctx_.packet_buf[9] == 1;
+                                    opus_info_.pre_skip_48k =
+                                        static_cast<uint32_t>(ctx_.packet_buf[10]) |
+                                        (static_cast<uint32_t>(ctx_.packet_buf[11]) << 8);
                                     const uint32_t input_sample_rate =
                                         static_cast<uint32_t>(ctx_.packet_buf[12]) |
                                         (static_cast<uint32_t>(ctx_.packet_buf[13]) << 8) |
@@ -317,7 +329,9 @@ size_t OggDemuxer::Process(const uint8_t* data, size_t size)
                                             opus_info_.sample_rate = 48000;
                                             break;
                                     }
-                                    ESP_LOGD(TAG, "OpusHead found, sample_rate=%d", opus_info_.sample_rate);
+                                    ESP_LOGI(TAG, "OpusHead sample_rate=%d pre_skip_48k=%u",
+                                             opus_info_.sample_rate,
+                                             (unsigned)opus_info_.pre_skip_48k);
                                     if (!opus_info_.mono) {
                                         ESP_LOGE(TAG, "Only mono Ogg Opus streams are supported");
                                         has_error_ = true;
@@ -346,12 +360,10 @@ size_t OggDemuxer::Process(const uint8_t* data, size_t size)
                             }
                         }
                         if (opus_info_.head_seen && opus_info_.tags_seen) {
-                            const int frame_duration_ms =
+                            int frame_duration_ms =
                                 GetOpusPacketDurationMs(ctx_.packet_buf, ctx_.packet_len);
                             if (frame_duration_ms <= 0) {
-                                ESP_LOGE(TAG, "Unsupported Opus packet duration");
-                                has_error_ = true;
-                                return processed;
+                                frame_duration_ms = 20; // 进度兜底；解码侧再按 TOC 配置
                             }
                             ++packet_count_;
                             if (on_packet_) {

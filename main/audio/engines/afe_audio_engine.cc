@@ -271,6 +271,12 @@ void AfeAudioEngine::Feed(std::vector<int16_t>&& data) {
     if ((bits & kVoiceProcessingEnabled) && !kUseAfeForVoiceProcessing) {
         OutputRawAudio(data);
     }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 点歌/通知播报期间丢弃麦帧：避免 FEED 环满抢 CPU0，扬声器前几秒卡顿。 */
+    if (nodelio_media_is_playing()) {
+        return;
+    }
+#endif
     if (afe_data_ == nullptr || (bits & kAfeActive) == 0) {
         return;
     }

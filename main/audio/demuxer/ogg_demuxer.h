@@ -21,6 +21,7 @@ private:
         bool    tags_seen{false};
         bool    mono{false};
         int     sample_rate{48000};
+        uint32_t pre_skip_48k{0}; /* OpusHead：48kHz 下开头应丢弃的采样数 */
     };
 
 
@@ -51,6 +52,7 @@ public:
 
     bool Finish() const;
     bool HasError() const { return has_error_; }
+    uint32_t PreSkip48k() const { return opus_info_.pre_skip_48k; }
 
     void OnPacket(std::function<void(const uint8_t* data, int sample_rate, int frame_duration_ms,
                                      size_t len)> on_packet) {
