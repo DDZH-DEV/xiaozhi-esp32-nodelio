@@ -149,8 +149,9 @@
 #define UI_AI_DRAWER_BG_OPA    200 /* ~78%：背后设置项隐约可见 */
 #define UI_AI_MINI_SZ          52  /* 最小化圆钮（仅图标，无文字） */
 #define UI_AI_MINI_RIGHT       14
-/* 新闻详情正文缩放：0=现状(14px)，最大 150%（LV_SCALE_NONE=256） */
-#define UI_NEWS_ZOOM_MAX       2
-#define UI_NEWS_ZOOM_SCALE_0   256
-#define UI_NEWS_ZOOM_SCALE_1   320
-#define UI_NEWS_ZOOM_SCALE_2   384
+/* 新闻阅读：0=14px 普惠；1/2=资源 20px 真字库（禁止 transform 放大点阵，会糊） */
+#define UI_NEWS_ZOOM_MAX         2
+#define UI_NEWS_LINE_SPACE_0     4
+#define UI_NEWS_LINE_SPACE_1     6
+#define UI_NEWS_LINE_SPACE_2     10
+#define UI_NEWS_LETTER_SPACE_2   1

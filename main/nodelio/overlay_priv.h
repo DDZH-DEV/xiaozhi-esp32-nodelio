@@ -224,7 +224,7 @@ void nl_ov_kb_set_visible(bool on);
 void nl_ov_fill_settings(void);
 void nl_ov_build_apps(void);
 void nl_ov_apps_set_visible(bool on);
-/** 应用列表刷新 FAB：音乐悬浮球出现时左移，避免叠在一起。 */
+/** 应用列表刷新 FAB 落位（左下；与右下音乐球错开）。 */
 void nl_ov_apps_layout_chrome(void);
 /** 有本地缓存则只画列表；无缓存才拉网。 */
 void nl_ov_apps_ensure(void);
@@ -269,4 +269,6 @@ void nl_ov_show_ai_drawer_session(chat_phase_t phase);
 
 /* —— misc —— */
 const lv_font_t *nl_ov_ui_font(void);
+/** 阅读用字库：主题/资源 20px（Noto common），失败回退普惠 14 */
+const lv_font_t *nl_ov_read_font(void);
 void nl_ov_do_factory_reset(void);

@@ -32,6 +32,7 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #include "backlight.h"
 #include "board.h"
 #include "display.h"
+#include "lvgl_font.h"
 #include "ssid_manager.h"
 #include "system_info.h"
 #include "wifi_manager.h"
@@ -158,6 +159,23 @@ Display *nl_ov_disp()
 const lv_font_t *nl_ov_ui_font(void)
 {
     return &font_puhui_14_1;
+}
+
+const lv_font_t *nl_ov_read_font(void)
+{
+    Display *d = nl_ov_disp();
+    if (!d) {
+        return nl_ov_ui_font();
+    }
+    Theme *th = d->GetTheme();
+    if (!th) {
+        return nl_ov_ui_font();
+    }
+    std::shared_ptr<LvglFont> tf = th->GetTextFont();
+    if (!tf || tf->font() == nullptr) {
+        return nl_ov_ui_font();
+    }
+    return tf->font();
 }
 
 void nl_ov_set_font(lv_obj_t *obj)

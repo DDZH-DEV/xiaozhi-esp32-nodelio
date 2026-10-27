@@ -145,6 +145,8 @@ static void free_owned_env(nl_content_envelope_t *env)
 static int s_play_idx = -1;
 static int s_list_page;
 static lv_obj_t *s_hdr_mid_btn;
+static lv_obj_t *s_hdr_btns;
+static lv_obj_t *s_news_zoom_bar; /* 新闻详情：顶栏刷新左侧 A-/A+ */
 static lv_obj_t *s_row_idx_labels[64];  /* 序号胶囊标签（数字/耳机） */
 static lv_obj_t *s_row_btns[64];       /* 播放/暂停按钮 */
 static int s_news_detail = -1;
@@ -2147,6 +2149,9 @@ static void null_skill_widget_ptrs(void)
     s_now_next_btn = nullptr;
     s_mini_fab = nullptr;
     s_mini_ic = nullptr;
+    s_hdr_btns = nullptr;
+    s_hdr_mid_btn = nullptr;
+    s_news_zoom_bar = nullptr;
     s_news_body_lbl = nullptr;
     s_dsh_focus_row = nullptr;
     s_dsh_pulse_n = 0;
@@ -2553,19 +2558,19 @@ static void ensure_card(void)
     lv_label_set_text(s_card_sub, "");
     lv_obj_set_style_text_color(s_card_sub, UI_TEXT_MUTED, 0);
 
-    lv_obj_t *hdr_btns = lv_obj_create(hdr);
-    lv_obj_remove_style_all(hdr_btns);
-    lv_obj_set_size(hdr_btns, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(hdr_btns, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(hdr_btns, 6, 0);
-    lv_obj_clear_flag(hdr_btns, LV_OBJ_FLAG_CLICKABLE);
+    s_hdr_btns = lv_obj_create(hdr);
+    lv_obj_remove_style_all(s_hdr_btns);
+    lv_obj_set_size(s_hdr_btns, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(s_hdr_btns, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(s_hdr_btns, 6, 0);
+    lv_obj_clear_flag(s_hdr_btns, LV_OBJ_FLAG_CLICKABLE);
 
-    make_play_ctrl_btn(hdr_btns, UI_CAPSULE_OFF, UI_ACCENT_SOFT, MATERIAL_SYMBOLS_REFRESH, on_reshuffle);
+    make_play_ctrl_btn(s_hdr_btns, UI_CAPSULE_OFF, UI_ACCENT_SOFT, MATERIAL_SYMBOLS_REFRESH, on_reshuffle);
     /* 曲库为下一页；新闻在 fill_news 里改回下箭头收起 */
-    s_hdr_mid_btn = make_play_ctrl_btn(hdr_btns, UI_CAPSULE_OFF, UI_TEXT_SUB, MATERIAL_SYMBOLS_SKIP_NEXT,
+    s_hdr_mid_btn = make_play_ctrl_btn(s_hdr_btns, UI_CAPSULE_OFF, UI_TEXT_SUB, MATERIAL_SYMBOLS_SKIP_NEXT,
                                        on_hdr_mid);
 
-    lv_obj_t *xbtn = lv_obj_create(hdr_btns);
+    lv_obj_t *xbtn = lv_obj_create(s_hdr_btns);
     lv_obj_remove_style_all(xbtn);
     lv_obj_set_size(xbtn, 44, 44);
     lv_obj_set_style_radius(xbtn, 22, 0);
@@ -2831,6 +2836,10 @@ static void apply_card_chrome(void)
     const bool paged = music || news || list_page_count() > 1;
     /* 有顶栏 chip 时勿 compact：否则列表 SIZE_CONTENT 被 max_h 裁切且难滚，第 4 行露不全 */
     const bool compact = !paged && !dsh_detail && s_env->filter_n == 0 && s_env->track_n <= 4;
+    /* 字号条仅新闻详情；切到其它卡或列表时收起 */
+    if (!news || s_news_detail < 0) {
+        set_news_zoom_hdr_visible(false);
+    }
     if (s_hdr_mid_btn) {
         /* DSH 详情：中间钮与左侧刷新易混，改用底栏「返回列表」；仅曲库/新闻分页显示 */
         if (dsh_detail) {

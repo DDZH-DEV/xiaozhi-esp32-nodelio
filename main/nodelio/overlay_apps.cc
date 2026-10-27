@@ -670,9 +670,8 @@ void nl_ov_apps_layout_chrome(void)
     if (!s_refresh) {
         return;
     }
-    /* 刷新 48、音乐球 52；球在屏幕右下，刷新左移一格避免叠住。 */
-    const lv_coord_t x = nodelio_skill_mini_fab_visible() ? -(2 + 52 + 12) : -2;
-    lv_obj_align(s_refresh, LV_ALIGN_BOTTOM_RIGHT, x, -2);
+    /* 刷新固定左下；音乐悬浮球仍在右下，互不抢位。 */
+    lv_obj_align(s_refresh, LV_ALIGN_BOTTOM_LEFT, 2, -2);
 }
 
 void nl_ov_apps_set_visible(bool on)
@@ -981,12 +980,12 @@ void nl_ov_build_apps(void)
     lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(s_list, UI_GAP, 0);
     lv_obj_set_style_pad_column(s_list, UI_GAP, 0);
-    lv_obj_set_style_pad_bottom(s_list, 56, 0); /* 避让右下 FAB（刷新 / 音乐球并排） */
+    lv_obj_set_style_pad_bottom(s_list, 56, 0); /* 避让左下刷新 / 右下音乐球 */
     lv_obj_add_flag(s_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_OFF);
 
-    /* 右下角浮动刷新；有音乐悬浮球时由 nl_ov_apps_layout_chrome 左移 */
+    /* 左下角浮动刷新 */
     s_refresh = lv_obj_create(s_page);
     lv_obj_remove_style_all(s_refresh);
     lv_obj_set_size(s_refresh, 48, 48);
