@@ -15,5 +15,6 @@
   "default_model": "codearts/GLM-5.2",
   "default_reasoning": "on",
   "default_permission": "danger-full-access",
-  "default_agent_preset": "standard"
+  "default_agent_preset": "standard",
+  "dsh_desktop_exe": ""
 }

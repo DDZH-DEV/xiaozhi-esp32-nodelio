@@ -248,9 +248,8 @@ static chat_phase_t phase_from_status(const char *status)
     /* 仅建链进度文案，勿匹配「连接成功 / 已连接」 */
     if (strstr(status, "连接中") || strstr(status, "Connecting") || strstr(status, "登录") ||
         strstr(status, "正在恢复网络") || strstr(status, "唤醒网络") || strstr(status, "入网中") ||
-        strstr(status, "获取地址") || strstr(status, "接通语音") || strstr(status, "网络未就绪") ||
-        strstr(status, "本地控家")) {
-        return strstr(status, "本地控家") ? CHAT_LISTEN : CHAT_CONNECT;
+        strstr(status, "获取地址") ||         strstr(status, "接通语音") || strstr(status, "网络未就绪")) {
+        return CHAT_CONNECT;
     }
     if (strstr(status, "待命") || strstr(status, "Standby") || strstr(status, "standby")) {
         return CHAT_IDLE;
@@ -267,8 +266,7 @@ static bool status_is_phase(const char *status)
            strstr(status, "连接中") || strstr(status, "Listening") || strstr(status, "Speaking") ||
            strstr(status, "Standby") || strstr(status, "Connecting") || strstr(status, "登录") ||
            strstr(status, "正在恢复网络") || strstr(status, "唤醒网络") || strstr(status, "入网中") ||
-           strstr(status, "获取地址") || strstr(status, "接通语音") || strstr(status, "网络未就绪") ||
-           strstr(status, "本地控家");
+           strstr(status, "获取地址") || strstr(status, "接通语音") || strstr(status, "网络未就绪");
 }
 
 /** 状态栏时钟 "HH:MM" —— 不写进对话上区 caption */

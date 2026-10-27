@@ -42,6 +42,24 @@ static void strip_hash_marks(char *s)
     *w = '\0';
 }
 
+/** music_list：display.media_kind 缺省时按 app_id 回退（旧包兼容） */
+static void fill_media_kind_fallback(nl_content_envelope_t *out)
+{
+    if (!out || out->media_kind[0]) {
+        return;
+    }
+    if (strcmp(out->card_type, "music_list") != 0 && out->track_n <= 0) {
+        return;
+    }
+    if (strstr(out->app_id, "radio") != NULL) {
+        snprintf(out->media_kind, sizeof(out->media_kind), "live");
+    } else if (strstr(out->app_id, "podcast") != NULL) {
+        snprintf(out->media_kind, sizeof(out->media_kind), "episode");
+    } else {
+        snprintf(out->media_kind, sizeof(out->media_kind), "track");
+    }
+}
+
 static void degrade_card_type(nl_content_envelope_t *out)
 {
     if (out->card_type[0] == '\0') {
@@ -195,6 +213,7 @@ static bool parse_legacy_mock(cJSON *root, nl_content_envelope_t *out)
         }
     }
     degrade_card_type(out);
+    fill_media_kind_fallback(out);
     return true;
 }
 
@@ -239,6 +258,7 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
         copy_str(out->display_title, sizeof(out->display_title), display, "title");
         copy_str(out->preferred_surface, sizeof(out->preferred_surface), display, "preferred_surface");
         copy_str(out->density, sizeof(out->density), display, "density");
+        copy_str(out->media_kind, sizeof(out->media_kind), display, "media_kind");
         const cJSON *ttl = cJSON_GetObjectItemCaseSensitive(display, "ttl_sec");
         if (cJSON_IsNumber(ttl)) {
             out->ttl_sec = ttl->valueint;
@@ -440,6 +460,7 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
     }
 
     degrade_card_type(out);
+    fill_media_kind_fallback(out);
     cJSON_Delete(root);
     return true;
 }

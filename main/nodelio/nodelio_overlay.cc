@@ -10,8 +10,10 @@
 #include "nodelio_bridge.h"
 #include "nodelio_http.h"
 #include "nvs_config.h"
+#include "offline_cmd.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
+#include "skill_result_ui.h"
 #include "ui_theme.h"
 #include "ui_widgets.h"
 #include "wifi_provision.h"
@@ -560,6 +562,35 @@ void nl_ov_show_page(int tab)
     }
     /* 切 Tab 不再藏小智；听/说中保持底部胶囊 */
     nl_ov_restore_ai_drawer_if_session();
+    /* 播放器/曲库与 s_root 同层：切页后抬回最前，避免点到应用卡 */
+    nodelio_skill_result_raise();
+}
+
+static bool s_boot_bl_revealed = false;
+
+static void reveal_boot_backlight(void)
+{
+    if (s_boot_bl_revealed) {
+        return;
+    }
+    s_boot_bl_revealed = true;
+    auto *bl = Board::GetInstance().GetBacklight();
+    if (bl) {
+        bl->RestoreBrightness();
+    }
+}
+
+/* 持 LVGL 锁：先把首页刷进 RGB FB，再开背光，避免亮着垃圾帧。 */
+static void reveal_boot_backlight_after_frame(void)
+{
+    if (s_boot_bl_revealed) {
+        return;
+    }
+    lv_display_t *disp = lv_display_get_default();
+    if (disp) {
+        lv_refr_now(disp);
+    }
+    reveal_boot_backlight();
 }
 
 static void apply_visible_locked(void)
@@ -580,6 +611,7 @@ static void apply_visible_locked(void)
         lv_obj_add_flag(s_fab, LV_OBJ_FLAG_HIDDEN);
     }
     lv_obj_move_foreground(s_root);
+    nodelio_skill_result_raise();
     s_visible = true;
     /* 必须在 root 置顶之后再开连接页，否则会被不透明的 s_root 盖住 */
     if (s_want_settings) {
@@ -606,6 +638,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     s_building = false;
     if (s_ready) {
         apply_visible_locked();
+        reveal_boot_backlight_after_frame();
         return;
     }
 
@@ -614,6 +647,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     s_root = lv_obj_create(lv_layer_top());
     if (!s_root) {
         ESP_LOGE(TAG, "root create fail");
+        reveal_boot_backlight_after_frame();
         return;
     }
     lv_obj_remove_style_all(s_root);
@@ -710,6 +744,9 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     /* 全局 AI 对话浮层抽屉（唤醒词触发，不依赖 Tab，挂在 lv_layer_top()） */
     nl_ov_create_ai_drawer(lv_layer_top());
 
+    /* 无云 snapshot 时先灌上次局域网 IP，本地口令可走 DIOL */
+    nodelio_panel_ui_lan_cache_load();
+
     /* 开机优先加载本地缓存布局：首帧立即渲染完整面板，无需等待 WiFi/HTTP 注册 */
     if (!s_have_layout) {
         (void)nodelio_layout_cache_mount();
@@ -725,6 +762,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
             }
             if (s_layout && nodelio_layout_parse(cached, s_layout) == ESP_OK) {
                 s_have_layout = true;
+                nodelio_offline_cmd_rebuild_from_layout(s_layout);
                 ESP_LOGI(TAG, "boot loaded cached layout v%d for instant render",
                          s_layout->layout_version);
             }
@@ -733,7 +771,9 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     }
 
     nl_ov_fill_home();
-    /* removed */
+    if (s_have_layout && s_layout && s_layout->layout_version > 0) {
+        nodelio_panel_ui_mark_home_filled(s_layout->layout_version);
+    }
     nl_ov_fill_settings();
     nl_ov_build_apps();
     nl_ov_build_connect();
@@ -741,6 +781,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
 
     s_ready = true;
     apply_visible_locked();
+    reveal_boot_backlight_after_frame();
     start_status_poll();
     if (!s_activity_tmr) {
         s_activity_tmr = lv_timer_create(
@@ -798,6 +839,16 @@ esp_err_t nodelio_overlay_init(void)
     }
     create_fab_locked();
     ESP_LOGI(TAG, "FAB ready");
+    /* 建壳失败也不让背光一直灭 */
+    lv_timer_create(
+        [](lv_timer_t *t) {
+            lv_timer_delete(t);
+            if (!s_boot_bl_revealed) {
+                ESP_LOGW(TAG, "boot backlight fallback (shell not ready)");
+                reveal_boot_backlight();
+            }
+        },
+        2000, nullptr);
     return ESP_OK;
 }
 

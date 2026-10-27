@@ -128,6 +128,10 @@
 #define UI_GAP              8
 #define UI_GAP_LG           14
 #define UI_EXT_CLICK        20
+/* 首页磁贴动效（开/关色过渡、图标弹跳、pending 转圈） */
+#define UI_TILE_TRANS_MS       220
+#define UI_TILE_ICON_POP_MS    320
+#define UI_TILE_SPIN_MS        900
 #define UI_SETTINGS_TILE_H  72
 #define UI_NAV_H            40
 #define UI_NAV_BACK_W       64
@@ -145,3 +149,8 @@
 #define UI_AI_DRAWER_BG_OPA    200 /* ~78%：背后设置项隐约可见 */
 #define UI_AI_MINI_SZ          52  /* 最小化圆钮（仅图标，无文字） */
 #define UI_AI_MINI_RIGHT       14
+/* 新闻详情正文缩放：0=现状(14px)，最大 150%（LV_SCALE_NONE=256） */
+#define UI_NEWS_ZOOM_MAX       2
+#define UI_NEWS_ZOOM_SCALE_0   256
+#define UI_NEWS_ZOOM_SCALE_1   320
+#define UI_NEWS_ZOOM_SCALE_2   384

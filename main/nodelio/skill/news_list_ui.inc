@@ -6,6 +6,8 @@ static void news_fetch_article(const news_job_t *job);
 bool nodelio_skill_news_action(const char *op, char *out, size_t out_len);
 static bool news_load_spoken(int idx, uint32_t gen, char *out, size_t out_len, bool reset_chunk);
 static void news_speak_clear(void);
+static int32_t news_zoom_scale(void);
+static void news_apply_body_zoom(void);
 
 static void news_abs_url(const char *in, char *out, size_t out_len)
 {
@@ -330,7 +332,9 @@ static void news_scroll_to_byte(size_t byte_off)
     lv_point_t pos = {};
     lv_label_get_letter_pos(s_news_body_lbl, char_id, &pos);
     const lv_coord_t view_h = lv_obj_get_content_height(s_card_list);
-    lv_coord_t y = lv_obj_get_y(s_news_body_lbl) + pos.y - (view_h > 0 ? view_h / 4 : 40);
+    const int32_t zscale = news_zoom_scale();
+    const lv_coord_t vis_y = (pos.y * (lv_coord_t)zscale) / (lv_coord_t)LV_SCALE_NONE;
+    lv_coord_t y = lv_obj_get_y(s_news_body_lbl) + vis_y - (view_h > 0 ? view_h / 4 : 40);
     if (y < 0) {
         y = 0;
     }
@@ -552,6 +556,64 @@ static bool news_pull_article_text(int idx, char **out_heap, const char **out_vi
     return ok;
 }
 
+/** 详情正文缩放档：0=现状，1≈125%，2≈150%（会话内记住）。 */
+static uint8_t s_news_zoom = 0;
+static lv_obj_t *s_news_zoom_hint = nullptr;
+
+static int32_t news_zoom_scale(void)
+{
+    static const int32_t k_scale[] = {UI_NEWS_ZOOM_SCALE_0, UI_NEWS_ZOOM_SCALE_1, UI_NEWS_ZOOM_SCALE_2};
+    if (s_news_zoom > UI_NEWS_ZOOM_MAX) {
+        return UI_NEWS_ZOOM_SCALE_0;
+    }
+    return k_scale[s_news_zoom];
+}
+
+static const char *news_zoom_name(void)
+{
+    static const char *k_name[] = {"标准", "较大", "更大"};
+    if (s_news_zoom > UI_NEWS_ZOOM_MAX) {
+        return k_name[0];
+    }
+    return k_name[s_news_zoom];
+}
+
+/** 用缩放放大正文（无更大中文字库）；缩窄换行宽 + pad 补布局高度。 */
+static void news_apply_body_zoom(void)
+{
+    if (!s_news_body_lbl || !lv_obj_is_valid(s_news_body_lbl) || !s_card_list) {
+        return;
+    }
+    const int32_t scale = news_zoom_scale();
+    lv_obj_update_layout(s_card_list);
+    lv_coord_t avail = lv_obj_get_content_width(s_card_list);
+    if (avail < 80) {
+        avail = 400;
+    }
+    lv_coord_t wrap_w = (avail * (lv_coord_t)LV_SCALE_NONE) / (lv_coord_t)scale;
+    if (wrap_w < 60) {
+        wrap_w = 60;
+    }
+    lv_obj_set_width(s_news_body_lbl, wrap_w);
+    lv_obj_set_height(s_news_body_lbl, LV_SIZE_CONTENT);
+    lv_obj_set_style_transform_pivot_x(s_news_body_lbl, 0, 0);
+    lv_obj_set_style_transform_pivot_y(s_news_body_lbl, 0, 0);
+    lv_obj_set_style_transform_scale_x(s_news_body_lbl, scale, 0);
+    lv_obj_set_style_transform_scale_y(s_news_body_lbl, scale, 0);
+    lv_obj_add_flag(s_news_body_lbl, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    lv_obj_update_layout(s_news_body_lbl);
+    const lv_coord_t content_h = lv_obj_get_height(s_news_body_lbl);
+    lv_coord_t extra = 0;
+    if (scale > (int32_t)LV_SCALE_NONE && content_h > 0) {
+        extra = (content_h * (scale - (int32_t)LV_SCALE_NONE)) / (lv_coord_t)LV_SCALE_NONE;
+    }
+    lv_obj_set_style_pad_bottom(s_news_body_lbl, 6 + extra, 0);
+    if (s_news_zoom_hint && lv_obj_is_valid(s_news_zoom_hint)) {
+        lv_label_set_text(s_news_zoom_hint, news_zoom_name());
+        lv_obj_set_style_text_color(s_news_zoom_hint, UI_TEXT_MUTED, 0);
+    }
+}
+
 static void news_apply_body_label(int idx, uint32_t gen, const char *text, bool from_summary)
 {
     if (!text || gen != s_news_gen || !nodelio_panel_ui_screen_on()) {
@@ -583,6 +645,7 @@ static void news_apply_body_label(int idx, uint32_t gen, const char *text, bool 
     s_news_body_heap = owned;
     lv_label_set_text_static(s_news_body_lbl, s_news_body_heap);
     lv_obj_set_style_text_color(s_news_body_lbl, from_summary ? UI_TEXT_DIM : UI_TEXT, 0);
+    news_apply_body_zoom();
 }
 
 /** 语音朗读：拉正文进缓存并吐出一段。UI 预加载勿走此路径（会打乱 off）。 */
@@ -756,6 +819,27 @@ static void on_news_nav(lv_event_t *e)
     }
 }
 
+static void on_news_zoom(lv_event_t *e)
+{
+    const int delta = (int)(intptr_t)lv_event_get_user_data(e);
+    int next = (int)s_news_zoom + delta;
+    if (next < 0) {
+        next = 0;
+        nl_ov_toast("已是最小字号");
+        return;
+    }
+    if (next > UI_NEWS_ZOOM_MAX) {
+        next = UI_NEWS_ZOOM_MAX;
+        nl_ov_toast("已是最大字号");
+        return;
+    }
+    if ((uint8_t)next == s_news_zoom) {
+        return;
+    }
+    s_news_zoom = (uint8_t)next;
+    news_apply_body_zoom();
+}
+
 static void fill_news(void)
 {
     set_hdr_mid_icon(MATERIAL_SYMBOLS_KEYBOARD_ARROW_DOWN);
@@ -764,6 +848,7 @@ static void fill_news(void)
     /* 不在此清 article 缓存：fill 可能与 HTTP 单飞并发；错 id 由 pull 内比对替换 */
     news_body_heap_clear();
     s_news_body_lbl = nullptr;
+    s_news_zoom_hint = nullptr;
     lv_obj_clean(s_card_list);
     lv_obj_add_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_card_list, LV_DIR_VER);
@@ -794,10 +879,13 @@ static void fill_news(void)
             snprintf(sub, sizeof(sub), "详情 %d/%d", s_news_detail + 1, s_env->news_n);
             lv_label_set_text(s_card_sub, sub);
         }
+        lv_obj_set_style_pad_row(s_card_list, 12, 0);
+
         lv_obj_t *back = lv_label_create(s_card_list);
         nl_ov_set_font(back);
         lv_label_set_text(back, "返回列表");
         lv_obj_set_style_text_color(back, UI_ACCENT_SOFT, 0);
+        lv_obj_set_style_pad_bottom(back, 4, 0);
         lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(back, on_news_back, LV_EVENT_CLICKED, nullptr);
 
@@ -807,11 +895,13 @@ static void fill_news(void)
         lv_obj_set_width(ttl, lv_pct(100));
         lv_label_set_long_mode(ttl, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(ttl, UI_TEXT, 0);
+        lv_obj_set_style_pad_ver(ttl, 4, 0);
 
         lv_obj_t *nav = lv_obj_create(s_card_list);
         lv_obj_remove_style_all(nav);
         lv_obj_set_width(nav, lv_pct(100));
         lv_obj_set_height(nav, LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_ver(nav, 8, 0);
         lv_obj_set_flex_flow(nav, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(nav, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_t *prev = lv_label_create(nav);
@@ -827,13 +917,42 @@ static void fill_news(void)
         lv_obj_add_flag(next, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(next, on_news_nav, LV_EVENT_CLICKED, (void *)(intptr_t)1);
 
+        /* 字号：最小=现状；A+ 放大到较大/更大 */
+        lv_obj_t *zoom = lv_obj_create(s_card_list);
+        lv_obj_remove_style_all(zoom);
+        lv_obj_set_width(zoom, lv_pct(100));
+        lv_obj_set_height(zoom, LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_ver(zoom, 4, 0);
+        lv_obj_set_flex_flow(zoom, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(zoom, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(zoom, 16, 0);
+        lv_obj_t *zm = lv_label_create(zoom);
+        nl_ov_set_font(zm);
+        lv_label_set_text(zm, "A-");
+        lv_obj_set_style_text_color(zm, UI_ACCENT_SOFT, 0);
+        lv_obj_add_flag(zm, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(zm, UI_EXT_CLICK);
+        lv_obj_add_event_cb(zm, on_news_zoom, LV_EVENT_CLICKED, (void *)(intptr_t)-1);
+        s_news_zoom_hint = lv_label_create(zoom);
+        nl_ov_set_font(s_news_zoom_hint);
+        lv_label_set_text(s_news_zoom_hint, news_zoom_name());
+        lv_obj_set_style_text_color(s_news_zoom_hint, UI_TEXT_MUTED, 0);
+        lv_obj_t *zp = lv_label_create(zoom);
+        nl_ov_set_font(zp);
+        lv_label_set_text(zp, "A+");
+        lv_obj_set_style_text_color(zp, UI_ACCENT_SOFT, 0);
+        lv_obj_add_flag(zp, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(zp, UI_EXT_CLICK);
+        lv_obj_add_event_cb(zp, on_news_zoom, LV_EVENT_CLICKED, (void *)(intptr_t)1);
+
         s_news_body_lbl = lv_label_create(s_card_list);
         nl_ov_set_font(s_news_body_lbl);
         /* 勿先贴 RSS 摘要（带「…」），否则长文加载失败时用户会以为详情只有概述 */
         lv_label_set_text(s_news_body_lbl, "正在加载详情…");
-        lv_obj_set_width(s_news_body_lbl, lv_pct(100));
         lv_label_set_long_mode(s_news_body_lbl, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(s_news_body_lbl, UI_TEXT_DIM, 0);
+        lv_obj_set_style_pad_top(s_news_body_lbl, 6, 0);
+        news_apply_body_zoom();
         news_enqueue_article(s_news_detail);
         return;
     }
@@ -844,20 +963,23 @@ static void fill_news(void)
         lv_label_set_text(s_card_sub, sub);
     }
 
+    lv_obj_set_style_pad_row(s_card_list, 10, 0);
+
     for (int i = 0; i < s_env->news_n; i++) {
         const nl_env_news_t *n = &s_env->news[i];
         lv_obj_t *row = lv_obj_create(s_card_list);
         lv_obj_remove_style_all(row);
         lv_obj_set_width(row, lv_pct(100));
-        lv_obj_set_height(row, 52);
+        lv_obj_set_height(row, 82);
         lv_obj_set_style_bg_color(row, UI_FIELD, 0);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(row, 12, 0);
+        lv_obj_set_style_radius(row, 14, 0);
         lv_obj_set_style_border_width(row, 1, 0);
         lv_obj_set_style_border_color(row, UI_TILE_OFF_BORDER, 0);
         lv_obj_set_style_border_opa(row, LV_OPA_60, 0);
-        lv_obj_set_style_pad_hor(row, 8, 0);
-        lv_obj_set_style_pad_column(row, 8, 0);
+        lv_obj_set_style_pad_hor(row, 12, 0);
+        lv_obj_set_style_pad_ver(row, 8, 0);
+        lv_obj_set_style_pad_column(row, 12, 0);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
@@ -866,8 +988,8 @@ static void fill_news(void)
 
         lv_obj_t *idx_pod = lv_obj_create(row);
         lv_obj_remove_style_all(idx_pod);
-        lv_obj_set_size(idx_pod, 22, 22);
-        lv_obj_set_style_radius(idx_pod, 6, 0);
+        lv_obj_set_size(idx_pod, 28, 28);
+        lv_obj_set_style_radius(idx_pod, 8, 0);
         lv_obj_set_style_bg_color(idx_pod, UI_CAPSULE_OFF, 0);
         lv_obj_set_style_bg_opa(idx_pod, LV_OPA_COVER, 0);
         lv_obj_clear_flag(idx_pod, LV_OBJ_FLAG_CLICKABLE);
@@ -885,18 +1007,19 @@ static void fill_news(void)
         lv_obj_set_height(txt, LV_SIZE_CONTENT);
         lv_obj_set_style_min_width(txt, 0, 0);
         lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_style_pad_row(txt, 2, 0);
+        lv_obj_set_style_pad_row(txt, 5, 0);
         lv_obj_clear_flag(txt, LV_OBJ_FLAG_CLICKABLE);
 
         lv_obj_t *t = lv_label_create(txt);
         nl_ov_set_font(t);
         lv_label_set_text(t, n->title);
         lv_obj_set_style_text_color(t, UI_TEXT, 0);
-        lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
+        lv_label_set_long_mode(t, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(t, lv_pct(100));
         {
             const lv_font_t *font = lv_obj_get_style_text_font(t, LV_PART_MAIN);
-            lv_obj_set_height(t, font ? lv_font_get_line_height(font) : 16);
+            const int lh = font ? (int)lv_font_get_line_height(font) : 16;
+            lv_obj_set_height(t, lh * 2);
         }
 
         char when[24];

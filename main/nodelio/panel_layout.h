@@ -140,7 +140,11 @@ esp_err_t nodelio_bootstrap_fetch(const nodelio_nvs_config_t *cfg, int known_ver
  * POST …/panel/command。
  * value_str：开关用 "ON"/"OFF"/"TOGGLE"；PWM 用数字字符串；情景可空（用 bind.name）。
  * 返回 HTTP 状态码到 *http_status（可 NULL）；503→ESP_ERR_INVALID_STATE 供 UI 回滚。
+ * apply_optimistic=true：HTTP 200 后立刻写本地缓存（语音/MCP）；首页触摸点按前已写缓存，传 false。
  */
+esp_err_t nodelio_panel_command_ex(const nodelio_nvs_config_t *cfg, const char *widget_id, const char *action,
+                                   const nl_bind_t *bind, const char *value_str, int *http_status,
+                                   bool apply_optimistic);
 esp_err_t nodelio_panel_command(const nodelio_nvs_config_t *cfg, const char *widget_id, const char *action,
                                 const nl_bind_t *bind, const char *value_str, int *http_status);
 

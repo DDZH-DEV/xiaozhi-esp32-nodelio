@@ -99,7 +99,9 @@ esp_err_t nodelio_offline_try_phrase(const nodelio_nvs_config_t *cfg, const char
  * 仅匹配本机系统口令并立即执行（不依赖 cfg / layout）：
  * 重启 / 进入配网 / UI 导航 / 打开某应用。
  * 供小智 STT 旁路与 MCP 使用；未命中返回 false。
- * end_session：非空时写出是否应结束语音会话（仅重启/配网为 true；切页/开应用为 false）。
+ * end_session：非空时写出是否应结束语音会话。
+ * true：重启/配网/关播放器/打开应用（须 Idle 才能播）。
+ * false：设置导航/开关/翻页/切歌（保持 Listening，对话框不落，可连说）。
  */
 bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session);
 

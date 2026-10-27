@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-/** 是否曲库技能（兼容 market_id::music.search / music_search）。 */
+/** 是否音频列表类技能（曲库 / 电台 / 播客；兼容 market:: 前缀）。 */
 bool nodelio_skill_id_is_music(const char *skill_id);
 
 /**

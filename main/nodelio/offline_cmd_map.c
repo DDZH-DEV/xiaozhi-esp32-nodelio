@@ -1,6 +1,7 @@
 #include "offline_cmd_map.h"
 
 #include "media_player.h"
+#include "offline_cmd.h"
 #include "skill_result_ui.h"
 
 #include "panel_layout.h"
@@ -538,16 +539,60 @@ esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int comm
     if (!layout) {
         layout = nodelio_panel_ui_get_layout();
     }
-    if (!layout) {
-        ESP_LOGW(TAG, "no layout — cannot map cmd %d", command_id);
-        nodelio_panel_ui_set_voice_hint("无布局，请先拉布局");
-        return ESP_ERR_INVALID_STATE;
-    }
 
     const nl_widget_t *w = NULL;
     const char *value = NULL;
     const char *verb = "";
     const char *miss = "布局无开关/引脚";
+
+    /* 开机无云布局：用 NVS 动态词回落开灯/关灯（DIOL/云仍可发） */
+    if (!layout && (command_id == NL_OC_LIGHT_ON || command_id == NL_OC_LIGHT_OFF ||
+                    command_id == NL_OC_CURTAIN_OPEN || command_id == NL_OC_CURTAIN_CLOSE)) {
+        const char *act =
+            (command_id == NL_OC_LIGHT_ON || command_id == NL_OC_CURTAIN_OPEN) ? "ON" : "OFF";
+        char did[32];
+        char dname[32];
+        int ch = 0;
+        bool is_pin = false;
+        if (!nodelio_offline_cmd_pick_dyn(act, did, sizeof(did), &ch, &is_pin, dname, sizeof(dname))) {
+            nodelio_panel_ui_set_voice_hint("无布局，请先联网拉布局");
+            return ESP_ERR_INVALID_STATE;
+        }
+        nl_bind_t bind;
+        memset(&bind, 0, sizeof(bind));
+        bind.kind = is_pin ? NL_BIND_DEVICE_PIN : NL_BIND_DEVICE_CHANNEL;
+        snprintf(bind.device_id, sizeof(bind.device_id), "%s", did);
+        if (is_pin) {
+            bind.pin = ch;
+            bind.channel = -1;
+        } else {
+            bind.channel = ch;
+            bind.pin = -1;
+        }
+        {
+            char t[48];
+            snprintf(t, sizeof(t), "%s %s…", act[1] == 'N' ? "开" : "关", dname);
+            nodelio_panel_ui_set_voice_hint(t);
+        }
+        int http = 0;
+        esp_err_t err = nodelio_panel_command(cfg, "dyn_voice", "set", &bind, act, &http);
+        if (err != ESP_OK) {
+            nodelio_panel_ui_set_voice_hint(err == ESP_ERR_INVALID_STATE ? "设备离线" : "执行失败");
+            return err;
+        }
+        {
+            char t[48];
+            snprintf(t, sizeof(t), "已%s %s", act[1] == 'N' ? "开" : "关", dname);
+            nodelio_panel_ui_set_voice_hint(t);
+        }
+        return ESP_OK;
+    }
+
+    if (!layout) {
+        ESP_LOGW(TAG, "no layout — cannot map cmd %d", command_id);
+        nodelio_panel_ui_set_voice_hint("无布局，请先拉布局");
+        return ESP_ERR_INVALID_STATE;
+    }
 
     switch (command_id) {
     case NL_OC_LIGHT_ON:
@@ -1230,10 +1275,13 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session)
         cmd == NL_OC_MEDIA_PAUSE || cmd == NL_OC_MEDIA_RESUME ||
         cmd == NL_OC_SKILL_CLOSE) {
         ESP_LOGI(TAG, "system phrase → %s", nodelio_offline_cmd_zh(cmd));
-        if (end_session && (cmd == NL_OC_REBOOT || cmd == NL_OC_WIFI_CONFIG)) {
-            *end_session = true;
+        if (end_session) {
+            /* 默认保持会话：设置导航/开关/翻页/切歌可连说，对话框不落。
+             * 仅重启/配网/关播放器退会话（否则 Listening+suppress 假死）。
+             * 开电台等应用走后面 open_app 分支，各自 end_session=true。 */
+            *end_session = (cmd == NL_OC_REBOOT || cmd == NL_OC_WIFI_CONFIG ||
+                            cmd == NL_OC_SKILL_CLOSE);
         }
-        /* 开启/关闭省电等 set_pref：end_session 保持 false，会话不退下 */
         return nodelio_offline_cmd_dispatch(NULL, cmd, NULL) == ESP_OK;
     }
     /* 「让它…」派活：须在 open_app「派活」之前；续聊武装时走确认，保持开麦 */
@@ -1263,10 +1311,8 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session)
     /* 「打开曲库」等：phrase_to_cmd_id 会落到 LIGHT_ON，这里再抢一次应用 */
     if (try_open_named_app(phrase)) {
         ESP_LOGI(TAG, "system phrase: named open hit");
-        /* 打开 DSH/任务：只开列表，必须退会话，禁止云端接着闲聊 */
-        if (end_session &&
-            (strstr(phrase, "DSH") != NULL || strstr(phrase, "dsh") != NULL ||
-             strstr(phrase, "任务") != NULL)) {
+        /* 开应用须退会话：停 Listening+suppress 会假死；电台/曲库也起不了 HTTP 播 */
+        if (end_session) {
             *end_session = true;
         }
         return true;
@@ -1274,14 +1320,15 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session)
     /* 「听歌/看天气」等：抢在云端 search_music 之前 */
     if (try_open_intent_app(phrase)) {
         ESP_LOGI(TAG, "system phrase: intent open hit");
+        if (end_session) {
+            *end_session = true;
+        }
         return true;
     }
     /* 裸说「电台。」/「播客」：无「打开」也开对应应用（剥句末标点） */
     if (try_open_bare_known_app(phrase)) {
         ESP_LOGI(TAG, "system phrase: bare open hit");
-        if (end_session &&
-            (strstr(phrase, "DSH") != NULL || strstr(phrase, "dsh") != NULL ||
-             strstr(phrase, "任务") != NULL)) {
+        if (end_session) {
             *end_session = true;
         }
         return true;

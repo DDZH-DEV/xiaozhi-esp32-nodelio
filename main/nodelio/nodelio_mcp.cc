@@ -7,6 +7,7 @@
 #include "nvs_config.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
+#include "overlay_priv.h"
 #include "media_player.h"
 #include "skill_result_ui.h"
 #include "skill_runtime.h"
@@ -639,6 +640,9 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
             return std::unexpected(std::string("未安装该技能，请先在应用市场安装"));
         }
         if (status == 0 || (err != ESP_OK && status < 400)) {
+            if (nl_ov_skill_needs_outbound_bridge(skill_id.c_str())) {
+                return std::unexpected(std::string("本地桥未连接，请在电脑上启动桥"));
+            }
             return std::unexpected(std::string("服务器无响应，请稍后重试"));
         }
         return std::unexpected(std::string("调用技能失败：HTTP ") + std::to_string(status));
@@ -686,7 +690,7 @@ static std::string list_skills_json(const nodelio_nvs_config_t *cfg)
     }
     resp[0] = '\0';
     int status = 0;
-    esp_err_t err = nodelio_http_get(url, cfg->device_key, NULL, &status, resp, kCap - 1);
+    esp_err_t err = nodelio_http_get_ms(url, cfg->device_key, NULL, &status, resp, kCap - 1, 8000);
     if (err != ESP_OK || status != 200) {
         ESP_LOGW(TAG, "list skills fail: status=%d err=%d", status, err);
         free(resp);
@@ -1027,9 +1031,7 @@ void nodelio_mcp_register_tools(void)
                 return std::string("已关闭小智云；本轮可说完");
             }
             if (strcasecmp(key.c_str(), "local_cmd") == 0) {
-                return std::string(strcasecmp(value.c_str(), "on") == 0 || value == "1" || value == "开"
-                                       ? "已启用本地口令"
-                                       : "已关闭本地口令");
+                return std::string("本地口令已下线");
             }
             if (strcasecmp(key.c_str(), "layout_sync") == 0) {
                 return std::string("已开始刷新布局");

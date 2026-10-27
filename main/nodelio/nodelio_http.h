@@ -1,11 +1,19 @@
 #pragma once
 
 #include <esp_err.h>
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * 语音会话中 / 刚结束时等射频空闲（给小智 MQTT TLS 让路）。
+ * timeout 内仍忙返回 false；调用方可重试或放弃。
+ */
+bool nodelio_http_wait_lan_ready(uint32_t timeout_ms);
 
 /**
  * 走小智 EspNetwork/HttpClient（与 OTA 同栈），勿用裸 esp_http_client。
@@ -45,6 +53,8 @@ esp_err_t nodelio_http_lan_get_ms(const char *url, const char *x_pass, int *out_
                                   int io_ms);
 esp_err_t nodelio_http_lan_post_form_ms(const char *url, const char *x_pass, const char *form_body, int *out_status,
                                         char *resp, int resp_cap, int io_ms);
+/** DIOL 普查专用：单次尝试、connect≈800ms，不做 3 次重试。 */
+esp_err_t nodelio_http_lan_probe_get(const char *url, const char *x_pass, int *out_status, char *resp, int resp_cap);
 
 #ifdef __cplusplus
 }

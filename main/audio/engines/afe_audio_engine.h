@@ -44,6 +44,7 @@ public:
     void OnVadStateChange(std::function<void(bool speaking)> callback) override;
 
     void EncodeWakeWordData() override;
+    void DiscardWakeWordAudio() override;
     bool GetWakeWordOpus(std::vector<uint8_t>& opus) override;
     const std::string& GetLastDetectedWakeWord() const override { return last_detected_wake_word_; }
 

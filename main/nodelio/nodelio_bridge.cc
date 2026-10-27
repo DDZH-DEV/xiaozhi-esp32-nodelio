@@ -4,6 +4,7 @@
 #include "application.h"
 #include "board.h"
 #include "device_state.h"
+#include "diol_lan.h"
 #include "mqtt_panel.h"
 #include "nodelio_overlay.h"
 #include "nvs_config.h"
@@ -38,8 +39,10 @@ static StackType_t *s_hb_stack;
 static StaticTask_t s_hb_tcb;
 static constexpr uint32_t kHbStackBytes = 10240;
 
-/* 服务端 WALL_PANEL 离线窗口 ≥180s（再连续两轮 5s）。须小于该窗口，单次 POST 失败仍能在下一次刷 last_seen。 */
-static constexpr uint32_t kHeartbeatPeriodMs = 30000;
+/* 服务端 WALL_PANEL 离线窗口 ≥180s。snapshot 也会刷 last_seen，心跳可放宽；
+ * 若近期已有 snapshot/bootstrap，本周期跳过单独 POST。 */
+static constexpr uint32_t kHeartbeatPeriodMs = 60000;
+static constexpr uint32_t kPresenceFreshMs = 50000;
 
 enum { PWR_SLEEP = 0, PWR_WAKE = 1 };
 
@@ -109,6 +112,10 @@ static void hb_task(void *arg)
         if (Application::GetInstance().GetDeviceState() == kDeviceStateNotifying) {
             continue;
         }
+        /* snapshot/bootstrap 已刷过 presence，不必再打 heartbeat */
+        if (nodelio_presence_recent(kPresenceFreshMs)) {
+            continue;
+        }
         esp_err_t hb = nodelio_device_heartbeat(&s_cfg);
         if (hb != ESP_OK) {
             ESP_LOGW(TAG, "periodic heartbeat: %s", esp_err_to_name(hb));
@@ -168,7 +175,8 @@ static void bring_up_cloud_if_needed(void)
             ESP_LOGW(TAG, "layout poll: %s", esp_err_to_name(ly));
         }
     }
-    if (!nodelio_mqtt_panel_connected()) {
+    /* 小智开着时面板 MQTT 由 InitializeProtocol 在 xz MQTT 之后再起 */
+    if (!nodelio_xiaozhi_enabled() && !nodelio_mqtt_panel_connected()) {
         esp_err_t mq = nodelio_mqtt_panel_start(&s_cfg);
         if (mq != ESP_OK) {
             ESP_LOGW(TAG, "mqtt: %s", esp_err_to_name(mq));
@@ -190,7 +198,8 @@ static void deferred_cloud_task(void *arg)
     uint32_t delay_ms = 2000;
     for (int i = 0; i < 48; i++) { /* ~15min 内退避重试 */
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
-        if (nodelio_layout_cloud_ready() && nodelio_mqtt_panel_connected()) {
+        if (nodelio_layout_cloud_ready() &&
+            (nodelio_mqtt_panel_connected() || nodelio_xiaozhi_enabled())) {
             ESP_LOGI(TAG, "deferred cloud done");
             break;
         }
@@ -207,7 +216,10 @@ static void deferred_cloud_task(void *arg)
         ESP_LOGI(TAG, "deferred cloud bring-up try %d", i + 1);
         bring_up_cloud_if_needed();
         if (nodelio_layout_cloud_ready()) {
-            Application::GetInstance().Schedule([]() { nodelio_panel_ui_skills_changed(); });
+            Application::GetInstance().Schedule([]() {
+                nodelio_bridge_start_panel_mqtt();
+                nodelio_panel_ui_skills_changed();
+            });
             break;
         }
         if (delay_ms < 20000) {
@@ -248,6 +260,7 @@ static void pwr_task(void *arg)
         if (cmd == PWR_SLEEP) {
             ESP_LOGI(TAG, "net sleep: suspend xz MQTT → panel MQTT → wifi");
             /* 先挡重连，再主任务挂起协议，最后停 STA（息屏超省电，无云端流量） */
+            nodelio_diol_set_probe_hold(true);
             Application::GetInstance().MarkTransportSuspended(true);
             run_on_main_sync([]() { Application::GetInstance().SuspendTransport(); });
             nodelio_mqtt_panel_stop();
@@ -265,9 +278,12 @@ static void pwr_task(void *arg)
             continue;
         }
 
-        /* 异步恢复小智通道：勿 run_on_main_sync，否则主任务卡在首唤 wait/OpenAudio 时会死锁 */
+        /* 异步恢复小智通道：勿 run_on_main_sync，否则主任务卡在首唤 wait/OpenAudio 时会死锁。
+         * 面板 MQTT 须在 ResumeTransport（xz MQTT）之后再起。 */
         Application::GetInstance().Schedule([]() {
             Application::GetInstance().ResumeTransport();
+            nodelio_bridge_start_panel_mqtt();
+            nodelio_diol_boot_quiet_end();
             /* 息屏期间跳过的钉选拉取，有 IP 后再补 */
             nodelio_panel_ui_skills_changed();
         });
@@ -422,16 +438,22 @@ static esp_err_t start_client(void)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "layout poll: %s", esp_err_to_name(err));
     }
-    nodelio_log_heap("before panel mqtt");
-    err = ESP_FAIL;
-    for (int i = 0; i < 3; i++) {
-        err = nodelio_mqtt_panel_start(&cfg);
-        if (err == ESP_OK) {
-            break;
+    if (nodelio_xiaozhi_enabled()) {
+        ESP_LOGI(TAG, "defer panel mqtt until after Xiaozhi MQTT (DRAM)");
+        nodelio_log_heap("panel mqtt deferred");
+    } else {
+        nodelio_log_heap("before panel mqtt");
+        err = ESP_FAIL;
+        for (int i = 0; i < 3; i++) {
+            err = nodelio_mqtt_panel_start(&cfg);
+            if (err == ESP_OK) {
+                break;
+            }
+            ESP_LOGW(TAG, "mqtt panel try %d/3: %s", i + 1, esp_err_to_name(err));
+            nodelio_log_heap("panel mqtt fail");
+            vTaskDelay(pdMS_TO_TICKS(400));
         }
-        ESP_LOGW(TAG, "mqtt panel try %d/3: %s", i + 1, esp_err_to_name(err));
-        nodelio_log_heap("panel mqtt fail");
-        vTaskDelay(pdMS_TO_TICKS(400));
+        nodelio_diol_boot_quiet_end();
     }
 
     s_started = true;
@@ -461,6 +483,27 @@ static void start_task(void *arg)
         ESP_LOGW(TAG, "start_client: %s", esp_err_to_name(err));
     }
     vTaskDelete(nullptr);
+}
+
+void nodelio_bridge_start_panel_mqtt(void)
+{
+    if (s_cfg.mqtt_server[0] == '\0' || s_cfg.device_id[0] == '\0') {
+        return;
+    }
+    nodelio_log_heap("before panel mqtt (post-xz)");
+    esp_err_t err = ESP_FAIL;
+    for (int i = 0; i < 3; i++) {
+        err = nodelio_mqtt_panel_start(&s_cfg);
+        if (err == ESP_OK) {
+            break;
+        }
+        ESP_LOGW(TAG, "mqtt panel try %d/3: %s", i + 1, esp_err_to_name(err));
+        nodelio_log_heap("panel mqtt fail");
+        vTaskDelay(pdMS_TO_TICKS(400));
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "panel mqtt still down: %s", esp_err_to_name(err));
+    }
 }
 
 bool nodelio_bridge_wait_ready(uint32_t timeout_ms)

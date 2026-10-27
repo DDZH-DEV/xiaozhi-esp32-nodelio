@@ -11,6 +11,7 @@
 #include <esp_mac.h>
 #include <esp_netif.h>
 #include <esp_random.h>
+#include <esp_timer.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -193,6 +194,22 @@ esp_err_t nodelio_device_register(nodelio_nvs_config_t *cfg)
     return err;
 }
 
+static int64_t s_presence_touch_ms;
+
+void nodelio_presence_note_touch(void)
+{
+    s_presence_touch_ms = esp_timer_get_time() / 1000;
+}
+
+bool nodelio_presence_recent(uint32_t within_ms)
+{
+    if (s_presence_touch_ms <= 0 || within_ms == 0) {
+        return false;
+    }
+    const int64_t now = esp_timer_get_time() / 1000;
+    return (now - s_presence_touch_ms) < (int64_t)within_ms;
+}
+
 esp_err_t nodelio_device_heartbeat(const nodelio_nvs_config_t *cfg)
 {
     if (!cfg || cfg->server_url[0] == '\0' || cfg->device_id[0] == '\0' || cfg->device_key[0] == '\0') {
@@ -210,5 +227,9 @@ esp_err_t nodelio_device_heartbeat(const nodelio_nvs_config_t *cfg)
         snprintf(body, sizeof(body), "{}");
     }
     int status = 0;
-    return nodelio_http_post_json(url, cfg->device_key, body, &status, NULL, 0);
+    esp_err_t err = nodelio_http_post_json(url, cfg->device_key, body, &status, NULL, 0);
+    if (err == ESP_OK && status >= 200 && status < 300) {
+        nodelio_presence_note_touch();
+    }
+    return err;
 }

@@ -29,18 +29,25 @@ Backlight::~Backlight() {
     }
 }
 
-void Backlight::RestoreBrightness() {
-    // Load brightness from settings
-    Settings settings("display");  
-    int saved_brightness = settings.GetInt("brightness", 75);
-    
-    // 检查亮度值是否为0或过小，设置默认值
-    if (saved_brightness <= 0) {
-        ESP_LOGW(TAG, "Brightness value (%d) is too small, setting to default (10)", saved_brightness);
-        saved_brightness = 10;  // 设置一个较低的默认值
+void Backlight::PreloadSavedBrightness() {
+    if (saved_on_loaded_) {
+        return;
     }
-    
-    SetBrightness(saved_brightness);
+    /* 仅冷启动 / 首次恢复走 NVS；须在内部 RAM 栈任务上调用（如 board 初始化）。 */
+    Settings settings("display");
+    int saved_brightness = settings.GetInt("brightness", 75);
+    if (saved_brightness <= 0) {
+        ESP_LOGW(TAG, "Brightness value (%d) is too small, setting to default (10)",
+                 saved_brightness);
+        saved_brightness = 10;
+    }
+    saved_on_brightness_ = static_cast<uint8_t>(saved_brightness);
+    saved_on_loaded_ = true;
+}
+
+void Backlight::RestoreBrightness() {
+    PreloadSavedBrightness();
+    SetBrightness(saved_on_brightness_);
 }
 
 void Backlight::SetBrightness(uint8_t brightness, bool permanent) {
@@ -67,6 +74,9 @@ void Backlight::SetBrightness(uint8_t brightness, bool permanent) {
         ESP_LOGI(TAG, "Set brightness to 0");
         return;
     }
+
+    saved_on_brightness_ = brightness;
+    saved_on_loaded_ = true;
 
     if (permanent) {
         Settings settings("display", true);
@@ -127,6 +137,8 @@ PwmBacklight::PwmBacklight(gpio_num_t pin, bool output_invert, uint32_t freq_hz,
     };
     ESP_ERROR_CHECK(ledc_timer_config(&backlight_timer));
     BindChannel(0);
+    /* duty 0 仍可能有窄脉冲；开机先 GPIO 钉灭，等首页首帧再 Restore。 */
+    SetBrightnessImpl(0);
 }
 
 PwmBacklight::~PwmBacklight() {

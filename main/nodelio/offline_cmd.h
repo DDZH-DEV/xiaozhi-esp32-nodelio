@@ -89,6 +89,13 @@ int nodelio_offline_cmd_dynamic_count(void);
 bool nodelio_offline_cmd_dynamic_at(int i, char *name, size_t name_len, char *action,
                                    size_t action_len);
 
+/**
+ * 无 layout 时挑一条动态口令（开灯/关灯回落）。
+ * 成功写入 device_id / channel / is_pin / name。
+ */
+bool nodelio_offline_cmd_pick_dyn(const char *action, char *device_id, size_t id_len, int *ch,
+                                  bool *is_pin, char *name, size_t name_len);
+
 #ifdef __cplusplus
 }
 #endif

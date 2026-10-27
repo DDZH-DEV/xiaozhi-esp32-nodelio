@@ -128,7 +128,7 @@ SILA-86 背光以板级 `config` 为准；勿盲目照抄旧叉 invert。
 
 ### Flash / 功能落点（加功能先看）
 
-- 分区：`partitions/v2/16m.csv`；产物 `build/`（`nodelio-build.bat`）。`xiaozhi.bin`→`ota_0`（~3.875MB，余量常紧）；`generated_assets.bin`→`0x800000`（8MB，大头 WakeNet+MultiNet + 字库）。整片：`flash_args` 五文件。
+- 分区：`partitions/v2/16m.csv`；产物 `build/`（`nodelio-build.bat`）。`xiaozhi.bin`→`ota_0`（~3.875MB）；`storage`→`0x800000`（1MB，layout/apps 等可写缓存）；`generated_assets.bin`→`0x900000`（7MB，WakeNet+字库）。整片：`flash_args`。
 - 板级：`main/boards/sila/sila-86/`；控家 UI：`main/nodelio/`；离线口令：`offline_cmd*.c`。SILA 已在 `main/CMakeLists.txt` 裁掉 camera / 4G 板 / OLED / Emote / 未用 codec；勿无条件加回。`EspNetwork`（esp-ml307）服务 WiFi HTTP/MQTT，保留。完整表：`NodeLio/.codex/rules/esp32-idf-panel.md` §4.1。
 
 ### UI 视觉规范（曜夜微晶体系）

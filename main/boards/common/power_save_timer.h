@@ -11,6 +11,8 @@ public:
     ~PowerSaveTimer();
 
     void SetEnabled(bool enabled);
+    /** 仅开关空闲断网；息屏计时不受影响（墙板「允许省电」只绑这个）。 */
+    void SetNetSleepEnabled(bool enabled);
     void OnEnterSleepMode(std::function<void()> callback);
     void OnExitSleepMode(std::function<void()> callback);
     void OnShutdownRequest(std::function<void()> callback);
@@ -40,6 +42,7 @@ private:
 
     esp_timer_handle_t power_save_timer_ = nullptr;
     bool enabled_ = false;
+    bool net_sleep_enabled_ = true;
     bool in_sleep_mode_ = false;
     bool in_net_sleep_ = false;
     bool sleep_asap_ = false;

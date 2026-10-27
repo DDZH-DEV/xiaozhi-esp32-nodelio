@@ -60,6 +60,7 @@
   "invoke": {
     "method": "POST",
     "timeout_ms": 8000,
+    "transport": "outbound_bridge",
     "url": "http://127.0.0.1:8790/nodelio/dsh/answer",
     "result_types": ["plain_result", "error"],
     "default_display": {

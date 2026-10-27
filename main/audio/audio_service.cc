@@ -177,6 +177,18 @@ void AudioService::Start() {
         "audio_input", 2048 * 3, this, 6, &audio_input_task_handle_, 0);
 
     /* Start the audio output task */
+#if CONFIG_BOARD_TYPE_SILA_86
+    /* 输出任务喂 6×240 帧（~30ms）的 I2S DMA，是硬期限任务：钉 Core1，
+     * Core0 上 WiFi(23)/lwIP 的突发曾把它拖过 30ms → 爆音；同核 notify_http
+     * 已降到 5，解码突发随时可被输出抢占。 */
+    xTaskCreatePinnedToCore(
+        [](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->AudioOutputTask();
+            vTaskDelete(NULL);
+        },
+        "audio_output", 2048 * 2, this, kOutPrio, &audio_output_task_handle_, 1);
+#else
     xTaskCreate(
         [](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
@@ -184,6 +196,7 @@ void AudioService::Start() {
             vTaskDelete(NULL);
         },
         "audio_output", 2048 * 2, this, kOutPrio, &audio_output_task_handle_);
+#endif
 #else
     /* Start the audio input task */
     xTaskCreate(
@@ -831,6 +844,12 @@ std::unique_ptr<AudioStreamPacket> AudioService::PopPacketFromSendQueue() {
 void AudioService::EncodeWakeWord() {
     if (audio_engine_) {
         audio_engine_->EncodeWakeWordData();
+    }
+}
+
+void AudioService::DiscardWakeWordAudio() {
+    if (audio_engine_) {
+        audio_engine_->DiscardWakeWordAudio();
     }
 }
 

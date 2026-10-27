@@ -22,8 +22,9 @@ bool nodelio_skill_id_is_music(const char *skill_id)
     if (!skill_id || !skill_id[0]) {
         return false;
     }
-    /* 安装后常见 com.nodelio.sample-market::music.search */
-    return strstr(skill_id, "music.search") != NULL || strstr(skill_id, "music_search") != NULL;
+    /* 音频列表类：曲库 / 电台 / 播客（互切不抢占正在播的 HTTP 音频） */
+    return strstr(skill_id, "music.search") != NULL || strstr(skill_id, "music_search") != NULL ||
+           strstr(skill_id, "radio.stations") != NULL || strstr(skill_id, "podcast.latest") != NULL;
 }
 
 void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *json, bool auto_play_first,
@@ -82,12 +83,11 @@ void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *jso
              env->card_type[0] ? env->card_type : "-", env->app_id[0] ? env->app_id : "-",
              env->track_n, (env->track_n > 0 && env->tracks[0].playback_url[0]) ? 1 : 0,
              env->spoken_audio_url[0] ? 1 : 0, env->display_title[0] ? env->display_title : "-");
-    nodelio_skill_result_show(cfg, env, play);
 
+    /* 先摘 spoken/音频 URL：show 接管 env 所有权后不可再读 */
     if (spoken_out && spoken_len) {
         nodelio_envelope_spoken_summary(env, spoken_out, spoken_len);
     }
-    /* 供本地 open_app 播报；MCP 路径只取 spoken 文本交模型，勿在此 EndVoiceSession */
     s_last_spoken_audio[0] = '\0';
     s_last_spoken_audio_n = 0;
     for (int i = 0; i < NL_ENV_SPOKEN_AUDIO_MAX; i++) {
@@ -107,12 +107,7 @@ void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *jso
                  env->spoken_audio_url);
         s_last_spoken_audio_n = 1;
     }
-    /* detail_body 已由 show 深拷走；此处释放解析侧副本 */
-    if (env->detail_body) {
-        heap_caps_free(env->detail_body);
-        env->detail_body = NULL;
-    }
-    free(env);
+    nodelio_skill_result_show(cfg, env, play);
 }
 
 const char *nodelio_skill_last_spoken_audio_url(void)

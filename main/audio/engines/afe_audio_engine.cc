@@ -644,6 +644,7 @@ void AfeAudioEngine::EncodeWakeWordData() {
                     engine->wake_word_opus_.emplace_back();
                     engine->wake_word_cv_.notify_all();
                 }
+                engine->wake_word_encode_task_ = nullptr;
                 vTaskDelete(nullptr);
                 return;
             }
@@ -691,10 +692,18 @@ void AfeAudioEngine::EncodeWakeWordData() {
                 engine->wake_word_opus_.emplace_back();
                 engine->wake_word_cv_.notify_all();
             }
+            engine->wake_word_encode_task_ = nullptr;
             vTaskDelete(nullptr);
         },
         "encode_wake_word", stack_size, this, 2, wake_word_encode_task_stack_,
         wake_word_encode_task_buffer_);
+}
+
+void AfeAudioEngine::DiscardWakeWordAudio() {
+    wake_word_audio_cache_.Clear();
+    std::lock_guard<std::mutex> lock(wake_word_mutex_);
+    wake_word_opus_.clear();
+    wake_word_cv_.notify_all();
 }
 
 bool AfeAudioEngine::GetWakeWordOpus(std::vector<uint8_t>& opus) {
@@ -705,7 +714,16 @@ bool AfeAudioEngine::GetWakeWordOpus(std::vector<uint8_t>& opus) {
         return false;
     }
     std::unique_lock<std::mutex> lock(wake_word_mutex_);
-    wake_word_cv_.wait(lock, [this]() { return !wake_word_opus_.empty(); });
+    if (wake_word_opus_.empty()) {
+        /* 没起编码任务时禁止无限 wait：主循环会卡在 connecting，唤醒词再也开不了 */
+        if (wake_word_encode_task_ == nullptr) {
+            return false;
+        }
+        wake_word_cv_.wait(lock, [this]() { return !wake_word_opus_.empty(); });
+        if (wake_word_opus_.empty()) {
+            return false;
+        }
+    }
     opus.swap(wake_word_opus_.front());
     wake_word_opus_.pop_front();
     return !opus.empty();

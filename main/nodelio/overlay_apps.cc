@@ -36,6 +36,7 @@ struct nl_app_item {
     char name[40];
     char desc[72];
     bool enabled;
+    bool outbound_bridge; /* invoke.transport=outbound_bridge */
 };
 
 struct nl_app_snap {
@@ -47,6 +48,7 @@ struct nl_app_snap {
 static lv_obj_t *s_page;
 static lv_obj_t *s_list;
 static lv_obj_t *s_hint;
+static lv_obj_t *s_refresh;
 static nl_app_item s_items[APP_MAX];
 
 /** 仅供进度卡「允许/拒绝」按钮 invoke，不进应用列表 / 语音打开。 */
@@ -88,7 +90,8 @@ static bool apps_list_eq(const nl_app_item *items, int n)
         return false;
     }
     for (int i = 0; i < n; i++) {
-        if (items[i].enabled != s_items[i].enabled) {
+        if (items[i].enabled != s_items[i].enabled ||
+            items[i].outbound_bridge != s_items[i].outbound_bridge) {
             return false;
         }
         if (strcmp(items[i].id, s_items[i].id) != 0 || strcmp(items[i].name, s_items[i].name) != 0 ||
@@ -180,6 +183,13 @@ static void render_list(void)
                     if (xTaskCreateWithCaps(
                             [](void *p) {
                                 auto *a = static_cast<invoke_arg *>(p);
+                                Application::GetInstance().Schedule([]() {
+                                    auto st = Application::GetInstance().GetDeviceState();
+                                    if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
+                                        st == kDeviceStateConnecting) {
+                                        Application::GetInstance().EndVoiceSessionAfterLocalSkill();
+                                    }
+                                });
                                 const bool music_app = nodelio_skill_id_is_music(a->id);
                                 if (!music_app && nodelio_media_preempt_for_heavy_app()) {
                                     nodelio_panel_ui_toast_defer("已停止音乐以打开应用");
@@ -221,7 +231,7 @@ static void render_list(void)
                                             nodelio_panel_ui_announce_spoken_ex(spoken, au);
                                         }
                                     } else if (err != ESP_OK || status == 0 || !resp[0]) {
-                                        nodelio_panel_ui_toast_defer("服务器无响应");
+                                        nl_ov_toast_invoke_unreachable(a->id);
                                     } else {
                                         nodelio_panel_ui_toast_defer("打开失败");
                                     }
@@ -250,8 +260,13 @@ static void render_list(void)
         lv_obj_clear_flag(pod, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_t *ic = lv_label_create(pod);
         lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
-        const bool music = nodelio_skill_id_is_music(it->id);
-        lv_label_set_text(ic, music ? MATERIAL_SYMBOLS_MUSIC_NOTE : MATERIAL_SYMBOLS_EXPLORE);
+        const char *glyph = MATERIAL_SYMBOLS_EXPLORE;
+        if (strstr(it->id, "radio.stations") != NULL || strstr(it->id, "podcast.latest") != NULL) {
+            glyph = MATERIAL_SYMBOLS_VOLUME_UP;
+        } else if (nodelio_skill_id_is_music(it->id)) {
+            glyph = MATERIAL_SYMBOLS_MUSIC_NOTE;
+        }
+        lv_label_set_text(ic, glyph);
         lv_obj_set_style_text_color(ic, it->enabled ? UI_ACCENT_SOFT : UI_TEXT_MUTED, 0);
         lv_obj_center(ic);
 
@@ -318,6 +333,8 @@ static bool items_from_json(const char *json)
         copy_field(tmp[n].desc, sizeof(tmp[n].desc), it, "desc");
         const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "en");
         tmp[n].enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
+        const cJSON *ob = cJSON_GetObjectItemCaseSensitive(it, "ob");
+        tmp[n].outbound_bridge = cJSON_IsTrue(ob);
         n++;
     }
     cJSON_Delete(root);
@@ -344,6 +361,9 @@ static void persist_list(void)
         cJSON_AddStringToObject(o, "name", s_items[i].name);
         cJSON_AddStringToObject(o, "desc", s_items[i].desc);
         cJSON_AddBoolToObject(o, "en", s_items[i].enabled);
+        if (s_items[i].outbound_bridge) {
+            cJSON_AddBoolToObject(o, "ob", true);
+        }
         cJSON_AddItemToArray(arr, o);
     }
     char *printed = cJSON_PrintUnformatted(arr);
@@ -441,6 +461,10 @@ static void fill_snap_from_skills_root(const cJSON *root, nl_app_snap *snap)
             copy_field(row->desc, sizeof(row->desc), it, "description");
             const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
             row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
+            const cJSON *tr = cJSON_GetObjectItemCaseSensitive(it, "invokeTransport");
+            row->outbound_bridge =
+                cJSON_IsString(tr) && tr->valuestring &&
+                strcmp(tr->valuestring, "outbound_bridge") == 0;
             snap->n++;
         }
     }
@@ -465,6 +489,10 @@ static void fill_snap_from_skills_root(const cJSON *root, nl_app_snap *snap)
                 copy_field(row->desc, sizeof(row->desc), it, "summary");
                 const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
                 row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
+                const cJSON *tr = cJSON_GetObjectItemCaseSensitive(it, "invoke_transport");
+                row->outbound_bridge =
+                    cJSON_IsString(tr) && tr->valuestring &&
+                    strcmp(tr->valuestring, "outbound_bridge") == 0;
                 snap->n++;
             }
         }
@@ -580,8 +608,8 @@ void nl_ov_apps_refresh(void)
                 buf[0] = '\0';
                 int status = 0;
                 esp_err_t err = ESP_FAIL;
-                /* 唤醒空窗：少试几次；连不上就停，避免拖死 HTTP 互斥锁 */
-                static const uint32_t k_retry_ms[] = {0, 800, 2000};
+                /* nl_http 已 grace+空收重试；外层再隔开 1 次兜底（新设备首开） */
+                static const uint32_t k_retry_ms[] = {0, 1200};
                 for (unsigned attempt = 0; attempt < sizeof(k_retry_ms) / sizeof(k_retry_ms[0]); attempt++) {
                     if (k_retry_ms[attempt]) {
                         vTaskDelay(pdMS_TO_TICKS(k_retry_ms[attempt]));
@@ -592,7 +620,7 @@ void nl_ov_apps_refresh(void)
                     }
                     buf[0] = '\0';
                     status = 0;
-                    err = nodelio_http_get(url, cfg->device_key, nullptr, &status, buf, APP_LIST_BUF - 1);
+                    err = nodelio_http_get_ms(url, cfg->device_key, nullptr, &status, buf, APP_LIST_BUF - 1, 8000);
                     if (err == ESP_OK && (status == 200 || status == 201)) {
                         break;
                     }
@@ -637,6 +665,16 @@ lv_obj_t *nl_ov_apps_scroll_obj(void)
     return s_list;
 }
 
+void nl_ov_apps_layout_chrome(void)
+{
+    if (!s_refresh) {
+        return;
+    }
+    /* 刷新 48、音乐球 52；球在屏幕右下，刷新左移一格避免叠住。 */
+    const lv_coord_t x = nodelio_skill_mini_fab_visible() ? -(2 + 52 + 12) : -2;
+    lv_obj_align(s_refresh, LV_ALIGN_BOTTOM_RIGHT, x, -2);
+}
+
 void nl_ov_apps_set_visible(bool on)
 {
     if (!s_page) {
@@ -644,6 +682,10 @@ void nl_ov_apps_set_visible(bool on)
     }
     if (on) {
         lv_obj_clear_flag(s_page, LV_OBJ_FLAG_HIDDEN);
+        nl_ov_apps_layout_chrome();
+        if (s_refresh) {
+            lv_obj_move_foreground(s_refresh);
+        }
     } else {
         lv_obj_add_flag(s_page, LV_OBJ_FLAG_HIDDEN);
     }
@@ -939,35 +981,70 @@ void nl_ov_build_apps(void)
     lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(s_list, UI_GAP, 0);
     lv_obj_set_style_pad_column(s_list, UI_GAP, 0);
-    lv_obj_set_style_pad_bottom(s_list, 56, 0); /* 避让右下刷新 FAB */
+    lv_obj_set_style_pad_bottom(s_list, 56, 0); /* 避让右下 FAB（刷新 / 音乐球并排） */
     lv_obj_add_flag(s_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_OFF);
 
-    /* 右下角浮动刷新 */
-    lv_obj_t *ref = lv_obj_create(s_page);
-    lv_obj_remove_style_all(ref);
-    lv_obj_set_size(ref, 48, 48);
-    lv_obj_set_style_radius(ref, 24, 0);
-    lv_obj_set_style_bg_color(ref, UI_SURFACE, 0);
-    lv_obj_set_style_bg_opa(ref, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(ref, 2, 0);
-    lv_obj_set_style_border_color(ref, UI_ACCENT, 0);
-    lv_obj_set_style_border_opa(ref, 200, 0);
-    lv_obj_set_style_shadow_width(ref, 14, 0);
-    lv_obj_set_style_shadow_opa(ref, LV_OPA_40, 0);
-    lv_obj_set_style_shadow_color(ref, UI_ACCENT, 0);
-    lv_obj_set_style_bg_color(ref, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
-    lv_obj_set_style_translate_y(ref, 1, LV_STATE_PRESSED);
-    lv_obj_add_flag(ref, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_FLOATING |
-                                         LV_OBJ_FLAG_IGNORE_LAYOUT));
-    lv_obj_set_ext_click_area(ref, 10);
-    lv_obj_align(ref, LV_ALIGN_BOTTOM_RIGHT, -2, -2);
-    lv_obj_add_event_cb(ref, [](lv_event_t *) { nl_ov_apps_refresh(); }, LV_EVENT_CLICKED, nullptr);
-    lv_obj_t *ric = lv_label_create(ref);
+    /* 右下角浮动刷新；有音乐悬浮球时由 nl_ov_apps_layout_chrome 左移 */
+    s_refresh = lv_obj_create(s_page);
+    lv_obj_remove_style_all(s_refresh);
+    lv_obj_set_size(s_refresh, 48, 48);
+    lv_obj_set_style_radius(s_refresh, 24, 0);
+    lv_obj_set_style_bg_color(s_refresh, UI_SURFACE, 0);
+    lv_obj_set_style_bg_opa(s_refresh, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_refresh, 2, 0);
+    lv_obj_set_style_border_color(s_refresh, UI_ACCENT, 0);
+    lv_obj_set_style_border_opa(s_refresh, 200, 0);
+    lv_obj_set_style_shadow_width(s_refresh, 14, 0);
+    lv_obj_set_style_shadow_opa(s_refresh, LV_OPA_40, 0);
+    lv_obj_set_style_shadow_color(s_refresh, UI_ACCENT, 0);
+    lv_obj_set_style_bg_color(s_refresh, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_translate_y(s_refresh, 1, LV_STATE_PRESSED);
+    lv_obj_add_flag(s_refresh, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_FLOATING |
+                                               LV_OBJ_FLAG_IGNORE_LAYOUT));
+    lv_obj_set_ext_click_area(s_refresh, 10);
+    lv_obj_add_event_cb(s_refresh, [](lv_event_t *) { nl_ov_apps_refresh(); }, LV_EVENT_CLICKED,
+                        nullptr);
+    lv_obj_t *ric = lv_label_create(s_refresh);
     lv_obj_set_style_text_font(ric, &font_material_symbols_20_4, 0);
     lv_label_set_text(ric, MATERIAL_SYMBOLS_REFRESH);
     lv_obj_set_style_text_color(ric, UI_ACCENT_SOFT, 0);
     lv_obj_center(ric);
-    lv_obj_move_foreground(ref);
+    nl_ov_apps_layout_chrome();
+    lv_obj_move_foreground(s_refresh);
+}
+
+bool nl_ov_skill_needs_outbound_bridge(const char *skill_id)
+{
+    if (!skill_id || !skill_id[0] || !s_have_list) {
+        return false;
+    }
+    for (int i = 0; i < s_item_n; i++) {
+        if (!s_items[i].id[0]) {
+            continue;
+        }
+        if (strcmp(s_items[i].id, skill_id) == 0) {
+            return s_items[i].outbound_bridge;
+        }
+        /* market::app 与裸 app_id 均可匹配 */
+        const char *p = strstr(s_items[i].id, "::");
+        const char *bare = p ? p + 2 : s_items[i].id;
+        if (strcmp(bare, skill_id) == 0 || strstr(skill_id, bare) != nullptr) {
+            return s_items[i].outbound_bridge;
+        }
+        if (strstr(s_items[i].id, skill_id) != nullptr) {
+            return s_items[i].outbound_bridge;
+        }
+    }
+    return false;
+}
+
+void nl_ov_toast_invoke_unreachable(const char *skill_id)
+{
+    if (nl_ov_skill_needs_outbound_bridge(skill_id)) {
+        nodelio_panel_ui_toast_defer("本地桥未连接");
+    } else {
+        nodelio_panel_ui_toast_defer("服务器无响应");
+    }
 }

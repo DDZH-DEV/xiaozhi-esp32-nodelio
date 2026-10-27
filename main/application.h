@@ -141,6 +141,11 @@ public:
      */
     void SuppressCloudTts(int duration_ms = 3000);
     bool IsCloudTtsSuppressed() const;
+    /**
+     * 本地口令保持会话后：重新 SendStartListening。
+     * Abort/丢弃云端 TTS 后云端常停收上行，Listening 态若处理器已在跑会跳过开麦 → 假死。
+     */
+    void ContinueListeningAfterLocalSkill();
     /** 本地技能完成：清抑制、关语音通道回 Idle，恢复唤醒。 */
     void EndVoiceSessionAfterLocalSkill();
     /**

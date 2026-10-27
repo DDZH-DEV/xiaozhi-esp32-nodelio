@@ -6,13 +6,14 @@ set "EP1=%USERPROFILE%\.agents-anywhere\dsh-bridge\endpoint.json"
 set "EP2=%USERPROFILE%\.dsh\agents-anywhere\bridge\endpoint.json"
 if exist "%EP1%" goto :ok
 if exist "%EP2%" goto :ok
-echo [dsh-bridge] DSH Desktop endpoint not found.
+echo [dsh-bridge] DSH Desktop endpoint not found (app may be closed).
 echo   Checked: %EP1%
 echo            %EP2%
-echo Open DSH Desktop and enable remote control, then retry.
-exit /b 1
+echo   Bridge will still start; the panel can ask to open DSH.
+goto :node
 
 :ok
+:node
 where node >nul 2>&1
 if errorlevel 1 (
   echo [dsh-bridge] node not in PATH

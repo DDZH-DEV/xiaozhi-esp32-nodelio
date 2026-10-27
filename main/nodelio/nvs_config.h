@@ -27,8 +27,8 @@ typedef struct {
     uint8_t brightness; /* 1–100；0=未设置用板级默认 */
     uint8_t volume;     /* 0–100；助手音频启用后生效 */
     uint8_t xiaozhi_en; /* 1=启用小智云对话（默认）；0=关闭 */
-    uint8_t local_cmd_en; /* 1=启用本地 MultiNet 口令；0=默认不加载（省片内 DRAM） */
-    uint8_t power_save_en; /* 1=允许息屏/断网省电（默认）；0=永不息屏/不断 WiFi */
+    uint8_t local_cmd_en; /* 已废弃：固件不再编 MultiNet，读写恒为 0 */
+    uint8_t power_save_en; /* 1=允许空闲断网（默认）；0=不断 WiFi；息屏仍走 idle_sleep */
     uint8_t controls_en;   /* 1=允许控家模块（默认）；0=首页不渲染控家，语音/MCP 降级提示 */
     uint8_t media_sleep_en; /* 1=播放中可息屏不停播（默认）；0=播放中常亮 */
     uint16_t idle_sleep_s;    /* 空闲息屏秒数，默认 60，范围 15–180 */
@@ -91,7 +91,7 @@ esp_err_t nodelio_xiaozhi_set_enabled(bool on);
 /** 本地 MultiNet 口令；读 RAM 镜像，缺省关闭（不占片内 DRAM）。 */
 bool nodelio_local_cmd_enabled(void);
 esp_err_t nodelio_local_cmd_set_enabled(bool on);
-/** 省电息屏断网开关；读 RAM 镜像，缺省开启。 */
+/** 空闲断网开关（不影响息屏）；读 RAM 镜像，缺省开启。 */
 bool nodelio_power_save_enabled(void);
 esp_err_t nodelio_power_save_set_enabled(bool on);
 /** 控家模块；读 RAM 镜像，缺省开启。 */

@@ -182,7 +182,9 @@ esp_err_t nodelio_mqtt_panel_start(const nodelio_nvs_config_t *cfg)
         .credentials.authentication.password = s_cfg.mqtt_pass[0] ? s_cfg.mqtt_pass : NULL,
         .session.keepalive = 60,
         .network.disable_auto_reconnect = false,
-        /* 明文 mqtt://；栈走 PSRAM（CONFIG_MQTT_TASK_STACK_ON_EXTERNAL_MEMORY）。 */
+        /* 明文 mqtt://；栈/缓冲走 PSRAM。notify 很小，收紧 buffer 少占堆。 */
+        .buffer.size = 1024,
+        .buffer.out_size = 512,
         .task.stack_size = 4096,
     };
     nodelio_log_heap("mqtt_panel init");

@@ -90,6 +90,15 @@ flowchart LR
 - `OpusCodecTask` encodes uplink PCM and decodes downlink packets.
 - `AfeAudioEngine` has its own AFE fetch task on S3/P4/S31.
 
+Scheduling invariant (SILA-86): the I2S TX DMA ring holds only ~30 ms of audio
+(`AUDIO_CODEC_DMA_DESC_NUM` × `AUDIO_CODEC_DMA_FRAME_NUM`), so the output task
+is the hard-deadline task. It is pinned to Core 1 at priority 6, away from the
+WiFi/lwIP bursts on Core 0. The HTTP playback producer (`notify_http`) is pinned
+to the same core one step lower (priority 5), so any decode or download burst is
+always preempted by the output deadline. Never raise a producer above the output
+task or give it an unbounded CPU burst: that shows up as periodic clicks during
+music playback.
+
 The audio power timer still enables and disables codec ADC/DAC channels based on
 activity; the engine refactor does not change that policy.
 

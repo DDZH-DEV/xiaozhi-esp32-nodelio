@@ -15,7 +15,7 @@ static const char *APPS_PATH = "/spiffs/panel_apps.json";
 static const char *APPS_NVS_NS = "nodelio";
 static const char *APPS_NVS_KEY = "apps_list";
 static bool s_mounted;
-static bool s_mount_failed; /* xz25 无 storage 分区，失败只报一次 */
+static bool s_mount_failed;
 
 esp_err_t nodelio_layout_cache_mount(void)
 {
@@ -25,17 +25,17 @@ esp_err_t nodelio_layout_cache_mount(void)
     if (s_mount_failed) {
         return ESP_ERR_NOT_FOUND;
     }
-    /* 本板分区表只有 assets(spiffs 只读资源)，无独立 storage；勿挂 assets 以免写坏 */
+    /* storage：可写 SPIFFS（layout/apps）；勿挂 assets（只读资源包） */
     esp_vfs_spiffs_conf_t conf = {
         .base_path = "/spiffs",
         .partition_label = "storage",
         .max_files = 4,
-        .format_if_mount_failed = false,
+        .format_if_mount_failed = true, /* 新分区 / 擦片后首次挂载自动格式化 */
     };
     esp_err_t err = esp_vfs_spiffs_register(&conf);
     if (err != ESP_OK) {
         s_mount_failed = true;
-        ESP_LOGW(TAG, "no layout SPIFFS (ok, use cloud): %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "layout SPIFFS mount failed: %s", esp_err_to_name(err));
         return err;
     }
     s_mounted = true;

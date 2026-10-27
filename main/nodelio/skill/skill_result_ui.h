@@ -10,8 +10,12 @@
 extern "C" {
 #endif
 
-/** 展示 Envelope：会话抽屉上方 card；新结果覆盖旧结果。 */
-void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content_envelope_t *env,
+/**
+ * 展示 Envelope：会话抽屉上方 card；新结果覆盖旧结果。
+ * env 须为堆分配；本函数接管所有权（含 detail_body），调用方勿再 free。
+ * 避免解析侧 + UI 侧各一份 ~54KB 信封把 PSRAM 打满（开 MultiNet 后尤甚）。
+ */
+void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envelope_t *env,
                                bool auto_play_first);
 
 void nodelio_skill_result_hide(void);
@@ -24,6 +28,9 @@ void nodelio_skill_close_all(void);
 
 /** 技能卡可见时抬到 layer_top 最前（防小智抽屉抢 z-order）。 */
 void nodelio_skill_result_raise(void);
+
+/** 音乐折叠后的右下悬浮球是否可见（应用页刷新钮要给它让位）。 */
+bool nodelio_skill_mini_fab_visible(void);
 
 /** now_playing 条（media 回调；无 media 能力时为空操作）。
  *  playing=true 播放中；playing=false 且 title 非空=已暂停（保留条）；title 空=关闭。 */

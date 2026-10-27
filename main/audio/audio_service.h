@@ -123,6 +123,7 @@ public:
     void Start();
     void Stop();
     void EncodeWakeWord();
+    void DiscardWakeWordAudio();
     std::unique_ptr<AudioStreamPacket> PopWakeWordPacket();
     const std::string& GetLastWakeWord() const;
     bool IsVoiceDetected() const { return voice_detected_; }

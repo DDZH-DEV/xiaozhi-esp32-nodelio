@@ -71,6 +71,8 @@ typedef struct {
     char display_title[NL_ENV_STR];
     char preferred_surface[24];
     char density[16]; /* compact | comfortable；缺省空=按 card_type */
+    /** display.media_kind：track | live | episode；缺省按 app_id 回退 */
+    char media_kind[16];
     char spoken[NL_ENV_SPOKEN];
     char spoken_audio_url[NL_ENV_URL]; /* spoken.audio.url，首段；兼容旧包 */
 #define NL_ENV_SPOKEN_AUDIO_MAX 6

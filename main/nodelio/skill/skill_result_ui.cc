@@ -86,6 +86,8 @@ static lv_obj_t *s_now_lbl;
 static lv_obj_t *s_now_sub;
 static lv_obj_t *s_now_btns;
 static lv_obj_t *s_now_pause_btn;
+static lv_obj_t *s_now_prev_btn;
+static lv_obj_t *s_now_next_btn;
 static lv_obj_t *s_mini_fab;
 static lv_obj_t *s_mini_ic;
 static lv_timer_t *s_ttl_tmr;
@@ -111,23 +113,34 @@ static bool s_minimized;
 static bool s_ui_closing;
 static uint32_t s_close_gen;
 static nodelio_nvs_config_t s_skill_cfg;
-/** ~50KB：必须 PSRAM。放内部 BSS 会把云端 UDP/AES 连续堆挤到 errno=12。 */
+/** ~54KB：必须 PSRAM。由 deliver 堆分配后交给 show 接管，禁止再拷一份。 */
 static nl_content_envelope_t *s_env;
 static bool s_have_env;
 
-static bool ensure_skill_env(void)
+static void free_skill_env(void)
 {
-    if (s_env) {
-        return true;
-    }
-    s_env = (nl_content_envelope_t *)heap_caps_calloc(1, sizeof(*s_env),
-                                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_env) {
-        ESP_LOGE(TAG, "skill env PSRAM fail need=%u", (unsigned)sizeof(nl_content_envelope_t));
-        return false;
+        return;
     }
-    ESP_LOGI(TAG, "skill env → PSRAM %u bytes", (unsigned)sizeof(nl_content_envelope_t));
-    return true;
+    if (s_env->detail_body) {
+        heap_caps_free(s_env->detail_body);
+        s_env->detail_body = nullptr;
+    }
+    heap_caps_free(s_env);
+    s_env = nullptr;
+    s_have_env = false;
+}
+
+static void free_owned_env(nl_content_envelope_t *env)
+{
+    if (!env) {
+        return;
+    }
+    if (env->detail_body) {
+        heap_caps_free(env->detail_body);
+        env->detail_body = nullptr;
+    }
+    heap_caps_free(env);
 }
 static int s_play_idx = -1;
 static int s_list_page;
@@ -195,6 +208,12 @@ static void layout_skill_layers(void)
     if (s_mini_fab && !lv_obj_has_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_align(s_mini_fab, LV_ALIGN_BOTTOM_RIGHT, -14, -(NL_UI_TAB_H + 14));
     }
+    nl_ov_apps_layout_chrome();
+}
+
+bool nodelio_skill_mini_fab_visible(void)
+{
+    return s_mini_fab && !lv_obj_has_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void raise_skill_layers(void)
@@ -215,11 +234,26 @@ static void raise_skill_layers(void)
 
 void nodelio_skill_result_raise(void)
 {
-    if (!s_skill_ui_active) {
-        return;
-    }
+    /* 播放条/曲库在 lv_layer_top 与 s_root 同级；s_root 被置顶后必须再抬一次，
+     * 且收起曲库后 s_skill_ui_active=false，不能再靠该旗标判断。 */
     raise_skill_layers();
     ensure_chrome_order();
+}
+
+/** 曲库或播放条可见时挡住下层应用页，避免点穿卡片 */
+static void sync_player_block_scrim(void)
+{
+    if (!s_scrim) {
+        return;
+    }
+    const bool card_up = s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN);
+    const bool bar_up = s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
+    if (!s_minimized && (card_up || bar_up)) {
+        lv_obj_clear_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_bg_opa(s_scrim, SKILL_SCRIM_OPA, 0);
+    } else if (!card_up) {
+        lv_obj_add_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static void set_drawer_for_skill(bool skill_on)
@@ -716,17 +750,64 @@ static void stop_mini_pulse(void);
 static void hide_mini_fab(void);
 static void dismiss_library_and_player(void);
 
+/** track | live | episode；无 env 时按 track */
+static const char *env_media_kind(void)
+{
+    if (!s_have_env || !s_env || !s_env->media_kind[0]) {
+        return "track";
+    }
+    return s_env->media_kind;
+}
+
+static bool env_media_is_live(void)
+{
+    return strcmp(env_media_kind(), "live") == 0;
+}
+
+/** 按 media_kind 刷新 now_playing 副文案与切台键可见性 */
+static void apply_now_media_chrome(bool playing, bool paused, bool list_open)
+{
+    if (s_now_prev_btn) {
+        if (env_media_is_live()) {
+            lv_obj_add_flag(s_now_prev_btn, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(s_now_prev_btn, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (s_now_next_btn) {
+        if (env_media_is_live()) {
+            lv_obj_add_flag(s_now_next_btn, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(s_now_next_btn, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (!s_now_sub) {
+        return;
+    }
+    if (paused) {
+        lv_label_set_text(s_now_sub, "已暂停 · 点播放继续");
+        return;
+    }
+    const char *kind = env_media_kind();
+    if (strcmp(kind, "live") == 0) {
+        lv_label_set_text(s_now_sub, list_open ? "直播 · 收听中" : "直播 · 点此打开列表");
+    } else if (strcmp(kind, "episode") == 0) {
+        lv_label_set_text(s_now_sub, list_open ? (playing ? "播客 · 播放中" : "播客")
+                                                : "播客 · 点此打开列表");
+    } else if (list_open) {
+        lv_label_set_text(s_now_sub, playing ? "正在播放" : "点此打开列表");
+    } else {
+        lv_label_set_text(s_now_sub, "点此打开列表");
+    }
+}
+
 static void close_list_keep_player(void)
 {
     clear_ttl();
     stop_dsh_detail_poll();
     s_dsh_detail_ws[0] = '\0';
     s_dsh_detail_sess[0] = '\0';
-    reset_obj_anim_style(s_scrim);
     reset_obj_anim_style(s_card);
-    if (s_scrim) {
-        lv_obj_add_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
-    }
     if (s_card) {
         lv_obj_add_flag(s_card, LV_OBJ_FLAG_HIDDEN);
     }
@@ -734,10 +815,9 @@ static void close_list_keep_player(void)
         if (s_now_bar) {
             lv_obj_clear_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
         }
-        if (s_now_sub) {
-            lv_label_set_text(s_now_sub, nodelio_media_is_paused() ? "已暂停 · 点播放继续"
-                                                                   : "点此打开列表");
-        }
+        apply_now_media_chrome(nodelio_media_is_playing(), nodelio_media_is_paused(), false);
+        /* 保留遮罩：仅播放条时也挡住应用列表，避免点穿 */
+        sync_player_block_scrim();
         set_drawer_for_skill(false);
         layout_skill_layers();
         raise_skill_layers();
@@ -1010,9 +1090,7 @@ static void reopen_list(void)
     }
     lv_obj_clear_flag(s_card, LV_OBJ_FLAG_HIDDEN);
     anim_show_obj(s_card, true);
-    if (s_now_sub) {
-        lv_label_set_text(s_now_sub, "正在播放");
-    }
+    apply_now_media_chrome(true, false, true);
     layout_skill_layers();
     raise_skill_layers();
     ensure_chrome_order();
@@ -1407,7 +1485,11 @@ static void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
                             }
                         }
                     } else if (!a->silent) {
-                        nodelio_panel_ui_toast_defer("加载失败");
+                        if (err != ESP_OK || status == 0 || !resp[0]) {
+                            nl_ov_toast_invoke_unreachable("dsh.status");
+                        } else {
+                            nodelio_panel_ui_toast_defer("加载失败");
+                        }
                     }
                     free(resp);
                 }
@@ -1442,6 +1524,10 @@ static void dsh_fetch_session_detail(int track_idx)
 static void run_invoke_action(const nl_env_invoke_action_t *ia)
 {
     if (!ia) {
+        return;
+    }
+    if (ia->params_json[0] && strstr(ia->params_json, "\"dismiss\"")) {
+        nodelio_skill_result_hide();
         return;
     }
     /* DSH 派活/续聊：本地武装，不 HTTP（等语音「让它…」） */
@@ -1548,8 +1634,10 @@ static void run_invoke_action(const nl_env_invoke_action_t *ia)
                 } else {
                     resp[0] = '\0';
                     int status = 0;
+                    const int io_ms =
+                        strstr(a->skill_id, "dsh") != nullptr ? DSH_HTTP_IO_MS : 10000;
                     esp_err_t err =
-                        nodelio_http_post_json_ms(url, a->cfg.device_key, a->body, &status, resp, cap - 1, 10000);
+                        nodelio_http_post_json_ms(url, a->cfg.device_key, a->body, &status, resp, cap - 1, io_ms);
                     if (err == ESP_OK && resp[0] &&
                         (status == 200 || status == 201 ||
                          (status >= 400 && strstr(resp, "\"schema_version\"") != nullptr))) {
@@ -1559,6 +1647,8 @@ static void run_invoke_action(const nl_env_invoke_action_t *ia)
                         if (strstr(a->skill_id, "dsh") != nullptr && spoken[0]) {
                             nodelio_panel_ui_announce_spoken(spoken);
                         }
+                    } else if (err != ESP_OK || status == 0 || !resp[0]) {
+                        nl_ov_toast_invoke_unreachable(a->skill_id);
                     } else {
                         nodelio_panel_ui_toast_defer("执行失败");
                     }
@@ -1845,6 +1935,9 @@ static void set_pause_btn_icon(bool playing)
 
 bool nodelio_skill_media_prev(void)
 {
+    if (env_media_is_live()) {
+        return false;
+    }
     int idx = neighbor_playable(s_play_idx, -1);
     if (idx < 0) {
         return false;
@@ -1855,6 +1948,9 @@ bool nodelio_skill_media_prev(void)
 
 bool nodelio_skill_media_next(void)
 {
+    if (env_media_is_live()) {
+        return false;
+    }
     int idx = neighbor_playable(s_play_idx, +1);
     if (idx < 0) {
         return false;
@@ -2047,6 +2143,8 @@ static void null_skill_widget_ptrs(void)
     s_now_sub = nullptr;
     s_now_btns = nullptr;
     s_now_pause_btn = nullptr;
+    s_now_prev_btn = nullptr;
+    s_now_next_btn = nullptr;
     s_mini_fab = nullptr;
     s_mini_ic = nullptr;
     s_news_body_lbl = nullptr;
@@ -2089,8 +2187,7 @@ static void free_skill_widgets(void)
     }
     null_skill_widget_ptrs();
     s_ui_closing = false;
-    s_have_env = false;
-    memset(&s_env, 0, sizeof(s_env));
+    free_skill_env();
     s_play_idx = -1;
     s_minimized = false;
     s_news_detail = -1;
@@ -2169,8 +2266,7 @@ static void dismiss_library_and_player(void)
 {
     s_close_gen += 1;
     s_ui_closing = true;
-    s_have_env = false;
-    memset(&s_env, 0, sizeof(s_env));
+    free_skill_env();
     s_play_idx = -1;
     s_minimized = false;
     clear_ttl();
@@ -2244,6 +2340,7 @@ static void hide_mini_fab(void)
         reset_obj_anim_style(s_mini_fab);
         lv_obj_add_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN);
     }
+    nl_ov_apps_layout_chrome();
 }
 
 static void show_mini_fab(bool playing)
@@ -2323,13 +2420,7 @@ static void expand_from_fab(void)
     }
 
     if (s_now_bar && (playing || paused)) {
-        if (s_now_sub) {
-            if (paused) {
-                lv_label_set_text(s_now_sub, "已暂停 · 点播放继续");
-            } else {
-                lv_label_set_text(s_now_sub, have_list ? "正在播放" : "点此打开列表");
-            }
-        }
+        apply_now_media_chrome(playing, paused, have_list);
         set_pause_btn_icon(playing);
         lv_obj_clear_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
         if (playing) {
@@ -2628,7 +2719,8 @@ static void ensure_card(void)
         lv_obj_set_style_pad_column(s_now_bar, 8, 0);
         lv_obj_set_flex_flow(s_now_bar, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(s_now_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_clear_flag(s_now_bar, LV_OBJ_FLAG_CLICKABLE);
+        /* 整条可点中（吞掉空隙点击，勿穿透到下层应用卡） */
+        lv_obj_add_flag(s_now_bar, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
 
         s_now_eq_wrap = lv_obj_create(s_now_bar);
@@ -2688,11 +2780,13 @@ static void ensure_card(void)
         lv_obj_set_style_pad_column(s_now_btns, 4, 0);
         lv_obj_clear_flag(s_now_btns, LV_OBJ_FLAG_CLICKABLE);
 
-        make_play_ctrl_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_SKIP_PREVIOUS, on_prev_now);
+        s_now_prev_btn =
+            make_play_ctrl_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_SKIP_PREVIOUS, on_prev_now);
         s_now_pause_btn =
             make_play_ctrl_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_PAUSE, on_pause_now);
         make_play_ctrl_btn(s_now_btns, UI_DANGER_BG, UI_DANGER_FG, MATERIAL_SYMBOLS_STOP, on_stop_now);
-        make_play_ctrl_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_SKIP_NEXT, on_next_now);
+        s_now_next_btn =
+            make_play_ctrl_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_SKIP_NEXT, on_next_now);
         make_icon_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT_SUB, MATERIAL_SYMBOLS_KEYBOARD_ARROW_DOWN,
                       on_minimize);
     }
@@ -3346,10 +3440,7 @@ void nodelio_skill_result_hide(void)
         heap_caps_free(s_news_body_heap);
         s_news_body_heap = nullptr;
     }
-    if (s_env && s_env->detail_body) {
-        heap_caps_free(s_env->detail_body);
-        s_env->detail_body = nullptr;
-    }
+    /* 保留 s_env 歌单：点播放条可 reopen；真正关掉走 dismiss/close_all → free_skill_env */
     clear_ttl();
     stop_dsh_detail_poll();
     s_dsh_detail_ws[0] = '\0';
@@ -3378,18 +3469,18 @@ void nodelio_skill_result_hide(void)
     if (s_card) {
         lv_obj_add_flag(s_card, LV_OBJ_FLAG_HIDDEN);
     }
-    if (s_now_sub && s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
-        lv_label_set_text(s_now_sub, "点此打开列表");
+    if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
+        apply_now_media_chrome(nodelio_media_is_playing(), nodelio_media_is_paused(), false);
     }
     set_drawer_for_skill(false);
     /* 保留歌单：hide 只收起卡片；点播放条仍可 reopen_list */
-    if (s_env->track_n <= 0) {
+    if (!s_env || s_env->track_n <= 0) {
         s_have_env = false;
     }
     ensure_chrome_order();
 }
 
-void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content_envelope_t *env,
+void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envelope_t *env,
                                bool auto_play_first)
 {
     if (!env) {
@@ -3425,37 +3516,21 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, const nl_content
                 layout_skill_layers();
                 raise_skill_layers();
             }
+            free_owned_env(env);
             return;
         }
     }
     char keep_url[NL_ENV_URL];
     keep_url[0] = '\0';
-    if (s_play_idx >= 0 && s_play_idx < s_env->track_n && s_env->tracks[s_play_idx].playback_url[0]) {
+    if (s_env && s_play_idx >= 0 && s_play_idx < s_env->track_n &&
+        s_env->tracks[s_play_idx].playback_url[0]) {
         snprintf(keep_url, sizeof(keep_url), "%s", s_env->tracks[s_play_idx].playback_url);
     }
-    if (!ensure_skill_env()) {
-        nl_ov_toast("内存不足");
-        return;
+    /* 接管堆信封：先摘掉旧指针再挂新的，峰值只保留一份 ~54KB */
+    if (s_env && s_env != env) {
+        free_skill_env();
     }
-    /* detail_body 深拷：调用方随后会释放解析侧指针 */
-    char *owned_detail = nullptr;
-    if (env->detail_body && env->detail_body[0]) {
-        const size_t n = strnlen(env->detail_body, 6000);
-        owned_detail = static_cast<char *>(heap_caps_malloc(n + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-        if (!owned_detail) {
-            owned_detail = static_cast<char *>(malloc(n + 1));
-        }
-        if (owned_detail) {
-            memcpy(owned_detail, env->detail_body, n);
-            owned_detail[n] = '\0';
-        }
-    }
-    if (s_env->detail_body) {
-        heap_caps_free(s_env->detail_body);
-        s_env->detail_body = nullptr;
-    }
-    *s_env = *env;
-    s_env->detail_body = owned_detail;
+    s_env = env;
     s_have_env = true;
     /* DSH：勿无清 DISPATCHED/ARMED；远端已 running/attention 或超时再清 */
     const bool is_dsh = strstr(s_env->app_id, "dsh") != nullptr;
@@ -3624,7 +3699,9 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
                 hide_mini_fab();
             }
         }
+        sync_player_block_scrim();
         layout_skill_layers();
+        raise_skill_layers();
         ensure_chrome_order();
         return;
     }
@@ -3639,13 +3716,9 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
         return;
     }
 
-    if (s_now_sub) {
+    {
         const bool list_open = s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN);
-        if (playing) {
-            lv_label_set_text(s_now_sub, list_open ? "正在播放" : "点此打开列表");
-        } else {
-            lv_label_set_text(s_now_sub, "已暂停 · 点播放继续");
-        }
+        apply_now_media_chrome(playing, !playing, list_open);
     }
     const bool was_hidden = lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
@@ -3657,14 +3730,9 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
     if (was_hidden) {
         anim_show_obj(s_now_bar, true);
     }
-    if (s_scrim && !lv_obj_has_flag(s_scrim, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_move_foreground(s_scrim);
-    }
-    if (s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_move_foreground(s_card);
-    }
-    lv_obj_move_foreground(s_now_bar);
+    sync_player_block_scrim();
     layout_skill_layers();
+    raise_skill_layers();
     ensure_chrome_order();
 }
 

@@ -31,6 +31,17 @@
 #ifndef NOD_HTTP_IO_MS
 #define NOD_HTTP_IO_MS 2500
 #endif
+/** 语音结束后给小智 MQTT TLS 重连的空窗（日志里常见 3–10s 与 LAN HTTP 撞车） */
+#ifndef NOD_HTTP_VOICE_GRACE_MS
+#define NOD_HTTP_VOICE_GRACE_MS 3500
+#endif
+/** 短请求也要能排在长 invoke（8s IO）后面，避免 2s 等锁直接 fail */
+#ifndef NOD_HTTP_LOCK_MIN_MS
+#define NOD_HTTP_LOCK_MIN_MS 8000
+#endif
+#ifndef NOD_HTTP_LOCK_MAX_MS
+#define NOD_HTTP_LOCK_MAX_MS 20000
+#endif
 
 /**
  * 息屏断网后 esp_wifi_stop，再 getaddrinfo → lwIP assert Invalid mbox。
@@ -49,9 +60,56 @@ static bool http_net_ready(void)
     return true;
 }
 
+static int64_t s_lan_quiet_until_us;
+static bool s_voice_was_active;
+
+static void refresh_voice_grace(void)
+{
+    if (nodelio_voice_session_active()) {
+        s_voice_was_active = true;
+        s_lan_quiet_until_us = esp_timer_get_time() + (int64_t)NOD_HTTP_VOICE_GRACE_MS * 1000;
+        return;
+    }
+    if (s_voice_was_active) {
+        s_voice_was_active = false;
+        s_lan_quiet_until_us = esp_timer_get_time() + (int64_t)NOD_HTTP_VOICE_GRACE_MS * 1000;
+        ESP_LOGI(TAG, "voice ended — lan quiet %ums for MQTT", (unsigned)NOD_HTTP_VOICE_GRACE_MS);
+    }
+}
+
+bool nodelio_http_wait_lan_ready(uint32_t timeout_ms)
+{
+    if (timeout_ms == 0) {
+        refresh_voice_grace();
+        return !nodelio_voice_session_active() && esp_timer_get_time() >= s_lan_quiet_until_us;
+    }
+    const int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    for (;;) {
+        refresh_voice_grace();
+        const int64_t now = esp_timer_get_time();
+        if (!nodelio_voice_session_active() && now >= s_lan_quiet_until_us) {
+            return true;
+        }
+        if (now >= deadline) {
+            ESP_LOGW(TAG, "lan wait timeout voice=%d quiet_left=%lldms",
+                     nodelio_voice_session_active() ? 1 : 0,
+                     (long long)((s_lan_quiet_until_us - now) / 1000));
+            return false;
+        }
+        uint32_t slice = 100;
+        if (!nodelio_voice_session_active() && s_lan_quiet_until_us > now) {
+            const int64_t left_ms = (s_lan_quiet_until_us - now) / 1000;
+            if (left_ms > 0 && left_ms < (int64_t)slice) {
+                slice = (uint32_t)left_ms;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(slice ? slice : 1));
+    }
+}
+
 struct HttpNetGuard {
     bool ok = false;
-    explicit HttpNetGuard(uint32_t lock_ms = 2000)
+    explicit HttpNetGuard(uint32_t lock_ms = NOD_HTTP_LOCK_MIN_MS)
     {
         if (!http_net_ready()) {
             return;
@@ -353,18 +411,31 @@ struct SkillInvokePace {
     }
 };
 
-static esp_err_t http_exchange(const char *method, const char *url, const char *device_key, const char *body,
-                               const char *if_none_match, int *out_status, char *resp, int resp_cap, size_t *out_n,
-                               int io_ms, const char *content_type, const char *x_pass)
+/**
+ * 单次 short-tcp。pace_mark 非空时在 send 成功后调用（限流按到达时刻）。
+ * out_empty_recv：对端 0 字节 / 无状态行时置 true，供外层在 MQTT 争用窗口重试。
+ */
+static esp_err_t http_exchange_once(const char *method, const char *url, const char *device_key, const char *body,
+                                    const char *if_none_match, int *out_status, char *resp, int resp_cap, size_t *out_n,
+                                    int io_ms, const char *content_type, const char *x_pass, SkillInvokePace *pace,
+                                    bool *out_empty_recv, int connect_ms = -1)
 {
+    if (out_empty_recv) {
+        *out_empty_recv = false;
+    }
     if (!url || !url[0]) {
         return ESP_ERR_INVALID_ARG;
     }
-    SkillInvokePace invoke_pace(url);
+    if (connect_ms <= 0) {
+        connect_ms = NOD_HTTP_CONNECT_MS;
+    }
     /* 长 IO（新闻正文等）会占锁十余秒；短等 2s 会导致并发请求误回退摘要 */
-    uint32_t lock_ms = 2000;
-    if (io_ms > 2000) {
-        lock_ms = (uint32_t)io_ms;
+    uint32_t lock_ms = (uint32_t)(io_ms > 0 ? io_ms : NOD_HTTP_IO_MS);
+    if (lock_ms < NOD_HTTP_LOCK_MIN_MS) {
+        lock_ms = NOD_HTTP_LOCK_MIN_MS;
+    }
+    if (lock_ms > NOD_HTTP_LOCK_MAX_MS) {
+        lock_ms = NOD_HTTP_LOCK_MAX_MS;
     }
     HttpNetGuard net(lock_ms);
     if (!net) {
@@ -385,9 +456,12 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
     }
 
     /* 单次短超时 connect（勿先 probe 再连，翻倍延迟） */
-    int fd = tcp_connect_ms(host.c_str(), port, NOD_HTTP_CONNECT_MS, io_ms);
+    int fd = tcp_connect_ms(host.c_str(), port, connect_ms, io_ms);
     if (fd < 0) {
-        ESP_LOGW(TAG, "TCP %s:%d fail (within %dms)", host.c_str(), port, NOD_HTTP_CONNECT_MS);
+        ESP_LOGW(TAG, "TCP %s:%d fail (within %dms)", host.c_str(), port, connect_ms);
+        if (out_empty_recv) {
+            *out_empty_recv = true;
+        }
         return ESP_FAIL;
     }
 
@@ -431,10 +505,15 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
     if (!send_all(fd, req.data(), req.size())) {
         ESP_LOGW(TAG, "send fail errno=%d", errno);
         close(fd);
+        if (out_empty_recv) {
+            *out_empty_recv = true;
+        }
         return ESP_FAIL;
     }
     /* 服务端限流看的是到达时刻，约等于这一下 send 完成 */
-    invoke_pace.mark_sent();
+    if (pace) {
+        pace->mark_sent();
+    }
 
     /* 收包放 PSRAM。默认 new/vector 扩容失败会走异常桩 abort（片内 DRAM 碎片时常见）。 */
     constexpr size_t kMaxRaw = 96 * 1024;
@@ -496,6 +575,9 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
     if (sscanf(raw, "HTTP/%*s %d", &status) != 1) {
         ESP_LOGW(TAG, "bad status line (recv bytes=%u)", (unsigned)raw_len);
         free(raw_buf);
+        if (out_empty_recv) {
+            *out_empty_recv = true;
+        }
         return ESP_FAIL;
     }
     if (out_status) {
@@ -563,6 +645,71 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
     }
     free(raw_buf);
     return ret;
+}
+
+static esp_err_t http_exchange(const char *method, const char *url, const char *device_key, const char *body,
+                               const char *if_none_match, int *out_status, char *resp, int resp_cap, size_t *out_n,
+                               int io_ms, const char *content_type, const char *x_pass)
+{
+    if (!url || !url[0]) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (io_ms <= 0) {
+        io_ms = NOD_HTTP_IO_MS;
+    }
+
+    /* 语音刚结束时小智会 MQTT TLS 重连；先让路再抢 LAN short-tcp */
+    uint32_t wait_ms = 4000;
+    if ((uint32_t)io_ms > wait_ms) {
+        wait_ms = (uint32_t)io_ms;
+    }
+    if (wait_ms > 10000) {
+        wait_ms = 10000;
+    }
+    (void)nodelio_http_wait_lan_ready(wait_ms);
+
+    SkillInvokePace invoke_pace(url);
+    esp_err_t last = ESP_FAIL;
+    constexpr int kMaxAttempts = 3;
+    for (int attempt = 0; attempt < kMaxAttempts; attempt++) {
+        if (attempt > 0) {
+            ESP_LOGW(TAG, "retry %s %s (%d/%d)", method, url, attempt + 1, kMaxAttempts);
+            vTaskDelay(pdMS_TO_TICKS(400u * (uint32_t)attempt));
+            (void)nodelio_http_wait_lan_ready(2000);
+            if (out_status) {
+                *out_status = 0;
+            }
+            if (resp && resp_cap > 0) {
+                resp[0] = '\0';
+            }
+            if (out_n) {
+                *out_n = 0;
+            }
+        }
+        bool empty = false;
+        /* 仅首发走 pace；重试不再二次 Sleep（服务端已按首次到达限流） */
+        SkillInvokePace *pace = (attempt == 0) ? &invoke_pace : nullptr;
+        last = http_exchange_once(method, url, device_key, body, if_none_match, out_status, resp, resp_cap, out_n,
+                                  io_ms, content_type, x_pass, pace, &empty);
+        /* once 若已 send 会自行 mark；此处兜底释放，避免重试间隔堵住其它 invoke */
+        invoke_pace.mark_sent();
+        if (last == ESP_OK) {
+            return last;
+        }
+        /* 业务 4xx（Envelope 已写入）不重试；锁忙 / 空收 / 连不上才重试 */
+        if (last == ESP_ERR_INVALID_ARG || last == ESP_ERR_NOT_SUPPORTED || last == ESP_ERR_NO_MEM ||
+            last == ESP_ERR_INVALID_SIZE) {
+            break;
+        }
+        if (last == ESP_ERR_INVALID_STATE || empty) {
+            continue;
+        }
+        /* 已有 HTTP 状态码的失败（401/500 等）不再刷 */
+        if (out_status && *out_status > 0) {
+            break;
+        }
+    }
+    return last;
 }
 
 esp_err_t nodelio_http_post_json(const char *url, const char *device_key, const char *body, int *out_status,
@@ -716,6 +863,26 @@ esp_err_t nodelio_http_lan_get_ms(const char *url, const char *x_pass, int *out_
     }
     return http_exchange("GET", url, nullptr, nullptr, nullptr, out_status, resp, resp_cap, nullptr, io_ms, nullptr,
                          x_pass);
+}
+
+esp_err_t nodelio_http_lan_probe_get(const char *url, const char *x_pass, int *out_status, char *resp, int resp_cap)
+{
+    /* DIOL 普查：单次、短 connect；死 IP 勿 2s×3 拖死开机 */
+    constexpr int kConnectMs = 800;
+    constexpr int kIoMs = 1200;
+    if (!url || !url[0]) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    (void)nodelio_http_wait_lan_ready(1500);
+    if (out_status) {
+        *out_status = 0;
+    }
+    if (resp && resp_cap > 0) {
+        resp[0] = '\0';
+    }
+    bool empty = false;
+    return http_exchange_once("GET", url, nullptr, nullptr, nullptr, out_status, resp, resp_cap, nullptr, kIoMs,
+                              nullptr, x_pass, nullptr, &empty, kConnectMs);
 }
 
 esp_err_t nodelio_http_lan_post_form_ms(const char *url, const char *x_pass, const char *form_body, int *out_status,

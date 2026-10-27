@@ -205,6 +205,9 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body_json);
 nl_dev_cache_t *nl_ov_find_dev(const char *device_id);
 /** 本地乐观写缓存（不刷 LVGL）；语音会话中 panel/command 成功后用，免等 MQTT snapshot */
 void nl_ov_apply_bind_state(const nl_bind_t *bind, const char *value);
+/** 兼容保留（乐观路径已不再等 snapshot 对齐）。 */
+void nl_ov_cmd_pending_scan_match(void);
+void nl_ov_cmd_pending_clear_all(void);
 /** channel 为负=设备级；秒小于等于 0 清除；内部确保本地秒表 tick */
 void nl_ov_set_countdown(const char *device_id, int channel_index, int seconds);
 /** 读绑定磁贴当前剩余秒（无则 0） */
@@ -221,6 +224,8 @@ void nl_ov_kb_set_visible(bool on);
 void nl_ov_fill_settings(void);
 void nl_ov_build_apps(void);
 void nl_ov_apps_set_visible(bool on);
+/** 应用列表刷新 FAB：音乐悬浮球出现时左移，避免叠在一起。 */
+void nl_ov_apps_layout_chrome(void);
 /** 有本地缓存则只画列表；无缓存才拉网。 */
 void nl_ov_apps_ensure(void);
 void nl_ov_apps_refresh(void);
@@ -240,6 +245,12 @@ bool nl_ov_apps_open_by_query(const char *query);
 bool nl_ov_apps_invoke_dsh_task(const char *instruction);
 /** 拉 dsh.status；session 非空则直开详情，否则刷新进度列表（workspace 可空） */
 void nl_ov_apps_invoke_dsh_status(const char *workspace, const char *session);
+
+/** 已装清单声明 invoke.transport=outbound_bridge（勿用 app_id 前缀猜）。 */
+bool nl_ov_skill_needs_outbound_bridge(const char *skill_id);
+
+/** 技能 HTTP 不可达时 toast：桥类 →「本地桥未连接」，其它 →「服务器无响应」。 */
+void nl_ov_toast_invoke_unreachable(const char *skill_id);
 
 /* —— ai drawer —— */
 void nl_ov_create_ai_drawer(lv_obj_t *parent);

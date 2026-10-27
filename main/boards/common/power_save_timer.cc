@@ -55,6 +55,14 @@ void PowerSaveTimer::SetEnabled(bool enabled) {
     }
 }
 
+void PowerSaveTimer::SetNetSleepEnabled(bool enabled) {
+    net_sleep_enabled_ = enabled;
+    if (!enabled) {
+        ExitNetSleep();
+    }
+    ESP_LOGI(TAG, "Net sleep %s", enabled ? "enabled" : "disabled");
+}
+
 void PowerSaveTimer::OnEnterSleepMode(std::function<void()> callback) {
     on_enter_sleep_mode_ = callback;
 }
@@ -76,7 +84,7 @@ void PowerSaveTimer::OnExitNetSleep(std::function<void()> callback) {
 }
 
 void PowerSaveTimer::TryEnterNetSleep() {
-    if (!enabled_ || in_net_sleep_ || !on_enter_net_sleep_) {
+    if (!enabled_ || !net_sleep_enabled_ || in_net_sleep_ || !on_enter_net_sleep_) {
         return;
     }
     auto& app = Application::GetInstance();

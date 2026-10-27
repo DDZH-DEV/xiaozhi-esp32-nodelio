@@ -23,6 +23,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { connect, readEndpoint } from '../lib/rpc.mjs';
+import { launchDshDesktop } from '../lib/dsh-launch.mjs';
 import {
   ATTENTION,
   decodeSessionLog,
@@ -665,13 +666,100 @@ function isDshOfflineError(error) {
   return /ECONNREFUSED|ECONNRESET|ENOENT|endpoint not found/i.test(m);
 }
 
-const DSH_OFFLINE_MESSAGE = '电脑 DSH 工作台未启动，桥连不上。请到电脑上打开 DSH Desktop 后再试。';
-const DSH_OFFLINE_SPOKEN = 'DSH 工作台没开，请到电脑上打开后再试。';
+const DSH_OFFLINE_SPOKEN = '电脑 DSH 没开，要帮你打开吗？';
+
+function wantsOpenDesktop(body) {
+  if (!body || typeof body !== 'object') return false;
+  const v = body.open_desktop;
+  return v === true || v === 1 || v === '1' || v === 'true';
+}
 
 function offlineEnvelope(appId) {
-  const env = errorEnvelope(appId, 'dsh_offline', DSH_OFFLINE_MESSAGE, DSH_OFFLINE_SPOKEN);
-  env.error.retryable = true; /* 工作台打开后立即恢复，允许面板重试 */
-  return env;
+  const id = appId || 'dsh.status';
+  return {
+    schema_version: 1,
+    request_id: newRequestId(),
+    app_id: id,
+    status: 'ok',
+    content: [
+      {
+        type: 'list_item',
+        id: 'dsh-offline',
+        title: '电脑 DSH 没开',
+        subtitle: '要在电脑上打开工作台吗？',
+        actions: [
+          {
+            id: 'open',
+            title: '打开',
+            run: 'invoke',
+            invoke: { app_id: 'dsh.status', params: { open_desktop: true } },
+          },
+          {
+            id: 'skip',
+            title: '不用',
+            run: 'invoke',
+            invoke: { app_id: 'dsh.status', params: { dismiss: true } },
+          },
+        ],
+      },
+    ],
+    display: {
+      card_type: 'list',
+      title: 'DSH',
+      preferred_surface: 'card',
+      density: 'comfortable',
+      max_items: 3,
+      ttl_sec: 60,
+    },
+    spoken: speak(DSH_OFFLINE_SPOKEN),
+  };
+}
+
+function openingEnvelope(appId, message, spokenText) {
+  return {
+    schema_version: 1,
+    request_id: newRequestId(),
+    app_id: appId || 'dsh.status',
+    status: 'ok',
+    content: [
+      {
+        type: 'list_item',
+        id: 'dsh-opening',
+        title: '正在打开 DSH',
+        subtitle: String(message || '请稍候再点顶栏刷新').slice(0, 120),
+      },
+    ],
+    display: {
+      card_type: 'list',
+      title: 'DSH',
+      preferred_surface: 'card',
+      density: 'comfortable',
+      max_items: 3,
+      ttl_sec: 30,
+    },
+    spoken: speak(spokenText || '正在打开电脑上的 DSH，请稍候刷新。'),
+  };
+}
+
+/** 墙板点「打开」：拉起 Desktop，就绪则交给调用方继续 RPC。 */
+async function tryOpenDesktop(appId) {
+  const r = await launchDshDesktop({ timeoutMs: 12000 });
+  if (!r.ok) {
+    return {
+      env: errorEnvelope(appId, 'dsh_offline', r.message, r.spoken),
+    };
+  }
+  if (r.waiting) {
+    return { env: openingEnvelope(appId, r.message, r.spoken) };
+  }
+  try {
+    return { client: await connect({ namespace: 'nodelio-market' }) };
+  } catch (e) {
+    if (isDshOfflineError(e)) {
+      return { env: openingEnvelope(appId, r.message, r.spoken) };
+    }
+    throw e;
+  }
 }
 
 function logTask(msg, extra) {
@@ -1987,7 +2075,20 @@ function startLanHttp() {
 
       let client;
       try {
-        client = await connect({ namespace: 'nodelio-market' });
+        let postBody = {};
+        if (request.method === 'POST' && url.pathname.startsWith('/nodelio/dsh/')) {
+          postBody = await readBody(request);
+        }
+        if (wantsOpenDesktop(postBody)) {
+          const opened = await tryOpenDesktop('dsh.status');
+          if (opened.env) {
+            send(response, 200, opened.env);
+            return;
+          }
+          client = opened.client;
+        } else {
+          client = await connect({ namespace: 'nodelio-market' });
+        }
 
         if (route === 'GET /nodelio/dsh/status') {
           const env = await handleStatus(client, url.searchParams, request);
@@ -1996,7 +2097,7 @@ function startLanHttp() {
           );
           send(response, 200, env);
         } else if (route === 'POST /nodelio/dsh/status') {
-          const body = await readBody(request);
+          const body = postBody;
           const env = await handleStatus(client, url.searchParams, request, body);
           const wav = env?.spoken?.audio?.url ? String(env.spoken.audio.url).slice(0, 96) : '';
           console.log(
@@ -2009,7 +2110,7 @@ function startLanHttp() {
         } else if (route === 'GET /nodelio/dsh/catalog') {
           send(response, 200, await listCreateCatalog(client));
         } else if (route === 'POST /nodelio/dsh/task') {
-          const body = await readBody(request);
+          const body = postBody;
           const env = await handleTask(client, body);
           console.log(
             `[dsh.http] POST task → ${env.status}` +
@@ -2019,7 +2120,7 @@ function startLanHttp() {
           );
           send(response, 200, env);
         } else if (route === 'POST /nodelio/dsh/answer') {
-          send(response, 200, await handleAnswer(client, await readBody(request)));
+          send(response, 200, await handleAnswer(client, postBody));
         } else {
           send(response, 404, errorEnvelope('dsh.status', 'internal', `no route: ${route}`, '路径不对。'));
         }

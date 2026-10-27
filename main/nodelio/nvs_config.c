@@ -210,12 +210,7 @@ esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out)
         } else {
             out->xiaozhi_en = 1;
         }
-        v = 0;
-        if (nvs_get_u8(h, "lc_en", &v) == ESP_OK) {
-            out->local_cmd_en = v ? 1 : 0;
-        } else {
-            out->local_cmd_en = 0; /* 缺省不加载 MultiNet */
-        }
+        out->local_cmd_en = 0; /* MultiNet 已移除；忽略旧 NVS lc_en */
         v = 1;
         if (nvs_get_u8(h, "ps_en", &v) == ESP_OK) {
             out->power_save_en = v ? 1 : 0;
@@ -335,14 +330,14 @@ esp_err_t nodelio_xiaozhi_set_enabled(bool on)
 
 bool nodelio_local_cmd_enabled(void)
 {
-    if (!s_ram_ok) {
-        return false;
-    }
-    return s_ram.local_cmd_en != 0;
+    /* MultiNet 已从固件拿掉：始终关闭，忽略 NVS 旧值。 */
+    (void)s_ram_ok;
+    return false;
 }
 
 esp_err_t nodelio_local_cmd_set_enabled(bool on)
 {
+    (void)on;
     nodelio_nvs_config_t cfg;
     if (s_ram_ok) {
         cfg = s_ram;
@@ -352,7 +347,10 @@ esp_err_t nodelio_local_cmd_set_enabled(bool on)
             return err;
         }
     }
-    cfg.local_cmd_en = on ? 1 : 0;
+    if (cfg.local_cmd_en == 0) {
+        return ESP_OK;
+    }
+    cfg.local_cmd_en = 0;
     ram_put(&cfg);
     return nodelio_nvs_save(&cfg);
 }

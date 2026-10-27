@@ -16,6 +16,12 @@ esp_err_t nodelio_panel_ui_start(const nodelio_nvs_config_t *cfg);
 /** 用 layout 重建首页控件；须在 LVGL 锁内或由本函数加锁. */
 esp_err_t nodelio_panel_ui_apply_layout(const nodelio_panel_layout_t *layout);
 
+/** overlay 开机已 fill_home 后标记，避免 start_poll/同版本 apply 再 lv_obj_clean 闪屏. */
+void nodelio_panel_ui_mark_home_filled(int layout_version);
+
+/** 当前首页已渲染的 layout 版本；未渲染过为 -1. */
+int nodelio_panel_ui_home_filled_version(void);
+
 /** 在 HTTP/cJSON 之前占住界面布局缓冲（约 660KB）。已分配则直接成功。 */
 esp_err_t nodelio_panel_ui_reserve_layout(void);
 
@@ -147,6 +153,15 @@ void nodelio_panel_ui_snapshot_set_lan(const char *device_id, const char *ip, bo
 void nodelio_panel_ui_snapshot_add_channel(const char *device_id, int channel_index, const char *ch_name,
                                            const char *state);
 void nodelio_panel_ui_snapshot_end(void);
+
+/** 开机无云 snapshot 时恢复上次局域网 IP（DIOL）；overlay 启动时调一次。 */
+void nodelio_panel_ui_lan_cache_load(void);
+
+/**
+ * 丢到 Application 主任务跑（片内栈）。
+ * PSRAM 栈任务禁止直接 nvs/flash；layout_sync 等须经此再落盘。
+ */
+void nodelio_run_on_app_task(void (*fn)(void *), void *arg);
 
 void nodelio_panel_ui_set_lan_online(const char *device_id, bool online, const char *power_state);
 void nodelio_panel_ui_set_lan_pass_required(const char *device_id, bool need);

@@ -28,6 +28,8 @@ const DEFAULTS = {
   default_reasoning: 'on',
   default_permission: 'danger-full-access',
   default_agent_preset: 'standard',
+  /* 墙板点「打开」时 spawn 的 DSH Desktop；空则按常见安装路径 / 开始菜单探测 */
+  dsh_desktop_exe: '',
 };
 
 /** @type {typeof DEFAULTS} */
@@ -73,6 +75,7 @@ function fromEnv() {
     default_reasoning: (process.env.DSH_DEFAULT_REASONING ?? DEFAULTS.default_reasoning).trim(),
     default_permission: (process.env.DSH_DEFAULT_PERMISSION ?? DEFAULTS.default_permission).trim(),
     default_agent_preset: (process.env.DSH_DEFAULT_AGENT_PRESET ?? DEFAULTS.default_agent_preset).trim(),
+    dsh_desktop_exe: (process.env.DSH_DESKTOP_EXE ?? '').trim(),
   };
   /* 仅当环境变量显式设置时覆盖 watch；未设则交 sanitize 按凭证默认 */
   if (process.env.DSH_BRIDGE_WATCH !== undefined && process.env.DSH_BRIDGE_WATCH !== '') {
@@ -170,6 +173,7 @@ function sanitize(raw) {
       String(o.default_permission || DEFAULTS.default_permission).trim() || 'danger-full-access',
     default_agent_preset:
       String(o.default_agent_preset || DEFAULTS.default_agent_preset).trim() || 'standard',
+    dsh_desktop_exe: String(o.dsh_desktop_exe || '').trim(),
   };
 }
 

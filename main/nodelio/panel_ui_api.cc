@@ -41,6 +41,7 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #include <freertos/queue.h>
 #include <freertos/task.h>
 #include <lvgl.h>
+#include <nvs.h>
 #include <time.h>
 
 #include <cstdint>
@@ -84,6 +85,18 @@ extern "C" esp_err_t nodelio_panel_ui_reserve_layout(void)
     return alloc_layout_buf();
 }
 
+static int s_home_filled_version = -1;
+
+extern "C" void nodelio_panel_ui_mark_home_filled(int layout_version)
+{
+    s_home_filled_version = layout_version;
+}
+
+extern "C" int nodelio_panel_ui_home_filled_version(void)
+{
+    return s_home_filled_version;
+}
+
 extern "C" esp_err_t nodelio_panel_ui_apply_layout(const nodelio_panel_layout_t *layout)
 {
     if (!layout) {
@@ -102,9 +115,21 @@ extern "C" esp_err_t nodelio_panel_ui_apply_layout(const nodelio_panel_layout_t 
     s_cloud_ok = true; /* 拉到 layout 说明 NodeLio 服务可达 */
     nodelio_offline_cmd_rebuild_from_layout(s_layout);
     if (s_ready && s_home) {
+        /* 同版本已画过：禁止再 lv_obj_clean（开机二次灌缓存会闪几下） */
+        if (s_home_filled_version == layout->layout_version && layout->layout_version > 0) {
+            ESP_LOGI(TAG, "layout v%d already on home — skip rebuild", layout->layout_version);
+            DisplayLockGuard lock(nl_ov_disp());
+            if (lock) {
+                char msg[20];
+                std::snprintf(msg, sizeof(msg), "v%d", layout->layout_version);
+                nl_ov_refresh_status_icons(s_wifi_ok, true, msg);
+            }
+            return ESP_OK;
+        }
         DisplayLockGuard lock(nl_ov_disp());
         if (lock) {
             nl_ov_fill_home();
+            s_home_filled_version = layout->layout_version;
             char msg[20];
             std::snprintf(msg, sizeof(msg), "v%d", layout->layout_version);
             nl_ov_refresh_status_icons(s_wifi_ok, true, msg);
@@ -365,6 +390,9 @@ extern "C" const nodelio_panel_layout_t *nodelio_panel_ui_get_layout(void)
     return s_have_layout ? s_layout : nullptr;
 }
 
+/** 已收到过至少一次 snapshot；之前未登记设备按离线画，避免亮→暗集体闪。 */
+static bool s_have_device_snapshot = false;
+
 extern "C" bool nodelio_panel_ui_device_online(const char *device_id)
 {
     if (!device_id || !device_id[0]) {
@@ -372,7 +400,8 @@ extern "C" bool nodelio_panel_ui_device_online(const char *device_id)
     }
     nl_dev_cache_t *d = nl_ov_find_dev(device_id);
     if (!d) {
-        return true; /* snapshot 未列 → 不拦 */
+        /* snapshot 前未登记 → 离线（暗）；snapshot 后未列 → 不拦（兼容旧逻辑） */
+        return s_have_device_snapshot;
     }
     return d->online;
 }
@@ -637,6 +666,14 @@ extern "C" bool nodelio_panel_ui_open_app(const char *name_or_id)
     }
     ESP_LOGI(TAG, "open_app stripped='%s'", q);
     Application::GetInstance().Schedule([q]() {
+        /* 点图标/语音开应用：若仍 Listening，先退会话，否则电台列表有、点台无声/假死 */
+        {
+            auto st = Application::GetInstance().GetDeviceState();
+            if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
+                st == kDeviceStateConnecting) {
+                Application::GetInstance().EndVoiceSessionAfterLocalSkill();
+            }
+        }
         if (!nodelio_overlay_visible()) {
             if (nl_ov_ai_session_active()) {
                 nodelio_overlay_show_chat();
@@ -919,8 +956,34 @@ extern "C" int nodelio_panel_ui_dsh_try_confirm_send(const char *stt)
     return 0;
 }
 
+/* 局域网设备：云端 online 恒 false / 通道 stub OFF，跨 snapshot 保留上次探测结果防闪烁 */
+static nl_dev_cache_t s_lan_sticky[NL_DEV_CACHE_MAX];
+static int s_lan_sticky_n = 0;
+
+static const nl_dev_cache_t *lan_sticky_find(const char *device_id)
+{
+    if (!device_id || !device_id[0]) {
+        return nullptr;
+    }
+    for (int i = 0; i < s_lan_sticky_n; i++) {
+        if (strcmp(s_lan_sticky[i].id, device_id) == 0) {
+            return &s_lan_sticky[i];
+        }
+    }
+    return nullptr;
+}
+
 extern "C" void nodelio_panel_ui_snapshot_begin(void)
 {
+    s_lan_sticky_n = 0;
+    if (s_devs) {
+        for (int i = 0; i < s_dev_n && s_lan_sticky_n < NL_DEV_CACHE_MAX; i++) {
+            if (!s_devs[i].lan_control || !s_devs[i].id[0]) {
+                continue;
+            }
+            s_lan_sticky[s_lan_sticky_n++] = s_devs[i];
+        }
+    }
     s_dev_n = 0;
 }
 
@@ -956,6 +1019,27 @@ extern "C" void nodelio_panel_ui_snapshot_set_lan(const char *device_id, const c
         std::snprintf(d->ip, sizeof(d->ip), "%s", ip);
     } else {
         d->ip[0] = '\0';
+    }
+    if (!lan_control) {
+        return;
+    }
+    /* 忽略云端 online=false / stub 通道：恢复上次探测态；首次见则乐观在线等探测 */
+    const nl_dev_cache_t *prev = lan_sticky_find(device_id);
+    if (prev) {
+        d->online = prev->online;
+        if (prev->power[0]) {
+            std::snprintf(d->power, sizeof(d->power), "%s", prev->power);
+        }
+        d->ch_n = prev->ch_n;
+        std::memcpy(d->ch_idx, prev->ch_idx, sizeof(d->ch_idx));
+        std::memcpy(d->ch_name, prev->ch_name, sizeof(d->ch_name));
+        std::memcpy(d->ch_st, prev->ch_st, sizeof(d->ch_st));
+        std::memcpy(d->ch_cd, prev->ch_cd, sizeof(d->ch_cd));
+        d->countdown = prev->countdown;
+    } else {
+        d->online = true;
+        d->ch_n = 0;
+        d->power[0] = '\0';
     }
 }
 
@@ -1049,8 +1133,134 @@ extern "C" void nodelio_panel_ui_set_countdown(const char *device_id, int channe
     nl_ov_refresh_home_tiles();
 }
 
+#define LAN_NVS_NS "nodelio"
+#define LAN_NVS_KEY "lan_devs"
+#define LAN_PACK_MAX 8
+
+typedef struct {
+    char id[NL_LAYOUT_STR];
+    char ip[48];
+    uint8_t pass_required;
+} nl_lan_pack_t;
+
+typedef struct {
+    uint8_t n;
+    nl_lan_pack_t items[LAN_PACK_MAX];
+} nl_lan_blob_t;
+
+extern "C" void nodelio_run_on_app_task(void (*fn)(void *), void *arg)
+{
+    if (!fn) {
+        return;
+    }
+    Application::GetInstance().Schedule([fn, arg]() { fn(arg); });
+}
+
+static void lan_cache_save_flash(void *arg)
+{
+    nl_lan_blob_t *blob = static_cast<nl_lan_blob_t *>(arg);
+    if (!blob) {
+        return;
+    }
+    nvs_handle_t h;
+    if (nvs_open(LAN_NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        heap_caps_free(blob);
+        return;
+    }
+    esp_err_t err = nvs_set_blob(h, LAN_NVS_KEY, blob, sizeof(*blob));
+    if (err == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
+        (void)nvs_erase_key(h, LAN_NVS_KEY);
+        err = nvs_set_blob(h, LAN_NVS_KEY, blob, sizeof(*blob));
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "lan cache saved n=%d", blob->n);
+    } else {
+        ESP_LOGW(TAG, "lan cache save: %s", esp_err_to_name(err));
+    }
+    heap_caps_free(blob);
+}
+
+static void lan_cache_save(void)
+{
+    /* layout_sync 在 PSRAM 栈：禁止本任务写 NVS（会 assert cache_disabled） */
+    nl_ov_ensure_devs_cache();
+    if (!s_devs) {
+        return;
+    }
+    nl_lan_blob_t *blob = static_cast<nl_lan_blob_t *>(
+        heap_caps_calloc(1, sizeof(*blob), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!blob) {
+        blob = static_cast<nl_lan_blob_t *>(calloc(1, sizeof(*blob)));
+    }
+    if (!blob) {
+        return;
+    }
+    for (int i = 0; i < s_dev_n && blob->n < LAN_PACK_MAX; i++) {
+        if (!s_devs[i].lan_control || !s_devs[i].id[0] || !s_devs[i].ip[0]) {
+            continue;
+        }
+        nl_lan_pack_t *p = &blob->items[blob->n++];
+        std::snprintf(p->id, sizeof(p->id), "%s", s_devs[i].id);
+        std::snprintf(p->ip, sizeof(p->ip), "%s", s_devs[i].ip);
+        p->pass_required = s_devs[i].pass_required ? 1 : 0;
+    }
+    if (blob->n == 0) {
+        heap_caps_free(blob);
+        return;
+    }
+    nodelio_run_on_app_task(lan_cache_save_flash, blob);
+}
+
+extern "C" void nodelio_panel_ui_lan_cache_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(LAN_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        return;
+    }
+    nl_lan_blob_t blob;
+    size_t len = sizeof(blob);
+    esp_err_t err = nvs_get_blob(h, LAN_NVS_KEY, &blob, &len);
+    nvs_close(h);
+    if (err != ESP_OK || blob.n == 0) {
+        return;
+    }
+    if (blob.n > LAN_PACK_MAX) {
+        blob.n = LAN_PACK_MAX;
+    }
+    nl_ov_ensure_devs_cache();
+    if (!s_devs) {
+        return;
+    }
+    for (int i = 0; i < blob.n; i++) {
+        const nl_lan_pack_t *p = &blob.items[i];
+        if (!p->id[0] || !p->ip[0]) {
+            continue;
+        }
+        nl_dev_cache_t *d = nl_ov_find_dev(p->id);
+        if (!d) {
+            if (s_dev_n >= NL_DEV_CACHE_MAX) {
+                continue;
+            }
+            d = &s_devs[s_dev_n++];
+            std::memset(d, 0, sizeof(*d));
+            std::snprintf(d->id, sizeof(d->id), "%s", p->id);
+        }
+        std::snprintf(d->ip, sizeof(d->ip), "%s", p->ip);
+        d->lan_control = true;
+        d->pass_required = p->pass_required != 0;
+        d->online = true;
+    }
+    ESP_LOGI(TAG, "lan cache loaded n=%d devs=%d", blob.n, s_dev_n);
+}
+
 extern "C" void nodelio_panel_ui_snapshot_end(void)
 {
+    lan_cache_save();
+    s_have_device_snapshot = true;
     if (!s_home) {
         return;
     }

@@ -9,8 +9,24 @@
 extern "C" {
 #endif
 
-/** snapshot 里 lanControl 设备：同网探测 /api/state，写回缓存并刷磁贴。 */
+/**
+ * snapshot 里 lanControl 设备：后台异步同网探测 /api/state。
+ * 调用前 UI 已用 sticky/lan cache；不阻塞 layout；死 IP 短超时+长退避。
+ */
 void nodelio_diol_probe_all_from_cache(void);
+
+/**
+ * 开机安静期：hold=true 时探测任务空转（可排队，不发 HTTP）。
+ * 小智 TLS MQTT 握手与 DIOL 短 TCP 并行会砸坏 PSRAM 堆（tlsf assert）。
+ * 默认 hold；云 MQTT 起来后再 nodelio_diol_boot_quiet_end()。
+ */
+void nodelio_diol_set_probe_hold(bool hold);
+
+/** 停在途探测并 hold；timeout 内等 running 结束。 */
+void nodelio_diol_wait_idle(uint32_t timeout_ms);
+
+/** 解除 hold 并若已有排队则立刻探一轮。 */
+void nodelio_diol_boot_quiet_end(void);
 
 /**
  * 若 bind 目标为局域网 DIOL：直连 HTTP 控通道，成功则乐观刷态。

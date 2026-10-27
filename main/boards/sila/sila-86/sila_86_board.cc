@@ -134,8 +134,9 @@ private:
         power_save_timer_->SetSecondsToNetSleep(wifi_s);
         power_save_timer_->OnEnterNetSleep([]() { nodelio_panel_ui_notify_net(false); });
         power_save_timer_->OnExitNetSleep([]() { nodelio_panel_ui_notify_net(true); });
-        /* NVS 可能尚未 load：缺省开；load 后 overlay/bridge 再 SetPowerSaveEnabled */
-        power_save_timer_->SetEnabled(nodelio_power_save_enabled());
+        /* 息屏计时始终开；「允许省电」只控断网（load 后再 SetPowerSaveEnabled） */
+        power_save_timer_->SetEnabled(true);
+        power_save_timer_->SetNetSleepEnabled(nodelio_power_save_enabled());
 #else
         power_save_timer_->SetEnabled(true);
 #endif
@@ -331,12 +332,14 @@ private:
 
 public:
     Sila86Board() : boot_button_(BOOT_BUTTON_GPIO) {
+        /* 先钉灭背光再点屏：否则 ST7701 垃圾帧 + 浮空 BL 会闪一下。 */
+        GetBacklight()->PreloadSavedBrightness();
         InitializePowerSaveTimer();
         InitializeI2c();
         InitializeRGB();
         InitializeTouch();
         /* 无物理 BOOT 键（GPIO0=RGB DB0）；配网：无 WiFi/未绑定→SoftAP，或语音「进入配网」 */
-        GetBacklight()->RestoreBrightness();
+        /* 亮度等 overlay 首帧 lv_refr_now 后再 RestoreBrightness */
     }
 
     virtual AudioCodec* GetAudioCodec() override {
@@ -441,20 +444,22 @@ public:
     }
 
     virtual void SetPowerSaveEnabled(bool enabled) override {
-        if (power_save_timer_) {
-            power_save_timer_->SetEnabled(enabled);
+        if (!power_save_timer_) {
+            return;
         }
+#if CONFIG_NODELIO_PANEL
+        /* 「允许省电」= 允许空闲断网；息屏仍走 idle_sleep / goodbye */
+        power_save_timer_->SetEnabled(true);
+        power_save_timer_->SetNetSleepEnabled(enabled);
+#else
+        power_save_timer_->SetEnabled(enabled);
+#endif
     }
 
     virtual void RequestGoodbyeSleep() override {
         if (!power_save_timer_) {
             return;
         }
-#if CONFIG_NODELIO_PANEL
-        if (!nodelio_power_save_enabled()) {
-            return;
-        }
-#endif
         /* 已息屏（关网关通道）不算「退下」，勿再排 15s 唤醒竞态 */
         if (power_save_timer_->IsInSleepMode()) {
             return;

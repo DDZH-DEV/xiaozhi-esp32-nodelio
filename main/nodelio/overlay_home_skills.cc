@@ -76,6 +76,12 @@ void nl_ov_home_skills_invalidate(void)
 
 static const char *skill_icon(const char *id)
 {
+    if (!id || !id[0]) {
+        return MATERIAL_SYMBOLS_EXPLORE;
+    }
+    if (strstr(id, "radio.stations") != NULL || strstr(id, "podcast.latest") != NULL) {
+        return MATERIAL_SYMBOLS_VOLUME_UP;
+    }
     if (nodelio_skill_id_is_music(id)) {
         return MATERIAL_SYMBOLS_MUSIC_NOTE;
     }
@@ -147,6 +153,13 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
     if (xTaskCreateWithCaps(
             [](void *p) {
                 auto *a = static_cast<invoke_arg *>(p);
+                Application::GetInstance().Schedule([]() {
+                    auto st = Application::GetInstance().GetDeviceState();
+                    if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
+                        st == kDeviceStateConnecting) {
+                        Application::GetInstance().EndVoiceSessionAfterLocalSkill();
+                    }
+                });
                 const bool music_app = nodelio_skill_id_is_music(a->id);
                 if (!music_app && nodelio_media_preempt_for_heavy_app()) {
                     nodelio_panel_ui_toast_defer("已停止音乐以打开应用");
@@ -167,6 +180,7 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
                 } else {
                     resp[0] = '\0';
                     int status = 0;
+                    /* nl_http 内已 voice-grace + 空收重试；此处只发一枪 */
                     esp_err_t err = nodelio_http_post_json_ms(url, a->cfg.device_key, a->body, &status, resp,
                                                               cap - 1, 10000);
                     if (err == ESP_OK && resp[0] &&
@@ -184,7 +198,7 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
                             nodelio_panel_ui_announce_spoken(spoken);
                         }
                     } else if (err != ESP_OK || status == 0 || !resp[0]) {
-                        nodelio_panel_ui_toast_defer("服务器无响应");
+                        nl_ov_toast_invoke_unreachable(a->id);
                     } else {
                         nodelio_panel_ui_toast_defer("打开失败");
                     }
@@ -316,6 +330,8 @@ void nl_ov_skill_widget_prefetch(const char *skill_id, const char *body, int ref
                     resp[0] = '\0';
                     int status = 0;
                     esp_err_t err = ESP_FAIL;
+                    /* 先等语音/MQTT 空窗，再进串行队列，避免占着 widget 锁空等 grace */
+                    (void)nodelio_http_wait_lan_ready(6000);
                     /* 串行：后一个组件等前一个结束再发，避开 400ms 限流。
                      * 429 / 连不上 / 读超时（status 仍为 0）再试，间隔拉开。 */
                     const bool locked = s_widget_http_mu &&
@@ -326,18 +342,21 @@ void nl_ov_skill_widget_prefetch(const char *skill_id, const char *body, int ref
                             vTaskDelay(pdMS_TO_TICKS((wait_us + 999) / 1000));
                         }
                     }
-                    for (int attempt = 0; attempt < 4; attempt++) {
+                    for (int attempt = 0; attempt < 3; attempt++) {
+                        if (attempt > 0) {
+                            vTaskDelay(pdMS_TO_TICKS(600 * attempt));
+                        }
                         resp[0] = '\0';
                         status = 0;
                         err = nodelio_http_post_json_ms(url, a->cfg.device_key, a->body, &status, resp, cap - 1,
                                                         8000);
-                        if (status != 429 && status != 0) {
+                        /* 429 再试；空收/锁忙已由 nl_http 消化，仍失败则隔开换下一组件 */
+                        if (err == ESP_OK && status != 429 && status != 0) {
                             break;
                         }
-                        if (attempt + 1 >= 4) {
+                        if (status > 0 && status != 429) {
                             break;
                         }
-                        vTaskDelay(pdMS_TO_TICKS(500 * (attempt + 1)));
                     }
                     if (locked) {
                         s_widget_invoke_done_us = esp_timer_get_time();
@@ -547,7 +566,15 @@ static void apply_pins_and_refill(nl_home_skill *items, int n)
             free(items);
             return;
         }
-        s_pin_n = n > HOME_SKILL_MAX ? HOME_SKILL_MAX : n;
+        const int nn = n > HOME_SKILL_MAX ? HOME_SKILL_MAX : n;
+        const bool same = (nn == s_pin_n) &&
+                          (nn == 0 || (items && memcmp(s_pins, items, sizeof(nl_home_skill) * (size_t)nn) == 0));
+        if (same) {
+            free(items);
+            ESP_LOGI(TAG, "pins unchanged n=%d — skip home refill", nn);
+            return;
+        }
+        s_pin_n = nn;
         if (s_pin_n > 0 && items) {
             memcpy(s_pins, items, sizeof(nl_home_skill) * (size_t)s_pin_n);
         } else {
@@ -659,7 +686,8 @@ void nl_ov_home_skills_ensure_fetched(void)
                     finish(true);
                     return;
                 }
-                esp_err_t err = nodelio_http_get(url, cfg->device_key, nullptr, &status, buf, kListBuf - 1);
+                esp_err_t err =
+                    nodelio_http_get_ms(url, cfg->device_key, nullptr, &status, buf, kListBuf - 1, 8000);
                 if (err != ESP_OK || (status != 200 && status != 201)) {
                     ESP_LOGW(TAG, "fetch pins status=%d err=%d", status, err);
                     free(buf);

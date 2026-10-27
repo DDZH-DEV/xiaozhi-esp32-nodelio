@@ -7,6 +7,7 @@
 #include "nodelio_bridge.h"
 #include "nodelio_http.h"
 #include "panel_ui.h"
+#include "register.h"
 #include "wifi_provision.h"
 
 #include <cJSON.h>
@@ -39,6 +40,8 @@ static int64_t s_last_snapshot_ms; /* MQTT 自动 snapshot 限频 */
 
 /** MQTT 推送 snapshot（非 force）最短间隔；手动刷新 / force 不受限 */
 #define NL_SNAPSHOT_MIN_INTERVAL_MS (60 * 1000)
+/* force（online/status）也合并：多设备连跳时避免每秒全量 GET + DIOL 探测 */
+#define NL_SNAPSHOT_FORCE_MIN_MS (8 * 1000)
 
 /** cJSON 节点默认吃内部 DRAM；与 WS/MQTT 并行时易 tlsf assert → 改走 PSRAM. */
 static void *cjson_malloc_psram(size_t sz)
@@ -528,7 +531,7 @@ esp_err_t nodelio_layout_fetch(const nodelio_nvs_config_t *cfg, int known_versio
     }
     int status = 0;
     esp_err_t err =
-        nodelio_http_get(url, cfg->device_key, etag[0] ? etag : NULL, &status, body, cap);
+        nodelio_http_get_ms(url, cfg->device_key, etag[0] ? etag : NULL, &status, body, cap, 8000);
 
     if (err != ESP_OK && status != 304) {
         ESP_LOGW(TAG, "GET layout failed: %s http=%d", esp_err_to_name(err), status);
@@ -557,8 +560,9 @@ esp_err_t nodelio_layout_fetch(const nodelio_nvs_config_t *cfg, int known_versio
     return err;
 }
 
-esp_err_t nodelio_panel_command(const nodelio_nvs_config_t *cfg, const char *widget_id, const char *action,
-                                const nl_bind_t *bind, const char *value_str, int *http_status)
+esp_err_t nodelio_panel_command_ex(const nodelio_nvs_config_t *cfg, const char *widget_id, const char *action,
+                                   const nl_bind_t *bind, const char *value_str, int *http_status,
+                                   bool apply_optimistic)
 {
     if (!cfg || !bind) {
         return ESP_ERR_INVALID_STATE;
@@ -573,7 +577,7 @@ esp_err_t nodelio_panel_command(const nodelio_nvs_config_t *cfg, const char *wid
         value_str = "";
     }
 
-    /* DIOL：同网 HTTP，不经 SERVER */
+    /* DIOL：同网 HTTP，不经 SERVER（设备直回应即真态，始终落缓存） */
     {
         esp_err_t diol = nodelio_diol_try_command(bind, value_str, http_status);
         if (diol != ESP_ERR_NOT_FOUND) {
@@ -642,16 +646,24 @@ esp_err_t nodelio_panel_command(const nodelio_nvs_config_t *cfg, const char *wid
         ESP_LOGW(TAG, "POST command failed: %s http=%d", esp_err_to_name(err), status);
         return err;
     }
-    ESP_LOGI(TAG, "command widget=%s → HTTP %d", widget_id, status);
+    ESP_LOGI(TAG, "command widget=%s → HTTP %d opt=%d", widget_id, status, apply_optimistic ? 1 : 0);
     if (status == 200) {
-        /* 语音会话期 snapshot 让路；命令成功后立刻乐观刷首页，避免「已开关页面不变」 */
-        nodelio_panel_ui_apply_bind_state(bind, value_str);
+        /* 语音/MCP：乐观刷态；首页触摸点按前已写缓存，此处 opt=false 免二次写 */
+        if (apply_optimistic) {
+            nodelio_panel_ui_apply_bind_state(bind, value_str);
+        }
         return ESP_OK;
     }
     if (status == 503) {
         return ESP_ERR_INVALID_STATE; /* offline — UI 回滚 */
     }
     return ESP_FAIL;
+}
+
+esp_err_t nodelio_panel_command(const nodelio_nvs_config_t *cfg, const char *widget_id, const char *action,
+                                const nl_bind_t *bind, const char *value_str, int *http_status)
+{
+    return nodelio_panel_command_ex(cfg, widget_id, action, bind, value_str, http_status, true);
 }
 
 /** 应用 snapshot.devices[]（或根级 devices[]）；返回设备条数. */
@@ -677,12 +689,15 @@ static int snapshot_apply_devices(const cJSON *devices)
                 online_n++;
             }
             nodelio_panel_ui_snapshot_add(id_s, name_s, online, power);
+            bool is_lan = false;
             {
                 const cJSON *lan = cJSON_GetObjectItemCaseSensitive(d, "lanControl");
                 const cJSON *ip = cJSON_GetObjectItemCaseSensitive(d, "ipAddress");
                 const cJSON *hp = cJSON_GetObjectItemCaseSensitive(d, "hasPass");
                 if (cJSON_IsTrue(lan)) {
+                    is_lan = true;
                     const char *ip_s = cJSON_IsString(ip) ? ip->valuestring : "";
+                    /* 恢复 sticky online/通道；忽略云端 false 与 stub OFF */
                     nodelio_panel_ui_snapshot_set_lan(id_s, ip_s, true, cJSON_IsTrue(hp));
                 }
             }
@@ -692,32 +707,35 @@ static int snapshot_apply_devices(const cJSON *devices)
                     nodelio_panel_ui_note_countdown(id_s, -1, (int)cd->valuedouble);
                 }
             }
-            const cJSON *chs = cJSON_GetObjectItemCaseSensitive(d, "channels");
-            if (cJSON_IsArray(chs)) {
-                const cJSON *ch;
-                cJSON_ArrayForEach(ch, chs)
-                {
-                    const cJSON *ix = cJSON_GetObjectItemCaseSensitive(ch, "index");
-                    const cJSON *cn = cJSON_GetObjectItemCaseSensitive(ch, "name");
-                    const cJSON *st = cJSON_GetObjectItemCaseSensitive(ch, "state");
-                    const cJSON *ccd = cJSON_GetObjectItemCaseSensitive(ch, "countdown");
-                    if (!cJSON_IsNumber(ix) || !cJSON_IsString(st)) {
-                        continue;
-                    }
-                    int ch_idx = (int)ix->valuedouble;
-                    const char *ch_name_s = cJSON_IsString(cn) ? cn->valuestring : "";
-                    nodelio_panel_ui_snapshot_add_channel(id_s, ch_idx, ch_name_s, st->valuestring);
-                    if (cJSON_IsNumber(ccd) && ccd->valuedouble > 0) {
-                        nodelio_panel_ui_note_countdown(id_s, ch_idx, (int)ccd->valuedouble);
+            /* 局域网通道态只信同网探测，勿用云端 stub OFF 覆盖 sticky */
+            if (!is_lan) {
+                const cJSON *chs = cJSON_GetObjectItemCaseSensitive(d, "channels");
+                if (cJSON_IsArray(chs)) {
+                    const cJSON *ch;
+                    cJSON_ArrayForEach(ch, chs)
+                    {
+                        const cJSON *ix = cJSON_GetObjectItemCaseSensitive(ch, "index");
+                        const cJSON *cn = cJSON_GetObjectItemCaseSensitive(ch, "name");
+                        const cJSON *st = cJSON_GetObjectItemCaseSensitive(ch, "state");
+                        const cJSON *ccd = cJSON_GetObjectItemCaseSensitive(ch, "countdown");
+                        if (!cJSON_IsNumber(ix) || !cJSON_IsString(st)) {
+                            continue;
+                        }
+                        int ch_idx = (int)ix->valuedouble;
+                        const char *ch_name_s = cJSON_IsString(cn) ? cn->valuestring : "";
+                        nodelio_panel_ui_snapshot_add_channel(id_s, ch_idx, ch_name_s, st->valuestring);
+                        if (cJSON_IsNumber(ccd) && ccd->valuedouble > 0) {
+                            nodelio_panel_ui_note_countdown(id_s, ch_idx, (int)ccd->valuedouble);
+                        }
                     }
                 }
             }
         }
     }
+    /* 先刷 sticky（局域网不闪离线）；DIOL 探测丢后台，勿串行堵 bootstrap */
     nodelio_panel_ui_snapshot_end();
-    /* DIOL：snapshot 后同网探测覆盖 online/通道态 */
     nodelio_diol_probe_all_from_cache();
-    ESP_LOGI(TAG, "snapshot devices=%d online=%d", n, online_n);
+    ESP_LOGI(TAG, "snapshot devices=%d online=%d (diol probe async)", n, online_n);
     return n;
 }
 
@@ -793,7 +811,8 @@ esp_err_t nodelio_snapshot_fetch(const nodelio_nvs_config_t *cfg)
     }
     body[0] = '\0';
     int status = 0;
-    esp_err_t err = nodelio_http_get(url, cfg->device_key, NULL, &status, body, cap);
+    /* 略加长 IO：与技能 invoke 争锁时默认 2.5s 易空收 */
+    esp_err_t err = nodelio_http_get_ms(url, cfg->device_key, NULL, &status, body, cap, 6000);
 
     if (err != ESP_OK || status != 200) {
         ESP_LOGW(TAG, "GET snapshot fail err=%s http=%d", esp_err_to_name(err), status);
@@ -848,7 +867,7 @@ esp_err_t nodelio_bootstrap_fetch(const nodelio_nvs_config_t *cfg, int known_ver
     }
     body[0] = '\0';
     int status = 0;
-    esp_err_t err = nodelio_http_get(url, cfg->device_key, NULL, &status, body, cap);
+    esp_err_t err = nodelio_http_get_ms(url, cfg->device_key, NULL, &status, body, cap, 12000);
     if (status == 404) {
         free(body);
         return ESP_ERR_NOT_FOUND;
@@ -919,19 +938,19 @@ static int layout_wait_kick(void)
 
 static esp_err_t snapshot_fetch_limited(bool force)
 {
-    if (!force) {
-        int64_t now_ms = esp_timer_get_time() / 1000;
-        if (s_last_snapshot_ms > 0 &&
-            (now_ms - s_last_snapshot_ms) < (int64_t)NL_SNAPSHOT_MIN_INTERVAL_MS) {
-            ESP_LOGD(TAG, "snapshot rate-limit skip (%lldms)",
-                     (long long)(now_ms - s_last_snapshot_ms));
-            return ESP_OK;
-        }
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    const int64_t min_ms =
+        force ? (int64_t)NL_SNAPSHOT_FORCE_MIN_MS : (int64_t)NL_SNAPSHOT_MIN_INTERVAL_MS;
+    if (s_last_snapshot_ms > 0 && (now_ms - s_last_snapshot_ms) < min_ms) {
+        ESP_LOGD(TAG, "snapshot rate-limit skip force=%d age=%lldms", force ? 1 : 0,
+                 (long long)(now_ms - s_last_snapshot_ms));
+        return ESP_OK;
     }
     esp_err_t err = nodelio_snapshot_fetch(&s_cfg);
     if (err == ESP_OK) {
         s_last_snapshot_ms = esp_timer_get_time() / 1000;
         s_boot_cloud_done = true;
+        nodelio_presence_note_touch(); /* 服务端 snapshot 已刷 last_seen */
     }
     return err;
 }
@@ -998,6 +1017,7 @@ static void layout_do_sync(nodelio_panel_layout_t *layout, bool toast_result)
         }
         s_last_snapshot_ms = esp_timer_get_time() / 1000;
         s_boot_cloud_done = true;
+        nodelio_presence_note_touch();
         return;
     }
     if (err != ESP_ERR_NOT_FOUND) {
@@ -1041,6 +1061,8 @@ static void layout_boot_cloud_once(void)
     if (!nodelio_wifi_is_connected() || !s_cfg.device_id[0] || !s_cfg.device_key[0]) {
         return;
     }
+    /* 开机常与小智云 MQTT 并行；先让射频，再 bootstrap */
+    (void)nodelio_http_wait_lan_ready(5000);
     layout_lock();
     nodelio_panel_layout_t *layout = layout_scratch();
     if (!layout) {
@@ -1061,10 +1083,11 @@ static void layout_sync_task(void *arg)
     (void)arg;
     while (true) {
         int kick = layout_wait_kick();
-        /* 语音会话让路：等空闲再拉，避免 HTTP 抢 UDP 造成断续 */
+        /* 语音会话让路：等空闲再拉，避免 HTTP 抢 UDP 造成断续；再等 MQTT TLS 空窗 */
         while (nodelio_voice_session_active()) {
             vTaskDelay(pdMS_TO_TICKS(500));
         }
+        (void)nodelio_http_wait_lan_ready(4000);
         layout_lock();
         nodelio_panel_layout_t *layout = layout_scratch();
         if (kick == 1 && layout) {
@@ -1114,21 +1137,31 @@ esp_err_t nodelio_layout_start_poll(const nodelio_nvs_config_t *cfg)
 
     if (!s_layout_task_started) {
         s_applied_version = -1;
-        /* 先挂缓存：云未通时也能出上一版布局 */
-        (void)nodelio_layout_cache_mount();
-        char *cached = NULL;
-        int cver = 0;
-        if (nodelio_layout_cache_load(&cached, NULL, &cver) == ESP_OK && cached) {
-            /* 直接写入界面缓冲，不再另开一块 660KB。 */
-            if (nodelio_panel_ui_reserve_layout() == ESP_OK) {
-                nodelio_panel_layout_t *dst = (nodelio_panel_layout_t *)nodelio_panel_ui_get_layout();
-                if (dst && nodelio_layout_parse(cached, dst) == ESP_OK) {
-                    s_applied_version = dst->layout_version;
-                    nodelio_layout_render(dst);
-                    ESP_LOGI(TAG, "boot from cache v%d", s_applied_version);
+        /* overlay 开机已灌缓存并 fill_home；此处再 render 会 lv_obj_clean 闪屏 */
+        int filled_ver = nodelio_panel_ui_home_filled_version();
+        const nodelio_panel_layout_t *ui = nodelio_panel_ui_get_layout();
+        int boot_ver = filled_ver > 0 ? filled_ver
+                                      : (ui && ui->layout_version > 0 ? ui->layout_version : -1);
+        if (boot_ver > 0) {
+            s_applied_version = boot_ver;
+            ESP_LOGI(TAG, "boot UI already has layout v%d — skip cache re-render",
+                     s_applied_version);
+        } else {
+            (void)nodelio_layout_cache_mount();
+            char *cached = NULL;
+            int cver = 0;
+            if (nodelio_layout_cache_load(&cached, NULL, &cver) == ESP_OK && cached) {
+                if (nodelio_panel_ui_reserve_layout() == ESP_OK) {
+                    nodelio_panel_layout_t *dst =
+                        (nodelio_panel_layout_t *)nodelio_panel_ui_get_layout();
+                    if (dst && nodelio_layout_parse(cached, dst) == ESP_OK) {
+                        s_applied_version = dst->layout_version;
+                        nodelio_layout_render(dst);
+                        ESP_LOGI(TAG, "boot from cache v%d", s_applied_version);
+                    }
                 }
+                free(cached);
             }
-            free(cached);
         }
 
         /* 本地口令 + AFE 之后内部最大块常只剩 ~5KB，xTaskCreate 的 6KB 栈会 NO_MEM，首页云布局不再拉。 */
