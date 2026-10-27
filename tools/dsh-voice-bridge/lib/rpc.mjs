@@ -10,16 +10,59 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 
-const ENDPOINT_CANDIDATES = [
+export const ENDPOINT_CANDIDATES = [
   path.join(os.homedir(), '.agents-anywhere', 'dsh-bridge', 'endpoint.json'),
+  path.join(os.homedir(), '.agents-anywhere', 'dsh-bridge-next', 'endpoint.json'),
   path.join(os.homedir(), '.dsh', 'agents-anywhere', 'bridge', 'endpoint.json'),
 ];
 
+/** pid 仍存活（Windows 上 kill(pid,0) 可用）。无 pid 字段返回 null。 */
+export function isEndpointPidAlive(pid) {
+  if (pid == null || pid === '') return null;
+  const n = Number(pid);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (e) {
+    if (e && e.code === 'ESRCH') return false;
+    /* EPERM 等：进程多半还在 */
+    return true;
+  }
+}
+
+/**
+ * 丢掉「写着端口但 AA 进程已死」的 endpoint.json。
+ * 否则会一直 ECONNREFUSED 旧端口，墙板永远停在「电脑 DSH 没开」。
+ * @returns {number} 删除个数
+ */
+export function purgeStaleEndpoints() {
+  let n = 0;
+  for (const candidate of ENDPOINT_CANDIDATES) {
+    try {
+      if (!fs.existsSync(candidate)) continue;
+      const raw = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+      const alive = isEndpointPidAlive(raw?.pid);
+      if (alive === false) {
+        fs.unlinkSync(candidate);
+        n += 1;
+        console.log(`[rpc] purged stale endpoint pid=${raw.pid} port=${raw.port} ${candidate}`);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return n;
+}
+
 export function readEndpoint() {
+  purgeStaleEndpoints();
   for (const candidate of ENDPOINT_CANDIDATES) {
     try {
       const raw = JSON.parse(fs.readFileSync(candidate, 'utf8'));
       if (raw && typeof raw.port === 'number' && typeof raw.token === 'string') {
+        const alive = isEndpointPidAlive(raw.pid);
+        if (alive === false) continue;
         return { ...raw, source: candidate };
       }
     } catch {
@@ -39,7 +82,8 @@ export function readEndpoint() {
 export async function connect(options = {}) {
   const endpoint = options.endpoint ?? readEndpoint();
   const namespace = options.namespace ?? 'dsh-voice-bridge';
-  const socket = net.connect(endpoint.port, endpoint.host);
+  const host = endpoint.host || '127.0.0.1';
+  const socket = net.connect(endpoint.port, host);
 
   let buffer = '';
   let nextId = 1;

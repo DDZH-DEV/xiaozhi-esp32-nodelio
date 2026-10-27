@@ -3,11 +3,14 @@ setlocal
 cd /d "%~dp0"
 
 set "EP1=%USERPROFILE%\.agents-anywhere\dsh-bridge\endpoint.json"
+set "EP1B=%USERPROFILE%\.agents-anywhere\dsh-bridge-next\endpoint.json"
 set "EP2=%USERPROFILE%\.dsh\agents-anywhere\bridge\endpoint.json"
 if exist "%EP1%" goto :ok
+if exist "%EP1B%" goto :ok
 if exist "%EP2%" goto :ok
 echo [dsh-bridge] DSH Desktop endpoint not found (app may be closed).
 echo   Checked: %EP1%
+echo            %EP1B%
 echo            %EP2%
 echo   Bridge will still start; the panel can ask to open DSH.
 goto :node

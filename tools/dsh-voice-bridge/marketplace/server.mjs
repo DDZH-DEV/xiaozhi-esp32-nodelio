@@ -743,7 +743,7 @@ function openingEnvelope(appId, message, spokenText) {
 
 /** 墙板点「打开」：拉起 Desktop，就绪则交给调用方继续 RPC。 */
 async function tryOpenDesktop(appId) {
-  const r = await launchDshDesktop({ timeoutMs: 12000 });
+  const r = await launchDshDesktop({ timeoutMs: 20000 });
   if (!r.ok) {
     return {
       env: errorEnvelope(appId, 'dsh_offline', r.message, r.spoken),
