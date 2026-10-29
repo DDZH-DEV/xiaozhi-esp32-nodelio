@@ -2980,6 +2980,10 @@ void Application::PlaySound(const std::string_view& sound) { audio_service_.Play
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
 bool Application::IsHttpAudioBusy() const { return notify_player_.IsBusy(); }
 
+bool Application::HasHttpAudioPlaybackStarted() const {
+    return notify_player_.HasPlaybackStarted();
+}
+
 void Application::YieldVoiceForMedia() {
     if (protocol_ && protocol_->IsAudioChannelOpened()) {
         protocol_->CloseAudioChannel();

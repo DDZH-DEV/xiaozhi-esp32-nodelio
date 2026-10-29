@@ -35,6 +35,7 @@ public:
     void OnPlaybackDrained();
     bool IsActive(uint32_t playback_id = 0) const;
     bool IsBusy() const;
+    bool HasPlaybackStarted() const;
 
 private:
     AudioService& audio_service_;
@@ -57,6 +58,7 @@ private:
     bool cancelled_ = false;
     bool http_finished_ = false;
     bool stream_started_ = false;
+    bool playback_started_ = false;
     bool playback_drained_ = false;
     bool completion_reported_ = false;
     int dram_epoch_ = 0;
