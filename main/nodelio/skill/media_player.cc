@@ -54,15 +54,56 @@ static volatile bool s_suppress_ended = false;
 static esp_timer_handle_t s_pause_close_timer;
 /** 语音打断后应在退下时续播（与用户手动暂停区分）。 */
 static volatile bool s_resume_after_voice = false;
-/** 开播稳定后再开唤醒，避免 AFE 与 HTTP 解码抢核导致开头破音。 */
+/** 开播稍后武装唤醒。测试：放宽 DRAM 门槛，验证播中唤得起是否稳定。 */
 static esp_timer_handle_t s_wake_arm_timer = nullptr;
-static constexpr int64_t kMediaWakeArmUs = 1500000; /* 1.5s */
+static constexpr int64_t kMediaWakeArmUs = 500000; /* 0.5s（原 1.5s） */
+/** 播中关 AEC 防 WDT，喇叭盖麦 → 武装唤醒时暂压音量提 SNR（不写 NVS）。 */
+static int s_wake_duck_restore = -1;
+static constexpr int kWakeDuckPct = 55; /* 相对当前音量 */
+
+static void media_wake_duck_restore(void)
+{
+    if (s_wake_duck_restore < 0) {
+        return;
+    }
+    auto *codec = Board::GetInstance().GetAudioCodec();
+    if (codec) {
+        codec->SetOutputVolumeTransient(s_wake_duck_restore);
+        ESP_LOGI(TAG, "media wake unduck vol=%d", s_wake_duck_restore);
+    }
+    s_wake_duck_restore = -1;
+}
+
+static void media_wake_duck(void)
+{
+    auto *codec = Board::GetInstance().GetAudioCodec();
+    if (!codec) {
+        return;
+    }
+    const int cur = codec->output_volume();
+    if (cur <= 0) {
+        return;
+    }
+    if (s_wake_duck_restore < 0) {
+        s_wake_duck_restore = cur;
+    }
+    int ducked = (s_wake_duck_restore * kWakeDuckPct) / 100;
+    if (ducked < 10) {
+        ducked = 10;
+    }
+    if (ducked >= s_wake_duck_restore) {
+        return;
+    }
+    codec->SetOutputVolumeTransient(ducked);
+    ESP_LOGI(TAG, "media wake duck vol %d → %d (test SNR)", s_wake_duck_restore, ducked);
+}
 
 static void disarm_media_wake_interrupt(void)
 {
     if (s_wake_arm_timer) {
         esp_timer_stop(s_wake_arm_timer);
     }
+    media_wake_duck_restore();
 }
 
 static void reclaim_wake_dram_after_media(void)
@@ -91,51 +132,40 @@ static void media_wake_arm_cb(void *arg)
         /* 先放唤醒坑再测 largest，避免坑本身卡住连续块 */
         (void)nodelio_wake_dram_release_for_arm();
         const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-        /* 实机播中 largest 常卡在 8192；10KB 门会导致永远 defer。仍校验 IsWakeWordRunning。 */
-        constexpr size_t kMinWakeDram = 8192;
-        if (largest < kMinWakeDram) {
-            s_wake_arm_retries++;
-            if (s_wake_arm_retries == 1) {
-                /* 首次 defer：拆 INTERNAL/DMA/PSRAM，避免误以为「512KB SRAM 都空着」 */
-                multi_heap_info_t di{}, dd{}, ds{};
-                heap_caps_get_info(&di, MALLOC_CAP_INTERNAL);
-                heap_caps_get_info(&dd, MALLOC_CAP_DMA);
-                heap_caps_get_info(&ds, MALLOC_CAP_SPIRAM);
-                ESP_LOGW(TAG,
-                         "wake-dram dump INTERNAL free=%u largest=%u allocated=%u min_free=%u | "
-                         "DMA free=%u largest=%u allocated=%u | "
-                         "PSRAM free=%u largest=%u allocated=%u",
-                         (unsigned)di.total_free_bytes, (unsigned)di.largest_free_block,
-                         (unsigned)di.total_allocated_bytes, (unsigned)di.minimum_free_bytes,
-                         (unsigned)dd.total_free_bytes, (unsigned)dd.largest_free_block,
-                         (unsigned)dd.total_allocated_bytes, (unsigned)ds.total_free_bytes,
-                         (unsigned)ds.largest_free_block, (unsigned)ds.total_allocated_bytes);
-            }
-            if (s_wake_arm_retries <= 30) {
-                ESP_LOGW(TAG, "defer media wake arm dram largest=%u retry=%d", (unsigned)largest,
-                         s_wake_arm_retries);
-                if (s_wake_arm_timer) {
-                    esp_timer_start_once(s_wake_arm_timer, 2000000); /* +2s */
-                }
-            } else if (s_wake_arm_retries == 31) {
-                ESP_LOGW(TAG, "media wake unavailable (dram largest=%u) — use player mic",
-                         (unsigned)largest);
-            }
-            return;
+        /* 测试放开：不再因 largest<8KB 直接放弃；仍只开唤醒、不开 voice processing。 */
+        if (s_wake_arm_retries == 0) {
+            multi_heap_info_t di{}, dd{}, ds{};
+            heap_caps_get_info(&di, MALLOC_CAP_INTERNAL);
+            heap_caps_get_info(&dd, MALLOC_CAP_DMA);
+            heap_caps_get_info(&ds, MALLOC_CAP_SPIRAM);
+            ESP_LOGW(TAG,
+                     "wake-dram dump(test-open) INTERNAL free=%u largest=%u min_free=%u | "
+                     "DMA free=%u largest=%u | PSRAM free=%u largest=%u",
+                     (unsigned)di.total_free_bytes, (unsigned)di.largest_free_block,
+                     (unsigned)di.minimum_free_bytes, (unsigned)dd.total_free_bytes,
+                     (unsigned)dd.largest_free_block, (unsigned)ds.total_free_bytes,
+                     (unsigned)ds.largest_free_block);
         }
-        /* 只开唤醒，不开 voice processing（否则 AFE FEED 与解码抢核）。 */
+        if (largest < 8192) {
+            ESP_LOGW(TAG, "media wake arm despite low dram largest=%u (test-open)",
+                     (unsigned)largest);
+        }
         audio.EnableWakeWordDetection(true);
         if (!audio.IsWakeWordRunning()) {
             s_wake_arm_retries++;
             ESP_LOGW(TAG, "media wake enable failed dram largest=%u retry=%d", (unsigned)largest,
                      s_wake_arm_retries);
             if (s_wake_arm_timer && s_wake_arm_retries <= 30) {
-                esp_timer_start_once(s_wake_arm_timer, 2000000);
+                esp_timer_start_once(s_wake_arm_timer, 1000000); /* +1s */
+            } else if (s_wake_arm_retries == 31) {
+                ESP_LOGW(TAG, "media wake unavailable (dram largest=%u) — use player mic",
+                         (unsigned)largest);
             }
             return;
         }
         s_wake_arm_retries = 0;
-        ESP_LOGI(TAG, "media wake interrupt armed dram largest=%u", (unsigned)largest);
+        media_wake_duck();
+        ESP_LOGI(TAG, "media wake interrupt armed(test-open) dram largest=%u", (unsigned)largest);
     });
 }
 

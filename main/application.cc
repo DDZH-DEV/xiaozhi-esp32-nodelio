@@ -2215,22 +2215,38 @@ void Application::FinishNewsReadPlayback() {
     bool more = false;
     const bool played = audio_service_.GetPlaybackCount() != news_playback_start_count_;
     const bool finished = !aborted_ && nodelio_skill_news_finish_chunk(token, played, &more);
-    ESP_LOGI(TAG, "news playback drained: token=%u audio=%d complete=%d more=%d", (unsigned)token,
-             played, finished, more);
+    const DeviceState st = GetDeviceState();
+    ESP_LOGI(TAG, "news playback drained: token=%u audio=%d complete=%d more=%d state=%d",
+             (unsigned)token, played, finished, more, (int)st);
+    /* SILA 可在 Listening 收尾包（UDP 早于 tts.start / stop 后仍排水）；勿只认 Speaking。 */
     if (finished && more && protocol_ && protocol_->IsAudioChannelOpened() &&
-        GetDeviceState() == kDeviceStateSpeaking) {
+        (st == kDeviceStateSpeaking || st == kDeviceStateListening)) {
         news_read_continue_ = true;
         news_reading_ = true;
         news_mcp_detect_retries_ = 0;
+        listen_idle_ticks_ = 0;
+        listen_idle_pending_close_ = false;
         SendNewsReadRequest(false);
         nodelio_skill_news_sync_read_btn();
+        return;
+    }
+    if (finished && more) {
+        /* 游标已前进；保留可点「继续」/说「继续读」，勿当失败 cancel。 */
+        ESP_LOGW(TAG, "news auto-continue skipped: state=%d ch=%d (UI/voice continue still ok)",
+                 (int)st, protocol_ && protocol_->IsAudioChannelOpened() ? 1 : 0);
+        news_reading_ = false;
+        nodelio_skill_news_sync_read_btn();
+        if (st == kDeviceStateSpeaking) {
+            SetDeviceState(listening_mode_ == kListeningModeManualStop ? kDeviceStateIdle
+                                                                       : kDeviceStateListening);
+        }
         return;
     }
     // Partial/failed audio must not silently advance the article cursor.
     news_reading_ = false;
     nodelio_skill_news_cancel_read();
     nodelio_skill_news_sync_read_btn();
-    if (GetDeviceState() == kDeviceStateSpeaking) {
+    if (st == kDeviceStateSpeaking) {
         SetDeviceState(listening_mode_ == kListeningModeManualStop ? kDeviceStateIdle
                                                                    : kDeviceStateListening);
     }

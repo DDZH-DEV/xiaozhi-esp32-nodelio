@@ -1596,7 +1596,8 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
         }
         const char *news_op = NULL;
         if (strstr(phrase, "继续读") || strstr(phrase, "接着念") || strstr(phrase, "往下读") ||
-            strstr(phrase, "继续念") || strstr(phrase, "接着读")) {
+            strstr(phrase, "继续念") || strstr(phrase, "接着读") ||
+            strcmp(news_phrase, "继续") == 0) {
             news_op = "continue";
         } else if (strstr(phrase, "下一篇") || strstr(phrase, "下一条新闻") || strstr(phrase, "下篇")) {
             news_op = "next";

@@ -909,6 +909,8 @@ void nodelio_mcp_register_tools(void)
     mcp.AddTool(
         "self.skill.news",
         "Always call for 读/读吧/朗读/继续读. op=read|continue|prev|next|close. "
+        "Detect「请用工具继续读」or user 继续读 → MUST op=continue (never read). "
+        "Detect「请用工具读新闻」→ op=read. "
         "Speak ONLY the article title and body. Never speak 【续】【完】【摘要】【等】【缺】 "
         "or any instruction line. Device auto-continues; never say no news without calling.",
         PropertyList({
@@ -924,6 +926,11 @@ void nodelio_mcp_register_tools(void)
                 return std::unexpected(std::string("op 须为 prev/next/read/continue/mark_read/skip/close"));
             }
             auto& app = Application::GetInstance();
+            /* 云端常忽略 continue、默认 op=read；设备已声明续读时强制纠正，避免整篇重头念。 */
+            if (op == "read" && app.PreferNewsContinue()) {
+                ESP_LOGW("nl_mcp", "cloud sent op=read while device requested continue → force continue");
+                op = "continue";
+            }
             app.Schedule([]() { Application::GetInstance().OnNewsReadToolCalled(); });
             constexpr size_t kNewsSpokenCap = 1536;
             char *spoken = static_cast<char *>(

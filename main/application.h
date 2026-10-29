@@ -169,6 +169,10 @@ public:
     /** 停当前段 TTS，不跳过未读原文；之后可点「继续」或说「继续读」。 */
     void PauseNewsRead();
     bool IsNewsReading() const { return news_reading_; }
+    /** 已发「继续读」detect、等 tools/call：云端若误传 op=read 须设备侧改成 continue。 */
+    bool PreferNewsContinue() const {
+        return news_awaiting_mcp_.load() && news_read_continue_;
+    }
     /** 新闻列表上屏后：武装「是/读」→ 朗读第一条。 */
     void ArmPendingConfirmReadNews();
     void OnNewsReadToolCalled();  // Application task only; validated MCP dispatch.
