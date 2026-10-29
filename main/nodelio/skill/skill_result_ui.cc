@@ -59,6 +59,8 @@ LV_FONT_DECLARE(font_material_symbols_20_4);
 #define NEWS_ARTICLE_CAP (20 * 1024)
 /* MQTT MCP 回包总长易被对端掐断；约 900 汉字一段，多数文章 1～2 段。 */
 #define NEWS_MCP_CHUNK 2800
+/* 本地 detect 播报：整包 JSON 须 ≤720B（聆听 DRAM~9KB）；正文约 360B ≈120 字，多段「继续读」。 */
+#define NEWS_LOCAL_SPEAK_CHUNK 360
 /* 云端回源拉正文最多约 8s，默认 HTTP 读超时 2.5s 会在状态行到达前断开 */
 #define NEWS_HTTP_IO_MS 12000
 #define NEWS_TASK_STACK 10240
@@ -223,11 +225,12 @@ static void raise_skill_layers(void)
     if (s_scrim && !lv_obj_has_flag(s_scrim, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_move_foreground(s_scrim);
     }
-    if (s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_move_foreground(s_card);
-    }
+    /* now_bar 在 Y 上高于卡片；z 序让卡在上，避免关音乐后残留条盖住新闻列表抢点 */
     if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_move_foreground(s_now_bar);
+    }
+    if (s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_move_foreground(s_card);
     }
     if (s_mini_fab && !lv_obj_has_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_move_foreground(s_mini_fab);
@@ -1904,6 +1907,31 @@ static void on_pause_now(lv_event_t *e)
     }
 }
 
+/** 播歌时内部 DRAM 常开不起唤醒：点麦克风 = 暂停并进对话 */
+static void on_voice_now(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    Board::GetInstance().NoteUserActivity();
+    nl_ov_toast("请说…");
+    Application::GetInstance().Schedule([]() {
+        auto &app = Application::GetInstance();
+        if (nodelio_media_is_playing()) {
+            nodelio_media_pause_for_voice();
+            nodelio_offline_cmd_yield_for_cloud_audio();
+            app.GetAudioService().EnableVoiceProcessing(false);
+        } else if (nodelio_media_is_paused()) {
+            /* 已暂停：清掉 pause_close，避免对话中途关播放器 */
+            nodelio_media_pause_for_voice(); /* no-op if not playing; need disarm close */
+        }
+        if (app.GetDeviceState() == kDeviceStateIdle ||
+            app.GetDeviceState() == kDeviceStateNotifying) {
+            app.ToggleChatState();
+        }
+    });
+}
+
 static void on_prev_now(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
@@ -2785,6 +2813,8 @@ static void ensure_card(void)
         lv_obj_set_style_pad_column(s_now_btns, 4, 0);
         lv_obj_clear_flag(s_now_btns, LV_OBJ_FLAG_CLICKABLE);
 
+        /* 麦克风：播中 DRAM 常开不起唤醒，点此暂停并进对话 */
+        make_play_ctrl_btn(s_now_btns, UI_TILE_SWITCH, UI_ACCENT_SOFT, MATERIAL_SYMBOLS_MIC, on_voice_now);
         s_now_prev_btn =
             make_play_ctrl_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_SKIP_PREVIOUS, on_prev_now);
         s_now_pause_btn =
@@ -3397,6 +3427,31 @@ bool nodelio_skill_result_is_visible(void)
     return skill_ui_is_up();
 }
 
+bool nodelio_skill_news_ui_active(void)
+{
+    return s_have_env && s_env && strcmp(s_env->card_type, "news_list") == 0 && skill_ui_is_up();
+}
+
+bool nodelio_skill_is_live_radio(void)
+{
+    if (!s_have_env || !s_env) {
+        return false;
+    }
+    if (env_media_is_live()) {
+        return true;
+    }
+    return strstr(s_env->app_id, "radio") != nullptr;
+}
+
+bool nodelio_skill_reopen_media_list(void)
+{
+    if (!s_have_env || !s_env || s_env->track_n <= 0) {
+        return false;
+    }
+    reopen_list();
+    return true;
+}
+
 void nodelio_skill_close_all(void)
 {
     nodelio_media_stop();
@@ -3631,6 +3686,17 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
     if (strcmp(s_env->card_type, "news_list") == 0 && !s_env->display_title[0]) {
         title = "最新新闻";
     }
+    /* 关音乐后再开新闻：残留 now_playing / 悬浮球会盖在卡上抢触摸，详情点不进去 */
+    if (strcmp(s_env->card_type, "music_list") != 0) {
+        if (nodelio_media_is_playing() || nodelio_media_is_paused()) {
+            nodelio_media_stop();
+        }
+        if (s_now_bar) {
+            lv_obj_add_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
+        }
+        s_minimized = false;
+        hide_mini_fab();
+    }
     lv_label_set_text(s_card_title, title);
     fill_list();
 
@@ -3673,6 +3739,15 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
 
     ESP_LOGI(TAG, "show card_type=%s tracks=%d news=%d auto_play=%d", s_env->card_type, s_env->track_n,
              s_env->news_n, auto_play_first ? 1 : 0);
+
+    /* 语音打开新闻：短 detect 追问（整句含前缀须 ≤16 字，勿带标题） */
+    if (!card_already_open && strcmp(s_env->card_type, "news_list") == 0 &&
+        strcmp(s_env->status, "ok") == 0 && s_env->news_n > 0 &&
+        nodelio_panel_ui_take_news_read_offer()) {
+        ESP_LOGI(TAG, "news read offer → 要读吗？");
+        nodelio_panel_ui_request_cloud_speak("要读吗？");
+        Application::GetInstance().ArmPendingConfirmReadNews();
+    }
 }
 
 void nodelio_panel_ui_media_now_playing(const char *title, bool playing)

@@ -183,15 +183,19 @@ static void render_list(void)
                     if (xTaskCreateWithCaps(
                             [](void *p) {
                                 auto *a = static_cast<invoke_arg *>(p);
-                                Application::GetInstance().Schedule([]() {
-                                    auto st = Application::GetInstance().GetDeviceState();
-                                    if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
-                                        st == kDeviceStateConnecting) {
-                                        Application::GetInstance().EndVoiceSessionAfterLocalSkill();
-                                    }
-                                });
                                 const bool music_app = nodelio_skill_id_is_music(a->id);
-                                if (!music_app && nodelio_media_preempt_for_heavy_app()) {
+                                /* 仅媒体退会话；天气等保留云端 TTS */
+                                if (music_app) {
+                                    Application::GetInstance().Schedule([]() {
+                                        auto st = Application::GetInstance().GetDeviceState();
+                                        if (st == kDeviceStateListening ||
+                                            st == kDeviceStateSpeaking ||
+                                            st == kDeviceStateConnecting) {
+                                            Application::GetInstance()
+                                                .EndVoiceSessionAfterLocalSkill();
+                                        }
+                                    });
+                                } else if (nodelio_media_preempt_for_heavy_app()) {
                                     nodelio_panel_ui_toast_defer("已停止音乐以打开应用");
                                 }
                                 char base[160];
@@ -670,8 +674,20 @@ void nl_ov_apps_layout_chrome(void)
     if (!s_refresh) {
         return;
     }
-    /* 刷新固定左下；音乐悬浮球仍在右下，互不抢位。 */
-    lv_obj_align(s_refresh, LV_ALIGN_BOTTOM_LEFT, 2, -2);
+    /* 与音乐缩小球同右缘上下叠：页 pad_hor=16 / pad_ver=8，对齐全屏球 (右 14 / 底 TAB+14)。 */
+    constexpr int kEdge = 14;
+    constexpr int kPagePadH = 16;
+    constexpr int kPagePadV = 8;
+    constexpr int kFabSz = 52; /* 与 SKILL_MINI_SZ 一致 */
+    constexpr int kStackGap = 10;
+    const int ox = kPagePadH - kEdge; /* +2 → 视觉右缘 14 */
+    const int oy_base = -(kEdge - kPagePadV); /* -6 → 视觉底边距 14 */
+    if (nodelio_skill_mini_fab_visible()) {
+        lv_obj_align(s_refresh, LV_ALIGN_BOTTOM_RIGHT, ox,
+                     oy_base - kFabSz - kStackGap);
+    } else {
+        lv_obj_align(s_refresh, LV_ALIGN_BOTTOM_RIGHT, ox, oy_base);
+    }
 }
 
 void nl_ov_apps_set_visible(bool on)
@@ -980,16 +996,16 @@ void nl_ov_build_apps(void)
     lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(s_list, UI_GAP, 0);
     lv_obj_set_style_pad_column(s_list, UI_GAP, 0);
-    lv_obj_set_style_pad_bottom(s_list, 56, 0); /* 避让左下刷新 / 右下音乐球 */
+    lv_obj_set_style_pad_bottom(s_list, 120, 0); /* 避让右下刷新+音乐球叠放 */
     lv_obj_add_flag(s_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_OFF);
 
-    /* 左下角浮动刷新 */
+    /* 右下角浮动刷新（有音乐球时叠在上方） */
     s_refresh = lv_obj_create(s_page);
     lv_obj_remove_style_all(s_refresh);
-    lv_obj_set_size(s_refresh, 48, 48);
-    lv_obj_set_style_radius(s_refresh, 24, 0);
+    lv_obj_set_size(s_refresh, 52, 52);
+    lv_obj_set_style_radius(s_refresh, 26, 0);
     lv_obj_set_style_bg_color(s_refresh, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(s_refresh, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_refresh, 2, 0);

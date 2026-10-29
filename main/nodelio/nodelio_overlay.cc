@@ -848,9 +848,16 @@ esp_err_t nodelio_overlay_init(void)
     }
     (void)nodelio_nvs_init();
     (void)nodelio_nvs_load(&s_cfg);
+    if (s_cfg.volume <= 100) {
+        s_volume = s_cfg.volume;
+    }
     Board::GetInstance().SetIdleSleepSeconds((int)nodelio_idle_sleep_seconds());
     Board::GetInstance().SetIdleWifiSeconds((int)nodelio_idle_wifi_seconds());
     Board::GetInstance().SetPowerSaveEnabled(nodelio_power_save_enabled());
+    /* AudioCodec::Start 读的是 Settings/audio；面板音量在 nodelio NVS，开机对齐一次 */
+    if (auto *codec = Board::GetInstance().GetAudioCodec()) {
+        codec->SetOutputVolumeTransient((int)s_volume);
+    }
     DisplayLockGuard lock(nl_ov_disp());
     if (!lock) {
         return ESP_FAIL;

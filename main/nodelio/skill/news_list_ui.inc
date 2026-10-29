@@ -348,6 +348,75 @@ static void news_scroll_follow(void)
     news_follow_ensure_timer();
 }
 
+/** 切下一段原文到 piece；推进游标并跟读滚屏。piece 由调用方 free。 */
+static char *news_take_piece(bool *more_out, size_t max_bytes)
+{
+    if (more_out) {
+        *more_out = false;
+    }
+    if (!s_speak_body || s_speak_off >= s_speak_len) {
+        return nullptr;
+    }
+    if (max_bytes < 48) {
+        max_bytes = 48;
+    }
+    const size_t end = news_utf8_chunk_end(s_speak_body, s_speak_off, max_bytes);
+    const size_t take = end > s_speak_off ? end - s_speak_off : 0;
+    if (more_out) {
+        *more_out = end < s_speak_len;
+    }
+    char *piece = static_cast<char *>(heap_caps_malloc(take + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!piece) {
+        piece = static_cast<char *>(malloc(take + 1));
+    }
+    if (!piece) {
+        return nullptr;
+    }
+    memcpy(piece, s_speak_body + s_speak_off, take);
+    piece[take] = '\0';
+    s_speak_off_prev = s_speak_off;
+    s_speak_off = end;
+    s_chunk_sent_us = esp_timer_get_time();
+    news_scroll_follow();
+    return piece;
+}
+
+static bool news_format_plain_chunk(char *out, size_t out_len, bool with_title)
+{
+    if (!out || out_len == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    /* 标题占额度；正文用 LOCAL 上限，整包 detect JSON 须 ≤720B */
+    size_t body_budget = NEWS_LOCAL_SPEAK_CHUNK;
+    if (with_title && s_speak_title[0]) {
+        const size_t tlen = strlen(s_speak_title);
+        if (tlen + 8 < body_budget) {
+            body_budget -= tlen + 8;
+        } else {
+            body_budget = 80;
+        }
+    }
+    bool more = false;
+    char *piece = news_take_piece(&more, body_budget);
+    if (!piece) {
+        if (with_title && s_speak_title[0]) {
+            snprintf(out, out_len, "%s。正文暂不可用。", s_speak_title);
+            return true;
+        }
+        return false;
+    }
+    /* 本地 detect 接力续段，勿把「可说继续读」念出声 */
+    (void)more;
+    if (with_title && s_speak_title[0]) {
+        snprintf(out, out_len, "%s。%s", s_speak_title, piece);
+    } else {
+        snprintf(out, out_len, "%s", piece);
+    }
+    heap_caps_free(piece);
+    return out[0] != '\0';
+}
+
 static bool news_format_chunk(char *out, size_t out_len, bool with_title)
 {
     if (!out || out_len == 0) {
@@ -362,22 +431,11 @@ static bool news_format_chunk(char *out, size_t out_len, bool with_title)
         }
         return false;
     }
-    const size_t end = news_utf8_chunk_end(s_speak_body, s_speak_off, NEWS_MCP_CHUNK);
-    const size_t take = end > s_speak_off ? end - s_speak_off : 0;
-    const bool more = end < s_speak_len;
-    char *piece = static_cast<char *>(heap_caps_malloc(take + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!piece) {
-        piece = static_cast<char *>(malloc(take + 1));
-    }
+    bool more = false;
+    char *piece = news_take_piece(&more, NEWS_MCP_CHUNK);
     if (!piece) {
         return false;
     }
-    memcpy(piece, s_speak_body + s_speak_off, take);
-    piece[take] = '\0';
-    s_speak_off_prev = s_speak_off;
-    s_speak_off = end;
-    s_chunk_sent_us = esp_timer_get_time();
-    news_scroll_follow();
     const char *tail_more =
         "\n【续】请先逐字朗读以上原文，不要摘要、不要说读完。念完后再调 op=continue。同一轮不要连续调用。";
     const char *tail_done =
@@ -860,6 +918,22 @@ static void on_news_back(lv_event_t *e)
     fill_list();
 }
 
+static void on_news_read_btn(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    Application::GetInstance().Schedule([]() {
+        auto &app = Application::GetInstance();
+        const auto st = app.GetDeviceState();
+        if (st != kDeviceStateListening && st != kDeviceStateSpeaking) {
+            nl_ov_toast("请唤醒后说「读这篇」");
+            return;
+        }
+        app.StartLocalNewsRead("read");
+    });
+}
+
 static void on_news_nav(lv_event_t *e)
 {
     const int delta = (int)(intptr_t)lv_event_get_user_data(e);
@@ -935,7 +1009,8 @@ static void news_set_nav_bar(bool on)
     lv_obj_set_flex_align(s_dsh_detail_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     news_make_bar_btn(s_dsh_detail_bar, "上一篇", on_news_nav, (void *)(intptr_t)-1, false);
-    news_make_bar_btn(s_dsh_detail_bar, "下一篇", on_news_nav, (void *)(intptr_t)1, true);
+    news_make_bar_btn(s_dsh_detail_bar, "朗读", on_news_read_btn, nullptr, true);
+    news_make_bar_btn(s_dsh_detail_bar, "下一篇", on_news_nav, (void *)(intptr_t)1, false);
     lv_obj_clear_flag(s_dsh_detail_bar, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_height(s_dsh_detail_bar, 52);
 }
@@ -1346,5 +1421,161 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
     if (!want_body || idx < 0) {
         return out && out[0];
     }
+    /* 小缓冲=本地旁路：只切详情，不拉朗读段（避免无声跟读滚屏） */
+    if (out_len > 0 && out_len < 512) {
+        if (out) {
+            snprintf(out, out_len, "%s", s_env->news[idx].title);
+        }
+        return true;
+    }
     return news_load_spoken(idx, gen, out, out_len, true);
+}
+
+bool nodelio_skill_news_prepare_read(void)
+{
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        return false;
+    }
+    return news_step_locked(0, nullptr, 0);
+}
+
+bool nodelio_skill_news_local_speak(const char *op, char *plain_out, size_t plain_len)
+{
+    if (plain_out && plain_len > 0) {
+        plain_out[0] = '\0';
+    }
+    if (!op || !op[0]) {
+        return false;
+    }
+    const bool is_cont = strcmp(op, "continue") == 0;
+    const bool is_read = strcmp(op, "read") == 0;
+    if (!is_cont && !is_read) {
+        return false;
+    }
+
+    int idx = -1;
+    uint32_t gen = 0;
+    char id[NL_ENV_STR];
+    id[0] = '\0';
+    {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (!lock) {
+            return false;
+        }
+        if (is_read) {
+            if (!news_step_locked(0, nullptr, 0)) {
+                return false;
+            }
+        } else if (s_news_detail < 0 || s_news_detail >= s_env->news_n) {
+            return false;
+        }
+        idx = s_news_detail;
+        gen = s_news_gen;
+        snprintf(id, sizeof(id), "%s", s_env->news[idx].id);
+    }
+
+    if (is_cont) {
+        /* 本地 TTS 停即续；勿套 MCP 的 8s 防连调闸门（短文会误杀续读） */
+        if (s_speak_body && strcmp(s_speak_id, id) == 0) {
+            if (s_speak_off >= s_speak_len) {
+                if (plain_out && plain_len > 0) {
+                    snprintf(plain_out, plain_len, "本篇已经读完。可以说下一篇。");
+                }
+                return plain_out && plain_out[0];
+            }
+            return news_format_plain_chunk(plain_out, plain_len, false);
+        }
+    }
+
+    /* read 或 continue 无缓存：拉正文后吐 plain */
+    char *heap = nullptr;
+    const char *view = nullptr;
+    bool from_summary = true;
+    if (!news_pull_article_text(idx, &heap, &view, &from_summary) || !view || !view[0]) {
+        if (plain_out && plain_len > 0) {
+            snprintf(plain_out, plain_len, "这篇正文暂时打不开。");
+        }
+        return plain_out && plain_out[0];
+    }
+    news_apply_body_label(idx, gen, view, from_summary);
+    news_speak_set(id, s_env->news[idx].title, view, from_summary);
+    if (heap) {
+        heap_caps_free(heap);
+    }
+    return news_format_plain_chunk(plain_out, plain_len, true);
+}
+
+bool nodelio_skill_try_news_pick_phrase(const char *text, bool *keep_cloud_tts)
+{
+    if (keep_cloud_tts) {
+        *keep_cloud_tts = false;
+    }
+    if (!text || !text[0] || !nodelio_skill_news_ui_active() || !s_env) {
+        return false;
+    }
+    int ord = parse_ordinal_zh(text);
+    if (ord <= 0 && (strstr(text, "第一条") || strstr(text, "首条") || strstr(text, "头条"))) {
+        ord = 1;
+    }
+    if (ord <= 0) {
+        return false;
+    }
+    /* 须像在点新闻：有「条/篇/个/新闻」或「打开/读/念」 */
+    const bool news_ish =
+        strstr(text, "条") || strstr(text, "篇") || strstr(text, "新闻") || strstr(text, "个") ||
+        strstr(text, "打开") || strstr(text, "读") || strstr(text, "念") || strstr(text, "听");
+    if (!news_ish) {
+        return false;
+    }
+    if (s_env->news_n <= 0) {
+        nl_ov_toast("没有新闻");
+        nodelio_panel_ui_announce_spoken("现在没有新闻可打开。");
+        return true;
+    }
+    if (ord > s_env->news_n) {
+        char tip[48];
+        snprintf(tip, sizeof(tip), "只有 %d 条", s_env->news_n);
+        nl_ov_toast(tip);
+        nodelio_panel_ui_announce_spoken("没有这个序号，请再说第几条。");
+        return true;
+    }
+
+    const bool want_read =
+        strstr(text, "读") || strstr(text, "念") || strstr(text, "朗读") || strstr(text, "听一下");
+    {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (!lock) {
+            return false;
+        }
+        s_news_detail = ord - 1;
+        if (s_minimized || (s_card && lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN))) {
+            s_minimized = false;
+            hide_mini_fab();
+            set_drawer_for_skill(true);
+            if (s_scrim) {
+                lv_obj_clear_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
+            }
+            if (s_card) {
+                lv_obj_clear_flag(s_card, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+        fill_list();
+    }
+    ESP_LOGI("nl_news", "voice pick ord=%d read=%d title=%s", ord, want_read ? 1 : 0,
+             s_env->news[ord - 1].title);
+
+    if (!want_read) {
+        char tip[64];
+        snprintf(tip, sizeof(tip), "第 %d 条", ord);
+        nl_ov_toast(tip);
+        return true;
+    }
+
+    /* 开详情后短 detect 促云端调 self.skill.news（正常长 TTS） */
+    Application::GetInstance().StartLocalNewsRead("read");
+    if (keep_cloud_tts) {
+        *keep_cloud_tts = true; /* 等 MCP 正文 TTS，勿 Suppress */
+    }
+    return true;
 }

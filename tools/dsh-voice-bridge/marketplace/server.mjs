@@ -23,7 +23,6 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { connect, readEndpoint } from '../lib/rpc.mjs';
-import { launchDshDesktop } from '../lib/dsh-launch.mjs';
 import {
   ATTENTION,
   decodeSessionLog,
@@ -583,7 +582,7 @@ async function handleHealth() {
       await client.call('session.list', {});
       dsh = true;
     } finally {
-      client.close();
+      await client.close();
     }
   } catch (e) {
     detail = e.message?.slice(0, 120) ?? 'unreachable';
@@ -666,8 +665,9 @@ function isDshOfflineError(error) {
   return /ECONNREFUSED|ECONNRESET|ENOENT|endpoint not found/i.test(m);
 }
 
-const DSH_OFFLINE_SPOKEN = '电脑 DSH 没开，要帮你打开吗？';
+const DSH_OFFLINE_SPOKEN = '电脑上的 DSH 没开，请在电脑上手动打开后再试。';
 
+/** 已取消墙板「打开 DSH」：自动拉起易进恢复模式 / invalid IPC。 */
 function wantsOpenDesktop(body) {
   if (!body || typeof body !== 'object') return false;
   const v = body.open_desktop;
@@ -686,21 +686,7 @@ function offlineEnvelope(appId) {
         type: 'list_item',
         id: 'dsh-offline',
         title: '电脑 DSH 没开',
-        subtitle: '要在电脑上打开工作台吗？',
-        actions: [
-          {
-            id: 'open',
-            title: '打开',
-            run: 'invoke',
-            invoke: { app_id: 'dsh.status', params: { open_desktop: true } },
-          },
-          {
-            id: 'skip',
-            title: '不用',
-            run: 'invoke',
-            invoke: { app_id: 'dsh.status', params: { dismiss: true } },
-          },
-        ],
+        subtitle: '请在电脑上手动打开 DSH NEXT，进主界面后再刷新',
       },
     ],
     display: {
@@ -713,53 +699,6 @@ function offlineEnvelope(appId) {
     },
     spoken: speak(DSH_OFFLINE_SPOKEN),
   };
-}
-
-function openingEnvelope(appId, message, spokenText) {
-  return {
-    schema_version: 1,
-    request_id: newRequestId(),
-    app_id: appId || 'dsh.status',
-    status: 'ok',
-    content: [
-      {
-        type: 'list_item',
-        id: 'dsh-opening',
-        title: '正在打开 DSH',
-        subtitle: String(message || '请稍候再点顶栏刷新').slice(0, 120),
-      },
-    ],
-    display: {
-      card_type: 'list',
-      title: 'DSH',
-      preferred_surface: 'card',
-      density: 'comfortable',
-      max_items: 3,
-      ttl_sec: 30,
-    },
-    spoken: speak(spokenText || '正在打开电脑上的 DSH，请稍候刷新。'),
-  };
-}
-
-/** 墙板点「打开」：拉起 Desktop，就绪则交给调用方继续 RPC。 */
-async function tryOpenDesktop(appId) {
-  const r = await launchDshDesktop({ timeoutMs: 20000 });
-  if (!r.ok) {
-    return {
-      env: errorEnvelope(appId, 'dsh_offline', r.message, r.spoken),
-    };
-  }
-  if (r.waiting) {
-    return { env: openingEnvelope(appId, r.message, r.spoken) };
-  }
-  try {
-    return { client: await connect({ namespace: 'nodelio-market' }) };
-  } catch (e) {
-    if (isDshOfflineError(e)) {
-      return { env: openingEnvelope(appId, r.message, r.spoken) };
-    }
-    throw e;
-  }
 }
 
 function logTask(msg, extra) {
@@ -1719,50 +1658,93 @@ function send(response, status, payload) {
   response.end(body);
 }
 
-/** 边沿：needs_you / completed → Host MQTT skill_hint */
+/** 边沿：needs_you→action / completed→info → Host Notice 总线 */
 const s_prev = new Map();
 let s_watch_seeded = false;
+let s_watch_offline_logged = false;
+
+function hintModeTitle(reason) {
+  if (reason === 'needs_you') {
+    return { mode: 'action', title: '有任务等你确认' };
+  }
+  if (reason === 'completed') {
+    return { mode: 'info', title: '有任务已完成' };
+  }
+  return { mode: 'info', title: '新通知' };
+}
 
 async function postSkillHint(reason, sessionId) {
   const c = cfg();
+  const { mode, title } = hintModeTitle(reason);
   /* 优先经出站 WS hint（公网 Host 无需设备密钥 HTTP） */
   if (hostWsClient) {
     try {
       hostWsClient.sendHint(reason, sessionId, {
         app_id: c.status_app_id,
         instance_id: c.status_instance_id || undefined,
+        mode,
+        title,
       });
-      console.log(`[watch] skill-hint via ws reason=${reason} session=${sessionId ?? '-'}`);
+      console.log(`[watch] notice via ws mode=${mode} reason=${reason} session=${sessionId ?? '-'}`);
       return;
     } catch (e) {
-      console.warn(`[watch] skill-hint ws fail: ${e.message}`);
+      console.warn(`[watch] notice ws fail: ${e.message}`);
     }
   }
   if (!c.host_url || !c.panel_device_id || !c.panel_device_key) return;
-  const url = `${c.host_url}/api/devices/${encodeURIComponent(c.panel_device_id)}/panel/skill-hint`;
-  const body = JSON.stringify({
-    app_id: c.status_app_id,
+  /* 优先正式 notices；失败再回落 skill-hint 薄封装 */
+  const noticeUrl = `${c.host_url}/api/devices/${encodeURIComponent(c.panel_device_id)}/panel/notices`;
+  const noticeBody = JSON.stringify({
+    app_id: c.status_app_id || 'dsh.status',
     instance_id: c.status_instance_id || undefined,
     reason,
+    mode,
+    title,
     session: sessionId || undefined,
+    invoke: {
+      app_id: c.status_app_id || 'dsh.status',
+      params: sessionId ? { session: sessionId } : {},
+    },
+    coalesce_key: sessionId
+      ? `dsh.status:session:${sessionId}`
+      : `dsh.status:${reason}`,
   });
   try {
-    const res = await fetch(url, {
+    let res = await fetch(noticeUrl, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         'X-Device-Key': c.panel_device_key,
       },
-      body,
+      body: noticeBody,
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) {
-      console.warn(`[watch] skill-hint HTTP ${res.status}`);
+      const url = `${c.host_url}/api/devices/${encodeURIComponent(c.panel_device_id)}/panel/skill-hint`;
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'X-Device-Key': c.panel_device_key,
+        },
+        body: JSON.stringify({
+          app_id: c.status_app_id,
+          instance_id: c.status_instance_id || undefined,
+          reason,
+          mode,
+          title,
+          session: sessionId || undefined,
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+    }
+    if (!res.ok) {
+      console.warn(`[watch] notice HTTP ${res.status}`);
     } else {
-      console.log(`[watch] skill-hint reason=${reason} session=${sessionId ?? '-'}`);
+      console.log(`[watch] notice mode=${mode} reason=${reason} session=${sessionId ?? '-'}`);
     }
   } catch (e) {
-    console.warn(`[watch] skill-hint fail: ${e.message}`);
+    console.warn(`[watch] notice fail: ${e.message}`);
   }
 }
 
@@ -1960,10 +1942,22 @@ async function watchTick() {
       }
     }
     s_watch_seeded = true;
+    s_watch_offline_logged = false;
   } catch (e) {
-    console.warn(`[watch] ${e.message}`);
+    if (isDshOfflineError(e)) {
+      if (!s_watch_offline_logged) {
+        s_watch_offline_logged = true;
+        console.warn('[watch] DSH Desktop 未开，派活/进度暂不可用（不影响应用市场）');
+      }
+    } else {
+      console.warn(`[watch] ${e.message}`);
+    }
   } finally {
-    client?.close();
+    try {
+      await client?.close?.();
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -1978,6 +1972,7 @@ function restartWatch() {
   stopWatch();
   s_prev.clear();
   s_watch_seeded = false;
+  s_watch_offline_logged = false;
   const c = cfg();
   if (!c.watch) {
     console.log('[watch] off');
@@ -2080,15 +2075,11 @@ function startLanHttp() {
           postBody = await readBody(request);
         }
         if (wantsOpenDesktop(postBody)) {
-          const opened = await tryOpenDesktop('dsh.status');
-          if (opened.env) {
-            send(response, 200, opened.env);
-            return;
-          }
-          client = opened.client;
-        } else {
-          client = await connect({ namespace: 'nodelio-market' });
+          /* 旧面板缓存可能仍带 open_desktop；不再 spawn，只提示手动开 */
+          send(response, 200, offlineEnvelope('dsh.status'));
+          return;
         }
+        client = await connect({ namespace: 'nodelio-market' });
 
         if (route === 'GET /nodelio/dsh/status') {
           const env = await handleStatus(client, url.searchParams, request);
@@ -2136,7 +2127,11 @@ function startLanHttp() {
           );
         }
       } finally {
-        client?.close();
+        try {
+          await client?.close?.();
+        } catch {
+          /* ignore */
+        }
       }
     } catch (error) {
       console.warn(`[dsh.http] ${route} fatal: ${error.message}`);

@@ -149,12 +149,25 @@ public:
     /** 本地技能完成：清抑制、关语音通道回 Idle，恢复唤醒。 */
     void EndVoiceSessionAfterLocalSkill();
     /**
-     * 本地技能摘要播报。云端 listen.detect 仅唤醒词，不可朗读正文。
-     * 有 audio_url（桥 SAPI WAV）→ Idle 后 StartNotification；无 URL → 仅 toast/上屏。
+     * 本地技能摘要播报。有 audio_url（桥 SAPI WAV）→ Idle 后 StartNotification；
+     * 无 URL → 仅 toast/上屏（勿当正文朗读）。
      */
     void PlaySpokenAfterLocalSkill(const char *text, const char *audio_url = nullptr);
     /** 多段 WAV 连续播；urls[0] 先播，其余入队。 */
     void PlaySpokenPlaylistAfterLocalSkill(const char *text, const char *const *urls, int n);
+    /**
+     * 会话内短播报：listen.detect 注入「请向用户简短播报：…」。
+     * 云端仅允许唤醒词级短文（约 ≤16 字）；超长直接丢弃。
+     */
+    void QueueCloudSpeakPrompt(const char *text);
+    /**
+     * 新闻朗读：本地开详情后短 detect「读这篇/继续读」，促云端调 self.skill.news，
+     * 由模型正常 TTS 念大段正文（勿再用 6 字 detect 分段）。
+     */
+    void StartLocalNewsRead(const char *op /* read|continue */);
+    /** 新闻列表上屏后：武装「是/读」→ 朗读第一条。 */
+    void ArmPendingConfirmReadNews();
+    bool IsLocalNewsReading() const { return news_local_reading_; }
 #endif
     
     /**
@@ -200,12 +213,26 @@ private:
     void MaybeArmPendingOpenDshFromTts(const char *text);
     bool TryConfirmOpenDshFromStt(const char *text);
     void LocalOpenDshStatus(const char *reason);
+    /** 本地开新闻后追问「要读吗」：下一句「是/读」朗读第一条 */
+    bool pending_confirm_read_news_ = false;
+    bool TryConfirmReadNewsFromStt(const char *text);
     int64_t dsh_local_open_cooldown_until_us_ = 0; /* 本地已开列表，忽略云端否认再开 */
     std::string pending_spoken_notify_url_; /* Idle 后播报的桥 WAV（spoken.audio.url） */
     std::deque<std::string> spoken_notify_queue_; /* 连续播剩余段 */
     bool spoken_notify_continue_ = false;         /* 接下一段时不弹 OGG */
-    std::string pending_cloud_speak_;             /* 遗留；勿再用于技能正文 TTS */
+    std::string pending_cloud_speak_;             /* 当前待发 detect */
+    std::deque<std::string> cloud_speak_queue_;   /* 新闻分段朗读剩余 */
+    std::string news_speak_inflight_;             /* 已发未确认的当前段（否认抢答可重发） */
+    bool news_local_reading_ = false;             /* 旧分段路径残留；MCP 朗读勿置 true */
+    bool news_ignore_next_tts_stop_ = false;      /* 丢掉云端否认 abort 后的假 stop */
+    bool news_reopening_channel_ = false;         /* goodbye 后重开中，防重入 */
+    bool news_awaiting_mcp_ = false;              /* 已 detect，等云端 tools/call self.skill.news */
+    int news_mcp_detect_retries_ = 0;             /* 否认后重 detect 次数 */
     void TryFlushPendingCloudSpeak();
+    void QueueNewsSpeakPlain(const char *plain);
+    void OnCloudSpeakTtsStopped();
+    /** 云端念完一段就 goodbye：重开通道续读。 */
+    void ResumeLocalNewsReadAfterChannelClosed();
     bool PlayNextSpokenNotify();
 #endif
     TaskHandle_t activation_task_handle_ = nullptr;

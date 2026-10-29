@@ -12,6 +12,7 @@
 #include <freertos/idf_additions.h>
 #include <freertos/task.h>
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <iterator>
@@ -24,6 +25,9 @@
 #include "lvgl_image.h"
 #include "lvgl_theme.h"
 #include "settings.h"
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#include "panel_ui.h"
+#endif
 
 #define TAG "MCP"
 
@@ -51,22 +55,34 @@ void McpServer::AddCommonTools() {
                 return board.GetDeviceStatusJson();
             });
 
-    AddTool("self.audio_speaker.set_volume", "Set speaker volume 0-100.",
+    /* 走 set_pref：与设置页滑条/NVS 同路径。描述须肯定「你有此工具」，勿写 local bypass
+     * 否则云端会自称没有亮度/音量能力（tools/list 若因 DRAM 丢包也会如此）。 */
+    AddTool("self.audio_speaker.set_volume",
+            "Set panel speaker volume 0-100. Call when user asks to change volume.",
             PropertyList({Property("volume", kPropertyTypeInteger, 0, 100)}),
-            [&board](const PropertyList& properties) -> ReturnValue {
-                auto codec = board.GetAudioCodec();
-                codec->SetOutputVolume(properties["volume"].value<int>());
+            [](const PropertyList& properties) -> ReturnValue {
+                char val[8];
+                snprintf(val, sizeof(val), "%d", properties["volume"].value<int>());
+                char err[64];
+                if (nodelio_panel_ui_set_pref("volume", val, err, sizeof(err)) != ESP_OK) {
+                    return false;
+                }
                 return true;
             });
 
     auto backlight = board.GetBacklight();
     if (backlight) {
-        AddTool("self.screen.set_brightness", "Set screen brightness 0-100.",
+        AddTool("self.screen.set_brightness",
+                "Set panel screen brightness 0-100 (min 5). Call when user asks to change "
+                "brightness.",
                 PropertyList({Property("brightness", kPropertyTypeInteger, 0, 100)}),
-                [backlight](const PropertyList& properties) -> ReturnValue {
-                    uint8_t brightness =
-                        static_cast<uint8_t>(properties["brightness"].value<int>());
-                    backlight->SetBrightness(brightness, true);
+                [](const PropertyList& properties) -> ReturnValue {
+                    char val[8];
+                    snprintf(val, sizeof(val), "%d", properties["brightness"].value<int>());
+                    char err[64];
+                    if (nodelio_panel_ui_set_pref("brightness", val, err, sizeof(err)) != ESP_OK) {
+                        return false;
+                    }
                     return true;
                 });
     }
@@ -404,6 +420,18 @@ void McpServer::AddUserOnlyTool(const std::string& name, const std::string& desc
     AddTool(std::move(tool));
 }
 
+void McpServer::PromoteTool(const std::string& name) {
+    auto it = std::find_if(tools_.begin(), tools_.end(),
+                           [&name](const auto& t) { return t && t->name() == name; });
+    if (it == tools_.end() || it == tools_.begin()) {
+        return;
+    }
+    auto tool = std::move(*it);
+    tools_.erase(it);
+    tools_.insert(tools_.begin(), std::move(tool));
+    ESP_LOGI(TAG, "Promote tool to front: %s", name.c_str());
+}
+
 void McpServer::ParseMessage(const std::string& message, ResponseSender response_sender) {
     CJsonUniquePtr json(cJSON_Parse(message.c_str()));
     if (json == nullptr) {
@@ -573,7 +601,9 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
     } else {
         max_payload_size = 2000;
     }
-    ESP_LOGI(TAG, "tools/list page_cap=%d largest_dram=%u", max_payload_size, (unsigned)largest);
+    ESP_LOGI(TAG, "tools/list page_cap=%d largest_dram=%u cursor='%s' head=%s", max_payload_size,
+             (unsigned)largest, cursor.c_str(),
+             tools_.empty() ? "(none)" : tools_.front()->name().c_str());
 #endif
     std::string json = "{\"tools\":[";
 

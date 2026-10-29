@@ -84,14 +84,28 @@ void AudioService::Initialize(AudioCodec* codec) {
     codec_ = codec;
     codec_->Start();
 
-    esp_opus_dec_cfg_t opus_dec_cfg = OPUS_DEC_CFG(codec->output_sample_rate());
+    /* 云端/提示音 Opus 均为 16k。墙板输出 24k：开机按 16k 建解码器 + 重采样，
+     * 避免首包唤醒问候在 AFE 占满 DRAM 时 close/open 失败 → 解码器变空 → 全程无声。 */
+    constexpr int kNetOpusRate = 16000;
+    esp_opus_dec_cfg_t opus_dec_cfg = OPUS_DEC_CFG(kNetOpusRate);
     auto ret = esp_opus_dec_open(&opus_dec_cfg, sizeof(esp_opus_dec_cfg_t), &opus_decoder_);
     if (opus_decoder_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create audio decoder, error code: %d", ret);
     } else {
-        decoder_sample_rate_ = codec->output_sample_rate();
+        decoder_sample_rate_ = kNetOpusRate;
         decoder_duration_ms_ = OPUS_FRAME_DURATION_MS;
         decoder_frame_size_ = decoder_sample_rate_ / 1000 * OPUS_FRAME_DURATION_MS;
+        if (decoder_sample_rate_ != codec->output_sample_rate()) {
+            esp_ae_rate_cvt_cfg_t output_resampler_cfg =
+                RATE_CVT_CFG(decoder_sample_rate_, codec->output_sample_rate(), ESP_AUDIO_MONO);
+            auto resampler_ret = esp_ae_rate_cvt_open(&output_resampler_cfg, &output_resampler_);
+            if (output_resampler_ == nullptr) {
+                ESP_LOGE(TAG, "Failed to create output resampler, error code: %d", resampler_ret);
+            } else {
+                ESP_LOGI(TAG, "Opus decode %d → out %d (resampler ready)", decoder_sample_rate_,
+                         codec->output_sample_rate());
+            }
+        }
     }
     esp_opus_enc_config_t opus_enc_cfg = AS_OPUS_ENC_CONFIG();
     ret = esp_opus_enc_open(&opus_enc_cfg, sizeof(esp_opus_enc_config_t), &opus_encoder_);
@@ -409,6 +423,20 @@ void AudioService::AudioOutputTask() {
             callbacks_.on_playback_progress(task.playback_id, task.media_position_ms);
         }
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        if (debug_statistics_.playback_count < 3) {
+            int16_t peak = 0;
+            for (int16_t s : task.pcm) {
+                int16_t a = s < 0 ? (int16_t)(-s) : s;
+                if (a > peak) {
+                    peak = a;
+                }
+            }
+            ESP_LOGI(TAG, "pcm out #%u samples=%u peak=%d out_en=%d vol=%d",
+                     (unsigned)debug_statistics_.playback_count, (unsigned)task.pcm.size(),
+                     (int)peak, codec_->output_enabled() ? 1 : 0, codec_->output_volume());
+        }
+#endif
         codec_->OutputData(task.pcm);
 
         /* Update the last output time */
@@ -552,6 +580,9 @@ void AudioService::OpusCodecTask() {
             lock.lock();
             if (decoded && generation == playback_generation_ && !service_stopped_.load()) {
                 audio_playback_queue_.push_back(std::move(task));
+            } else if (decoded && generation != playback_generation_) {
+                ESP_LOGW(TAG, "drop decoded pcm: generation mismatch %u→%u (ResetDecoder raced)",
+                         (unsigned)generation, (unsigned)playback_generation_);
             }
             decode_in_flight_ = false;
             debug_statistics_.decode_count++;
@@ -664,17 +695,30 @@ void AudioService::SetDecodeSampleRate(int sample_rate, int frame_us, int frame_
         }
         return;
     }
-    std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
-    if (opus_decoder_ != nullptr) {
-        esp_opus_dec_close(opus_decoder_);
+    /* 先开新再关旧：open 失败时勿留下空解码器（否则 popup/TTS 全程无声） */
+    void* old_dec = nullptr;
+    const int old_rate = decoder_sample_rate_;
+    {
+        std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
+        old_dec = opus_decoder_;
         opus_decoder_ = nullptr;
     }
-    decoder_lock.unlock();
+    void* new_dec = nullptr;
     esp_opus_dec_cfg_t opus_dec_cfg = OPUS_DEC_CFG(sample_rate);
-    auto ret = esp_opus_dec_open(&opus_dec_cfg, sizeof(esp_opus_dec_cfg_t), &opus_decoder_);
-    if (opus_decoder_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create audio decoder, error code: %d", ret);
+    auto ret = esp_opus_dec_open(&opus_dec_cfg, sizeof(esp_opus_dec_cfg_t), &new_dec);
+    if (new_dec == nullptr) {
+        ESP_LOGE(TAG, "Failed to create audio decoder rate=%d err=%d — keep %d", sample_rate,
+                 ret, old_rate);
+        std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
+        opus_decoder_ = old_dec;
         return;
+    }
+    if (old_dec != nullptr) {
+        esp_opus_dec_close(old_dec);
+    }
+    {
+        std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
+        opus_decoder_ = new_dec;
     }
     decoder_sample_rate_ = sample_rate;
     decoder_duration_ms_ = packet_ms;
@@ -698,6 +742,9 @@ void AudioService::SetDecodeSampleRate(int sample_rate, int frame_us, int frame_
         if (output_resampler_ == nullptr) {
             ESP_LOGE(TAG, "Failed to create output resampler, error code: %d", resampler_ret);
         }
+    } else if (output_resampler_ != nullptr) {
+        esp_ae_rate_cvt_close(output_resampler_);
+        output_resampler_ = nullptr;
     }
 }
 
@@ -869,6 +916,15 @@ std::unique_ptr<AudioStreamPacket> AudioService::PopWakeWordPacket() {
 void AudioService::EnableWakeWordDetection(bool enable) {
     ESP_LOGD(TAG, "%s wake word detection", enable ? "Enabling" : "Disabling");
     if (enable) {
+        /* AFE 创建后 INTERNAL largest 常只剩 ~4KB。若此时才首次开麦，
+         * duplex 重配 TX DMA 会失败并在 i2s_channel_enable 空指针崩。
+         * 先开喇叭占住 TX（随即 mute 保 DMA），再建 AFE。
+         * 引擎已建好后再做 true→false：speaking 入队的首包 TTS 会在
+         * output_enabled_=false 时被 Write 瞬间丢光 → 唤醒首句无声。 */
+        if (codec_ && !audio_engine_initialized_) {
+            codec_->EnableOutput(true);
+            codec_->EnableOutput(false);
+        }
         if (!InitializeAudioEngine()) {
             xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
             return;
@@ -918,10 +974,30 @@ void AudioService::EnableVoiceProcessing(bool enable) {
     ESP_LOGD(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
 
     if (enable) {
+        /* 同 EnableWakeWordDetection：仅首次建引擎时占 TX；已初始化勿 mute。 */
+        if (codec_ && !audio_engine_initialized_) {
+            codec_->EnableOutput(true);
+            codec_->EnableOutput(false);
+        }
         if (!InitializeAudioEngine()) {
             return;
         }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        /* 云端问候 UDP 可能已在队列/解码中；ResetDecoder 会 ++generation 丢掉在途 PCM → 有字无声 */
+        bool playback_busy = false;
+        {
+            std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+            playback_busy = !audio_decode_queue_.empty() || !audio_playback_queue_.empty() ||
+                            decode_in_flight_ || output_in_flight_;
+        }
+        if (playback_busy) {
+            ESP_LOGW(TAG, "EnableVoiceProcessing: skip ResetDecoder (cloud TTS in flight)");
+        } else {
+            ResetDecoder();
+        }
+#else
         ResetDecoder();
+#endif
         audio_input_need_warmup_ = true;
         {
             std::lock_guard<std::mutex> lock(input_resampler_mutex_);

@@ -127,6 +127,7 @@ private:
             GetBacklight()->RestoreBrightness();
 #if CONFIG_NODELIO_PANEL
             nodelio_panel_ui_notify_screen(true);
+            nodelio_panel_ui_notice_flush_deferred();
 #endif
             /* 播报时 AudioService 会再 EnableOutput(true)；此处不强制开 */
         });
@@ -157,7 +158,7 @@ private:
                 esp_lcd_touch_point_data_t pt = {};
                 uint8_t cnt = 0;
                 if (esp_lcd_touch_get_data(self->touch_, &pt, &cnt, 1) == ESP_OK && cnt > 0) {
-                    /* 连续两拍（~160ms）才唤醒，滤毛刺/悬空误触 */
+                    /* 连续两拍（~100ms）才唤醒，滤毛刺/悬空误触 */
                     if (++self->touch_wake_hits_ >= 2) {
                         self->touch_wake_hits_ = 0;
                         self->power_save_timer_->NoteActivity();
@@ -174,8 +175,8 @@ private:
         if (esp_timer_create(&args, &touch_wake_timer_) != ESP_OK) {
             return;
         }
-        /* 息屏触控轮询 80ms：人手轻触约 80-150ms；去抖后需约 160ms 实触 */
-        esp_timer_start_periodic(touch_wake_timer_, 80 * 1000);
+        /* 息屏触控轮询 50ms；去抖后约 100ms 实触可醒 */
+        esp_timer_start_periodic(touch_wake_timer_, 50 * 1000);
     }
 
     void StopTouchWakePoll() {
@@ -318,13 +319,25 @@ private:
             return;
         }
 
+        /* 比驱动默认略灵敏：THGROUP 70→55 等；误触再往回调 */
+        auto ft_wr = [this](uint8_t reg, uint8_t val) {
+            uint8_t b = val;
+            (void)esp_lcd_panel_io_tx_param(touch_->io, reg, &b, 1);
+        };
+        ft_wr(0x80, 55); /* THGROUP */
+        ft_wr(0x81, 48); /* THPEAK */
+        ft_wr(0x82, 14); /* THCAL */
+        ft_wr(0x83, 50); /* THWATER */
+        ft_wr(0x85, 15); /* THDIFF */
+        ft_wr(0x88, 10); /* PERIODACTIVE ms */
+
         const lvgl_port_touch_cfg_t touch_cfg = {
             .disp = lv_display_get_default(),
             .handle = touch_,
         };
         if (touch_cfg.disp) {
             lvgl_port_add_touch(&touch_cfg);
-            ESP_LOGI(TAG, "FT5x06 touch ready");
+            ESP_LOGI(TAG, "FT5x06 touch ready (sensitive)");
         } else {
             ESP_LOGW(TAG, "LVGL display missing, touch not added");
         }

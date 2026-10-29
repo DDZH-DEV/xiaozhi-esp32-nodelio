@@ -9,7 +9,7 @@
 | 角色 | 干什么 |
 |------|--------|
 | 墙板 | 语音/触控 invoke；显示 list 卡；点允许/拒绝 |
-| Host | 安装市场包、代 invoke、MQTT `skill_hint`；公网拓扑下收桥出站 WS |
+| Host | 安装市场包、代 invoke、MQTT `kind=notice`（旧 `skill_hint` 兼容）；公网拓扑下收桥出站 WS |
 | 本桥 | LAN HTTP Envelope 上游 + 可选出站 `host-ws`；调 DSH Desktop JSON-RPC |
 | DSH Desktop | 真正执行 |
 
@@ -130,7 +130,7 @@ node dsh-task.mjs send "D:\xz25" "只回复一句话：测试通过。" --wait
 
 - 需要 DSH Desktop 在跑；退出即断
 - token 仅本机；勿过公网
-- 无任务卡原地刷新：靠再问进度、点刷新，或 `skill_hint` 单次 re-invoke
+- 无任务卡原地刷新：靠再问进度、点刷新，或 Notice/`skill_hint` 单次 re-invoke（`needs_you`→action，`completed`→info）
 - 列表 `density=comfortable`（约 4 行）；顶栏 `display.filters` 工作区 chip；行「续聊」/审批
 - 点会话行 → `session` 详情 `body` 纯文本；刷新清 `detail_body` 重回列表
 - `default_workspace`：派活无武装时回落；打开进度时优先选中该 chip

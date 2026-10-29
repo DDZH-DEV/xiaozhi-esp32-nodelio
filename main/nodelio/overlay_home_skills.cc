@@ -153,15 +153,17 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
     if (xTaskCreateWithCaps(
             [](void *p) {
                 auto *a = static_cast<invoke_arg *>(p);
-                Application::GetInstance().Schedule([]() {
-                    auto st = Application::GetInstance().GetDeviceState();
-                    if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
-                        st == kDeviceStateConnecting) {
-                        Application::GetInstance().EndVoiceSessionAfterLocalSkill();
-                    }
-                });
                 const bool music_app = nodelio_skill_id_is_music(a->id);
-                if (!music_app && nodelio_media_preempt_for_heavy_app()) {
+                /* 仅媒体退会话；天气等保留云端 TTS */
+                if (music_app) {
+                    Application::GetInstance().Schedule([]() {
+                        auto st = Application::GetInstance().GetDeviceState();
+                        if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
+                            st == kDeviceStateConnecting) {
+                            Application::GetInstance().EndVoiceSessionAfterLocalSkill();
+                        }
+                    });
+                } else if (nodelio_media_preempt_for_heavy_app()) {
                     nodelio_panel_ui_toast_defer("已停止音乐以打开应用");
                 }
                 char base[160];

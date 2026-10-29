@@ -13,6 +13,7 @@
 #include "nodelio_http.h"
 #include "nvs_config.h"
 #include "offline_cmd.h"
+#include "offline_cmd_map.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
 #include "skill_result_ui.h"
@@ -212,6 +213,51 @@ extern "C" void nodelio_panel_ui_announce_spoken(const char *text)
     nodelio_panel_ui_announce_spoken_ex(text, nullptr);
 }
 
+extern "C" void nodelio_panel_ui_request_cloud_speak(const char *text)
+{
+    if (!text || !text[0]) {
+        return;
+    }
+    char *copy = strdup(text);
+    if (!copy) {
+        return;
+    }
+    Application::GetInstance().Schedule([copy]() {
+        Application::GetInstance().QueueCloudSpeakPrompt(copy);
+        free(copy);
+    });
+}
+
+extern "C" void nodelio_panel_ui_news_read_local(const char *op)
+{
+    const char *use = (op && op[0]) ? op : "read";
+    char *copy = strdup(use);
+    if (!copy) {
+        return;
+    }
+    Application::GetInstance().Schedule([copy]() {
+        Application::GetInstance().StartLocalNewsRead(copy);
+        free(copy);
+    });
+}
+
+static bool s_news_read_offer_armed = false;
+
+extern "C" void nodelio_panel_ui_arm_news_read_offer(void)
+{
+    s_news_read_offer_armed = true;
+    ESP_LOGI(TAG, "arm news read offer");
+}
+
+extern "C" bool nodelio_panel_ui_take_news_read_offer(void)
+{
+    if (!s_news_read_offer_armed) {
+        return false;
+    }
+    s_news_read_offer_armed = false;
+    return true;
+}
+
 extern "C" void nodelio_panel_ui_announce_spoken_ex(const char *text, const char *audio_url)
 {
     if (audio_url && audio_url[0]) {
@@ -305,43 +351,235 @@ extern "C" void nodelio_panel_ui_apply_skills_http_body(const char *json)
     cJSON_Delete(root);
 }
 
+/* Notice 短队列：息屏 info 延迟；action 置顶同时最多积压若干条 */
+static constexpr int kNoticeDeferMax = 5;
+static nodelio_panel_notice_t s_notice_defer[kNoticeDeferMax];
+static int s_notice_defer_n = 0;
+static char s_notice_active_id[40] = {0};
+
+static void notice_copy(nodelio_panel_notice_t *dst, const nodelio_panel_notice_t *src)
+{
+    if (!dst || !src) {
+        return;
+    }
+    *dst = *src;
+}
+
+static bool notice_sev_at_least_warning(const char *sev)
+{
+    return sev && (strcmp(sev, "warning") == 0 || strcmp(sev, "critical") == 0);
+}
+
+static bool notice_wants_wake(const nodelio_panel_notice_t *n)
+{
+    if (!n) {
+        return false;
+    }
+    if (n->wake) {
+        return true;
+    }
+    if (strcmp(n->mode, "action") == 0) {
+        return true;
+    }
+    if (strcmp(n->mode, "alert") == 0 && notice_sev_at_least_warning(n->severity)) {
+        return true;
+    }
+    return false;
+}
+
+static void notice_maybe_wake(const nodelio_panel_notice_t *n)
+{
+    if (!notice_wants_wake(n)) {
+        return;
+    }
+    Board::GetInstance().NoteUserActivity();
+}
+
+static void notice_do_invoke(const nodelio_panel_notice_t *n)
+{
+    if (!n) {
+        return;
+    }
+    const char *sid = n->invoke_app[0] ? n->invoke_app : n->app_id;
+    if (!sid || !sid[0]) {
+        return;
+    }
+    /* DSH 兼容：有 session 时走专用 status 详情 */
+    if (strstr(sid, "dsh.status") != nullptr ||
+        (strstr(sid, "dsh") != nullptr && n->session[0])) {
+        nl_ov_apps_invoke_dsh_status(nullptr, n->session[0] ? n->session : nullptr);
+        return;
+    }
+    const char *body = n->invoke_params[0] ? n->invoke_params : "{}";
+    nl_ov_invoke_skill_async(sid, body);
+}
+
+static void notice_present(const nodelio_panel_notice_t *n)
+{
+    if (!n) {
+        return;
+    }
+    if (n->notice_id[0]) {
+        snprintf(s_notice_active_id, sizeof(s_notice_active_id), "%s", n->notice_id);
+    }
+    const char *toast = n->title[0] ? n->title : nullptr;
+    if (!toast) {
+        if (strcmp(n->reason, "needs_you") == 0) {
+            toast = "有任务等你确认";
+        } else if (strcmp(n->reason, "completed") == 0) {
+            toast = "有任务已完成";
+        } else if (strcmp(n->mode, "alert") == 0) {
+            toast = "监测告警";
+        } else if (strcmp(n->mode, "action") == 0) {
+            toast = "需要你确认";
+        } else {
+            toast = "新通知";
+        }
+    }
+    nl_ov_toast(toast);
+
+    /* 有 invoke_app（或 action/alert 带 app_id）才拉 Envelope；纯 title info 零 HTTP */
+    const bool has_invoke_target = n->invoke_app[0] || n->app_id[0];
+    if (strcmp(n->mode, "action") == 0 && has_invoke_target) {
+        notice_do_invoke(n);
+    } else if (strcmp(n->mode, "alert") == 0 && has_invoke_target &&
+               (strcmp(n->severity, "critical") == 0 || n->invoke_app[0])) {
+        notice_do_invoke(n);
+    } else if (strcmp(n->mode, "info") == 0 && n->invoke_app[0]) {
+        notice_do_invoke(n);
+    }
+}
+
+static void notice_enqueue_deferred(const nodelio_panel_notice_t *n)
+{
+    if (!n) {
+        return;
+    }
+    if (s_notice_defer_n >= kNoticeDeferMax) {
+        /* 丢最旧 */
+        memmove(&s_notice_defer[0], &s_notice_defer[1],
+                sizeof(s_notice_defer[0]) * (kNoticeDeferMax - 1));
+        s_notice_defer_n = kNoticeDeferMax - 1;
+    }
+    notice_copy(&s_notice_defer[s_notice_defer_n++], n);
+}
+
+extern "C" void nodelio_panel_ui_notice_flush_deferred(void)
+{
+    if (s_notice_defer_n <= 0) {
+        return;
+    }
+    const int n = s_notice_defer_n;
+    auto *local = static_cast<nodelio_panel_notice_t *>(
+        malloc(sizeof(nodelio_panel_notice_t) * (size_t)n));
+    if (!local) {
+        s_notice_defer_n = 0;
+        return;
+    }
+    memcpy(local, s_notice_defer, sizeof(nodelio_panel_notice_t) * (size_t)n);
+    s_notice_defer_n = 0;
+    Application::GetInstance().Schedule([local, n]() {
+        for (int i = 0; i < n; ++i) {
+            notice_present(&local[i]);
+        }
+        free(local);
+    });
+}
+
+extern "C" void nodelio_panel_ui_notice_clear(const char *notice_id)
+{
+    if (!notice_id || !notice_id[0]) {
+        return;
+    }
+    char *id = strdup(notice_id);
+    Application::GetInstance().Schedule([id]() {
+        if (id && s_notice_active_id[0] && strcmp(s_notice_active_id, id) == 0) {
+            s_notice_active_id[0] = '\0';
+        }
+        if (id) {
+            for (int i = 0; i < s_notice_defer_n; ++i) {
+                if (strcmp(s_notice_defer[i].notice_id, id) == 0) {
+                    if (i + 1 < s_notice_defer_n) {
+                        memmove(&s_notice_defer[i], &s_notice_defer[i + 1],
+                                sizeof(s_notice_defer[0]) * (size_t)(s_notice_defer_n - i - 1));
+                    }
+                    --s_notice_defer_n;
+                    break;
+                }
+            }
+            free(id);
+        }
+    });
+}
+
+extern "C" void nodelio_panel_ui_notice(const nodelio_panel_notice_t *notice)
+{
+    if (!notice) {
+        return;
+    }
+    auto *copy = static_cast<nodelio_panel_notice_t *>(malloc(sizeof(nodelio_panel_notice_t)));
+    if (!copy) {
+        return;
+    }
+    notice_copy(copy, notice);
+    if (!copy->mode[0]) {
+        if (strcmp(copy->reason, "needs_you") == 0) {
+            snprintf(copy->mode, sizeof(copy->mode), "action");
+        } else if (strcmp(copy->reason, "completed") == 0) {
+            snprintf(copy->mode, sizeof(copy->mode), "info");
+        } else {
+            snprintf(copy->mode, sizeof(copy->mode), "info");
+        }
+    }
+    if (!copy->severity[0]) {
+        snprintf(copy->severity, sizeof(copy->severity), "normal");
+    }
+    Application::GetInstance().Schedule([copy]() {
+        const bool sleeping = Board::GetInstance().IsInSleepMode();
+        const bool is_info = strcmp(copy->mode, "info") == 0;
+        if (sleeping && is_info && !notice_wants_wake(copy)) {
+            notice_enqueue_deferred(copy);
+            free(copy);
+            return;
+        }
+        notice_maybe_wake(copy);
+        notice_present(copy);
+        free(copy);
+    });
+}
+
 extern "C" void nodelio_panel_ui_skill_hint(const char *app_or_instance_id, const char *reason,
                                             const char *session)
 {
-    char *id_copy = nullptr;
-    char *reason_copy = nullptr;
-    char *sess_copy = nullptr;
+    nodelio_panel_notice_t n;
+    memset(&n, 0, sizeof(n));
     if (app_or_instance_id && app_or_instance_id[0]) {
-        id_copy = strdup(app_or_instance_id);
+        snprintf(n.app_id, sizeof(n.app_id), "%s", app_or_instance_id);
+        snprintf(n.invoke_app, sizeof(n.invoke_app), "%s", app_or_instance_id);
     }
     if (reason && reason[0]) {
-        reason_copy = strdup(reason);
+        snprintf(n.reason, sizeof(n.reason), "%s", reason);
     }
     if (session && session[0]) {
-        sess_copy = strdup(session);
+        snprintf(n.session, sizeof(n.session), "%s", session);
+        snprintf(n.invoke_params, sizeof(n.invoke_params), "{\"session\":\"%s\"}", session);
     }
-    Application::GetInstance().Schedule([id_copy, reason_copy, sess_copy]() {
-        if (reason_copy && strcmp(reason_copy, "needs_you") == 0) {
-            nl_ov_toast("有任务等你确认");
-        } else if (reason_copy && strcmp(reason_copy, "completed") == 0) {
-            nl_ov_toast("有任务已完成");
-        }
-        /* 有 session → 直开详情；否则刷新进度列表 */
-        if (sess_copy && sess_copy[0]) {
-            nl_ov_apps_invoke_dsh_status(nullptr, sess_copy);
-        } else if (id_copy && id_copy[0]) {
-            if (strstr(id_copy, "dsh") != nullptr) {
-                nl_ov_apps_invoke_dsh_status(nullptr, nullptr);
-            } else {
-                (void)nodelio_panel_ui_open_app(id_copy);
-            }
-        } else {
-            nl_ov_apps_invoke_dsh_status(nullptr, nullptr);
-        }
-        free(id_copy);
-        free(reason_copy);
-        free(sess_copy);
-    });
+    if (reason && strcmp(reason, "needs_you") == 0) {
+        snprintf(n.mode, sizeof(n.mode), "action");
+        snprintf(n.title, sizeof(n.title), "有任务等你确认");
+        n.wake = 1;
+    } else if (reason && strcmp(reason, "completed") == 0) {
+        snprintf(n.mode, sizeof(n.mode), "info");
+        snprintf(n.title, sizeof(n.title), "有任务已完成");
+    } else {
+        snprintf(n.mode, sizeof(n.mode), "info");
+    }
+    /* 旧 hint 无 app 时默认 dsh.status */
+    if (!n.app_id[0]) {
+        snprintf(n.app_id, sizeof(n.app_id), "dsh.status");
+        snprintf(n.invoke_app, sizeof(n.invoke_app), "dsh.status");
+    }
+    nodelio_panel_ui_notice(&n);
 }
 
 extern "C" void nodelio_panel_ui_play_cue(int cue)
@@ -666,8 +904,8 @@ extern "C" bool nodelio_panel_ui_open_app(const char *name_or_id)
     }
     ESP_LOGI(TAG, "open_app stripped='%s'", q);
     Application::GetInstance().Schedule([q]() {
-        /* 点图标/语音开应用：若仍 Listening，先退会话，否则电台列表有、点台无声/假死 */
-        {
+        /* 媒体须退会话才能 HTTP 播；新闻 keep_listening 追问要不要读；天气问内容 keep_cloud */
+        if (!nodelio_offline_query_keeps_listening(q)) {
             auto st = Application::GetInstance().GetDeviceState();
             if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
                 st == kDeviceStateConnecting) {
@@ -959,6 +1197,11 @@ extern "C" int nodelio_panel_ui_dsh_try_confirm_send(const char *stt)
 /* 局域网设备：云端 online 恒 false / 通道 stub OFF，跨 snapshot 保留上次探测结果防闪烁 */
 static nl_dev_cache_t s_lan_sticky[NL_DEV_CACHE_MAX];
 static int s_lan_sticky_n = 0;
+/** snapshot_begin 前视觉签名；end 时相同则跳过整页刷磁贴 */
+static uint32_t s_snap_vis_before;
+static uint32_t s_lan_pack_sig_saved;
+static int64_t s_lan_nvs_backoff_until_ms;
+#define LAN_NVS_BACKOFF_MS (10 * 60 * 1000)
 
 static const nl_dev_cache_t *lan_sticky_find(const char *device_id)
 {
@@ -973,8 +1216,70 @@ static const nl_dev_cache_t *lan_sticky_find(const char *device_id)
     return nullptr;
 }
 
+static uint32_t mix_u32(uint32_t h, uint32_t v)
+{
+    h ^= v;
+    h *= 16777619u;
+    return h;
+}
+
+static uint32_t mix_str(uint32_t h, const char *s)
+{
+    if (!s) {
+        return mix_u32(h, 0);
+    }
+    while (*s) {
+        h = mix_u32(h, (uint8_t)*s++);
+    }
+    return h;
+}
+
+extern "C" uint32_t nodelio_panel_ui_dev_visual_sig(void)
+{
+    nl_ov_ensure_devs_cache();
+    uint32_t h = 2166136261u;
+    h = mix_u32(h, (uint32_t)s_dev_n);
+    if (!s_devs) {
+        return h;
+    }
+    for (int i = 0; i < s_dev_n; i++) {
+        const nl_dev_cache_t *d = &s_devs[i];
+        h = mix_str(h, d->id);
+        h = mix_u32(h, d->online ? 1u : 0u);
+        h = mix_u32(h, d->pass_required ? 1u : 0u);
+        h = mix_str(h, d->power);
+        h = mix_u32(h, (uint32_t)(uint16_t)d->countdown);
+        h = mix_u32(h, d->ch_n);
+        for (uint8_t c = 0; c < d->ch_n; c++) {
+            h = mix_u32(h, (uint32_t)(uint16_t)d->ch_idx[c]);
+            h = mix_str(h, d->ch_st[c]);
+            h = mix_u32(h, (uint32_t)(uint16_t)d->ch_cd[c]);
+        }
+    }
+    return h;
+}
+
+static uint32_t lan_pack_sig_now(void)
+{
+    nl_ov_ensure_devs_cache();
+    uint32_t h = 2166136261u;
+    if (!s_devs) {
+        return h;
+    }
+    for (int i = 0; i < s_dev_n; i++) {
+        if (!s_devs[i].lan_control || !s_devs[i].id[0] || !s_devs[i].ip[0]) {
+            continue;
+        }
+        h = mix_str(h, s_devs[i].id);
+        h = mix_str(h, s_devs[i].ip);
+        h = mix_u32(h, s_devs[i].pass_required ? 1u : 0u);
+    }
+    return h;
+}
+
 extern "C" void nodelio_panel_ui_snapshot_begin(void)
 {
+    s_snap_vis_before = nodelio_panel_ui_dev_visual_sig();
     s_lan_sticky_n = 0;
     if (s_devs) {
         for (int i = 0; i < s_dev_n && s_lan_sticky_n < NL_DEV_CACHE_MAX; i++) {
@@ -1023,7 +1328,8 @@ extern "C" void nodelio_panel_ui_snapshot_set_lan(const char *device_id, const c
     if (!lan_control) {
         return;
     }
-    /* 忽略云端 online=false / stub 通道：恢复上次探测态；首次见则乐观在线等探测 */
+    /* 忽略云端 online=false / stub 通道：恢复上次探测态。
+     * 首次见默认离线（黑）：勿乐观在线，否则重刷/冷启动死设备会先黄再黑。 */
     const nl_dev_cache_t *prev = lan_sticky_find(device_id);
     if (prev) {
         d->online = prev->online;
@@ -1037,7 +1343,7 @@ extern "C" void nodelio_panel_ui_snapshot_set_lan(const char *device_id, const c
         std::memcpy(d->ch_cd, prev->ch_cd, sizeof(d->ch_cd));
         d->countdown = prev->countdown;
     } else {
-        d->online = true;
+        d->online = false;
         d->ch_n = 0;
         d->power[0] = '\0';
     }
@@ -1148,6 +1454,11 @@ typedef struct {
     nl_lan_pack_t items[LAN_PACK_MAX];
 } nl_lan_blob_t;
 
+typedef struct {
+    uint32_t pack_sig;
+    nl_lan_blob_t blob;
+} nl_lan_save_job_t;
+
 extern "C" void nodelio_run_on_app_task(void (*fn)(void *), void *arg)
 {
     if (!fn) {
@@ -1158,18 +1469,20 @@ extern "C" void nodelio_run_on_app_task(void (*fn)(void *), void *arg)
 
 static void lan_cache_save_flash(void *arg)
 {
-    nl_lan_blob_t *blob = static_cast<nl_lan_blob_t *>(arg);
-    if (!blob) {
+    nl_lan_save_job_t *job = static_cast<nl_lan_save_job_t *>(arg);
+    if (!job) {
         return;
     }
+    nl_lan_blob_t *blob = &job->blob;
     nvs_handle_t h;
     if (nvs_open(LAN_NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
-        heap_caps_free(blob);
+        heap_caps_free(job);
         return;
     }
     esp_err_t err = nvs_set_blob(h, LAN_NVS_KEY, blob, sizeof(*blob));
     if (err == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
         (void)nvs_erase_key(h, LAN_NVS_KEY);
+        (void)nvs_erase_key(h, "apps_list"); /* 可重建；勿挤掉 server_url */
         err = nvs_set_blob(h, LAN_NVS_KEY, blob, sizeof(*blob));
     }
     if (err == ESP_OK) {
@@ -1177,42 +1490,57 @@ static void lan_cache_save_flash(void *arg)
     }
     nvs_close(h);
     if (err == ESP_OK) {
+        s_lan_nvs_backoff_until_ms = 0;
+        s_lan_pack_sig_saved = job->pack_sig;
         ESP_LOGI(TAG, "lan cache saved n=%d", blob->n);
     } else {
-        ESP_LOGW(TAG, "lan cache save: %s", esp_err_to_name(err));
+        /* 满盘时退避，避免每次 snapshot 都打 WARN + 擦写 flash；成功前不记 sig */
+        s_lan_nvs_backoff_until_ms = esp_timer_get_time() / 1000 + LAN_NVS_BACKOFF_MS;
+        ESP_LOGW(TAG, "lan cache save: %s (backoff %ds)", esp_err_to_name(err),
+                 LAN_NVS_BACKOFF_MS / 1000);
     }
-    heap_caps_free(blob);
+    heap_caps_free(job);
 }
 
 static void lan_cache_save(void)
 {
     /* layout_sync 在 PSRAM 栈：禁止本任务写 NVS（会 assert cache_disabled） */
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    if (s_lan_nvs_backoff_until_ms > 0 && now_ms < s_lan_nvs_backoff_until_ms) {
+        return;
+    }
+    const uint32_t pack_sig = lan_pack_sig_now();
+    if (pack_sig == s_lan_pack_sig_saved && s_lan_pack_sig_saved != 0) {
+        return; /* IP/口令清单未变，勿反复写 NVS */
+    }
     nl_ov_ensure_devs_cache();
     if (!s_devs) {
         return;
     }
-    nl_lan_blob_t *blob = static_cast<nl_lan_blob_t *>(
-        heap_caps_calloc(1, sizeof(*blob), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!blob) {
-        blob = static_cast<nl_lan_blob_t *>(calloc(1, sizeof(*blob)));
+    nl_lan_save_job_t *job = static_cast<nl_lan_save_job_t *>(
+        heap_caps_calloc(1, sizeof(*job), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!job) {
+        job = static_cast<nl_lan_save_job_t *>(calloc(1, sizeof(*job)));
     }
-    if (!blob) {
+    if (!job) {
         return;
     }
-    for (int i = 0; i < s_dev_n && blob->n < LAN_PACK_MAX; i++) {
+    job->pack_sig = pack_sig;
+    for (int i = 0; i < s_dev_n && job->blob.n < LAN_PACK_MAX; i++) {
         if (!s_devs[i].lan_control || !s_devs[i].id[0] || !s_devs[i].ip[0]) {
             continue;
         }
-        nl_lan_pack_t *p = &blob->items[blob->n++];
+        nl_lan_pack_t *p = &job->blob.items[job->blob.n++];
         std::snprintf(p->id, sizeof(p->id), "%s", s_devs[i].id);
         std::snprintf(p->ip, sizeof(p->ip), "%s", s_devs[i].ip);
         p->pass_required = s_devs[i].pass_required ? 1 : 0;
     }
-    if (blob->n == 0) {
-        heap_caps_free(blob);
+    if (job->blob.n == 0) {
+        heap_caps_free(job);
+        s_lan_pack_sig_saved = pack_sig;
         return;
     }
-    nodelio_run_on_app_task(lan_cache_save_flash, blob);
+    nodelio_run_on_app_task(lan_cache_save_flash, job);
 }
 
 extern "C" void nodelio_panel_ui_lan_cache_load(void)
@@ -1252,8 +1580,10 @@ extern "C" void nodelio_panel_ui_lan_cache_load(void)
         std::snprintf(d->ip, sizeof(d->ip), "%s", p->ip);
         d->lan_control = true;
         d->pass_required = p->pass_required != 0;
-        d->online = true;
+        /* 只恢复 IP；在线态等 DIOL 探测，避免重刷后死设备先亮黄 */
+        d->online = false;
     }
+    s_lan_pack_sig_saved = lan_pack_sig_now();
     ESP_LOGI(TAG, "lan cache loaded n=%d devs=%d", blob.n, s_dev_n);
 }
 
@@ -1261,6 +1591,11 @@ extern "C" void nodelio_panel_ui_snapshot_end(void)
 {
     lan_cache_save();
     s_have_device_snapshot = true;
+    const uint32_t after = nodelio_panel_ui_dev_visual_sig();
+    if (after == s_snap_vis_before) {
+        ESP_LOGD(TAG, "snapshot end: visual unchanged — skip tile refresh");
+        return;
+    }
     if (!s_home) {
         return;
     }

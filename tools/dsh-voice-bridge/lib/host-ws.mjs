@@ -274,26 +274,29 @@ export function startHostWs(opts) {
         const requestId = frame.request_id;
         const reqPath = frame.path;
         console.log(`[host-ws] fetch path=${reqPath} req=${requestId}`);
-        try {
-          const r = localMarketFetch(reqPath);
-          if (r.bodyRaw) {
-            sendResultRaw(requestId, r.status_code, r.bodyRaw);
-          } else {
+        /* 异步：勿堵 WS 读循环，否则 Host 写泵积压 → bridge_send_busy */
+        Promise.resolve()
+          .then(() => localMarketFetch(reqPath))
+          .then((r) => {
+            if (r.bodyRaw) {
+              sendResultRaw(requestId, r.status_code, r.bodyRaw);
+            } else {
+              send({
+                type: 'result',
+                request_id: requestId,
+                status_code: r.status_code,
+                body: r.body,
+              });
+            }
+          })
+          .catch((e) => {
             send({
               type: 'result',
               request_id: requestId,
-              status_code: r.status_code,
-              body: r.body,
+              status_code: 500,
+              body: { error: e.message || 'fetch_failed' },
             });
-          }
-        } catch (e) {
-          send({
-            type: 'result',
-            request_id: requestId,
-            status_code: 500,
-            body: { error: e.message || 'fetch_failed' },
           });
-        }
       }
     });
 
@@ -314,13 +317,25 @@ export function startHostWs(opts) {
   connect();
 
   return {
-    /** 经 WS 上报 skill_hint（替代 HTTP POST） */
+    /** 经 WS 上报 Notice hint（Host 映射为 kind=notice；兼容旧 reason） */
     sendHint(reason, sessionId, extra = {}) {
+      const mode =
+        extra.mode ||
+        (reason === 'needs_you' ? 'action' : reason === 'completed' ? 'info' : undefined);
+      const title =
+        extra.title ||
+        (reason === 'needs_you'
+          ? '有任务等你确认'
+          : reason === 'completed'
+            ? '有任务已完成'
+            : undefined);
       send({
         type: 'hint',
         app_id: extra.app_id || 'dsh.status',
         instance_id: extra.instance_id || undefined,
         reason,
+        mode,
+        title,
         session: sessionId || undefined,
         panel_device_id: panelDeviceId || undefined,
       });

@@ -17,7 +17,7 @@ if errorlevel 1 (
   echo [nodelio] CONFIG_BOARD_TYPE_SILA_86 not set
   exit /b 1
 )
-REM idf.py build 不会吃 config.json 的 sdkconfig_append；补上 WiFi RX；去掉 MultiNet（省 ~4MB PSRAM）
+REM idf.py build ignores config.json sdkconfig_append; patch WiFi RX; disable MultiNet (~4MB PSRAM)
 findstr /b /c:"CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16" sdkconfig >nul
 if errorlevel 1 (
   echo [nodelio] applying sila WiFi RX buffers to sdkconfig

@@ -4,6 +4,7 @@
 #include "diol_lan.h"
 #include "layout_cache.h"
 #include "nl_url_util.h"
+#include "media_player.h"
 #include "nodelio_bridge.h"
 #include "nodelio_http.h"
 #include "panel_ui.h"
@@ -40,8 +41,8 @@ static int64_t s_last_snapshot_ms; /* MQTT 自动 snapshot 限频 */
 
 /** MQTT 推送 snapshot（非 force）最短间隔；手动刷新 / force 不受限 */
 #define NL_SNAPSHOT_MIN_INTERVAL_MS (60 * 1000)
-/* force（online/status）也合并：多设备连跳时避免每秒全量 GET + DIOL 探测 */
-#define NL_SNAPSHOT_FORCE_MIN_MS (8 * 1000)
+/* force（online/status）合并：多设备连跳时避免十几秒一次全量 GET + DIOL + 整页刷磁贴 */
+#define NL_SNAPSHOT_FORCE_MIN_MS (45 * 1000)
 
 /** cJSON 节点默认吃内部 DRAM；与 WS/MQTT 并行时易 tlsf assert → 改走 PSRAM. */
 static void *cjson_malloc_psram(size_t sz)
@@ -467,6 +468,28 @@ static void parse_layout_object(const cJSON *root, int outer_version, nodelio_pa
         ESP_LOGW(TAG, "truncated %d user page(s); max=%d", skipped_user, NL_LAYOUT_MAX_USER_PAGES);
     }
     layout_autopack(out);
+
+    /* 调试：串口看云端 layout 实际带了什么 skin（双路=skin dual_line） */
+    ESP_LOGI(TAG, "parsed layoutVersion=%d pages=%d", out->layout_version, out->page_count);
+    for (int pi = 0; pi < out->page_count; pi++) {
+        const nl_page_t *pg = &out->pages[pi];
+        for (int si = 0; si < pg->section_count; si++) {
+            const nl_section_t *sec = &pg->sections[si];
+            for (int wi = 0; wi < sec->widget_count; wi++) {
+                const nl_widget_t *wid = &sec->widgets[wi];
+                if (wid->type != NL_WIDGET_SWITCH_TILE) {
+                    continue;
+                }
+                const int is_dual = (wid->skin[0] && strcmp(wid->skin, "dual_line") == 0) ? 1 : 0;
+                ESP_LOGI(TAG,
+                         "switch page=%s id=%s title='%s' skin='%s' dual=%d labels='%s'/'%s' "
+                         "bind=%s#%d size=%dx%d",
+                         pg->id[0] ? pg->id : "?", wid->id, wid->title, wid->skin, is_dual,
+                         wid->labels_off, wid->labels_on, wid->bind.device_id, (int)wid->bind.channel,
+                         (int)wid->gw, (int)wid->gh);
+            }
+        }
+    }
 }
 
 esp_err_t nodelio_layout_parse(const char *json, nodelio_panel_layout_t *out)
@@ -1083,15 +1106,28 @@ static void layout_sync_task(void *arg)
     (void)arg;
     while (true) {
         int kick = layout_wait_kick();
-        /* 语音会话让路：等空闲再拉，避免 HTTP 抢 UDP 造成断续；再等 MQTT TLS 空窗 */
-        while (nodelio_voice_session_active()) {
-            vTaskDelay(pdMS_TO_TICKS(500));
+        /* 自动 sync/snapshot：语音与播歌让路（手动刷新 kick==1 不因播歌阻塞） */
+        if (kick != 1) {
+            while (nodelio_voice_session_active() || nodelio_media_is_playing()) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+        } else {
+            while (nodelio_voice_session_active() && !nodelio_media_is_playing()) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
         }
         (void)nodelio_http_wait_lan_ready(4000);
         layout_lock();
         nodelio_panel_layout_t *layout = layout_scratch();
         if (kick == 1 && layout) {
-            layout_do_sync(layout, true);
+            /* 开机 cache-warm：先补 bootstrap；已就绪则普通全量 sync */
+            if (!s_boot_cloud_done) {
+                layout_unlock();
+                layout_boot_cloud_once();
+                layout_lock();
+            } else {
+                layout_do_sync(layout, true);
+            }
         } else if (!layout) {
             ESP_LOGE(TAG, "layout buf OOM");
         } else if (nodelio_wifi_is_connected()) {
@@ -1179,7 +1215,13 @@ esp_err_t nodelio_layout_start_poll(const nodelio_nvs_config_t *cfg)
         s_layout_task_started = true;
     }
 
-    /* 注册/唤醒后同步拉一次；已成功则跳过，不再二次 kick */
-    layout_boot_cloud_once();
+    /* 缓存热：UI 已能用 → bootstrap 丢 layout 任务，勿堵 bridge/小智 MQTT。
+     * 无缓存：仍同步拉一枪，避免空白首页。 */
+    if (s_applied_version > 0) {
+        ESP_LOGI(TAG, "cache warm v%d — bootstrap async", s_applied_version);
+        s_sync_kick = true;
+    } else {
+        layout_boot_cloud_once();
+    }
     return ESP_OK;
 }

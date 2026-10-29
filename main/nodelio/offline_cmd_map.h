@@ -67,6 +67,17 @@ enum {
     NL_OC_APP_QUOTE = 44,
     /* 停播并收起曲库/电台等技能弹窗（≠ 退下息屏） */
     NL_OC_SKILL_CLOSE = 45,
+    /* 电台：回台列表点选（不伪造 prev/next） */
+    NL_OC_RADIO_SWAP = 46,
+    /* 显示与声音：相对/极限调节（走 set_pref，与滑条同路径） */
+    NL_OC_BRIGHT_UP = 47,
+    NL_OC_BRIGHT_DOWN = 48,
+    NL_OC_VOL_UP = 49,
+    NL_OC_VOL_DOWN = 50,
+    NL_OC_BRIGHT_MAX = 51,
+    NL_OC_BRIGHT_MIN = 52,
+    NL_OC_VOL_MAX = 53,
+    NL_OC_VOL_MIN = 54,
 };
 
 /** 重启/退下等纯本机口令（不依赖 WiFi / layout）。 */
@@ -100,10 +111,22 @@ esp_err_t nodelio_offline_try_phrase(const nodelio_nvs_config_t *cfg, const char
  * 重启 / 进入配网 / UI 导航 / 打开某应用。
  * 供小智 STT 旁路与 MCP 使用；未命中返回 false。
  * end_session：非空时写出是否应结束语音会话。
- * true：重启/配网/关播放器/打开应用（须 Idle 才能播）。
- * false：设置导航/开关/翻页/切歌（保持 Listening，对话框不落，可连说）。
+ * true：重启/配网/关播放器/开媒体应用（须 Idle 才能播）。
+ * false：设置导航/开关/翻页/切歌/开信息卡（天气等）。
+ * keep_cloud_tts：非空时，仅「问天气/空气内容」写出 true（勿 Suppress，云端答同一句）。
+ * 纯开卡（新闻/打开天气）为 false。
+ * end_session：新闻开卡为 false（保持聆听以便追问「要不要读」）；媒体仍为 true。
  */
-bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session);
+bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bool *keep_cloud_tts);
+
+/** 问天气/空气内容时保留云端 TTS；纯开卡（新闻等）返回 false。 */
+bool nodelio_offline_query_keeps_cloud_tts(const char *query);
+
+/**
+ * 是否保持语音通道：新闻开卡后要追问「要读吗」须保持聆听；
+ * 其它与 keeps_cloud_tts 相同（天气问内容 keep，曲库/电台等 false）。
+ */
+bool nodelio_offline_query_keeps_listening(const char *query);
 
 #ifdef __cplusplus
 }

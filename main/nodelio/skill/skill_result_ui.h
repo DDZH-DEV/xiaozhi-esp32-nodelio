@@ -51,6 +51,24 @@ bool nodelio_skill_media_play_any(char *title_out, size_t title_out_len);
 bool nodelio_skill_news_action(const char *op, char *out, size_t out_len);
 
 /**
+ * 本地旁路朗读：op=read|continue。
+ * 打开详情、拉正文、跟读滚屏，并把可播报原文写入 plain_out（无 MCP 指令壳）。
+ */
+bool nodelio_skill_news_local_speak(const char *op, char *plain_out, size_t plain_len);
+
+/** 仅确保详情打开（列表态进当前/首条），不推进朗读游标。 */
+bool nodelio_skill_news_prepare_read(void);
+
+/** 当前技能是否为 news_list 且卡/播放层仍在前台（语音「下一篇」仅此时命中）。 */
+bool nodelio_skill_news_ui_active(void);
+
+/** 当前 media_kind 为 live（电台）；切歌口令应失败，「换台」回列表。 */
+bool nodelio_skill_is_live_radio(void);
+
+/** 展开当前 music_list 列表卡（换台）；无列表返回 false。 */
+bool nodelio_skill_reopen_media_list(void);
+
+/**
  * 用户原话要关技能弹窗时：停播并收起（新闻/电台/播客/曲库/天气等）。
  * 已处理返回 true。
  */
@@ -61,6 +79,12 @@ bool nodelio_skill_try_dismiss_phrase(const char *text);
  * 已处理返回 true。
  */
 bool nodelio_skill_try_pick_phrase(const char *text);
+
+/**
+ * 新闻卡前台：「第 N 条/打开第一条/读第二条」→ 进详情；含读/念则 StartLocalNewsRead（keep_cloud=true）。
+ * 已处理返回 true。
+ */
+bool nodelio_skill_try_news_pick_phrase(const char *text, bool *keep_cloud_tts);
 
 /**
  * 续聊武装后语音派活已发出：进度卡切到「已投递/执行中」动画。

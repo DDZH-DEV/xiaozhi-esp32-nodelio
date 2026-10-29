@@ -1,14 +1,38 @@
 #include "nvs_config.h"
 
+#include <esp_log.h>
 #include <nvs.h>
 #include <nvs_flash.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
+static const char *TAG = "nl_nvs";
+
 /* LVGL 任务栈在 PSRAM：禁 cache 读 flash 时不可用 → 回调内禁止 nvs_load/save */
 static nodelio_nvs_config_t s_ram;
 static bool s_ram_ok;
+
+/** 可重建缓存：腾空间保住 server_url / 凭证。NVS 仅 16KB，易被 lan/apps 占满。 */
+static void reclaim_ephemeral(nvs_handle_t h)
+{
+    (void)nvs_erase_key(h, "lan_devs");
+    (void)nvs_erase_key(h, "apps_list");
+    (void)nvs_erase_key(h, "oc_dyn");
+}
+
+static esp_err_t set_str_checked(nvs_handle_t h, const char *key, const char *val)
+{
+    esp_err_t err = nvs_set_str(h, key, val ? val : "");
+    if (err == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
+        reclaim_ephemeral(h);
+        err = nvs_set_str(h, key, val ? val : "");
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "set_str %s: %s", key, esp_err_to_name(err));
+    }
+    return err;
+}
 
 static void ram_put(const nodelio_nvs_config_t *in)
 {
@@ -272,36 +296,55 @@ esp_err_t nodelio_nvs_save(const nodelio_nvs_config_t *in)
     if (err != ESP_OK) {
         return err;
     }
-    nvs_set_str(h, "wifi_ssid", tmp.wifi_ssid);
-    nvs_set_str(h, "wifi_pass", tmp.wifi_pass);
-    nvs_set_str(h, "server_url", tmp.server_url);
-    nvs_set_str(h, "device_key", tmp.device_key);
-    nvs_set_str(h, "asst_ws", tmp.assistant_ws_url);
-    nvs_set_str(h, "device_id", tmp.device_id);
-    nvs_set_str(h, "owner", tmp.owner);
-    nvs_set_str(h, "mqtt_server", tmp.mqtt_server);
-    nvs_set_str(h, "mqtt_port", tmp.mqtt_port);
-    nvs_set_str(h, "mqtt_user", tmp.mqtt_user);
-    nvs_set_str(h, "mqtt_pass", tmp.mqtt_pass);
-    nvs_set_str(h, "topic_prefix", tmp.topic_prefix);
-    nvs_set_u8(h, "brightness", tmp.brightness);
-    nvs_set_u8(h, "volume", tmp.volume);
-    nvs_set_u8(h, "xz_en", tmp.xiaozhi_en ? 1 : 0);
-    nvs_set_u8(h, "lc_en", tmp.local_cmd_en ? 1 : 0);
-    nvs_set_u8(h, "ps_en", tmp.power_save_en ? 1 : 0);
-    nvs_set_u8(h, "ctrl_en", tmp.controls_en ? 1 : 0);
-    nvs_set_u8(h, "md_slp", tmp.media_sleep_en ? 1 : 0);
-    nvs_set_u16(h, "idle_slp", tmp.idle_sleep_s);
-    nvs_set_u16(h, "wifi_slp", tmp.idle_wifi_s);
-    nvs_set_u16(h, "bye_slp", tmp.goodbye_sleep_s);
-    nvs_set_u16(h, "lis_idle", tmp.listen_idle_s);
-    nvs_set_u16(h, "md_pause", tmp.media_pause_s);
+    /* 凭证优先：先写 server_url，避免后面 blob/其它键占满后静默留旧地址 */
+    esp_err_t first = ESP_OK;
+    esp_err_t e;
+#define NL_ACCUM(expr)                                                                                 \
+    do {                                                                                               \
+        e = (expr);                                                                                    \
+        if (e != ESP_OK && first == ESP_OK) {                                                          \
+            first = e;                                                                                 \
+        }                                                                                              \
+    } while (0)
+
+    NL_ACCUM(set_str_checked(h, "server_url", tmp.server_url));
+    NL_ACCUM(set_str_checked(h, "owner", tmp.owner));
+    NL_ACCUM(set_str_checked(h, "device_id", tmp.device_id));
+    NL_ACCUM(set_str_checked(h, "device_key", tmp.device_key));
+    NL_ACCUM(set_str_checked(h, "wifi_ssid", tmp.wifi_ssid));
+    NL_ACCUM(set_str_checked(h, "wifi_pass", tmp.wifi_pass));
+    NL_ACCUM(set_str_checked(h, "asst_ws", tmp.assistant_ws_url));
+    NL_ACCUM(set_str_checked(h, "mqtt_server", tmp.mqtt_server));
+    NL_ACCUM(set_str_checked(h, "mqtt_port", tmp.mqtt_port));
+    NL_ACCUM(set_str_checked(h, "mqtt_user", tmp.mqtt_user));
+    NL_ACCUM(set_str_checked(h, "mqtt_pass", tmp.mqtt_pass));
+    NL_ACCUM(set_str_checked(h, "topic_prefix", tmp.topic_prefix));
+    NL_ACCUM(nvs_set_u8(h, "brightness", tmp.brightness));
+    NL_ACCUM(nvs_set_u8(h, "volume", tmp.volume));
+    NL_ACCUM(nvs_set_u8(h, "xz_en", tmp.xiaozhi_en ? 1 : 0));
+    NL_ACCUM(nvs_set_u8(h, "lc_en", tmp.local_cmd_en ? 1 : 0));
+    NL_ACCUM(nvs_set_u8(h, "ps_en", tmp.power_save_en ? 1 : 0));
+    NL_ACCUM(nvs_set_u8(h, "ctrl_en", tmp.controls_en ? 1 : 0));
+    NL_ACCUM(nvs_set_u8(h, "md_slp", tmp.media_sleep_en ? 1 : 0));
+    NL_ACCUM(nvs_set_u16(h, "idle_slp", tmp.idle_sleep_s));
+    NL_ACCUM(nvs_set_u16(h, "wifi_slp", tmp.idle_wifi_s));
+    NL_ACCUM(nvs_set_u16(h, "bye_slp", tmp.goodbye_sleep_s));
+    NL_ACCUM(nvs_set_u16(h, "lis_idle", tmp.listen_idle_s));
+    NL_ACCUM(nvs_set_u16(h, "md_pause", tmp.media_pause_s));
+#undef NL_ACCUM
+
     err = nvs_commit(h);
     nvs_close(h);
-    if (err == ESP_OK) {
-        ram_put(&tmp);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "commit: %s", esp_err_to_name(err));
+        return err;
     }
-    return err;
+    if (first != ESP_OK) {
+        ESP_LOGW(TAG, "save partial fail: %s (server_url may be stale)", esp_err_to_name(first));
+        return first;
+    }
+    ram_put(&tmp);
+    return ESP_OK;
 }
 
 bool nodelio_xiaozhi_enabled(void)
@@ -611,8 +654,15 @@ esp_err_t nodelio_conn_hist_save(const nodelio_conn_hist_t *in)
         return err;
     }
     err = nvs_set_blob(h, CONN_HIST_KEY, &tmp, sizeof(tmp));
+    if (err == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
+        reclaim_ephemeral(h);
+        (void)nvs_erase_key(h, CONN_HIST_KEY);
+        err = nvs_set_blob(h, CONN_HIST_KEY, &tmp, sizeof(tmp));
+    }
     if (err == ESP_OK) {
         err = nvs_commit(h);
+    } else {
+        ESP_LOGW(TAG, "conn_hist save: %s", esp_err_to_name(err));
     }
     nvs_close(h);
     if (err == ESP_OK) {

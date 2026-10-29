@@ -213,6 +213,11 @@ static void deferred_cloud_task(void *arg)
             }
             continue;
         }
+        /* 点歌/播中让路：勿与 NotifyPlayer 抢 TCP/片内 */
+        if (nodelio_voice_session_active() || nodelio_media_is_playing()) {
+            ESP_LOGD(TAG, "deferred cloud: wait media/voice (try %d)", i + 1);
+            continue;
+        }
         ESP_LOGI(TAG, "deferred cloud bring-up try %d", i + 1);
         bring_up_cloud_if_needed();
         if (nodelio_layout_cloud_ready()) {
@@ -426,12 +431,9 @@ static esp_err_t start_client(void)
         return ESP_OK;
     }
 
-    err = nodelio_device_heartbeat(&cfg);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "heartbeat: %s", esp_err_to_name(err));
-    } else {
-        cloud = true;
-    }
+    /* 开机勿在此同步 heartbeat：HTTP 默认 3 次重试可占满 bridge wait（~10s），
+     * 逼主任务超时后并行开小智 TLS → mbedtls OOM。心跳由 ensure_hb_task 稍后补。 */
+    cloud = true;
     /* register 后再拉 layout+snapshot（一次），再开 MQTT，避免并行竞态与 notify 连打 */
     nodelio_log_heap("before layout");
     err = nodelio_layout_start_poll(&cfg);
@@ -563,6 +565,10 @@ void nodelio_bridge_stop(void)
 bool nodelio_voice_session_active(void)
 {
     DeviceState st = Application::GetInstance().GetDeviceState();
-    return st == kDeviceStateConnecting || st == kDeviceStateListening ||
-           st == kDeviceStateSpeaking || st == kDeviceStateNotifying;
+    if (st == kDeviceStateConnecting || st == kDeviceStateListening ||
+        st == kDeviceStateSpeaking || st == kDeviceStateNotifying) {
+        return true;
+    }
+    /* 入队后、Notifying 前也可能已在播 */
+    return nodelio_media_is_playing();
 }

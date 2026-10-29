@@ -8,6 +8,7 @@
 #include "offline_cmd.h"
 #include "panel_ui.h"
 #include "skill_result_ui.h"
+#include "wake_dram.h"
 
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -53,13 +54,128 @@ static volatile bool s_suppress_ended = false;
 static esp_timer_handle_t s_pause_close_timer;
 /** 语音打断后应在退下时续播（与用户手动暂停区分）。 */
 static volatile bool s_resume_after_voice = false;
+/** 开播稳定后再开唤醒，避免 AFE 与 HTTP 解码抢核导致开头破音。 */
+static esp_timer_handle_t s_wake_arm_timer = nullptr;
+static constexpr int64_t kMediaWakeArmUs = 1500000; /* 1.5s */
+
+static void disarm_media_wake_interrupt(void)
+{
+    if (s_wake_arm_timer) {
+        esp_timer_stop(s_wake_arm_timer);
+    }
+}
+
+static void reclaim_wake_dram_after_media(void)
+{
+    if (s_playing || s_paused) {
+        return;
+    }
+    (void)nodelio_wake_dram_try_reclaim();
+}
+
+static int s_wake_arm_retries = 0;
+
+static void media_wake_arm_cb(void *arg)
+{
+    (void)arg;
+    Application::GetInstance().Schedule([]() {
+        if (!nodelio_media_is_playing()) {
+            s_wake_arm_retries = 0;
+            return;
+        }
+        if (Application::GetInstance().GetDeviceState() != kDeviceStateNotifying) {
+            s_wake_arm_retries = 0;
+            return;
+        }
+        auto &audio = Application::GetInstance().GetAudioService();
+        /* 先放唤醒坑再测 largest，避免坑本身卡住连续块 */
+        (void)nodelio_wake_dram_release_for_arm();
+        const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        /* 实机播中 largest 常卡在 8192；10KB 门会导致永远 defer。仍校验 IsWakeWordRunning。 */
+        constexpr size_t kMinWakeDram = 8192;
+        if (largest < kMinWakeDram) {
+            s_wake_arm_retries++;
+            if (s_wake_arm_retries == 1) {
+                /* 首次 defer：拆 INTERNAL/DMA/PSRAM，避免误以为「512KB SRAM 都空着」 */
+                multi_heap_info_t di{}, dd{}, ds{};
+                heap_caps_get_info(&di, MALLOC_CAP_INTERNAL);
+                heap_caps_get_info(&dd, MALLOC_CAP_DMA);
+                heap_caps_get_info(&ds, MALLOC_CAP_SPIRAM);
+                ESP_LOGW(TAG,
+                         "wake-dram dump INTERNAL free=%u largest=%u allocated=%u min_free=%u | "
+                         "DMA free=%u largest=%u allocated=%u | "
+                         "PSRAM free=%u largest=%u allocated=%u",
+                         (unsigned)di.total_free_bytes, (unsigned)di.largest_free_block,
+                         (unsigned)di.total_allocated_bytes, (unsigned)di.minimum_free_bytes,
+                         (unsigned)dd.total_free_bytes, (unsigned)dd.largest_free_block,
+                         (unsigned)dd.total_allocated_bytes, (unsigned)ds.total_free_bytes,
+                         (unsigned)ds.largest_free_block, (unsigned)ds.total_allocated_bytes);
+            }
+            if (s_wake_arm_retries <= 30) {
+                ESP_LOGW(TAG, "defer media wake arm dram largest=%u retry=%d", (unsigned)largest,
+                         s_wake_arm_retries);
+                if (s_wake_arm_timer) {
+                    esp_timer_start_once(s_wake_arm_timer, 2000000); /* +2s */
+                }
+            } else if (s_wake_arm_retries == 31) {
+                ESP_LOGW(TAG, "media wake unavailable (dram largest=%u) — use player mic",
+                         (unsigned)largest);
+            }
+            return;
+        }
+        /* 只开唤醒，不开 voice processing（否则 AFE FEED 与解码抢核）。 */
+        audio.EnableWakeWordDetection(true);
+        if (!audio.IsWakeWordRunning()) {
+            s_wake_arm_retries++;
+            ESP_LOGW(TAG, "media wake enable failed dram largest=%u retry=%d", (unsigned)largest,
+                     s_wake_arm_retries);
+            if (s_wake_arm_timer && s_wake_arm_retries <= 30) {
+                esp_timer_start_once(s_wake_arm_timer, 2000000);
+            }
+            return;
+        }
+        s_wake_arm_retries = 0;
+        ESP_LOGI(TAG, "media wake interrupt armed dram largest=%u", (unsigned)largest);
+    });
+}
+
+static void arm_media_wake_interrupt(void)
+{
+    disarm_media_wake_interrupt();
+    s_wake_arm_retries = 0;
+    if (!s_wake_arm_timer) {
+        const esp_timer_create_args_t args = {
+            .callback = &media_wake_arm_cb,
+            .arg = nullptr,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "nl_mwake",
+            .skip_unhandled_events = true,
+        };
+        if (esp_timer_create(&args, &s_wake_arm_timer) != ESP_OK) {
+            ESP_LOGW(TAG, "wake arm timer create fail");
+            return;
+        }
+    }
+    esp_timer_start_once(s_wake_arm_timer, kMediaWakeArmUs);
+}
 /** 说话未结束时把 PLAY 退回队列的次数，成功开播后清零。 */
 static int s_defer_n = 0;
+
+static void arm_pause_close(void);
 
 static void pause_close_cb(void *arg)
 {
     (void)arg;
     if (!s_paused) {
+        return;
+    }
+    /* 聆听/说话中关播放器会 StopNotification，易弄脏 Opus 解码与 MQTT 音序 → 第二次无声 */
+    const DeviceState st = Application::GetInstance().GetDeviceState();
+    if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
+        st == kDeviceStateConnecting) {
+        ESP_LOGI(TAG, "pause timeout deferred (voice state=%s)",
+                 DeviceStateMachine::GetStateName(st));
+        arm_pause_close();
         return;
     }
     ESP_LOGI(TAG, "pause timeout, close player");
@@ -316,6 +432,7 @@ static void media_worker(void *arg)
                 s_started_url[0] = '\0';
                 s_now_key[0] = '\0';
                 nodelio_panel_ui_media_now_playing("", false);
+                reclaim_wake_dram_after_media();
             }
             for (int i = 0; i < 80 && Application::GetInstance().IsHttpAudioBusy(); ++i) {
                 vTaskDelay(pdMS_TO_TICKS(100));
@@ -470,7 +587,10 @@ static void media_worker(void *arg)
                 return;
             }
             snprintf(s_started_url, sizeof(s_started_url), "%s", url.c_str());
+            s_resume_after_voice = false;
             ESP_LOGI(TAG, "play id=%lu title=%s tail=%s", (unsigned long)id, title.c_str(), url_tail(url.c_str()));
+            /* Notifying 入态会关唤醒；稳定后再开，供「唤醒→暂停→旁路切歌」 */
+            arm_media_wake_interrupt();
         };
         Application::GetInstance().Schedule([try_start]() { (*try_start)(20); });
     }
@@ -587,6 +707,7 @@ void nodelio_media_stop(void)
         return;
     }
     disarm_pause_close();
+    disarm_media_wake_interrupt();
     s_paused = false;
     s_resume_after_voice = false;
     media_msg_t msg{.op = MEDIA_OP_STOP};
@@ -599,6 +720,7 @@ void nodelio_media_pause(void)
         return;
     }
     s_resume_after_voice = false;
+    disarm_media_wake_interrupt();
     s_paused = true;
     s_playing = false;
     arm_pause_close();
@@ -610,13 +732,19 @@ void nodelio_media_pause(void)
 
 void nodelio_media_pause_for_voice(void)
 {
+    disarm_media_wake_interrupt();
+    disarm_pause_close();
+    /* 已暂停：只挡 pause_close，对话结束后仍可 resume_after_voice */
     if (!s_playing || !s_now_url[0]) {
+        if (s_paused && s_now_title[0]) {
+            s_resume_after_voice = true;
+            ESP_LOGI(TAG, "hold paused for voice title=%s", s_now_title);
+        }
         return;
     }
     s_paused = true;
     s_playing = false;
     s_resume_after_voice = true;
-    disarm_pause_close();
     nodelio_panel_ui_media_now_playing(s_now_title, false);
     /* 主任务同步掐流，避免 Schedule 晚于 BeginWakeWordInvoke */
     Application::GetInstance().StopHttpAudio();
@@ -740,4 +868,5 @@ void nodelio_media_on_playback_ended(bool success)
     s_now_title[0] = '\0';
     s_now_key[0] = '\0';
     nodelio_panel_ui_media_now_playing("", false);
+    reclaim_wake_dram_after_media();
 }

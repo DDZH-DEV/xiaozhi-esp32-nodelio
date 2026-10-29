@@ -82,7 +82,10 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
 }
 
 BoxAudioCodec::~BoxAudioCodec() {
-    ESP_ERROR_CHECK(esp_codec_dev_close(output_dev_));
+    if (output_device_opened_) {
+        ESP_ERROR_CHECK(esp_codec_dev_close(output_dev_));
+        output_device_opened_ = false;
+    }
     esp_codec_dev_delete(output_dev_);
     ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
     esp_codec_dev_delete(input_dev_);
@@ -186,12 +189,16 @@ void BoxAudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_
 }
 
 void BoxAudioCodec::SetOutputVolumeTransient(int volume) {
-    ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, volume));
+    if (output_device_opened_) {
+        ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, volume));
+    }
     AudioCodec::SetOutputVolumeTransient(volume);
 }
 
 void BoxAudioCodec::SetOutputVolume(int volume) {
-    ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, volume));
+    if (output_device_opened_) {
+        ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, volume));
+    }
     AudioCodec::SetOutputVolume(volume);
 }
 
@@ -201,6 +208,25 @@ void BoxAudioCodec::EnableInput(bool enable) {
         return;
     }
     if (enable) {
+        /* duplex 开麦会重配共享 TX；TX 未先占 DMA 时此处易 OOM 并留下坏句柄。 */
+        if (!output_device_opened_) {
+            esp_codec_dev_sample_info_t ofs = {
+                .bits_per_sample = 16,
+                .channel = 1,
+                .channel_mask = 0,
+                .sample_rate = (uint32_t)output_sample_rate_,
+                .mclk_multiple = 0,
+            };
+            esp_err_t oerr = esp_codec_dev_open(output_dev_, &ofs);
+            if (oerr != ESP_OK) {
+                ESP_LOGE(TAG, "EnableInput: prime TX failed %s", esp_err_to_name(oerr));
+                return;
+            }
+            output_device_opened_ = true;
+            (void)esp_codec_dev_set_out_vol(output_dev_, output_volume_);
+            (void)esp_codec_dev_set_out_mute(output_dev_, true);
+            AudioCodec::EnableOutput(false);
+        }
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
             .channel = 4,
@@ -211,42 +237,76 @@ void BoxAudioCodec::EnableInput(bool enable) {
         if (input_reference_) {
             fs.channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
         }
-        ESP_ERROR_CHECK(esp_codec_dev_open(input_dev_, &fs));
-        ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(
+        esp_err_t err = esp_codec_dev_open(input_dev_, &fs);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "EnableInput open failed: %s", esp_err_to_name(err));
+            return;
+        }
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_set_in_channel_gain(
             input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0), input_gain_));
         if (input_reference_ && reference_gain_channel_ >= 0) {
             // ES7210 gain masks use physical MIC numbering, which differs
             // from the TDM slot order (MIC1, MIC3, MIC2, MIC4).
-            ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(
+            ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_set_in_channel_gain(
                 input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(reference_gain_channel_),
                 reference_gain_));
         }
     } else {
-        ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_close(input_dev_));
     }
     AudioCodec::EnableInput(enable);
+    /* 开麦会重配共享 I2S TX；若喇叭逻辑已开，重刷 DAC */
+    if (enable && output_enabled_ && output_device_opened_) {
+        (void)esp_codec_dev_set_out_vol(output_dev_, output_volume_);
+        (void)esp_codec_dev_set_out_mute(output_dev_, false);
+    }
 }
 
 void BoxAudioCodec::EnableOutput(bool enable) {
     std::lock_guard<std::mutex> lock(data_if_mutex_);
-    if (enable == output_enabled_) {
+    if (enable) {
+        /* Play 16bit 1 channel. Open once；即便已 enable 也重刷 vol+unmute
+         * （AFE 开麦会重配 I2S，仅靠旗标 early-return 会留下哑音）。 */
+        if (!output_device_opened_) {
+            esp_codec_dev_sample_info_t fs = {
+                .bits_per_sample = 16,
+                .channel = 1,
+                .channel_mask = 0,
+                .sample_rate = (uint32_t)output_sample_rate_,
+                .mclk_multiple = 0,
+            };
+            esp_err_t err = esp_codec_dev_open(output_dev_, &fs);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "EnableOutput open failed: %s", esp_err_to_name(err));
+                return;
+            }
+            output_device_opened_ = true;
+        }
+        (void)esp_codec_dev_set_out_vol(output_dev_, output_volume_);
+        esp_err_t mu = esp_codec_dev_set_out_mute(output_dev_, false);
+        if (mu != ESP_OK) {
+            ESP_LOGW(TAG, "set_out_mute(false) failed: %s", esp_err_to_name(mu));
+        }
+        if (output_enabled_) {
+            return;
+        }
+        AudioCodec::EnableOutput(true);
         return;
     }
-    if (enable) {
-        // Play 16bit 1 channel
-        esp_codec_dev_sample_info_t fs = {
-            .bits_per_sample = 16,
-            .channel = 1,
-            .channel_mask = 0,
-            .sample_rate = (uint32_t)output_sample_rate_,
-            .mclk_multiple = 0,
-        };
-        ESP_ERROR_CHECK(esp_codec_dev_open(output_dev_, &fs));
-        ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, output_volume_));
-    } else {
-        ESP_ERROR_CHECK(esp_codec_dev_close(output_dev_));
+    if (!output_enabled_ && output_device_opened_) {
+        /* 已 mute 占坑：保持 TX DMA，勿重复操作 */
+        return;
     }
-    AudioCodec::EnableOutput(enable);
+    if (!output_enabled_) {
+        return;
+    }
+    /* Keep TX open: ES7210 RX shares I2S clock. Close+reopen after sleep
+     * leaves playback silent on ESP-IDF 6 (same fix as Es8388AudioCodec).
+     * Mute still cuts hiss; board sleep may call this while wake RX runs. */
+    if (output_device_opened_) {
+        (void)esp_codec_dev_set_out_mute(output_dev_, true);
+    }
+    AudioCodec::EnableOutput(false);
 }
 
 int BoxAudioCodec::Read(int16_t* dest, int samples) {
@@ -257,8 +317,12 @@ int BoxAudioCodec::Read(int16_t* dest, int samples) {
 }
 
 int BoxAudioCodec::Write(const int16_t* data, int samples) {
-    if (output_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
+    /* TX 已 open 时始终按 I2S 节拍写。EnableOutput(false) 只做 set_out_mute，
+     * 若此处因 output_enabled_ 直接 return，播放队列会以 CPU 速度抽干，
+     * speaking 入口的 mute 舞步会把唤醒首句 TTS 整段丢光。 */
+    if (output_device_opened_ && output_dev_ != nullptr && data != nullptr) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(
+            esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
     }
     return samples;
 }

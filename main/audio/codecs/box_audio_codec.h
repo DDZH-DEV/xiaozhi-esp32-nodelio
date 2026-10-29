@@ -19,6 +19,7 @@ private:
 
     esp_codec_dev_handle_t output_dev_ = nullptr;
     esp_codec_dev_handle_t input_dev_ = nullptr;
+    bool output_device_opened_ = false;
     std::mutex data_if_mutex_;
     int reference_gain_channel_ = -1;
     float reference_gain_ = 0.0f;

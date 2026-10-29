@@ -37,6 +37,8 @@ enum {
     TILE_CHILD_DL_OFF = 5, /* DualLine OFF/NC 支路 */
     TILE_CHILD_DL_ON = 6,  /* DualLine ON/NO 支路 */
     TILE_CHILD_DL_ROW = 7,
+    TILE_CHILD_DL_DIV = 8, /* DualLine 支路间分隔 */
+    TILE_CHILD_DL_SUB = 9, /* DualLine 支路副标题 NC/NO */
 };
 
 typedef enum {

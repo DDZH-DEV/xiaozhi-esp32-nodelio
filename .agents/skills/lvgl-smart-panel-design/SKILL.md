@@ -56,9 +56,9 @@ Never place a naked icon floating above raw text.
    - Icon: `LV_SYMBOL_BELL` or trigger pulse glyph.
    - Badge: "点动" (Muted pill).
    - Touch Behavior: Down triggers visual press ripple; release dispatches action without sticking local state to "ON".
-3. **DualLine 互斥双段 (Changeover Tile)**:
-   - `2×2+` / 宽横条：标题 + 左右支路按钮（`labels.off`=NC、`labels.on`=NO）；点支路下发绝对 OFF/ON。
-   - 窄卡：整卡翻转；角标显示当前导通支路名。勿复制 APP 接线动画。
+3. **DualLine 互斥双路 (Changeover Tile)**:
+   - **两路终端卡**（禁止做成开/关按钮）。整卡中性底；每路主名（厨房/热水器）+ 副标 NC·常闭 / NO·常开；通道路高亮描边，断道路暗底。
+   - 高≥2：上下两路（贴近 APP）；扁横条：左右两路。`labels.off`/`labels.on` 来自详情 `stateLabels`；点支路绝对 OFF/ON。勿抄接线摇臂动画。
 
 ---
 

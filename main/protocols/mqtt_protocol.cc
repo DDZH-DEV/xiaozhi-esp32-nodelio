@@ -246,7 +246,20 @@ bool MqttProtocol::SendText(const std::string& text) {
      * 只拦 MCP 大包。根字段 type=mcp，勿把 features.mcp=true 的 hello 当成 MCP。 */
     const bool is_hello = text.compare(0, 15, "{\"type\":\"hello\"") == 0;
     const bool is_mcp = !is_hello && text.compare(0, 13, "{\"type\":\"mcp\"") == 0;
-    auto mqtt_publish_risky = [](size_t largest, size_t nbytes, bool mcp) {
+    /* 新闻本地朗读走 listen.detect 短文；勿按普通上行 ≥256B@24KB 一刀切掉 */
+    const bool is_listen_detect =
+        !is_hello && !is_mcp && text.find("\"type\":\"listen\"") != std::string::npos &&
+        text.find("\"state\":\"detect\"") != std::string::npos;
+    auto mqtt_publish_risky = [](size_t largest, size_t nbytes, bool mcp, bool detect) {
+        if (detect) {
+            if (nbytes <= 200) {
+                return false; /* 唤醒词量级 */
+            }
+            if (nbytes > 720) {
+                return true; /* 须上游切更短；2KB+ 必 OOM */
+            }
+            return largest < 8 * 1024;
+        }
         if (mcp) {
             return (largest < 20 * 1024 && nbytes >= 256) ||
                    (largest < 28 * 1024 && nbytes >= 1400) ||
@@ -258,19 +271,22 @@ bool MqttProtocol::SendText(const std::string& text) {
     };
     if (!is_hello) {
         size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-        if (mqtt_publish_risky(largest, text.size(), is_mcp)) {
-            if (is_mcp) {
+        if (mqtt_publish_risky(largest, text.size(), is_mcp, is_listen_detect)) {
+            if (is_mcp || is_listen_detect) {
                 nodelio_offline_cmd_yield_for_cloud_audio();
-                vTaskDelay(pdMS_TO_TICKS(80));
+                vTaskDelay(pdMS_TO_TICKS(is_listen_detect ? 40 : 80));
                 largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
             }
-            if (mqtt_publish_risky(largest, text.size(), is_mcp)) {
-                ESP_LOGW(TAG, "skip mqtt publish (%u B), largest_dram=%u mcp=%d (avoid esp-aes OOM)",
-                         (unsigned)text.size(), (unsigned)largest, is_mcp ? 1 : 0);
+            if (mqtt_publish_risky(largest, text.size(), is_mcp, is_listen_detect)) {
+                ESP_LOGW(TAG,
+                         "skip mqtt publish (%u B), largest_dram=%u mcp=%d detect=%d (avoid esp-aes OOM)",
+                         (unsigned)text.size(), (unsigned)largest, is_mcp ? 1 : 0,
+                         is_listen_detect ? 1 : 0);
                 return false; /* 不 SetError，避免「发送失败」误导成断网 */
             }
-            ESP_LOGI(TAG, "mcp publish after yield (%u B) largest_dram=%u", (unsigned)text.size(),
-                     (unsigned)largest);
+            ESP_LOGI(TAG, "publish after yield (%u B) largest_dram=%u mcp=%d detect=%d",
+                     (unsigned)text.size(), (unsigned)largest, is_mcp ? 1 : 0,
+                     is_listen_detect ? 1 : 0);
         }
     }
 #endif

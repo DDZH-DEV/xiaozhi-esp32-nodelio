@@ -2,6 +2,12 @@
 setlocal
 cd /d "%~dp0"
 
+REM 关 QuickEdit：点选控制台会暂停输出缓冲，桥日志看起来像卡住
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$sig='[DllImport(\"kernel32.dll\")]public static extern IntPtr GetStdHandle(int n);[DllImport(\"kernel32.dll\")]public static extern bool GetConsoleMode(IntPtr h,out uint m);[DllImport(\"kernel32.dll\")]public static extern bool SetConsoleMode(IntPtr h,uint m);';" ^
+  "$t=Add-Type -MemberDefinition $sig -Name QE -Namespace Win32 -PassThru;" ^
+  "$h=$t::GetStdHandle(-10); $m=0; if($t::GetConsoleMode($h,[ref]$m)){ [void]$t::SetConsoleMode($h, ($m -band (-bnot 0x40)) -bor 0x80) }" >nul 2>&1
+
 set "EP1=%USERPROFILE%\.agents-anywhere\dsh-bridge\endpoint.json"
 set "EP1B=%USERPROFILE%\.agents-anywhere\dsh-bridge-next\endpoint.json"
 set "EP2=%USERPROFILE%\.dsh\agents-anywhere\bridge\endpoint.json"

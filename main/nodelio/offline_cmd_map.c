@@ -194,7 +194,8 @@ bool nodelio_offline_cmd_is_local(int command_id)
            command_id == NL_OC_PAGE_NEXT || command_id == NL_OC_PAGE_PREV ||
            command_id == NL_OC_SCROLL_DOWN || command_id == NL_OC_SCROLL_UP ||
            (command_id >= NL_OC_APP_MUSIC && command_id <= NL_OC_APP_QUOTE) ||
-           command_id == NL_OC_SKILL_CLOSE;
+           command_id == NL_OC_SKILL_CLOSE || command_id == NL_OC_RADIO_SWAP ||
+           (command_id >= NL_OC_BRIGHT_UP && command_id <= NL_OC_VOL_MIN);
 }
 
 const char *nodelio_offline_cmd_zh(int command_id)
@@ -290,6 +291,24 @@ const char *nodelio_offline_cmd_zh(int command_id)
         return "打开每日一句";
     case NL_OC_SKILL_CLOSE:
         return "关闭播放器";
+    case NL_OC_RADIO_SWAP:
+        return "换台";
+    case NL_OC_BRIGHT_UP:
+        return "亮一点";
+    case NL_OC_BRIGHT_DOWN:
+        return "暗一点";
+    case NL_OC_VOL_UP:
+        return "声音大一点";
+    case NL_OC_VOL_DOWN:
+        return "声音小一点";
+    case NL_OC_BRIGHT_MAX:
+        return "亮度最大";
+    case NL_OC_BRIGHT_MIN:
+        return "亮度最小";
+    case NL_OC_VOL_MAX:
+        return "声音最大";
+    case NL_OC_VOL_MIN:
+        return "声音最小";
     default:
         return "未知口令";
     }
@@ -314,6 +333,8 @@ static const nodelio_oc_catalog_entry_t k_oc_catalog[] = {
     {"导航", "打开设置"},
     {"导航", "打开连接 / 网络设置"},
     {"导航", "显示与声音"},
+    {"设置", "亮一点 / 暗一点 / 亮度高一点 / 亮度最大"},
+    {"设置", "声音大一点 / 声音小一点 / 声音最大 / 声音最小"},
     {"导航", "打开省电"},
     {"导航", "语音助手"},
     {"导航", "播放器设置"},
@@ -324,16 +345,19 @@ static const nodelio_oc_catalog_entry_t k_oc_catalog[] = {
     {"导航", "往下翻 / 向下滑"},
     {"导航", "往上翻 / 向上滑"},
     {"播放", "上一首"},
-    {"播放", "下一首"},
+    {"播放", "下一首 / 切歌 / 换一首"},
     {"播放", "暂停"},
     {"播放", "继续播放"},
+    {"播放", "换台 / 换个台（电台回列表）"},
     {"应用", "打开曲库 / 打开音乐"},
     {"应用", "打开新闻"},
-    {"应用", "打开天气"},
+    {"应用", "打开天气 / 再问天气 / 刷新天气"},
     {"应用", "打开电台"},
     {"应用", "打开播客"},
-    {"应用", "打开空气"},
-    {"应用", "打开每日一句"},
+    {"应用", "打开空气 / 再问空气 / 刷新空气"},
+    {"应用", "打开每日一句 / 换一句 / 再来一句"},
+    {"应用", "下一篇 / 上一篇 / 读这篇 / 继续读（新闻卡打开时）"},
+    {"应用", "第 N 条 / 打开第一条 / 读第二条（新闻卡打开时）"},
     {"播放", "关闭播放器 / 关闭曲库 / 关掉音乐 / 退出播放器"},
     {"控家关", "开灯 / 关灯 / 回家 / 出门（仅控家关闭时提示）"},
 };
@@ -454,6 +478,55 @@ esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int comm
         }
         nodelio_panel_ui_set_voice_hint(nodelio_offline_cmd_zh(command_id));
         return nodelio_panel_ui_open_app(q) ? ESP_OK : ESP_FAIL;
+    }
+    if (command_id == NL_OC_RADIO_SWAP) {
+        if (nodelio_skill_is_live_radio() && nodelio_skill_reopen_media_list()) {
+            nodelio_panel_ui_set_voice_hint("请点选电台");
+            return ESP_OK;
+        }
+        nodelio_panel_ui_set_voice_hint("打开电台");
+        return nodelio_panel_ui_open_app("电台") ? ESP_OK : ESP_FAIL;
+    }
+    if (command_id >= NL_OC_BRIGHT_UP && command_id <= NL_OC_VOL_MIN) {
+        const bool is_bright = (command_id == NL_OC_BRIGHT_UP || command_id == NL_OC_BRIGHT_DOWN ||
+                                command_id == NL_OC_BRIGHT_MAX || command_id == NL_OC_BRIGHT_MIN);
+        const char *key = is_bright ? "brightness" : "volume";
+        int v;
+        if (command_id == NL_OC_BRIGHT_MAX || command_id == NL_OC_VOL_MAX) {
+            v = 100;
+        } else if (command_id == NL_OC_BRIGHT_MIN) {
+            v = 5;
+        } else if (command_id == NL_OC_VOL_MIN) {
+            v = 0;
+        } else {
+            const int delta =
+                (command_id == NL_OC_BRIGHT_UP || command_id == NL_OC_VOL_UP) ? 10 : -10;
+            char cur[16] = {0};
+            if (nodelio_panel_ui_get_pref(key, cur, sizeof(cur)) != ESP_OK || !cur[0]) {
+                snprintf(cur, sizeof(cur), "%s", is_bright ? "80" : "70");
+            }
+            v = atoi(cur) + delta;
+            if (is_bright) {
+                if (v < 5) {
+                    v = 5;
+                }
+            } else if (v < 0) {
+                v = 0;
+            }
+            if (v > 100) {
+                v = 100;
+            }
+        }
+        char val[8];
+        snprintf(val, sizeof(val), "%d", v);
+        char err[64];
+        esp_err_t e = nodelio_panel_ui_set_pref(key, val, err, sizeof(err));
+        if (e != ESP_OK) {
+            nodelio_panel_ui_set_voice_hint(err[0] ? err : "调节失败");
+            return e;
+        }
+        nodelio_panel_ui_set_voice_hint(nodelio_offline_cmd_zh(command_id));
+        return ESP_OK;
     }
     if (command_id == NL_OC_SCROLL_DOWN || command_id == NL_OC_SCROLL_UP) {
         int dir = (command_id == NL_OC_SCROLL_DOWN) ? 1 : -1;
@@ -765,7 +838,8 @@ static int phrase_to_cmd_id(const char *phrase)
         return NL_OC_GOTO_CONNECT;
     }
     if (strstr(phrase, "显示与声音") || strstr(phrase, "亮度设置") || strstr(phrase, "音量设置") ||
-        strstr(phrase, "打开亮度") || strstr(phrase, "调节亮度") || strstr(phrase, "调节音量")) {
+        strstr(phrase, "打开亮度") || strstr(phrase, "调节亮度") || strstr(phrase, "调节音量") ||
+        strstr(phrase, "屏幕亮度设置")) {
         return NL_OC_GOTO_DISP;
     }
     /* 开关用「开启/关闭」；页用「打开/进入」——勿与 GOTO 混淆 */
@@ -817,10 +891,66 @@ static int phrase_to_cmd_id(const char *phrase)
         strstr(phrase, "息屏") || strstr(phrase, "睡觉")) {
         return NL_OC_GOODBYE;
     }
+    /* 亮度/音量：极限值优先；须在「打开亮度」GOTO 与泛化开灯之前 */
+    if (strstr(phrase, "亮度最大") || strstr(phrase, "最亮") || strstr(phrase, "屏幕最亮") ||
+        strstr(phrase, "亮度调到最大") || strstr(phrase, "亮度调至最大")) {
+        return NL_OC_BRIGHT_MAX;
+    }
+    if (strstr(phrase, "亮度最小") || strstr(phrase, "最暗") || strstr(phrase, "屏幕最暗") ||
+        strstr(phrase, "亮度调到最小") || strstr(phrase, "亮度调至最小")) {
+        return NL_OC_BRIGHT_MIN;
+    }
+    if (strstr(phrase, "声音最大") || strstr(phrase, "音量最大") || strstr(phrase, "最大声") ||
+        strstr(phrase, "音量调到最大") || strstr(phrase, "声音调到最大") ||
+        strstr(phrase, "音量调至最大")) {
+        return NL_OC_VOL_MAX;
+    }
+    if (strstr(phrase, "声音最小") || strstr(phrase, "音量最小") || strstr(phrase, "最小声") ||
+        strstr(phrase, "音量调到最小") || strstr(phrase, "声音调到最小") ||
+        strstr(phrase, "音量调至最小")) {
+        return NL_OC_VOL_MIN;
+    }
+    if (strstr(phrase, "亮一点") || strstr(phrase, "调亮") || strstr(phrase, "亮度高一点") ||
+        strstr(phrase, "屏幕亮一点") || strstr(phrase, "亮一些") || strstr(phrase, "提高亮度") ||
+        strstr(phrase, "加大亮度") || strstr(phrase, "亮度调高") || strstr(phrase, "调高亮度") ||
+        /* ASR：「屏幕亮度调」常听成「屏幕亮度对」 */
+        strstr(phrase, "屏幕亮度对") || strstr(phrase, "屏幕亮度调")) {
+        return NL_OC_BRIGHT_UP;
+    }
+    if (strstr(phrase, "暗一点") || strstr(phrase, "调暗") || strstr(phrase, "亮度低一点") ||
+        strstr(phrase, "屏幕暗一点") || strstr(phrase, "暗一些") || strstr(phrase, "降低亮度") ||
+        strstr(phrase, "亮度调低") || strstr(phrase, "调低亮度")) {
+        return NL_OC_BRIGHT_DOWN;
+    }
+    if (strstr(phrase, "声音大一点") || strstr(phrase, "音量大一点") || strstr(phrase, "大声点") ||
+        strstr(phrase, "音量高一点") || strstr(phrase, "大一点声") || strstr(phrase, "大声一点") ||
+        strstr(phrase, "音量调大") || strstr(phrase, "声音调大") || strstr(phrase, "大点声")) {
+        return NL_OC_VOL_UP;
+    }
+    if (strstr(phrase, "声音小一点") || strstr(phrase, "音量小一点") || strstr(phrase, "小声点") ||
+        strstr(phrase, "音量低一点") || strstr(phrase, "小一点声") || strstr(phrase, "小声一点") ||
+        strstr(phrase, "音量调小") || strstr(phrase, "声音调小") || strstr(phrase, "小点声")) {
+        return NL_OC_VOL_DOWN;
+    }
+    /* 换台 ≠ 换一首；须在切歌之前 */
+    if (strstr(phrase, "换台") || strstr(phrase, "换个台") || strstr(phrase, "换个电台")) {
+        return NL_OC_RADIO_SWAP;
+    }
+    /* 信息类再 invoke：勿与「打开…」控家冲突 */
+    if (strstr(phrase, "换一句") || strstr(phrase, "再来一句") || strstr(phrase, "换一句名言")) {
+        return NL_OC_APP_QUOTE;
+    }
+    if (strstr(phrase, "再问天气") || strstr(phrase, "刷新天气") || strstr(phrase, "更新天气")) {
+        return NL_OC_APP_WEATHER;
+    }
+    if (strstr(phrase, "再问空气") || strstr(phrase, "刷新空气") || strstr(phrase, "更新空气")) {
+        return NL_OC_APP_AIR;
+    }
     if (strstr(phrase, "上一首") || strstr(phrase, "上一曲")) {
         return NL_OC_MEDIA_PREV;
     }
-    if (strstr(phrase, "下一首") || strstr(phrase, "下一曲") || strstr(phrase, "切歌")) {
+    if (strstr(phrase, "下一首") || strstr(phrase, "下一曲") || strstr(phrase, "切歌") ||
+        strstr(phrase, "换一首")) {
         return NL_OC_MEDIA_NEXT;
     }
     if (strstr(phrase, "暂停")) {
@@ -1072,6 +1202,21 @@ static bool try_open_named_app(const char *phrase)
             return nodelio_panel_ui_open_app("查看任务");
         }
     }
+    /* 「打开新闻阅读第一篇」→ 只开新闻（阅读留给卡内旁路） */
+    {
+        static const char *const kShort[] = {"新闻", "曲库", "音乐", "电台", "播客", "天气", "空气",
+                                             "一句", "名言"};
+        for (size_t i = 0; i < sizeof(kShort) / sizeof(kShort[0]); i++) {
+            const size_t sl = strlen(kShort[i]);
+            if (strncmp(name, kShort[i], sl) == 0 && name[sl] != '\0' &&
+                (strstr(name + sl, "阅读") || strstr(name + sl, "朗读") || strstr(name + sl, "第一") ||
+                 strstr(name + sl, "读一") || strstr(name + sl, "播报"))) {
+                ESP_LOGI(TAG, "open app trim '%s' → '%s'", name, kShort[i]);
+                snprintf(name, sizeof(name), "%s", kShort[i]);
+                break;
+            }
+        }
+    }
     if (!app_query_plausible(name)) {
         ESP_LOGI(TAG, "skip open-app (not a name): '%s'", name[0] ? name : p);
         return false;
@@ -1139,6 +1284,47 @@ static bool try_dsh_dispatch_phrase(const char *phrase)
         return nodelio_panel_ui_dsh_confirm_send(instr);
     }
     return nodelio_panel_ui_dsh_task(instr);
+}
+
+bool nodelio_offline_query_keeps_cloud_tts(const char *query)
+{
+    if (!query || !query[0]) {
+        return false;
+    }
+    /* 仅「问内容」保留云端播报（天气怎么样）。纯开卡（打开新闻/看新闻）勿 keep：
+     * 云端常说「找不到应用」而本地卡已弹出。 */
+    if (strstr(query, "新闻") || strstr(query, "news") || strstr(query, "一句") ||
+        strstr(query, "名言") || strstr(query, "quote") || strstr(query, "曲库") ||
+        strstr(query, "音乐") || strstr(query, "听歌") || strstr(query, "放歌") ||
+        strstr(query, "爱音乐") || strstr(query, "music") || strstr(query, "电台") ||
+        strstr(query, "radio") || strstr(query, "播客") || strstr(query, "podcast")) {
+        return false;
+    }
+    if (strstr(query, "天气") || strstr(query, "weather")) {
+        return strstr(query, "怎么样") != NULL || strstr(query, "如何") != NULL ||
+               strstr(query, "几度") != NULL || strstr(query, "冷") != NULL ||
+               strstr(query, "热") != NULL || strstr(query, "下雨") != NULL ||
+               strstr(query, "预报") != NULL || strstr(query, "明天") != NULL ||
+               strstr(query, "后天") != NULL || strstr(query, "今天天气") != NULL;
+    }
+    if (strstr(query, "空气") || strstr(query, "air")) {
+        return strstr(query, "质量") != NULL || strstr(query, "怎么样") != NULL ||
+               strstr(query, "如何") != NULL || strstr(query, "AQI") != NULL ||
+               strstr(query, "aqi") != NULL;
+    }
+    return false;
+}
+
+bool nodelio_offline_query_keeps_listening(const char *query)
+{
+    if (!query || !query[0]) {
+        return false;
+    }
+    /* 打开新闻后本地追问「要不要读第一条」，须保持通道；勿交给云端（会说找不到应用）。 */
+    if (strstr(query, "新闻") || strstr(query, "news")) {
+        return true;
+    }
+    return nodelio_offline_query_keeps_cloud_tts(query);
 }
 
 /**
@@ -1243,10 +1429,13 @@ esp_err_t nodelio_offline_try_phrase(const nodelio_nvs_config_t *cfg, const char
     return nodelio_offline_cmd_dispatch(cfg, cmd, layout);
 }
 
-bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session)
+bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bool *keep_cloud_tts)
 {
     if (end_session) {
         *end_session = false;
+    }
+    if (keep_cloud_tts) {
+        *keep_cloud_tts = false;
     }
     if (!phrase || !phrase[0]) {
         ESP_LOGI(TAG, "system phrase: empty");
@@ -1263,6 +1452,55 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session)
             return true;
         }
     }
+    /* 新闻卡前台：读/续读走云 detect 播原文；翻篇本地切卡。未开卡不吞句 */
+    if (nodelio_skill_news_ui_active()) {
+        const char *news_op = NULL;
+        if (strstr(phrase, "继续读") || strstr(phrase, "接着念") || strstr(phrase, "往下读") ||
+            strstr(phrase, "继续念") || strstr(phrase, "接着读")) {
+            news_op = "continue";
+        } else if (strstr(phrase, "下一篇") || strstr(phrase, "下一条新闻") || strstr(phrase, "下篇")) {
+            news_op = "next";
+        } else if (strstr(phrase, "上一篇") || strstr(phrase, "上一条新闻") || strstr(phrase, "上篇")) {
+            news_op = "prev";
+        } else if (strstr(phrase, "读这篇") || strstr(phrase, "朗读") || strstr(phrase, "念一下") ||
+                   strstr(phrase, "读一下") || strstr(phrase, "念这篇") || strstr(phrase, "读吧") ||
+                   strstr(phrase, "开始读") || strstr(phrase, "要读") || strcmp(phrase, "读") == 0) {
+            news_op = "read";
+        }
+        if (news_op) {
+            ESP_LOGI(TAG, "system phrase → news %s", news_op);
+            if (strcmp(news_op, "read") == 0 || strcmp(news_op, "continue") == 0) {
+                nodelio_panel_ui_news_read_local(news_op);
+                if (keep_cloud_tts) {
+                    *keep_cloud_tts = true; /* 云端 skill.news 长念，勿 Suppress */
+                }
+                if (end_session) {
+                    *end_session = false;
+                }
+                return true;
+            }
+            char out[256];
+            out[0] = '\0';
+            if (nodelio_skill_news_action(news_op, out, sizeof(out))) {
+                if (strcmp(news_op, "next") == 0) {
+                    nodelio_panel_ui_set_voice_hint("下一篇");
+                } else if (strcmp(news_op, "prev") == 0) {
+                    nodelio_panel_ui_set_voice_hint("上一篇");
+                } else if (out[0]) {
+                    nodelio_panel_ui_set_voice_hint(out);
+                }
+                if (end_session) {
+                    *end_session = false;
+                }
+                return true;
+            }
+            nodelio_panel_ui_set_voice_hint(out[0] ? out : "没有更多新闻");
+            if (end_session) {
+                *end_session = false;
+            }
+            return true;
+        }
+    }
     int cmd = phrase_to_cmd_id(phrase);
     ESP_LOGI(TAG, "system phrase try phrase='%s' cmd=%d(%s)", phrase, cmd,
              nodelio_offline_cmd_zh(cmd));
@@ -1273,14 +1511,21 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session)
         cmd == NL_OC_SCROLL_DOWN || cmd == NL_OC_SCROLL_UP ||
         cmd == NL_OC_MEDIA_PREV || cmd == NL_OC_MEDIA_NEXT ||
         cmd == NL_OC_MEDIA_PAUSE || cmd == NL_OC_MEDIA_RESUME ||
-        cmd == NL_OC_SKILL_CLOSE) {
+        cmd == NL_OC_SKILL_CLOSE || cmd == NL_OC_RADIO_SWAP ||
+        cmd == NL_OC_APP_QUOTE || cmd == NL_OC_APP_WEATHER || cmd == NL_OC_APP_AIR ||
+        (cmd >= NL_OC_BRIGHT_UP && cmd <= NL_OC_VOL_MIN)) {
         ESP_LOGI(TAG, "system phrase → %s", nodelio_offline_cmd_zh(cmd));
         if (end_session) {
-            /* 默认保持会话：设置导航/开关/翻页/切歌可连说，对话框不落。
-             * 仅重启/配网/关播放器退会话（否则 Listening+suppress 假死）。
-             * 开电台等应用走后面 open_app 分支，各自 end_session=true。 */
-            *end_session = (cmd == NL_OC_REBOOT || cmd == NL_OC_WIFI_CONFIG ||
-                            cmd == NL_OC_SKILL_CLOSE);
+            /* 默认保持会话：设置导航/开关/翻页可连说。
+             * 切歌/继续播须退会话，否则 Listening 与 HTTP 播抢通道（re-arm 与 notifying 打架）。
+             * 换台：已在播电台则只回列表；否则 open 电台须退会话。 */
+            if (cmd == NL_OC_RADIO_SWAP) {
+                *end_session = !nodelio_skill_is_live_radio();
+            } else {
+                *end_session =
+                    (cmd == NL_OC_REBOOT || cmd == NL_OC_WIFI_CONFIG || cmd == NL_OC_SKILL_CLOSE ||
+                     cmd == NL_OC_MEDIA_PREV || cmd == NL_OC_MEDIA_NEXT || cmd == NL_OC_MEDIA_RESUME);
+            }
         }
         return nodelio_offline_cmd_dispatch(NULL, cmd, NULL) == ESP_OK;
     }
@@ -1310,26 +1555,56 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session)
     }
     /* 「打开曲库」等：phrase_to_cmd_id 会落到 LIGHT_ON，这里再抢一次应用 */
     if (try_open_named_app(phrase)) {
-        ESP_LOGI(TAG, "system phrase: named open hit");
-        /* 开应用须退会话：停 Listening+suppress 会假死；电台/曲库也起不了 HTTP 播 */
+        const bool keep_cloud = nodelio_offline_query_keeps_cloud_tts(phrase);
+        const bool keep_listen = nodelio_offline_query_keeps_listening(phrase);
+        ESP_LOGI(TAG, "system phrase: named open hit keep_cloud=%d keep_listen=%d", keep_cloud ? 1 : 0,
+                 keep_listen ? 1 : 0);
+        /* 媒体须退会话才能 HTTP 播；天气问内容 keep_cloud；新闻 keep_listen 追问要不要读 */
         if (end_session) {
-            *end_session = true;
+            *end_session = !keep_listen;
+        }
+        if (keep_cloud_tts) {
+            *keep_cloud_tts = keep_cloud;
+        }
+        if (keep_listen && !keep_cloud &&
+            (strstr(phrase, "新闻") != NULL || strstr(phrase, "news") != NULL)) {
+            nodelio_panel_ui_arm_news_read_offer();
         }
         return true;
     }
     /* 「听歌/看天气」等：抢在云端 search_music 之前 */
     if (try_open_intent_app(phrase)) {
-        ESP_LOGI(TAG, "system phrase: intent open hit");
+        const bool keep_cloud = nodelio_offline_query_keeps_cloud_tts(phrase);
+        const bool keep_listen = nodelio_offline_query_keeps_listening(phrase);
+        ESP_LOGI(TAG, "system phrase: intent open hit keep_cloud=%d keep_listen=%d",
+                 keep_cloud ? 1 : 0, keep_listen ? 1 : 0);
         if (end_session) {
-            *end_session = true;
+            *end_session = !keep_listen;
+        }
+        if (keep_cloud_tts) {
+            *keep_cloud_tts = keep_cloud;
+        }
+        if (keep_listen && !keep_cloud &&
+            (strstr(phrase, "新闻") != NULL || strstr(phrase, "news") != NULL)) {
+            nodelio_panel_ui_arm_news_read_offer();
         }
         return true;
     }
     /* 裸说「电台。」/「播客」：无「打开」也开对应应用（剥句末标点） */
     if (try_open_bare_known_app(phrase)) {
-        ESP_LOGI(TAG, "system phrase: bare open hit");
+        const bool keep_cloud = nodelio_offline_query_keeps_cloud_tts(phrase);
+        const bool keep_listen = nodelio_offline_query_keeps_listening(phrase);
+        ESP_LOGI(TAG, "system phrase: bare open hit keep_cloud=%d keep_listen=%d", keep_cloud ? 1 : 0,
+                 keep_listen ? 1 : 0);
         if (end_session) {
-            *end_session = true;
+            *end_session = !keep_listen;
+        }
+        if (keep_cloud_tts) {
+            *keep_cloud_tts = keep_cloud;
+        }
+        if (keep_listen && !keep_cloud &&
+            (strstr(phrase, "新闻") != NULL || strstr(phrase, "news") != NULL)) {
+            nodelio_panel_ui_arm_news_read_offer();
         }
         return true;
     }

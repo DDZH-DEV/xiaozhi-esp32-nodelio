@@ -58,9 +58,29 @@ void nodelio_panel_ui_skills_changed(void);
 void nodelio_panel_ui_apply_skills_http_body(const char *json);
 
 /**
- * MQTT kind=skill_hint：按 app_id / instance_id 触发一次技能 invoke（拉最新 Envelope）。
- * reason：needs_you / completed（可空）；session：有则直开该会话详情。
- * 仅事件驱动；禁止在固件侧轮询。
+ * MQTT kind=notice（及过渡 skill_hint）：事件驱动 Toast / 单次 invoke。
+ * 禁止固件轮询。mode=info|action|alert；severity=normal|warning|critical。
+ */
+typedef struct nodelio_panel_notice {
+    char notice_id[40];
+    char mode[12];
+    char severity[12];
+    char title[96];
+    char app_id[72];
+    char invoke_app[72];
+    char invoke_params[256];
+    char session[80];
+    char reason[24];
+    int wake; /* 1=允许点亮背光 */
+} nodelio_panel_notice_t;
+
+void nodelio_panel_ui_notice(const nodelio_panel_notice_t *notice);
+void nodelio_panel_ui_notice_clear(const char *notice_id);
+/** 息屏期间积压的 info：亮屏后 Flush（由板级 OnExitSleepMode 调用）。 */
+void nodelio_panel_ui_notice_flush_deferred(void);
+
+/**
+ * 旧 MQTT kind=skill_hint 入口：映射为 notice 后处理。
  */
 void nodelio_panel_ui_skill_hint(const char *app_or_instance_id, const char *reason,
                                  const char *session);
@@ -73,9 +93,21 @@ void nodelio_panel_ui_toast_defer(const char *text);
 
 /**
  * 技能摘要上屏 + toast；有 audio_url（桥 SAPI WAV）则 Idle 后 HTTP 播报。
- * 云 listen.detect 不可朗读正文。MCP 路径仍可由模型直接播报。
+ * 无 URL 时仅 toast/上屏（勿当正文朗读）。
  */
 void nodelio_panel_ui_announce_spoken(const char *text);
+
+/**
+ * 会话中短播报：listen.detect 注入「请向用户简短播报：…」（云端约 ≤16 字）。
+ */
+void nodelio_panel_ui_request_cloud_speak(const char *text);
+/** 新闻朗读：op=read|continue → 短 detect 促云端 self.skill.news。 */
+void nodelio_panel_ui_news_read_local(const char *op);
+
+/** 语音「打开新闻」后武装：列表上屏时追问要不要读第一条（触控打开勿调）。 */
+void nodelio_panel_ui_arm_news_read_offer(void);
+/** 消费一次武装；未武装返回 false。 */
+bool nodelio_panel_ui_take_news_read_offer(void);
 /** audio_url 非空 → StartNotification；否则仅 toast/上屏。 */
 void nodelio_panel_ui_announce_spoken_ex(const char *text, const char *audio_url);
 /** 多段 WAV 连续播（urls[0..n)）；n≤0 则退回 toast。 */
@@ -153,6 +185,12 @@ void nodelio_panel_ui_snapshot_set_lan(const char *device_id, const char *ip, bo
 void nodelio_panel_ui_snapshot_add_channel(const char *device_id, int channel_index, const char *ch_name,
                                            const char *state);
 void nodelio_panel_ui_snapshot_end(void);
+
+/**
+ * 设备缓存视觉签名（online/power/通道/倒计时/灰显相关）。
+ * snapshot / DIOL 前后比较：相同则跳过 refresh_home_tiles，避免无变化整页闪。
+ */
+uint32_t nodelio_panel_ui_dev_visual_sig(void);
 
 /** 开机无云 snapshot 时恢复上次局域网 IP（DIOL）；overlay 启动时调一次。 */
 void nodelio_panel_ui_lan_cache_load(void);

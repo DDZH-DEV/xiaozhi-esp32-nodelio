@@ -72,7 +72,7 @@ static void handle_notify_payload(const char *data, int len)
         schedule_kick(false);
         return;
     }
-    char tmp[480];
+    char tmp[768];
     int n = len < (int)sizeof(tmp) - 1 ? len : (int)sizeof(tmp) - 1;
     memcpy(tmp, data, (size_t)n);
     tmp[n] = '\0';
@@ -89,22 +89,79 @@ static void handle_notify_payload(const char *data, int len)
         /* 只拉已装清单，不拉 layout/snapshot，不拉市场 */
         nodelio_panel_ui_skills_changed();
     } else if (cJSON_IsString(kind) && kind->valuestring &&
-               strcmp(kind->valuestring, "skill_hint") == 0) {
-        /* PC 桥边沿：needs_you / completed → 单次 invoke，无轮询 */
+               (strcmp(kind->valuestring, "notice") == 0 ||
+                strcmp(kind->valuestring, "skill_hint") == 0)) {
+        /* Notice 总线；skill_hint 为过渡兼容 */
+        nodelio_panel_notice_t notice;
+        memset(&notice, 0, sizeof(notice));
+        const cJSON *nid = cJSON_GetObjectItemCaseSensitive(root, "notice_id");
         const cJSON *inst = cJSON_GetObjectItemCaseSensitive(root, "instance_id");
         const cJSON *app = cJSON_GetObjectItemCaseSensitive(root, "app_id");
+        const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
+        const cJSON *sev = cJSON_GetObjectItemCaseSensitive(root, "severity");
+        const cJSON *title = cJSON_GetObjectItemCaseSensitive(root, "title");
         const cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
         const cJSON *session = cJSON_GetObjectItemCaseSensitive(root, "session");
-        const char *id = nullptr;
-        if (cJSON_IsString(inst) && inst->valuestring && inst->valuestring[0]) {
-            id = inst->valuestring;
-        } else if (cJSON_IsString(app) && app->valuestring && app->valuestring[0]) {
-            id = app->valuestring;
+        const cJSON *wake = cJSON_GetObjectItemCaseSensitive(root, "wake");
+        const cJSON *inv = cJSON_GetObjectItemCaseSensitive(root, "invoke");
+        if (cJSON_IsString(nid) && nid->valuestring) {
+            snprintf(notice.notice_id, sizeof(notice.notice_id), "%s", nid->valuestring);
         }
-        if (id) {
-            nodelio_panel_ui_skill_hint(
-                id, cJSON_IsString(reason) ? reason->valuestring : nullptr,
-                cJSON_IsString(session) ? session->valuestring : nullptr);
+        if (cJSON_IsString(mode) && mode->valuestring) {
+            snprintf(notice.mode, sizeof(notice.mode), "%s", mode->valuestring);
+        }
+        if (cJSON_IsString(sev) && sev->valuestring) {
+            snprintf(notice.severity, sizeof(notice.severity), "%s", sev->valuestring);
+        }
+        if (cJSON_IsString(title) && title->valuestring) {
+            snprintf(notice.title, sizeof(notice.title), "%s", title->valuestring);
+        }
+        if (cJSON_IsString(reason) && reason->valuestring) {
+            snprintf(notice.reason, sizeof(notice.reason), "%s", reason->valuestring);
+        }
+        if (cJSON_IsString(session) && session->valuestring) {
+            snprintf(notice.session, sizeof(notice.session), "%s", session->valuestring);
+        }
+        if (cJSON_IsTrue(wake)) {
+            notice.wake = 1;
+        }
+        if (cJSON_IsString(app) && app->valuestring) {
+            snprintf(notice.app_id, sizeof(notice.app_id), "%s", app->valuestring);
+        } else if (cJSON_IsString(inst) && inst->valuestring) {
+            snprintf(notice.app_id, sizeof(notice.app_id), "%s", inst->valuestring);
+        }
+        if (cJSON_IsObject(inv)) {
+            const cJSON *ia = cJSON_GetObjectItemCaseSensitive(inv, "app_id");
+            const cJSON *ip = cJSON_GetObjectItemCaseSensitive(inv, "params");
+            if (cJSON_IsString(ia) && ia->valuestring) {
+                snprintf(notice.invoke_app, sizeof(notice.invoke_app), "%s", ia->valuestring);
+            }
+            if (ip) {
+                char *printed = cJSON_PrintUnformatted(ip);
+                if (printed) {
+                    snprintf(notice.invoke_params, sizeof(notice.invoke_params), "%s", printed);
+                    cJSON_free(printed);
+                }
+            }
+        }
+        if (!notice.invoke_app[0] && notice.app_id[0]) {
+            snprintf(notice.invoke_app, sizeof(notice.invoke_app), "%s", notice.app_id);
+        }
+        if (!notice.session[0] && notice.invoke_params[0]) {
+            /* params 里可能有 session；skill_hint 兼容路径已在 UI 层处理 */
+        }
+        if (strcmp(kind->valuestring, "skill_hint") == 0 && !notice.mode[0]) {
+            nodelio_panel_ui_skill_hint(notice.app_id[0] ? notice.app_id : nullptr,
+                                       notice.reason[0] ? notice.reason : nullptr,
+                                       notice.session[0] ? notice.session : nullptr);
+        } else {
+            nodelio_panel_ui_notice(&notice);
+        }
+    } else if (cJSON_IsString(kind) && kind->valuestring &&
+               strcmp(kind->valuestring, "notice_clear") == 0) {
+        const cJSON *nid = cJSON_GetObjectItemCaseSensitive(root, "notice_id");
+        if (cJSON_IsString(nid) && nid->valuestring) {
+            nodelio_panel_ui_notice_clear(nid->valuestring);
         }
     } else if (cJSON_IsString(kind) && kind->valuestring &&
                strcmp(kind->valuestring, "countdown") == 0) {

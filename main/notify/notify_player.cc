@@ -58,14 +58,12 @@ struct PsramAllocator {
     PsramAllocator(const PsramAllocator<U>&) noexcept {}
     T* allocate(std::size_t n) {
         const size_t bytes = n * sizeof(T);
+        /* 大缓冲只许 PSRAM：回落 INTERNAL 会打穿播中唤醒所需连续块 */
         void* p = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!p) {
-            p = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        }
-        if (!p) {
-            ESP_LOGE(TAG, "alloc fail need=%u psram_free=%u dram_free=%u", (unsigned)bytes,
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+            ESP_LOGE(TAG, "PSRAM alloc fail need=%u psram_free=%u largest=%u (no INTERNAL fallback)",
+                     (unsigned)bytes, (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
             s_psram_alloc_failed = true;
             return reinterpret_cast<T*>(&s_psram_poison);
         }
@@ -91,8 +89,7 @@ using PsramBytes = std::vector<uint8_t, PsramAllocator<uint8_t>>;
 using PsramSamples = std::vector<int16_t, PsramAllocator<int16_t>>;
 
 static bool PsramCanHold(size_t bytes) {
-    return heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) >= bytes ||
-           heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= bytes;
+    return heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) >= bytes;
 }
 
 enum class StreamKind { kUnknown, kOgg, kMp3, kM4a, kWav };

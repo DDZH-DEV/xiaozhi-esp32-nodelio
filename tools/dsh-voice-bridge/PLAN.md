@@ -21,7 +21,7 @@
 
 # 公网
 墙板 → Host invoke →（桥已在线）WS invoke → 家桥回环本机 HTTP → DSH
-桥 ──WSS──► Host（register / result / hint）
+桥 ──WSS──► Host（register / result / hint→Notice：needs_you=action，completed=info）
 ```
 
 ## 验收场景

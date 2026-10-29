@@ -356,16 +356,15 @@ static void probe_worker(void *arg)
         }
 
         ESP_LOGI(TAG, "probe round n=%d (async, short-tcp)", njob);
-        bool any = false;
+        const uint32_t vis_before = nodelio_panel_ui_dev_visual_sig();
         for (int i = 0; i < njob; i++) {
             if (s_probe_hold || s_probe_pending) {
                 /* hold / 新一轮：打断当前扫尾 */
                 break;
             }
-            any = true;
             (void)probe_one(s_jobs[i].id, s_jobs[i].ip);
         }
-        if (any && !s_probe_hold) {
+        if (!s_probe_hold && nodelio_panel_ui_dev_visual_sig() != vis_before) {
             nodelio_panel_ui_refresh_tiles();
         }
         s_probe_running = false;
@@ -429,16 +428,15 @@ void nodelio_diol_probe_all_from_cache(void)
         }
         /* 无任务时同步短探一轮（仍用 probe_get，不再 2s×3） */
         int n = nodelio_panel_ui_get_dev_count();
-        bool any = false;
+        const uint32_t vis_before = nodelio_panel_ui_dev_visual_sig();
         for (int i = 0; i < n; i++) {
             const nl_dev_cache_t *d = nodelio_panel_ui_get_dev(i);
             if (!d || !d->lan_control || !d->ip[0] || diol_fail_skip(d->id)) {
                 continue;
             }
-            any = true;
             (void)probe_one(d->id, d->ip);
         }
-        if (any) {
+        if (nodelio_panel_ui_dev_visual_sig() != vis_before) {
             nodelio_panel_ui_refresh_tiles();
         }
         return;

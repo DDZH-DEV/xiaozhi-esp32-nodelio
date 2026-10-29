@@ -658,15 +658,20 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
         io_ms = NOD_HTTP_IO_MS;
     }
 
-    /* 语音刚结束时小智会 MQTT TLS 重连；先让路再抢 LAN short-tcp */
-    uint32_t wait_ms = 4000;
-    if ((uint32_t)io_ms > wait_ms) {
-        wait_ms = (uint32_t)io_ms;
+    /* 语音刚结束时小智会 MQTT TLS 重连；先让路再抢 LAN short-tcp。
+     * 新闻正文/标已读是弹窗内交互，会话中也要立刻拉，勿空等 quiet。 */
+    const bool ui_content =
+        url && (strstr(url, "/panel/news/") != nullptr || strstr(url, "/panel/snapshot") != nullptr);
+    if (!ui_content) {
+        uint32_t wait_ms = 4000;
+        if ((uint32_t)io_ms > wait_ms) {
+            wait_ms = (uint32_t)io_ms;
+        }
+        if (wait_ms > 10000) {
+            wait_ms = 10000;
+        }
+        (void)nodelio_http_wait_lan_ready(wait_ms);
     }
-    if (wait_ms > 10000) {
-        wait_ms = 10000;
-    }
-    (void)nodelio_http_wait_lan_ready(wait_ms);
 
     SkillInvokePace invoke_pace(url);
     esp_err_t last = ESP_FAIL;

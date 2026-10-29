@@ -435,6 +435,8 @@ public:
                  const PropertyList& properties, ToolCallback callback);
     void AddUserOnlyTool(const std::string& name, const std::string& description,
                          const PropertyList& properties, ToolCallback callback);
+    /** 把已注册工具挪到 tools/list 首页（SILA 单页常仅数百字节）。 */
+    void PromoteTool(const std::string& name);
     void ParseMessage(const cJSON* json, ResponseSender response_sender = nullptr);
     void ParseMessage(const std::string& message, ResponseSender response_sender = nullptr);
 

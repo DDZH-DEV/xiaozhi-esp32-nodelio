@@ -16,6 +16,14 @@ export const ENDPOINT_CANDIDATES = [
   path.join(os.homedir(), '.dsh', 'agents-anywhere', 'bridge', 'endpoint.json'),
 ];
 
+/** 串行化短连接：健康检查 / watch / status 叠 initialize 会 ECONNRESET（见诊断日志 10:23:53）。 */
+let s_aaChain = Promise.resolve();
+let s_aaActive = 0;
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 /** pid 仍存活（Windows 上 kill(pid,0) 可用）。无 pid 字段返回 null。 */
 export function isEndpointPidAlive(pid) {
   if (pid == null || pid === '') return null;
@@ -78,8 +86,22 @@ export function readEndpoint() {
 /**
  * One authenticated connection. Resolves after `initialize` succeeds.
  * Every method returns a promise keyed by request id.
+ * 同刻只允许一条 AA 连接；close 等 FIN，并与下一连间隔，避免 ECONNRESET。
  */
 export async function connect(options = {}) {
+  const run = s_aaChain.then(() => connectExclusive(options));
+  s_aaChain = run.then(
+    () => sleep(80),
+    () => sleep(80),
+  );
+  return run;
+}
+
+async function connectExclusive(options = {}) {
+  /* 若上一连接尚未 close 完，稍等（health 与 watch 曾 3ms 内叠 initialize） */
+  for (let i = 0; i < 40 && s_aaActive > 0; i += 1) {
+    await sleep(50);
+  }
   const endpoint = options.endpoint ?? readEndpoint();
   const namespace = options.namespace ?? 'dsh-voice-bridge';
   const host = endpoint.host || '127.0.0.1';
@@ -90,6 +112,7 @@ export async function connect(options = {}) {
   const pending = new Map();
   const listeners = new Set();
   let closed = false;
+  s_aaActive += 1;
 
   socket.setNoDelay(true);
 
@@ -122,14 +145,17 @@ export async function connect(options = {}) {
     }
   });
 
-  socket.on('close', () => {
+  const markClosed = () => {
+    if (closed) return;
     closed = true;
+    s_aaActive = Math.max(0, s_aaActive - 1);
     for (const { reject } of pending.values()) {
       reject(new Error('DSH bridge connection closed'));
     }
     pending.clear();
-  });
+  };
 
+  socket.on('close', markClosed);
   socket.on('error', (error) => {
     for (const { reject } of pending.values()) reject(error);
     pending.clear();
@@ -146,28 +172,58 @@ export async function connect(options = {}) {
       socket.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
     });
 
-  await new Promise((resolve, reject) => {
-    socket.once('connect', resolve);
-    socket.once('error', reject);
-  });
+  try {
+    await new Promise((resolve, reject) => {
+      socket.once('connect', resolve);
+      socket.once('error', reject);
+    });
 
-  const identity = await call('initialize', {
-    authToken: endpoint.token,
-    protocolVersion: '1.0',
-    runtime: 'dsh',
-    sessionNamespace: namespace,
-  });
+    const identity = await call('initialize', {
+      authToken: endpoint.token,
+      protocolVersion: '1.0',
+      runtime: 'dsh',
+      sessionNamespace: namespace,
+    });
 
-  return {
-    identity,
-    endpoint,
-    call,
-    onNotification: (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    close: () => socket.end(),
-  };
+    return {
+      identity,
+      endpoint,
+      call,
+      onNotification: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      /** 等 TCP FIN，避免半开重置打到 AA 插件 */
+      close: () =>
+        new Promise((resolve) => {
+          if (closed || socket.destroyed) {
+            markClosed();
+            resolve();
+            return;
+          }
+          const done = () => {
+            socket.off('close', done);
+            socket.off('error', done);
+            resolve();
+          };
+          socket.once('close', done);
+          socket.once('error', done);
+          socket.end();
+          setTimeout(() => {
+            if (!socket.destroyed) socket.destroy();
+            done();
+          }, 1500);
+        }),
+    };
+  } catch (e) {
+    markClosed();
+    try {
+      socket.destroy();
+    } catch {
+      /* ignore */
+    }
+    throw e;
+  }
 }
 
 export class RpcError extends Error {

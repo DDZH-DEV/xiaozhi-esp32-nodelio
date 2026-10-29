@@ -898,6 +898,59 @@ void nodelio_mcp_register_tools(void)
 {
     auto &mcp = McpServer::GetInstance();
 
+    /* 注册后由 Application::PromoteTool 挪到列表头：否则 common 置顶后本工具落在第 2+ 页，
+     * SILA page_cap≈400 时模型看不见，会空口说「没有新闻内容」且从不 tools/call。 */
+    mcp.AddTool(
+        "self.skill.news",
+        "Always call for 读/读吧/朗读/继续读. op=read|continue|prev|next|close. "
+        "Speak return text verbatim; never say no news without calling.",
+        PropertyList({
+            Property("op", kPropertyTypeString, "read"),
+        }),
+        [](const PropertyList &properties) -> ToolResult {
+            std::string op = properties["op"].value<std::string>();
+            if (op.empty()) {
+                op = "read";
+            }
+            if (op != "prev" && op != "next" && op != "read" && op != "continue" && op != "mark_read" &&
+                op != "mark" && op != "skip" && op != "close" && op != "dismiss") {
+                return std::unexpected(std::string("op 须为 prev/next/read/continue/mark_read/skip/close"));
+            }
+            constexpr size_t kNewsSpokenCap = 4096;
+            char *spoken = static_cast<char *>(
+                heap_caps_malloc(kNewsSpokenCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+            if (!spoken) {
+                spoken = static_cast<char *>(malloc(kNewsSpokenCap));
+            }
+            if (!spoken) {
+                return std::unexpected(std::string("内存不足"));
+            }
+            spoken[0] = '\0';
+            ESP_LOGI("nl_mcp", "tools/call self.skill.news op=%s", op.c_str());
+            const bool ok = nodelio_skill_news_action(op.c_str(), spoken, kNewsSpokenCap);
+            std::string out = spoken;
+            heap_caps_free(spoken);
+            if (!ok) {
+                if (op == "prev") {
+                    return std::unexpected(std::string("没有上一篇"));
+                }
+                if (op == "continue") {
+                    return std::unexpected(std::string("没有更多正文"));
+                }
+                if (op == "mark_read" || op == "mark") {
+                    return std::unexpected(std::string("没有可标记的新闻"));
+                }
+                if (op == "close" || op == "dismiss") {
+                    return std::string("已关闭");
+                }
+                return std::unexpected(std::string("没有下一篇"));
+            }
+            if (out.empty()) {
+                return std::unexpected(std::string("正文加载失败"));
+            }
+            return out;
+        });
+
     mcp.AddTool(
         "self.nodelio.reboot",
         "重启本机墙板。用户说重启/重新启动时调用。",
@@ -1011,9 +1064,9 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.nodelio.set_pref",
-        "改设置。key=idle_wifi_s|idle_sleep_s|bye_sleep_s|brightness|volume|power_save|"
-        "controls|xiaozhi|local_cmd|listen_idle_s|media_sleep|media_pause_s|"
-        "layout_sync|fw_check|factory_reset。",
+        "改面板设置。亮度/音量用 key=brightness|volume value=0-100（你有此能力，请直接调用）。"
+        "其它 key=idle_wifi_s|idle_sleep_s|bye_sleep_s|power_save|controls|xiaozhi|"
+        "listen_idle_s|media_sleep|media_pause_s|layout_sync|fw_check|factory_reset。",
         PropertyList({
             Property("key", kPropertyTypeString),
             Property("value", kPropertyTypeString, ""),
@@ -1256,6 +1309,8 @@ void nodelio_mcp_register_tools(void)
     mcp.AddTool(
         "self.skill.transport",
         "面板当前歌单播控。op=prev|next|pause|resume|play|stop|close。"
+        "用户说换一首/下一首/切歌→next；上一首→prev。"
+        "电台 live 无切台（prev/next 会失败）；换台请让用户点列表或说换台回列表。"
         "stop/close=停播并关掉技能弹窗（关闭电台/播客/曲库时用，勿只 goto_page）。"
         "随便放一首用 play，勿重新搜索。",
         PropertyList({
@@ -1320,51 +1375,6 @@ void nodelio_mcp_register_tools(void)
         PropertyList(), [](const PropertyList &) -> ReturnValue {
             nodelio_skill_close_all();
             return std::string("已关闭技能弹窗");
-        });
-
-    mcp.AddTool(
-        "self.skill.news",
-        "新闻卡朗读：op=read 开读；有【续】再 continue；见【完】/【摘要】则停。"
-        "勿在朗读前说已读完。prev|next|mark_read|skip|close。未开卡先 invoke news.latest。",
-        PropertyList({
-            Property("op", kPropertyTypeString, ""),
-        }),
-        [](const PropertyList &properties) -> ToolResult {
-            std::string op = properties["op"].value<std::string>();
-            if (op != "prev" && op != "next" && op != "read" && op != "continue" && op != "mark_read" &&
-                op != "mark" && op != "skip" && op != "close" && op != "dismiss") {
-                return std::unexpected(std::string("op 须为 prev/next/read/continue/mark_read/skip/close"));
-            }
-            // 分段回包：约 900 字/段，避免整篇顶爆 MQTT。
-            constexpr size_t kNewsSpokenCap = 4096;
-            char *spoken = static_cast<char *>(
-                heap_caps_malloc(kNewsSpokenCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-            if (!spoken) {
-                spoken = static_cast<char *>(malloc(kNewsSpokenCap));
-            }
-            if (!spoken) {
-                return std::unexpected(std::string("内存不足"));
-            }
-            spoken[0] = '\0';
-            const bool ok = nodelio_skill_news_action(op.c_str(), spoken, kNewsSpokenCap);
-            std::string out = spoken;
-            heap_caps_free(spoken);
-            if (!ok) {
-                if (op == "prev") {
-                    return std::unexpected(std::string("没有上一篇"));
-                }
-                if (op == "continue") {
-                    return std::unexpected(std::string("没有更多正文"));
-                }
-                if (op == "mark_read" || op == "mark") {
-                    return std::unexpected(std::string("没有可标记的新闻"));
-                }
-                return std::unexpected(std::string("没有下一篇"));
-            }
-            if (out.empty()) {
-                return std::unexpected(std::string("正文加载失败"));
-            }
-            return out;
         });
 
     mcp.AddTool(

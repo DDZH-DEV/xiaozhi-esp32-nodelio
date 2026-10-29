@@ -1,6 +1,7 @@
 #include "system_info.h"
 
 #include <freertos/task.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_flash.h>
 #include <esp_mac.h>
@@ -148,9 +149,16 @@ void SystemInfo::PrintTaskList() {
 }
 
 void SystemInfo::PrintHeapStats() {
-    int free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    int min_free_sram = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
-    ESP_LOGI(TAG, "free sram: %u minimal sram: %u", free_sram, min_free_sram);
+    multi_heap_info_t di{}, ds{};
+    heap_caps_get_info(&di, MALLOC_CAP_INTERNAL);
+    heap_caps_get_info(&ds, MALLOC_CAP_SPIRAM);
+    ESP_LOGI(TAG,
+             "free sram: %u minimal sram: %u | INTERNAL free=%u largest=%u alloc=%u | "
+             "PSRAM free=%u largest=%u alloc=%u",
+             (unsigned)di.total_free_bytes, (unsigned)di.minimum_free_bytes,
+             (unsigned)di.total_free_bytes, (unsigned)di.largest_free_block,
+             (unsigned)di.total_allocated_bytes, (unsigned)ds.total_free_bytes,
+             (unsigned)ds.largest_free_block, (unsigned)ds.total_allocated_bytes);
 }
 
 void SystemInfo::PrintPmLocks() {

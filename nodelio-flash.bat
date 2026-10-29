@@ -2,10 +2,10 @@
 setlocal EnableDelayedExpansion
 chcp 65001 >nul
 
-rem 常用入口：构建号 → 编译 → 烧录+监视
-rem   nodelio-flash.bat              默认 COM12，先编再烧
-rem   nodelio-flash.bat COM15        指定口
-rem   nodelio-flash.bat --nofresh    不重编，只烧已有 build\
+rem entry: build-stamp -> build -> flash+monitor
+rem   nodelio-flash.bat              default COM12, build then flash
+rem   nodelio-flash.bat COM15        set port
+rem   nodelio-flash.bat --nofresh    skip build, flash existing build dir
 rem   nodelio-flash.bat COM15 --nofresh
 
 set "PORT=COM12"
@@ -30,7 +30,7 @@ call "%~dp0nodelio-build.bat"
 if errorlevel 1 exit /b 1
 
 :after_build
-rem build.bat 用了 setlocal，export 的 PATH 不会留到本脚本，烧录前必须重新 export
+rem build.bat uses setlocal; re-export before flash so PATH sticks
 set IDF_PATH=D:\Espressif\frameworks\esp-idf-v6.1
 set IDF_TOOLS_PATH=D:\Espressif
 set IDF_GITHUB_ASSETS=dl.espressif.com/github_assets

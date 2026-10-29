@@ -272,8 +272,9 @@ void AfeAudioEngine::Feed(std::vector<int16_t>&& data) {
         OutputRawAudio(data);
     }
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-    /* 点歌/通知播报期间丢弃麦帧：避免 FEED 环满抢 CPU0，扬声器前几秒卡顿。 */
-    if (nodelio_media_is_playing()) {
+    /* 点歌时默认丢麦帧，避免 FEED 抢核导致开声卡顿；播中已武装唤醒则必须继续喂，
+     * 否则 EnableWakeWord 只是假开（log 有 armed 但永远检不到）。 */
+    if (nodelio_media_is_playing() && (bits & kWakeWordEnabled) == 0) {
         return;
     }
 #endif

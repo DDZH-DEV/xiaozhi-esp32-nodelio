@@ -32,6 +32,7 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <esp_wifi.h>
+#include <nvs.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
@@ -413,13 +414,30 @@ static void on_save(lv_event_t *e)
     nodelio_conn_hist_cache_get(&hist);
     nodelio_conn_hist_push(&hist, https, host_s.c_str(), port_s.c_str(), owner_s.c_str());
     nodelio_conn_hist_cache_put(&hist);
-    nl_ov_toast(server_changed ? "已保存，将重新注册…" : "已保存，重启…");
-    Application::GetInstance().Schedule([cfg, ssid_s, pass_s, hist]() mutable {
+    nl_ov_toast("正在保存…");
+    Application::GetInstance().Schedule([cfg, ssid_s, pass_s, hist, server_changed]() mutable {
         nodelio_nvs_config_t out = cfg;
         apply_wifi_creds(ssid_s.c_str(), pass_s.c_str(), &out);
-        (void)nodelio_nvs_save(&out);
+        /* 换服务器：先清可重建缓存，腾出 16KB NVS，避免 server_url 写失败仍重启 */
+        if (server_changed) {
+            (void)nodelio_layout_cache_clear();
+            (void)nodelio_apps_cache_clear();
+        }
+        esp_err_t err = nodelio_nvs_save(&out);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "nvs save failed: %s — keep old server", esp_err_to_name(err));
+            nodelio_nvs_config_t revert{};
+            if (nodelio_nvs_load(&revert) == ESP_OK) {
+                s_cfg = revert;
+                nodelio_nvs_cache_put(&revert);
+            }
+            nl_ov_toast(err == ESP_ERR_NVS_NOT_ENOUGH_SPACE ? "保存失败：存储已满" : "保存失败");
+            return;
+        }
         (void)nodelio_conn_hist_save(&hist);
-        vTaskDelay(pdMS_TO_TICKS(300));
+        ESP_LOGI(TAG, "saved server=%s — reboot", out.server_url);
+        nl_ov_toast(server_changed ? "已保存，将重新注册…" : "已保存，重启…");
+        vTaskDelay(pdMS_TO_TICKS(400));
         esp_restart();
     });
 }
