@@ -120,14 +120,17 @@ static void store_default_invoke(char *dst, size_t n, const cJSON *it)
     cJSON_free(printed);
 }
 
-void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
-{
+bool nl_ov_invoke_skill_async(const char* skill_id, const char* body) {
     if (!skill_id || !skill_id[0]) {
-        return;
+        return false;
+    }
+    if (strlen(skill_id) >= 72 || (body && strlen(body) >= HOME_INVOKE_BODY_MAX)) {
+        nl_ov_toast("内容过长，未发送，请缩短后重说");
+        return false;
     }
     if (!s_cfg.server_url[0] || !s_cfg.device_id[0]) {
         nl_ov_toast("未绑定服务器");
-        return;
+        return false;
     }
 
     struct invoke_arg {
@@ -142,7 +145,7 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
     }
     if (!arg) {
         nl_ov_toast("内存不足");
-        return;
+        return false;
     }
     arg->cfg = s_cfg;
     snprintf(arg->id, sizeof(arg->id), "%s", skill_id);
@@ -154,6 +157,8 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
             [](void *p) {
                 auto *a = static_cast<invoke_arg *>(p);
                 const bool music_app = nodelio_skill_id_is_music(a->id);
+                const bool dsh_app = strstr(a->id, "dsh") != nullptr;
+                const bool dsh_mutation = strstr(a->id, "dsh.task") || strstr(a->id, "dsh.answer");
                 /* 仅媒体退会话；天气等保留云端 TTS */
                 if (music_app) {
                     Application::GetInstance().Schedule([]() {
@@ -182,9 +187,10 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
                 } else {
                     resp[0] = '\0';
                     int status = 0;
-                    /* nl_http 内已 voice-grace + 空收重试；此处只发一枪 */
-                    esp_err_t err = nodelio_http_post_json_ms(url, a->cfg.device_key, a->body, &status, resp,
-                                                              cap - 1, 10000);
+                    /* DSH 桥可能等待 20s；HTTP 层对派活/审批禁自动重试。 */
+                    esp_err_t err =
+                        nodelio_http_post_json_ms(url, a->cfg.device_key, a->body, &status, resp,
+                                                  cap - 1, dsh_app ? 22000 : 10000);
                     if (err == ESP_OK && resp[0] &&
                         (status == 200 || status == 201 ||
                          (status >= 400 && strstr(resp, "\"schema_version\"") != nullptr))) {
@@ -200,7 +206,11 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
                             nodelio_panel_ui_announce_spoken(spoken);
                         }
                     } else if (err != ESP_OK || status == 0 || !resp[0]) {
-                        nl_ov_toast_invoke_unreachable(a->id);
+                        if (dsh_mutation) {
+                            nodelio_panel_ui_toast_defer("结果未确认，请先查看任务，勿重复发送");
+                        } else {
+                            nl_ov_toast_invoke_unreachable(a->id);
+                        }
                     } else {
                         nodelio_panel_ui_toast_defer("打开失败");
                     }
@@ -212,7 +222,9 @@ void nl_ov_invoke_skill_async(const char *skill_id, const char *body)
             "nl_home_sk", kStackWords, arg, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         free(arg);
         nl_ov_toast("无法打开");
+        return false;
     }
+    return true;
 }
 
 #define WIDGET_CACHE_N 8

@@ -203,7 +203,7 @@ esp_err_t nl_ov_voice_scroll_peek(int dir);
 /** 须已持有 DisplayLock。 */
 void nl_ov_voice_scroll_apply(int dir);
 /** 异步 invoke 已装技能（画布 skill_tile / 钉选共用）；LVGL 回调内调用，禁止同步 HTTP */
-void nl_ov_invoke_skill_async(const char *skill_id, const char *body_json);
+bool nl_ov_invoke_skill_async(const char* skill_id, const char* body_json);
 nl_dev_cache_t *nl_ov_find_dev(const char *device_id);
 /** 本地乐观写缓存（不刷 LVGL）；语音会话中 panel/command 成功后用，免等 MQTT snapshot */
 void nl_ov_apply_bind_state(const nl_bind_t *bind, const char *value);
@@ -244,7 +244,8 @@ void nl_ov_stop_sys_monitor(void);
 bool nl_ov_apps_open_by_query(const char *query);
 
 /** 派活：invoke dsh.task + instruction；空指令只提示不请求 */
-bool nl_ov_apps_invoke_dsh_task(const char *instruction);
+bool nl_ov_apps_invoke_dsh_task(const char* instruction, const char* workspace = nullptr,
+                                const char* session = nullptr);
 /** 拉 dsh.status；session 非空则直开详情，否则刷新进度列表（workspace 可空） */
 void nl_ov_apps_invoke_dsh_status(const char *workspace, const char *session);
 

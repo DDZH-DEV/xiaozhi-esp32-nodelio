@@ -14,6 +14,7 @@
 #include "board.h"
 #include "display.h"
 #include "offline_cmd.h"
+#include "offline_cmd_map.h"
 
 #include <cJSON.h>
 #include <esp_heap_caps.h>
@@ -1543,6 +1544,12 @@ static void run_invoke_action(const nl_env_invoke_action_t *ia)
         if (root) {
             const cJSON *jw = cJSON_GetObjectItemCaseSensitive(root, "workspace");
             const cJSON *js = cJSON_GetObjectItemCaseSensitive(root, "session");
+            if ((cJSON_IsString(jw) && strlen(jw->valuestring) >= sizeof(ws_buf)) ||
+                (cJSON_IsString(js) && strlen(js->valuestring) >= sizeof(sess_buf))) {
+                cJSON_Delete(root);
+                nl_ov_toast("工作区或会话标识过长，无法续聊");
+                return;
+            }
             if (cJSON_IsString(jw) && jw->valuestring) {
                 snprintf(ws_buf, sizeof(ws_buf), "%s", jw->valuestring);
             }
@@ -1567,9 +1574,13 @@ static void run_invoke_action(const nl_env_invoke_action_t *ia)
             return;
         }
         nodelio_panel_ui_arm_dsh(ws_buf[0] ? ws_buf : nullptr, sess_buf[0] ? sess_buf : nullptr);
+        if (!nodelio_panel_ui_dsh_is_armed()) {
+            nl_ov_toast("缺少工作区或会话，无法续聊");
+            return;
+        }
         Board::GetInstance().NoteUserActivity();
         restart_skill_ttl();
-        /* 续聊：只 toast + 开麦。禁止 announce_spoken——纯文字会 EndVoiceSession，立刻把刚开的麦掐掉 */
+        /* 续聊提示只显示文字，保持麦克风等待正文。 */
         const bool card_open =
             s_skill_ui_active && s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN);
         if (sess_buf[0]) {
@@ -1653,7 +1664,11 @@ static void run_invoke_action(const nl_env_invoke_action_t *ia)
                             nodelio_panel_ui_announce_spoken(spoken);
                         }
                     } else if (err != ESP_OK || status == 0 || !resp[0]) {
-                        nl_ov_toast_invoke_unreachable(a->skill_id);
+                        if (strstr(a->skill_id, "dsh.task") || strstr(a->skill_id, "dsh.answer")) {
+                            nodelio_panel_ui_toast_defer("结果未确认，请先查看任务，勿重复发送");
+                        } else {
+                            nl_ov_toast_invoke_unreachable(a->skill_id);
+                        }
                     } else {
                         nodelio_panel_ui_toast_defer("执行失败");
                     }
@@ -1723,24 +1738,23 @@ static void invoke_filter_workspace(const nl_env_filter_t *f)
     if (!f || !f->workspace[0] || !s_env) {
         return;
     }
-    nodelio_panel_ui_arm_dsh(f->workspace, nullptr);
     nl_env_invoke_action_t ia;
     memset(&ia, 0, sizeof(ia));
     snprintf(ia.id, sizeof(ia.id), "filter");
     snprintf(ia.title, sizeof(ia.title), "%s", f->title[0] ? f->title : "工作区");
     snprintf(ia.app_id, sizeof(ia.app_id), "%s",
              s_env->app_id[0] ? s_env->app_id : "dsh.status");
-    /* 路径转义后须装进 params_json(256)：外壳 {"workspace":""} = 16+NUL → esc≤239 */
-    char esc[240];
-    size_t eo = 0;
-    for (const char *p = f->workspace; *p && eo + 2 < sizeof(esc); ++p) {
-        if (*p == '\\' || *p == '"') {
-            esc[eo++] = '\\';
-        }
-        esc[eo++] = *p;
+    cJSON* params = cJSON_CreateObject();
+    const bool valid =
+        params && cJSON_AddStringToObject(params, "workspace", f->workspace) &&
+        cJSON_PrintPreallocated(params, ia.params_json, sizeof(ia.params_json), false);
+    cJSON_Delete(params);
+    if (!valid) {
+        nl_ov_toast("工作区参数无法发送，请检查路径长度");
+        return;
     }
-    esc[eo] = '\0';
-    snprintf(ia.params_json, sizeof(ia.params_json), "{\"workspace\":\"%s\"}", esc);
+    nodelio_panel_ui_arm_dsh(f->workspace, nullptr);
+    dsh_clear_ui_phase();
     run_invoke_action(&ia);
 }
 
@@ -1815,15 +1829,24 @@ static void fill_filters(void)
 
 bool nodelio_skill_try_pick_phrase(const char *text)
 {
-    if (!text || !text[0] || !skill_ui_is_up() || !s_env) {
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock || !text || !text[0] || !skill_ui_is_up() || !s_env) {
         return false;
     }
     if (strstr(s_env->app_id, "dsh") == nullptr) {
         return false;
     }
-    const int ord = parse_ordinal_zh(text);
-    if (ord <= 0) {
+    bool resume = false;
+    int ord = nodelio_offline_dsh_selection(text, &resume);
+    if (ord == 0) {
         return false;
+    }
+    if (ord < 0) {
+        if (!dsh_is_detail_view()) {
+            nodelio_panel_ui_announce_spoken("请说续聊第几个，或先打开会话详情。");
+            return true;
+        }
+        ord = 1;
     }
     /* 「第 N 个工作区」→ 顶栏 filters */
     if (s_env->filter_n > 0 && strstr(text, "工作区") != nullptr) {
@@ -1855,6 +1878,20 @@ bool nodelio_skill_try_pick_phrase(const char *text)
         return true;
     }
     const int ti = selectable[ord - 1];
+    if (resume) {
+        const auto& track = s_env->tracks[ti];
+        for (int ai = 0; ai < track.invoke_n; ++ai) {
+            cJSON* params = cJSON_Parse(track.invokes[ai].params_json);
+            const bool arm = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(params, "arm"));
+            cJSON_Delete(params);
+            if (arm) {
+                run_invoke_action(&track.invokes[ai]);
+                return true;
+            }
+        }
+        nodelio_panel_ui_announce_spoken("这个会话暂不支持续聊。");
+        return true;
+    }
     /* 「第 N 个」→ 打开详情看回复；续聊请说「续聊」或点按钮（避免误武装 + 主线程重建卡死） */
     ESP_LOGI(TAG, "dsh pick ord=%d track=%d → detail", ord, ti);
     nl_ov_toast("打开详情");
@@ -3884,7 +3921,7 @@ void nodelio_skill_dsh_on_dispatched(const char *instruction)
     if (!lock) {
         return;
     }
-    nl_ov_toast("已投递，执行中…");
+    nl_ov_toast("正在发送，请等待结果…");
     const bool card_open =
         s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN) && s_skill_ui_active;
     if (card_open && s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr && s_card_list) {

@@ -119,11 +119,17 @@ esp_err_t nodelio_offline_try_phrase(const nodelio_nvs_config_t *cfg, const char
  */
 bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bool *keep_cloud_tts);
 
+/** DSH 指令/确认优先于序号选择和本机系统口令；命中后保持聆听。 */
+bool nodelio_offline_try_dsh_phrase(const char* phrase);
+
+/** 完整序号口令：返回 1-based 序号；单独「续聊」为 -1，非导航为 0。 */
+int nodelio_offline_dsh_selection(const char* phrase, bool* resume);
+
 /** 问天气/空气内容时保留云端 TTS；纯开卡（新闻等）返回 false。 */
 bool nodelio_offline_query_keeps_cloud_tts(const char *query);
 
 /**
- * 是否保持语音通道：新闻开卡后要追问「要读吗」须保持聆听；
+ * 是否保持语音通道：新闻追问、DSH 开卡/派活保持聆听；
  * 其它与 keeps_cloud_tts 相同（天气问内容 keep，曲库/电台等 false）。
  */
 bool nodelio_offline_query_keeps_listening(const char *query);

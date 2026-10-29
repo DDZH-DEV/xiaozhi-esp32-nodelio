@@ -676,7 +676,11 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
 
     SkillInvokePace invoke_pace(url);
     esp_err_t last = ESP_FAIL;
-    constexpr int kMaxAttempts = 3;
+    /* 派活/审批可能已执行但响应丢失，没有幂等键时不能自动重发。 */
+    const bool dsh_mutation = strcmp(method, "POST") == 0 &&
+                              strstr(url, "/panel/skills/") != nullptr &&
+                              (strstr(url, "dsh.task") || strstr(url, "dsh.answer"));
+    const int kMaxAttempts = dsh_mutation ? 1 : 3;
     for (int attempt = 0; attempt < kMaxAttempts; attempt++) {
         if (attempt > 0) {
             ESP_LOGW(TAG, "retry %s %s (%d/%d)", method, url, attempt + 1, kMaxAttempts);

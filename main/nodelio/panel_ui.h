@@ -284,7 +284,7 @@ bool nodelio_panel_ui_dsh_task(const char *instruction);
 bool nodelio_panel_ui_dsh_confirm_send(const char *instruction);
 /**
  * STT 处理待确认句。
- * @return 0 未处理；1 已确认发送（可结束语音）；2 取消/改口（保持开麦）。
+ * @return 0 未处理；1 已确认发送；2 取消/改口。处理后保持开麦。
  */
 int nodelio_panel_ui_dsh_try_confirm_send(const char *stt);
 void nodelio_panel_ui_dsh_confirm_accept(void);

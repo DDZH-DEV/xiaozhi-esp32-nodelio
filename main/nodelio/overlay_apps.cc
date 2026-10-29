@@ -733,140 +733,53 @@ static const char *find_installed_app_id(const char *app_key, bool prefer_status
     return fallback;
 }
 
+/* cJSON 保留指令、路径和会话 ID 中的引号/反斜杠；队列拒绝超长 JSON，绝不截断。 */
+static bool invoke_dsh(const char* skill, const char* instruction, const char* workspace,
+                       const char* session) {
+    cJSON* params = cJSON_CreateObject();
+    if (!params) {
+        nl_ov_toast("内存不足，未发送");
+        return false;
+    }
+    const bool valid =
+        (!instruction || cJSON_AddStringToObject(params, "instruction", instruction)) &&
+        (!workspace || !workspace[0] || cJSON_AddStringToObject(params, "workspace", workspace)) &&
+        (!session || !session[0] || cJSON_AddStringToObject(params, "session", session));
+    char* body = valid ? cJSON_PrintUnformatted(params) : nullptr;
+    cJSON_Delete(params);
+    if (!body) {
+        nl_ov_toast("内存不足，未发送");
+        return false;
+    }
+    const bool queued = nl_ov_invoke_skill_async(skill, body);
+    cJSON_free(body);
+    return queued;
+}
+
 void nl_ov_apps_invoke_dsh_status(const char *workspace, const char *session)
 {
     const char *sid = find_installed_app_id("dsh.status", true);
     if (!sid) {
         sid = "com.nodelio.dsh::dsh.status";
     }
-    char ws_esc[220];
-    char sess_esc[160];
-    size_t wi = 0;
-    ws_esc[0] = '\0';
-    if (workspace && workspace[0]) {
-        for (const char *p = workspace; *p && wi + 2 < sizeof(ws_esc); ++p) {
-            if (*p == '\\' || *p == '"') {
-                ws_esc[wi++] = '\\';
-            }
-            ws_esc[wi++] = *p;
-        }
-        ws_esc[wi] = '\0';
-    }
-    sess_esc[0] = '\0';
-    if (session && session[0]) {
-        size_t si = 0;
-        for (const char *p = session; *p && si + 2 < sizeof(sess_esc); ++p) {
-            if (*p == '\\' || *p == '"') {
-                sess_esc[si++] = '\\';
-            }
-            sess_esc[si++] = *p;
-        }
-        sess_esc[si] = '\0';
-    }
-    /* ws_esc≤219 + sess_esc≤159 + 外壳 30 → ≤408 */
-    char body[420];
-    if (ws_esc[0] && sess_esc[0]) {
-        snprintf(body, sizeof(body), "{\"workspace\":\"%s\",\"session\":\"%s\"}", ws_esc, sess_esc);
-    } else if (sess_esc[0]) {
-        snprintf(body, sizeof(body), "{\"session\":\"%s\"}", sess_esc);
-    } else if (ws_esc[0]) {
-        snprintf(body, sizeof(body), "{\"workspace\":\"%s\"}", ws_esc);
-    } else {
-        snprintf(body, sizeof(body), "{}");
-    }
-    ESP_LOGI(TAG, "invoke dsh.status sid=%s body=%s", sid, body);
-    nl_ov_invoke_skill_async(sid, body);
+    (void)invoke_dsh(sid, nullptr, workspace, session);
 }
 
-bool nl_ov_apps_invoke_dsh_task(const char *instruction)
-{
+bool nl_ov_apps_invoke_dsh_task(const char* instruction, const char* workspace,
+                                const char* session) {
     if (!instruction || !instruction[0]) {
-        nl_ov_toast("请说：让它 + 要做的事");
         nodelio_panel_ui_announce_spoken("请说让它，再加上要做的事。");
         return true;
     }
-    char esc[180];
-    size_t o = 0;
-    for (const char *p = instruction; *p && o + 1 < sizeof(esc); ++p) {
-        if (*p == '"' || *p == '\\' || (unsigned char)*p < 0x20) {
-            continue;
-        }
-        esc[o++] = *p;
-    }
-    esc[o] = '\0';
-    if (!esc[0]) {
-        nl_ov_toast("请说：让它 + 要做的事");
-        return true;
-    }
-    char ws[200];
-    char sess[80];
-    nodelio_panel_ui_get_dsh_arm(ws, sizeof(ws), sess, sizeof(sess));
-
     const char *sid = find_installed_app_id("dsh.task", false);
     if (!sid) {
         sid = "com.nodelio.dsh::dsh.task";
     }
-    /* 未武装：仍发请求（Host 可注入 APP default_workspace）；先提示避免「不知道建在哪」 */
-    if (!ws[0] && !sess[0]) {
-        nl_ov_toast("未选工作区，将用 APP 默认");
-        ESP_LOGW(TAG, "dsh.task no arm — Host will inject default_workspace; instr='%s'", esc);
-    } else {
-        ESP_LOGI(TAG, "dsh.task armed ws='%s' sess='%s' instr='%s'", ws, sess, esc);
+    if (!invoke_dsh(sid, instruction, workspace, session)) {
+        return false;
     }
-    /* esc≤179 + ws_esc≤219 + sess≤79 + JSON 外壳 ≈524；给足余量消 -Wformat-truncation */
-    char body[544];
-    /* 转义 path 反斜杠供 JSON */
-    char ws_esc[220];
-    size_t wi = 0;
-    for (const char *p = ws; *p && wi + 2 < sizeof(ws_esc); ++p) {
-        if (*p == '\\' || *p == '"') {
-            ws_esc[wi++] = '\\';
-        }
-        ws_esc[wi++] = *p;
-    }
-    ws_esc[wi] = '\0';
-
-    if (sess[0] && ws_esc[0]) {
-        snprintf(body, sizeof(body),
-                 "{\"instruction\":\"%s\",\"workspace\":\"%s\",\"session\":\"%s\"}", esc, ws_esc, sess);
-    } else if (ws_esc[0]) {
-        snprintf(body, sizeof(body), "{\"instruction\":\"%s\",\"workspace\":\"%s\"}", esc, ws_esc);
-    } else if (sess[0]) {
-        snprintf(body, sizeof(body), "{\"instruction\":\"%s\",\"session\":\"%s\"}", esc, sess);
-    } else {
-        snprintf(body, sizeof(body), "{\"instruction\":\"%s\"}", esc);
-    }
-    ESP_LOGI(TAG, "invoke dsh.task sid=%s body=%s", sid, body);
-    /* 续聊/派活发出瞬间：进度卡切「已投递」动画（HTTP 回包后会被真实列表覆盖） */
-    nodelio_skill_dsh_on_dispatched(esc);
-    /* 保存工作区：task 回包后链式拉 status（arm 即将清空） */
-    char chain_ws[200];
-    snprintf(chain_ws, sizeof(chain_ws), "%s", ws);
-    nl_ov_invoke_skill_async(sid, body);
-    /* 链式进度：稍后再拉，避免与 task 回包竞态盖掉 */
-    struct chain_arg {
-        char ws[200];
-    };
-    auto *ca = static_cast<chain_arg *>(malloc(sizeof(chain_arg)));
-    if (ca) {
-        snprintf(ca->ws, sizeof(ca->ws), "%s", chain_ws);
-        constexpr uint32_t kStack = 4096 / sizeof(StackType_t);
-        if (xTaskCreateWithCaps(
-                [](void *p) {
-                    auto *a = static_cast<chain_arg *>(p);
-                    vTaskDelay(pdMS_TO_TICKS(1200));
-                    nl_ov_apps_invoke_dsh_status(a->ws[0] ? a->ws : nullptr, nullptr);
-                    free(a);
-                    vTaskDeleteWithCaps(nullptr);
-                },
-                "nl_dsh_chain", kStack, ca, 2, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
-            free(ca);
-            nl_ov_apps_invoke_dsh_status(chain_ws[0] ? chain_ws : nullptr, nullptr);
-        }
-    } else {
-        nl_ov_apps_invoke_dsh_status(chain_ws[0] ? chain_ws : nullptr, nullptr);
-    }
-    nodelio_panel_ui_clear_dsh_arm();
+    nodelio_skill_dsh_on_dispatched(instruction);
+    /* dsh.task 已返回含目标会话的进度列表。定时补拉会与本次响应竞态，覆盖真实结果。 */
     return true;
 }
 

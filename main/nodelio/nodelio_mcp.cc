@@ -600,6 +600,9 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
         return std::unexpected(std::string("skill_id 不能为空"));
     }
     const std::string skill_id = normalize_skill_id_alias(skill_id_in);
+    const bool dsh_app = skill_id.find("dsh") != std::string::npos;
+    const bool dsh_mutation = skill_id.find("dsh.task") != std::string::npos ||
+                              skill_id.find("dsh.answer") != std::string::npos;
     const bool music_app = nodelio_skill_id_is_music(skill_id.c_str());
     if (!music_app && nodelio_media_preempt_for_heavy_app()) {
         ESP_LOGI(TAG, "preempt media before skill '%s'", skill_id.c_str());
@@ -629,8 +632,8 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
     }
     resp[0] = '\0';
     int status = 0;
-    esp_err_t err =
-        nodelio_http_post_json_ms(url, cfg->device_key, body.c_str(), &status, resp, cap - 1, 10000);
+    esp_err_t err = nodelio_http_post_json_ms(url, cfg->device_key, body.c_str(), &status, resp,
+                                              cap - 1, dsh_app ? 22000 : 10000);
     const bool envelope_body = resp[0] && strstr(resp, "\"schema_version\"") != nullptr;
     const bool http_ok = (status == 200 || status == 201);
     const bool envelope_err = status >= 400 && envelope_body;
@@ -641,6 +644,9 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
             return std::unexpected(std::string("未安装该技能，请先在应用市场安装"));
         }
         if (status == 0 || (err != ESP_OK && status < 400)) {
+            if (dsh_mutation) {
+                return std::unexpected(std::string("结果未确认，请先查看任务，勿重复发送"));
+            }
             if (nl_ov_skill_needs_outbound_bridge(skill_id.c_str())) {
                 return std::unexpected(std::string("本地桥未连接，请在电脑上启动桥"));
             }

@@ -1231,27 +1231,25 @@ static bool try_dsh_dispatch_phrase(const char *phrase)
     if (!phrase || !phrase[0]) {
         return false;
     }
-    const char *p = NULL;
-    /* 长前缀优先 */
-    if ((p = strstr(phrase, "让助手")) != NULL) {
-        p += 9;
-    } else if ((p = strstr(phrase, "让它去")) != NULL) {
-        p += 9;
-    } else if ((p = strstr(phrase, "让他去")) != NULL) {
-        p += 9;
-    } else if ((p = strstr(phrase, "让它")) != NULL) {
-        p += 6;
-    } else if ((p = strstr(phrase, "让他")) != NULL) {
-        p += 6;
-    } else if ((p = strstr(phrase, "叫它")) != NULL) {
-        p += 6;
-    } else if ((p = strstr(phrase, "叫他")) != NULL) {
-        p += 6;
-    } else if ((p = strstr(phrase, "请它")) != NULL) {
-        p += 6;
-    } else if ((p = strstr(phrase, "请他")) != NULL) {
-        p += 6;
-    } else {
+    const char* p = phrase;
+    while (*p == ' ' || *p == '\t') {
+        ++p;
+    }
+    if (strncmp(p, "帮我", strlen("帮我")) == 0) {
+        p += strlen("帮我");
+    }
+    static const char* const prefixes[] = {"让助手", "让它去", "让他去", "让它", "让他",
+                                           "叫它",   "叫他",   "请它",   "请他"};
+    bool matched = false;
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
+        const size_t n = strlen(prefixes[i]);
+        if (strncmp(p, prefixes[i], n) == 0) {
+            p += n;
+            matched = true;
+            break;
+        }
+    }
+    if (!matched) {
         return false;
     }
     for (;;) {
@@ -1272,18 +1270,134 @@ static bool try_dsh_dispatch_phrase(const char *phrase)
         }
         break;
     }
-    char instr[200];
-    strip_app_query(instr, sizeof(instr), p);
-    if (!instr[0]) {
-        ESP_LOGI(TAG, "dsh dispatch: empty instruction after prefix");
+    /* 正文不走应用名清洗，也不截断 UTF-8、代码和路径。 */
+    char probe[16];
+    strip_app_query(probe, sizeof(probe), p);
+    if (!probe[0]) {
         return nodelio_panel_ui_dsh_task(NULL);
     }
-    ESP_LOGI(TAG, "dsh dispatch instruction='%s'", instr);
-    /* 续聊武装中：与裸说同一路径，先确认再发 */
     if (nodelio_panel_ui_dsh_is_armed()) {
-        return nodelio_panel_ui_dsh_confirm_send(instr);
+        return nodelio_panel_ui_dsh_confirm_send(p);
     }
-    return nodelio_panel_ui_dsh_task(instr);
+    return nodelio_panel_ui_dsh_task(p);
+}
+
+int nodelio_offline_dsh_selection(const char* phrase, bool* resume) {
+    if (resume) {
+        *resume = false;
+    }
+    if (!phrase || strlen(phrase) >= 96) {
+        return 0;
+    }
+    char text[96];
+    strip_app_query(text, sizeof(text), phrase);
+    const char* p = text;
+    static const char* const prefixes[] = {"续聊", "打开", "查看", "选择", "选", "要"};
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
+        const size_t n = strlen(prefixes[i]);
+        if (strncmp(p, prefixes[i], n) == 0) {
+            p += n;
+            if (i == 0) {
+                if (resume) {
+                    *resume = true;
+                }
+                if (!*p) {
+                    return -1;
+                }
+            }
+            break;
+        }
+    }
+    if (strncmp(p, "第", strlen("第")) == 0) {
+        p += strlen("第");
+    }
+    int ordinal = 0;
+    if (*p >= '1' && *p <= '9') {
+        ordinal = *p++ - '0';
+        if (*p >= '0' && *p <= '9') {
+            ordinal = ordinal * 10 + *p++ - '0';
+        }
+    } else {
+        static const char* const digits[] = {"零", "一", "二", "三", "四",
+                                             "五", "六", "七", "八", "九"};
+        for (int i = 1; i <= 9; ++i) {
+            if (strncmp(p, digits[i], strlen(digits[i])) == 0) {
+                ordinal = i;
+                p += strlen(digits[i]);
+                break;
+            }
+        }
+        if (strncmp(p, "两", strlen("两")) == 0) {
+            ordinal = 2;
+            p += strlen("两");
+        }
+        if (strncmp(p, "十", strlen("十")) == 0) {
+            ordinal = (ordinal ? ordinal : 1) * 10;
+            p += strlen("十");
+            for (int i = 1; i <= 9; ++i) {
+                if (strncmp(p, digits[i], strlen(digits[i])) == 0) {
+                    ordinal += i;
+                    p += strlen(digits[i]);
+                    break;
+                }
+            }
+        }
+    }
+    if (ordinal <= 0) {
+        return 0;
+    }
+    if (strncmp(p, "个", strlen("个")) == 0 || strncmp(p, "条", strlen("条")) == 0) {
+        p += strlen("个");
+    }
+    return (!*p || strcmp(p, "工作区") == 0 || strcmp(p, "会话") == 0 || strcmp(p, "任务") == 0)
+               ? ordinal
+               : 0;
+}
+
+/* 明确的面板导航可以退出续聊输入；其余正文均先确认，不能触发面板重启等操作。 */
+bool nodelio_offline_try_dsh_phrase(const char* phrase) {
+    if (!phrase || !phrase[0]) {
+        return false;
+    }
+    char short_phrase[96];
+    strip_app_query(short_phrase, sizeof(short_phrase), phrase);
+    if (strcmp(short_phrase, "取消续聊") == 0 || strcmp(short_phrase, "退出续聊") == 0) {
+        if (!nodelio_panel_ui_dsh_is_armed()) {
+            return false;
+        }
+        nodelio_panel_ui_clear_dsh_arm();
+        nodelio_skill_dsh_on_arm_cleared();
+        nodelio_panel_ui_toast_defer("已取消续聊");
+        return true;
+    }
+    const bool navigation =
+        strcmp(short_phrase, "查看任务") == 0 || strcmp(short_phrase, "任务列表") == 0 ||
+        strcmp(short_phrase, "关闭面板") == 0 || strcmp(short_phrase, "关闭任务") == 0 ||
+        strcmp(short_phrase, "关闭DSH") == 0 || strcmp(short_phrase, "返回首页") == 0;
+    if (navigation) {
+        nodelio_panel_ui_clear_dsh_arm();
+        nodelio_skill_dsh_on_arm_cleared();
+        return false;
+    }
+    if (nodelio_panel_ui_dsh_has_pending_send()) {
+        return nodelio_panel_ui_dsh_try_confirm_send(phrase) != 0;
+    }
+    if (try_dsh_dispatch_phrase(phrase)) {
+        return true;
+    }
+    /* 否定派活不是指令；同时防止正文中的「重启」落入本机系统口令。 */
+    if (!nodelio_panel_ui_dsh_is_armed() &&
+        (strstr(phrase, "不要让它") || strstr(phrase, "不要让他") || strstr(phrase, "别让它") ||
+         strstr(phrase, "别让他") || strstr(phrase, "不用让它") || strstr(phrase, "不用让他"))) {
+        nodelio_panel_ui_toast_defer("未发送任务");
+        return true;
+    }
+    /* 序号导航留给技能卡；带「修改第一个文件」的正文不能被抢成选项。 */
+    const bool selection = nodelio_offline_dsh_selection(phrase, NULL) != 0;
+    if (nodelio_panel_ui_dsh_is_armed() && !selection) {
+        return nodelio_panel_ui_dsh_confirm_send(phrase);
+    }
+    return false;
 }
 
 bool nodelio_offline_query_keeps_cloud_tts(const char *query)
@@ -1320,8 +1434,9 @@ bool nodelio_offline_query_keeps_listening(const char *query)
     if (!query || !query[0]) {
         return false;
     }
-    /* 打开新闻后本地追问「要不要读第一条」，须保持通道；勿交给云端（会说找不到应用）。 */
-    if (strstr(query, "新闻") || strstr(query, "news")) {
+    /* 新闻追问、DSH 序号导航和续聊都需要继续聆听。 */
+    if (strstr(query, "新闻") || strstr(query, "news") || strstr(query, "任务") ||
+        strstr(query, "DSH") || strstr(query, "dsh") || strstr(query, "派活")) {
         return true;
     }
     return nodelio_offline_query_keeps_cloud_tts(query);
@@ -1443,16 +1558,8 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
         ESP_LOGI(TAG, "system phrase: empty");
         return false;
     }
-    /* 续聊待确认：是→发送 / 不用→取消 / 其它→改口重确认 */
-    if (nodelio_panel_ui_dsh_has_pending_send()) {
-        const int conf = nodelio_panel_ui_dsh_try_confirm_send(phrase);
-        if (conf != 0) {
-            ESP_LOGI(TAG, "system phrase: dsh confirm handled rc=%d", conf);
-            if (end_session) {
-                *end_session = (conf == 1);
-            }
-            return true;
-        }
+    if (nodelio_offline_try_dsh_phrase(phrase)) {
+        return true;
     }
     /* 新闻卡前台：读/续读走云 detect 播原文；翻篇本地切卡。未开卡不吞句 */
     if (nodelio_skill_news_ui_active()) {
@@ -1540,30 +1647,6 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
             }
         }
         return nodelio_offline_cmd_dispatch(NULL, cmd, NULL) == ESP_OK;
-    }
-    /* 「让它…」派活：须在 open_app「派活」之前；续聊武装时走确认，保持开麦 */
-    if (try_dsh_dispatch_phrase(phrase)) {
-        ESP_LOGI(TAG, "system phrase: dsh.task dispatch hit pending=%d",
-                 nodelio_panel_ui_dsh_has_pending_send() ? 1 : 0);
-        if (end_session) {
-            *end_session = !nodelio_panel_ui_dsh_has_pending_send();
-        }
-        return true;
-    }
-    /* 点「续聊」武装后：下一句无需「让它」前缀 → 先确认再发送 */
-    if (nodelio_panel_ui_dsh_is_armed()) {
-        char instr[200];
-        strip_app_query(instr, sizeof(instr), phrase);
-        if (instr[0] && phrase_to_cmd_id(phrase) == 0 &&
-            strstr(instr, "打开") == NULL && strstr(instr, "关闭") == NULL &&
-            strstr(instr, "查看任务") == NULL) {
-            ESP_LOGI(TAG, "system phrase: armed bare → confirm '%s'", instr);
-            /* 保持会话，等「是/不用」或点发送/取消 */
-            if (end_session) {
-                *end_session = false;
-            }
-            return nodelio_panel_ui_dsh_confirm_send(instr);
-        }
     }
     /* 「打开曲库」等：phrase_to_cmd_id 会落到 LIGHT_ON，这里再抢一次应用 */
     if (try_open_named_app(phrase)) {

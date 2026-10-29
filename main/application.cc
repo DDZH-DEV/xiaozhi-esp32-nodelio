@@ -1080,6 +1080,14 @@ void Application::InitializeProtocol() {
                     news_awaiting_mcp_ = false;
                     news_detect_echo_.clear();
                     suppress_cloud_tts_until_us_ = 0;
+                    /* 派活正文可能含「第一个」「重启」；不能被面板导航/新闻确认抢走。 */
+                    if (nodelio_offline_try_dsh_phrase(message.c_str())) {
+                        pending_confirm_open_dsh_ = false;
+                        pending_confirm_read_news_ = false;
+                        SuppressCloudTts(5000);
+                        ContinueListeningAfterLocalSkill();
+                        return;
+                    }
                     if (TryConfirmOpenDshFromStt(message.c_str())) {
                         ESP_LOGI(TAG, "stt local-route: confirm→dsh.status");
                         return;
@@ -1109,7 +1117,7 @@ void Application::InitializeProtocol() {
                         ContinueListeningAfterLocalSkill();
                         return;
                     }
-                    /* 本机口令旁路：切页/曲库等可保持会话；DSH/重启/配网结束语音 */
+                    /* 本机口令旁路：信息卡保持会话；媒体/重启/配网结束语音 */
                     bool end_session = false;
                     bool keep_cloud_tts = false;
                     if (nodelio_offline_try_system_phrase(message.c_str(), &end_session,
@@ -2315,6 +2323,7 @@ void Application::LocalOpenDshStatus(const char *reason)
     pending_confirm_open_dsh_ = false;
     dsh_local_open_cooldown_until_us_ = esp_timer_get_time() + (int64_t)20000 * 1000;
     nodelio_panel_ui_open_app("查看任务");
+    ContinueListeningAfterLocalSkill();
 }
 
 void Application::MaybeArmPendingOpenDshFromTts(const char *text)
@@ -2442,19 +2451,16 @@ bool Application::TryConfirmOpenDshFromStt(const char *text)
         buf[n++] = *p;
     }
     buf[n] = '\0';
-    const bool yes = (strcmp(buf, "是的") == 0 || strcmp(buf, "是") == 0 || strcmp(buf, "好的") == 0 ||
-                      strcmp(buf, "好") == 0 || strcmp(buf, "嗯") == 0 || strcmp(buf, "行") == 0 ||
-                      strcmp(buf, "可以") == 0 || strcmp(buf, "打开") == 0 || strcmp(buf, "打开吧") == 0 ||
-                      strcmp(buf, "对") == 0 || strcmp(buf, "要") == 0 ||
-                      strstr(buf, "打开任务") != nullptr || strstr(buf, "打开DSH") != nullptr);
+    const bool yes =
+        (strcmp(buf, "是的") == 0 || strcmp(buf, "是") == 0 || strcmp(buf, "好的") == 0 ||
+         strcmp(buf, "好") == 0 || strcmp(buf, "嗯") == 0 || strcmp(buf, "行") == 0 ||
+         strcmp(buf, "可以") == 0 || strcmp(buf, "打开") == 0 || strcmp(buf, "打开吧") == 0 ||
+         strcmp(buf, "对") == 0 || strcmp(buf, "要") == 0 || strcmp(buf, "打开任务") == 0 ||
+         strcmp(buf, "打开DSH") == 0);
     ESP_LOGI(TAG, "confirm_open_dsh pending=1 stt='%s' norm='%s' yes=%d", text, buf, yes ? 1 : 0);
     if (!yes) {
-        /* 否定则撤；其它新意图留给后面本地/云端 */
-        if (strcmp(buf, "不") == 0 || strcmp(buf, "不用") == 0 || strcmp(buf, "不要") == 0 ||
-            strcmp(buf, "算了") == 0 || strstr(buf, "不用了") != nullptr) {
-            pending_confirm_open_dsh_ = false;
-            ESP_LOGI(TAG, "pending_confirm_open_dsh cleared (no)");
-        }
+        /* 新意图结束旧询问，勿把之后的「是」误当成开 DSH。 */
+        pending_confirm_open_dsh_ = false;
         return false;
     }
     LocalOpenDshStatus("stt_confirm_yes");

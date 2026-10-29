@@ -703,8 +703,7 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
         }
     }
 
-    auto run = [this, id, tool, arguments = std::move(arguments),
-                response_sender = std::move(response_sender)]() {
+    auto run = [this, id, tool, arguments = std::move(arguments), response_sender]() {
         auto result = tool->Call(arguments);
         if (!result) {
             ESP_LOGE(TAG, "tools/call: %s", result.error().c_str());
@@ -718,7 +717,6 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
     const bool local_only = tool_name == "self.nodelio.reboot" ||
                             tool_name == "self.nodelio.enter_wifi_config" ||
                             tool_name == "self.nodelio.goto_page" ||
-                            tool_name == "self.nodelio.open_app" ||
                             tool_name == "self.nodelio.list_controls" ||
                             tool_name == "self.nodelio.set_pref" ||
                             tool_name == "self.skill.transport";
@@ -751,9 +749,7 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
         ESP_LOGE(TAG, "tools/call: mcp_http create fail (stack_words=%u dram_free=%u spiram_free=%u)",
                  (unsigned)kStackWords, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-        /* 最后手段：主任务跑（可能短暂卡说话）；总比工具全废好 */
-        auto fn = std::move(job->fn);
         delete job;
-        Application::GetInstance().Schedule(std::move(fn));
+        ReplyError(id, "Unable to start HTTP task", response_sender);
     }
 }
