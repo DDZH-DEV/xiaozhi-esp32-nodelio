@@ -2504,10 +2504,18 @@ static void photo_nav_raise(lv_obj_t *tile)
         return;
     }
     lv_obj_update_layout(tile);
-    const int32_t tw = lv_obj_get_width(tile);
-    const int32_t th = lv_obj_get_height(tile);
+    /* 未出图时 layout 宽高可能仍为 0；回退到 place_grid_obj 写入的 style 尺寸，
+     * 否则右钮会落到 x=10（看起来像叠在左上角）。 */
+    int32_t tw = lv_obj_get_width(tile);
+    int32_t th = lv_obj_get_height(tile);
+    if (tw <= 0) {
+        tw = lv_obj_get_style_width(tile, LV_PART_MAIN);
+    }
+    if (th <= 0) {
+        th = lv_obj_get_style_height(tile, LV_PART_MAIN);
+    }
     const int32_t btn = 48;
-    const int32_t y = (th > btn) ? (th / 2 + 12) : 12;
+    const int32_t y = (th > btn) ? ((th - btn) / 2) : 0;
     for (uint32_t i = 0; i < lv_obj_get_child_count(tile); i++) {
         lv_obj_t *ch = lv_obj_get_child(tile, i);
         if (!ch || !lv_obj_has_flag(ch, LV_OBJ_FLAG_USER_1)) {
@@ -2543,7 +2551,9 @@ static void photo_apply_rgb(const char *widget_id, uint8_t *rgb, size_t rgb_len,
             if (hint && lv_obj_check_type(hint, &lv_label_class)) {
                 lv_label_set_text(hint, "加载失败");
                 lv_obj_set_style_text_color(hint, UI_TEXT_MUTED, 0);
+                lv_obj_center(hint);
             }
+            photo_nav_raise(tile);
         }
         return;
     }
@@ -3090,10 +3100,12 @@ static void fill_photo_frame(nl_widget_t *w, int cell_w, int cell_h)
     if (w->photo_n == 0 || !w->photo_ids[0][0]) {
         lv_label_set_text(lb, "去 APP 添加");
         lv_obj_set_style_text_color(lb, UI_TEXT_MUTED, 0);
+        lv_obj_center(lb);
         return;
     }
     lv_label_set_text(lb, "加载中");
     lv_obj_set_style_text_color(lb, UI_TEXT_MUTED, 0);
+    lv_obj_center(lb);
     if (w->photo_n >= 2) {
         const bool multi = s_home_user_n > 1;
         const bool large = photo_frame_is_large(w);
