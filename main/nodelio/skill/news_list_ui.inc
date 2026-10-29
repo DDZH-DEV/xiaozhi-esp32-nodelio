@@ -338,8 +338,15 @@ uint32_t nodelio_skill_news_on_sentence(const char* text) {
 bool nodelio_skill_news_finish_chunk(uint32_t token, bool played_audio, bool* more) {
     DisplayLockGuard lock(nl_ov_disp());
     bool next = false;
-    if (!lock || !news_read_is_current() ||
-        !s_news_read_progress.Finish(token, played_audio, next)) {
+    if (!lock || !news_read_is_current()) {
+        return false;
+    }
+    const bool finished = s_news_read_progress.Finish(token, played_audio, next);
+    ESP_LOGI(TAG, "news cursor: token=%u matched=%u end=%u resume=%u complete=%d more=%d",
+             (unsigned)token, (unsigned)s_news_read_progress.MatchedOffset(),
+             (unsigned)s_news_read_progress.EndOffset(),
+             (unsigned)s_news_read_progress.ResumeOffset(), finished, next);
+    if (!finished) {
         return false;
     }
     if (more) {
@@ -399,6 +406,9 @@ static char *news_take_piece(bool *more_out, size_t max_bytes)
     s_speak_off = end;
     s_news_read_progress.Begin(std::string_view(s_speak_body + s_speak_off_prev, take),
                                s_speak_off_prev, end < s_speak_len);
+    ESP_LOGI(TAG, "news chunk: token=%u begin=%u end=%u total=%u more=%d",
+             (unsigned)s_news_read_progress.token(), (unsigned)s_speak_off_prev,
+             (unsigned)s_speak_off, (unsigned)s_speak_len, end < s_speak_len);
     return piece;
 }
 
@@ -1391,10 +1401,10 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
                 }
                 return true;
             }
-            // A user interrupted the previous chunk: replay it instead of skipping
-            // the unplayed suffix. Completed chunks advance exactly once.
+            // Preserve the confirmed cursor. A pause replays only the current
+            // sentence; a normally drained response resumes after its last sentence.
             if (s_news_read_progress.unfinished()) {
-                s_speak_off = s_speak_off_prev;
+                s_speak_off = s_news_read_progress.ResumeOffset();
             }
             if (s_speak_body && strcmp(s_speak_id, id) == 0) {
                 if (s_speak_off >= s_speak_len) {

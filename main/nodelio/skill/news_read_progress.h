@@ -15,6 +15,7 @@ public:
         offset_ = offset;
         matched_end_ = 0;
         matched_chars_ = 0;
+        resume_ = 0;
         more_ = more;
         active_ = !chunk.empty() && chunk.size() <= 640;
         complete_ = false;
@@ -29,6 +30,11 @@ public:
     uint32_t token() const { return active_ ? generation_ : 0; }
     bool waiting() const { return active_ && !complete_; }
     bool unfinished() const { return !chunk_.empty() && !complete_; }
+    // During playback, replay the current sentence on resume: sentence_start is
+    // a subtitle announcement, not proof that its audio has finished playing.
+    size_t ResumeOffset() const { return offset_ + (complete_ ? chunk_.size() : resume_); }
+    size_t MatchedOffset() const { return offset_ + matched_end_; }
+    size_t EndOffset() const { return offset_ + chunk_.size(); }
 
     // Align subtitle text to this chunk, ignoring punctuation and whitespace.
     // Also tolerates a spoken title/preamble. No allocations on the UI path.
@@ -41,6 +47,11 @@ public:
         uint16_t lengths[1025] = {};
         size_t best_count = 0, best_start_char = 0, best_end = 0, chars = 0, bi = 0;
         size_t sentence_chars = 0;
+        size_t total_chars = 0, scan = 0;
+        while (Next(chunk_, scan)) {
+            ++total_chars;
+        }
+        size_t tail_count = 0;
         while (const auto bc = Next(chunk_, bi)) {
             ++chars;
             size_t si = 0, j = 0;
@@ -57,8 +68,18 @@ public:
                     best_start_char = chars - best_count;
                     best_end = bi;
                 }
+                if (chars == total_chars && lengths[j] > tail_count) {
+                    tail_count = lengths[j];
+                }
             }
             sentence_chars = j;
+        }
+        // A small rewrite near the start of the final sentence must not hide an
+        // unambiguous matching ending behind a longer matching prefix.
+        if (tail_count >= 8) {
+            best_count = tail_count;
+            best_start_char = total_chars - tail_count;
+            best_end = chunk_.size();
         }
         size_t best_start = 0;
         for (size_t n = 0; n < best_start_char; ++n) {
@@ -71,10 +92,17 @@ public:
         }
         const bool short_tail = matched_chars_ > 0 && best_start_char == matched_chars_ &&
                                 best_start_char + best_count == chars;
+        // Re-sync on a substantial later phrase. Requiring a gap-free prefix
+        // made one changed word block every subsequent sentence and continuation.
+        const bool resynced = best_count >= 8;
         if (!minimum || (best_count < minimum && !short_tail) || best_end <= matched_end_ ||
-            best_start_char > matched_chars_) {
+            (best_start_char > matched_chars_ && !resynced)) {
             return false;
         }
+        // A re-sync anchor can be in the middle of an announced sentence. Until
+        // drain confirms it played, retain the earlier boundary instead of
+        // skipping that sentence's possibly unplayed prefix on pause/resume.
+        resume_ = best_start_char > matched_chars_ ? matched_end_ : best_start;
         matched_end_ = best_end;
         matched_chars_ = best_start_char + best_count;
         byte_offset = offset_ + best_start;
@@ -87,6 +115,9 @@ public:
         if (!token || token != this->token() || !played_audio || !matched_end_) {
             return false;
         }
+        // TTS stop + drain commits the observed sentence even when the server
+        // did not read the entire chunk. A manual continue must not restart it.
+        resume_ = matched_end_;
         size_t remaining = matched_end_;
         if (Next(chunk_, remaining)) {
             return false;  // Never skip text after a summary or truncated response.
@@ -124,6 +155,7 @@ private:
     size_t offset_ = 0;
     size_t matched_end_ = 0;
     size_t matched_chars_ = 0;
+    size_t resume_ = 0;
     bool more_ = false;
     bool active_ = false;
     bool complete_ = false;
