@@ -164,3 +164,13 @@ SILA-86 背光以板级 `config` 为准；勿盲目照抄旧叉 invert。
 - `goto_page home` **不关** `lv_layer_top()` 上的技能弹窗；关电台/新闻用 `self.skill.close`。
 - **禁止**在聆听/说话/连接中走 `StopNotification()` 收尾（`ResetDecoder` + `EnableVoiceProcessing(true)`）。否则下一轮跳过 `SendStartListening`，云端不再出字。只在 `Notifying` 停 HTTP 播歌。
 
+### 实机踩坑硬约束（2026-10-29）
+
+完整条文：`NodeLio/.codex/rules/esp32-idf-panel.md` §11；排障长文：`docs/nodelio-sila86.md`。
+
+- SILA **关硬件 AES**（`CONFIG_MBEDTLS_HARDWARE_AES=n`）；PSRAM 余量不能代替内部堆/DMA；MCP 预算 ≠ AES 安全。
+- MCP 消息须能被 MQTT 按 `type` 识别；新闻/技能是否调用只认 `tools/call`，勿把云端口播当正文。
+- 新建 MQTT/UDP 通道先发 **60ms 加密静音预热** 再报打开；分阶段看 `UDP audio primed` / `first audio rx` / `pcm out`。
+- 新闻自动续段：末句匹配 + TTS stop + PCM 确已排空；**禁止**为续段 `abort`/`ResetDecoder`；跟读按句匹配。
+- DSH：指令/确认优先于序号与系统口令并保持聆听；「让它…」当正文；禁静默截长、禁 `dsh.task`/`answer` 自动重试。
+

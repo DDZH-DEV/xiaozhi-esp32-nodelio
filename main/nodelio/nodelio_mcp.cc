@@ -909,7 +909,8 @@ void nodelio_mcp_register_tools(void)
     mcp.AddTool(
         "self.skill.news",
         "Always call for 读/读吧/朗读/继续读. op=read|continue|prev|next|close. "
-        "Speak return text verbatim; never say no news without calling.",
+        "Speak ONLY the article title and body. Never speak 【续】【完】【摘要】【等】【缺】 "
+        "or any instruction line. Device auto-continues; never say no news without calling.",
         PropertyList({
             Property("op", kPropertyTypeString, "read"),
         }),

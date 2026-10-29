@@ -166,6 +166,9 @@ public:
      * 由模型正常 TTS 念大段正文（勿再用 6 字 detect 分段）。
      */
     void StartLocalNewsRead(const char *op /* read|continue */);
+    /** 停当前段 TTS，不跳过未读原文；之后可点「继续」或说「继续读」。 */
+    void PauseNewsRead();
+    bool IsNewsReading() const { return news_reading_; }
     /** 新闻列表上屏后：武装「是/读」→ 朗读第一条。 */
     void ArmPendingConfirmReadNews();
     void OnNewsReadToolCalled();  // Application task only; validated MCP dispatch.
@@ -224,6 +227,7 @@ private:
     std::string pending_cloud_speak_;             /* 当前待发 detect */
     std::atomic<bool> news_awaiting_mcp_{false};  // Also read by network/audio callbacks.
     bool news_read_continue_ = false;
+    bool news_reading_ = false; /* 详情底栏「暂停」；与自动续段独立 */
     int news_mcp_detect_retries_ = 0;
     int64_t news_mcp_deadline_us_ = 0;
     std::string news_detect_echo_;

@@ -64,6 +64,8 @@ uint32_t nodelio_skill_news_read_token(void);
 uint32_t nodelio_skill_news_on_sentence(const char* text);
 bool nodelio_skill_news_finish_chunk(uint32_t token, bool played_audio, bool* more);
 void nodelio_skill_news_cancel_read(void);
+/** 详情底栏：朗读 / 暂停 / 继续。 */
+void nodelio_skill_news_sync_read_btn(void);
 
 /** 当前技能是否为 news_list 且卡/播放层仍在前台（语音「下一篇」仅此时命中）。 */
 bool nodelio_skill_news_ui_active(void);

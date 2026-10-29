@@ -791,6 +791,23 @@ bool nl_ov_apps_open_by_query(const char *query)
     }
     ESP_LOGI(TAG, "open_by_query q='%s' installed=%d", query, s_item_n);
 
+    /* 「打开面板曲库」→ 口语「面板」前缀；「取库」≈「曲库」ASR */
+    char qbuf[64];
+    snprintf(qbuf, sizeof(qbuf), "%s", query);
+    if (strncmp(qbuf, "面板", 6) == 0 && qbuf[6] != '\0') {
+        memmove(qbuf, qbuf + 6, strlen(qbuf + 6) + 1);
+    }
+    if (strcmp(qbuf, "取库") == 0 || strcmp(qbuf, "去库") == 0 || strcmp(qbuf, "趣库") == 0) {
+        snprintf(qbuf, sizeof(qbuf), "%s", "曲库");
+    }
+    if (strcmp(qbuf, "应用") == 0 || strcmp(qbuf, "面板应用") == 0) {
+        ESP_LOGI(TAG, "open_by_query: apps page intent q='%s'", query);
+        nl_ov_show_page(NL_TAB_APPS);
+        nl_ov_toast("应用");
+        return true;
+    }
+    query = qbuf;
+
     /* 裸「派活」无 instruction → 只提示，避免 error 卡「缺少参数」 */
     if (strcmp(query, "派活") == 0 || strcmp(query, "DSH派活") == 0 ||
         strcmp(query, "dsh.task") == 0 || strcmp(query, "dsh_task") == 0) {
@@ -810,7 +827,8 @@ bool nl_ov_apps_open_by_query(const char *query)
                (strstr(query, "任务") != nullptr && strstr(query, "派活") == nullptr)) {
         /* 含「打开DSH / 查看任务 / 任务应用」一律进度列表；派活须带「派活」 */
         alias_id = "dsh.status";
-    } else if (strstr(query, "曲库") || strstr(query, "音乐") || strstr(query, "music") ||
+    } else if (strstr(query, "曲库") || strstr(query, "取库") || strstr(query, "去库") ||
+               strstr(query, "趣库") || strstr(query, "音乐") || strstr(query, "music") ||
                strstr(query, "听歌") || strstr(query, "放歌") || strstr(query, "爱音乐")) {
         alias_id = "music.search";
     } else if (strstr(query, "新闻") || strstr(query, "news")) {

@@ -89,6 +89,8 @@ static char s_speak_id[NL_ENV_STR];
 static char s_speak_title[NL_ENV_NEWS_TITLE];
 static NewsReadProgress s_news_read_progress;
 static uint32_t s_news_read_epoch = 0;
+static lv_obj_t *s_news_read_btn = nullptr;
+static void news_sync_read_btn_locked(void);
 /** true=仅摘要/标题，勿让模型声称「全文已读完」 */
 static bool s_speak_from_summary = false;
 static void news_scroll_to_byte(size_t byte_off);
@@ -160,6 +162,7 @@ static void news_speak_clear(void)
     s_speak_id[0] = '\0';
     s_speak_title[0] = '\0';
     s_speak_from_summary = false;
+    news_sync_read_btn_locked();
 }
 
 static size_t news_utf8_floor(const char *s, size_t off)
@@ -350,6 +353,15 @@ void nodelio_skill_news_cancel_read(void) {
     if (lock) {
         s_news_read_progress.Cancel();
         ++s_news_read_epoch;
+        news_sync_read_btn_locked();
+    }
+}
+
+void nodelio_skill_news_sync_read_btn(void)
+{
+    DisplayLockGuard lock(nl_ov_disp());
+    if (lock) {
+        news_sync_read_btn_locked();
     }
 }
 
@@ -438,8 +450,8 @@ static bool news_format_chunk(char *out, size_t out_len, bool with_title)
     out[0] = '\0';
     if (!s_speak_body || s_speak_off >= s_speak_len) {
         if (with_title && s_speak_title[0]) {
-            snprintf(out, out_len,
-                     "%s\n（没有可朗读的正文，请稍后重试 op=read，不要告诉用户已经读完）", s_speak_title);
+            /* 勿写长中文指令壳——模型会把「Speak verbatim」整段念出声 */
+            snprintf(out, out_len, "%s\n【缺】", s_speak_title);
             return true;
         }
         return false;
@@ -463,18 +475,12 @@ static bool news_format_chunk(char *out, size_t out_len, bool with_title)
     if (!piece) {
         return false;
     }
-    const char* tail_more =
-        "\n【续】请先逐字朗读以上原文，不要摘要、不要说读完。设备会在播完后请求下一段；本轮不要自行"
-        "调用 continue，不要读出这些指令。";
-    const char *tail_done =
-        s_speak_from_summary
-            ? "\n【摘要】以上仅为摘要，请逐字朗读；不要声称全文已读完。"
-            : "\n【完】请逐字朗读以上原文；念完后可告知本段结束，不要在朗读前说已经读完。";
+    /* 正文在前；尾标仅给模型/设备，禁止念出（见 MCP 工具说明）。续段由设备自动请求。 */
+    const char *tail = more ? "\n【续】" : (s_speak_from_summary ? "\n【摘要】" : "\n【完】");
     if (with_title && s_speak_title[0]) {
-        snprintf(out, out_len, "逐字朗读下面原文，不要摘要，不要换篇：\n%s\n%s%s", s_speak_title, piece,
-                 more ? tail_more : tail_done);
+        snprintf(out, out_len, "%s\n%s%s", s_speak_title, piece, tail);
     } else {
-        snprintf(out, out_len, "逐字朗读下面原文，不要摘要：\n%s%s", piece, more ? tail_more : tail_done);
+        snprintf(out, out_len, "%s%s", piece, tail);
     }
     heap_caps_free(piece);
     return out[0] != '\0';
@@ -959,6 +965,38 @@ static void on_news_back(lv_event_t *e)
     fill_list();
 }
 
+static bool news_can_resume_locked(void)
+{
+    if (s_news_read_progress.unfinished()) {
+        return true;
+    }
+    return s_speak_body && s_speak_off < s_speak_len && s_speak_off > 0;
+}
+
+static void news_sync_read_btn_locked(void)
+{
+    if (!s_news_read_btn || !lv_obj_is_valid(s_news_read_btn)) {
+        s_news_read_btn = nullptr;
+        return;
+    }
+    lv_obj_t *lbl = lv_obj_get_child(s_news_read_btn, 0);
+    const bool reading = Application::GetInstance().IsNewsReading();
+    const char *title = "朗读";
+    lv_color_t bg = UI_ACCENT;
+    if (reading) {
+        title = "暂停";
+        bg = UI_WARN;
+    } else if (news_can_resume_locked()) {
+        title = "继续";
+    }
+    lv_obj_set_style_bg_color(s_news_read_btn, bg, 0);
+    if (lbl) {
+        lv_label_set_text(lbl, title);
+        lv_obj_set_style_text_color(lbl, UI_BG, 0);
+        lv_obj_center(lbl);
+    }
+}
+
 static void on_news_read_btn(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
@@ -966,12 +1004,21 @@ static void on_news_read_btn(lv_event_t *e)
     }
     Application::GetInstance().Schedule([]() {
         auto &app = Application::GetInstance();
-        const auto st = app.GetDeviceState();
-        if (st != kDeviceStateListening && st != kDeviceStateSpeaking) {
-            nl_ov_toast("请唤醒后说「读这篇」");
+        if (app.IsNewsReading()) {
+            app.PauseNewsRead();
             return;
         }
-        app.StartLocalNewsRead("read");
+        bool resume = false;
+        {
+            DisplayLockGuard lock(nl_ov_disp());
+            resume = lock && news_can_resume_locked();
+        }
+        const auto st = app.GetDeviceState();
+        if (st != kDeviceStateListening && st != kDeviceStateSpeaking) {
+            nl_ov_toast(resume ? "请唤醒后说「继续读」" : "请唤醒后说「读这篇」");
+            return;
+        }
+        app.StartLocalNewsRead(resume ? "continue" : "read");
     });
 }
 
@@ -1042,6 +1089,7 @@ static void news_set_nav_bar(bool on)
         return;
     }
     lv_obj_clean(s_dsh_detail_bar);
+    s_news_read_btn = nullptr;
     if (!on) {
         lv_obj_add_flag(s_dsh_detail_bar, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_height(s_dsh_detail_bar, 0);
@@ -1050,8 +1098,9 @@ static void news_set_nav_bar(bool on)
     lv_obj_set_flex_align(s_dsh_detail_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     news_make_bar_btn(s_dsh_detail_bar, "上一篇", on_news_nav, (void *)(intptr_t)-1, false);
-    news_make_bar_btn(s_dsh_detail_bar, "朗读", on_news_read_btn, nullptr, true);
+    s_news_read_btn = news_make_bar_btn(s_dsh_detail_bar, "朗读", on_news_read_btn, nullptr, true);
     news_make_bar_btn(s_dsh_detail_bar, "下一篇", on_news_nav, (void *)(intptr_t)1, false);
+    news_sync_read_btn_locked();
     lv_obj_clear_flag(s_dsh_detail_bar, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_height(s_dsh_detail_bar, 52);
 }
@@ -1338,9 +1387,7 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
             }
             if (s_news_read_progress.waiting()) {
                 if (out && out_len > 0) {
-                    snprintf(out, out_len,
-                             "请先逐字朗读上一段原文，不要摘要。设备将在音频播完后请求续段，本轮不"
-                             "要再调 continue。");
+                    snprintf(out, out_len, "%s", "【等】");
                 }
                 return true;
             }
@@ -1352,12 +1399,8 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
             if (s_speak_body && strcmp(s_speak_id, id) == 0) {
                 if (s_speak_off >= s_speak_len) {
                     if (out && out_len > 0) {
-                        snprintf(
-                            out, out_len,
-                            s_speak_from_summary
-                                ? "【完】摘要已全部给出。若要下一篇用 op=next；不要重复说已经读完。"
-                                : "【完】本篇正文已全部给出。若要下一篇用 "
-                                  "op=next；不要重复说已经读完。");
+                        snprintf(out, out_len, "%s",
+                                 s_speak_from_summary ? "【摘要完】" : "【完】");
                     }
                     return true;
                 }

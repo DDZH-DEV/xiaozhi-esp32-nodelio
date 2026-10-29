@@ -826,7 +826,9 @@ static int phrase_to_cmd_id(const char *phrase)
         (strstr(phrase, "首页") && !strstr(phrase, "回家"))) {
         return NL_OC_GOTO_HOME;
     }
-    if (strstr(phrase, "打开应用") || strstr(phrase, "应用列表") || strstr(phrase, "技能列表") ||
+    /* 「打开面板应用」是 MCP/口播常用说法；中间夹「面板」时 strstr「打开应用」匹配不到 */
+    if (strstr(phrase, "打开应用") || strstr(phrase, "打开面板应用") ||
+        strstr(phrase, "面板应用") || strstr(phrase, "应用列表") || strstr(phrase, "技能列表") ||
         strstr(phrase, "应用页")) {
         return NL_OC_GOTO_APPS;
     }
@@ -992,6 +994,20 @@ static int phrase_to_cmd_id(const char *phrase)
     return 0;
 }
 
+/** 「打开面板曲库」口语里的「面板」不是应用名；「取库」是「曲库」ASR 近音。 */
+static void normalize_open_app_name(char *name, size_t name_sz)
+{
+    if (!name || !name[0] || name_sz < 8) {
+        return;
+    }
+    if (strncmp(name, "面板", 6) == 0 && name[6] != '\0') {
+        memmove(name, name + 6, strlen(name + 6) + 1);
+    }
+    if (strcmp(name, "取库") == 0 || strcmp(name, "去库") == 0 || strcmp(name, "趣库") == 0) {
+        snprintf(name, name_sz, "%s", "曲库");
+    }
+}
+
 /** 去掉首尾空白与句末标点（STT 常带「音乐。」）；中间标点仍留给 plausible 拒绝。 */
 static void strip_app_query(char *dst, size_t dst_sz, const char *src)
 {
@@ -1045,6 +1061,7 @@ static void strip_app_query(char *dst, size_t dst_sz, const char *src)
         }
         break;
     }
+    normalize_open_app_name(dst, dst_sz);
 }
 
 /** UTF-8 大致字数（CJK 按 3 字节计）；用于拒「电」单字误匹配电台。 */
@@ -1186,15 +1203,19 @@ static bool try_open_named_app(const char *phrase)
     if (!p[0]) {
         return false;
     }
-    /* 纯导航词已由 GOTO 处理 */
+    /* 纯导航词已由 GOTO 处理（含「打开面板应用」剥前缀后剩「应用」） */
     if (strncmp(p, "首页", 6) == 0 || strncmp(p, "设置", 6) == 0 || strncmp(p, "应用", 6) == 0 ||
         strncmp(p, "连接", 6) == 0 || strncmp(p, "热点", 6) == 0 || strncmp(p, "配网", 6) == 0 ||
         strncmp(p, "省电", 6) == 0 || strncmp(p, "亮度", 6) == 0 || strncmp(p, "音量", 6) == 0 ||
-        strncmp(p, "控家", 6) == 0 || strncmp(p, "语音", 6) == 0 || strncmp(p, "小智", 6) == 0) {
+        strncmp(p, "控家", 6) == 0 || strncmp(p, "语音", 6) == 0 || strncmp(p, "小智", 6) == 0 ||
+        strncmp(p, "面板应用", 12) == 0) {
         return false;
     }
     char name[48];
     strip_app_query(name, sizeof(name), p);
+    if (strcmp(name, "应用") == 0 || strcmp(name, "面板应用") == 0) {
+        return false;
+    }
     /* 「打开任务应用 / 打开DSH」：即使名不完全在白名单也开进度 */
     if (strstr(name, "任务") != NULL || strstr(name, "DSH") != NULL || strstr(name, "dsh") != NULL) {
         if (strstr(name, "派活") == NULL) {
@@ -1204,8 +1225,8 @@ static bool try_open_named_app(const char *phrase)
     }
     /* 「打开新闻阅读第一篇」→ 只开新闻（阅读留给卡内旁路） */
     {
-        static const char *const kShort[] = {"新闻", "曲库", "音乐", "电台", "播客", "天气", "空气",
-                                             "一句", "名言"};
+        static const char *const kShort[] = {"新闻", "曲库", "取库", "音乐", "电台", "播客", "天气",
+                                             "空气", "一句", "名言"};
         for (size_t i = 0; i < sizeof(kShort) / sizeof(kShort[0]); i++) {
             const size_t sl = strlen(kShort[i]);
             if (strncmp(name, kShort[i], sl) == 0 && name[sl] != '\0' &&
@@ -1499,7 +1520,8 @@ static bool try_open_bare_known_app(const char *phrase)
         return false;
     }
     static const char* const kKnown[] = {
-        "电台",     "播客",     "曲库",     "音乐",     "新闻",     "面板新闻", "新闻面板",
+        "电台",     "播客",     "曲库",     "取库",     "去库",     "趣库",     "音乐",
+        "新闻",     "面板新闻", "新闻面板",
         "最新新闻", "财经新闻", "财新闻", /* 「看新闻」的常见 ASR 残句；只匹配整个短句。 */
         "天气",     "空气",     "一句",     "名言",     "网络电台", "radio",    "podcast",
         "music",    "news",     "weather",  "DSH",      "dsh",      "DSH任务",  "DSH进度",

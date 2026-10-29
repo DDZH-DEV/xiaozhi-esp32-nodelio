@@ -47,6 +47,8 @@ extern "C" srmodel_list_t* nodelio_get_srmodels(void) {
     return Application::GetInstance().GetAudioService().GetModelsList();
 }
 static bool tts_looks_like_app_deny(const char *text);
+/** 新闻 MCP 旧指令壳 / 【标】被模型念出时丢掉字幕；正文匹配不受影响。 */
+static bool tts_looks_like_news_instruction(const char *text);
 #endif
 
 Application::Application() : notify_player_(audio_service_) {
@@ -1007,6 +1009,12 @@ void Application::InitializeProtocol() {
                         ESP_LOGI(TAG, "drop cloud tts sentence: %s", text->valuestring);
                         return;
                     }
+                    /* 指令壳勿上屏/跟读；音频若已编码仍可能出声，靠 MCP 回包去壳根治 */
+                    if (nodelio_skill_news_ui_active() &&
+                        tts_looks_like_news_instruction(text->valuestring)) {
+                        ESP_LOGI(TAG, "drop news instruction tts: %s", text->valuestring);
+                        return;
+                    }
                     /* 否认句：本地已开卡则只丢弃；DSH 未开则本地补开 */
                     if (!nodelio_skill_news_ui_active() &&
                         tts_looks_like_app_deny(text->valuestring)) {
@@ -1048,6 +1056,11 @@ void Application::InitializeProtocol() {
                         if (IsCloudTtsSuppressed()) {
                             ESP_LOGI(TAG, "drop cloud tts sentence after local open: %s",
                                      message.c_str());
+                            return;
+                        }
+                        if (nodelio_skill_news_ui_active() &&
+                            tts_looks_like_news_instruction(message.c_str())) {
+                            ESP_LOGI(TAG, "drop news instruction tts (ui): %s", message.c_str());
                             return;
                         }
                         if (const auto token = nodelio_skill_news_on_sentence(message.c_str())) {
@@ -2149,8 +2162,10 @@ void Application::CheckNewsReadRequest() {
     }
     if (!protocol_ || !protocol_->IsAudioChannelOpened() || !nodelio_skill_news_ui_active()) {
         news_awaiting_mcp_ = false;
+        news_reading_ = false;
         news_detect_echo_.clear();
         ContinueListeningAfterLocalSkill();
+        nodelio_skill_news_sync_read_btn();
         return;
     }
     if (esp_timer_get_time() < news_mcp_deadline_us_) {
@@ -2164,10 +2179,12 @@ void Application::CheckNewsReadRequest() {
     AbortSpeaking(kAbortReasonNone);
     audio_service_.ResetDecoder();
     news_awaiting_mcp_ = false;
+    news_reading_ = false;
     news_detect_echo_.clear();
     ESP_LOGW(TAG, "news read: tools/call timeout; check tools/list and MCP send logs");
     nodelio_panel_ui_toast("云端未调用新闻工具，请重试");
     ContinueListeningAfterLocalSkill();
+    nodelio_skill_news_sync_read_btn();
 }
 
 void Application::OnNewsReadToolCalled() {
@@ -2179,6 +2196,7 @@ void Application::OnNewsReadToolCalled() {
         news_playback_start_count_ = audio_service_.GetPlaybackCount();
     }
     ESP_LOGI(TAG, "news read: tools/call received, waiting for article result");
+    nodelio_skill_news_sync_read_btn();
 }
 
 void Application::CancelNewsReadPlayback() {
@@ -2202,12 +2220,16 @@ void Application::FinishNewsReadPlayback() {
     if (finished && more && protocol_ && protocol_->IsAudioChannelOpened() &&
         GetDeviceState() == kDeviceStateSpeaking) {
         news_read_continue_ = true;
+        news_reading_ = true;
         news_mcp_detect_retries_ = 0;
         SendNewsReadRequest(false);
+        nodelio_skill_news_sync_read_btn();
         return;
     }
     // Partial/failed audio must not silently advance the article cursor.
+    news_reading_ = false;
     nodelio_skill_news_cancel_read();
+    nodelio_skill_news_sync_read_btn();
     if (GetDeviceState() == kDeviceStateSpeaking) {
         SetDeviceState(listening_mode_ == kListeningModeManualStop ? kDeviceStateIdle
                                                                    : kDeviceStateListening);
@@ -2260,8 +2282,33 @@ void Application::StartLocalNewsRead(const char *op)
     }
 
     news_read_continue_ = strcmp(use_op, "continue") == 0;
+    news_reading_ = true;
     nodelio_panel_ui_set_voice_hint(news_read_continue_ ? "继续读" : "读这篇");
     SendNewsReadRequest();
+    nodelio_skill_news_sync_read_btn();
+}
+
+void Application::PauseNewsRead()
+{
+    if (!news_reading_ && GetDeviceState() != kDeviceStateSpeaking) {
+        nodelio_skill_news_sync_read_btn();
+        return;
+    }
+    ESP_LOGI(TAG, "news read: pause (keep unread text)");
+    news_reading_ = false;
+    news_awaiting_mcp_ = false;
+    news_mcp_deadline_us_ = 0;
+    news_mcp_detect_retries_ = 0;
+    news_detect_echo_.clear();
+    const bool speaking = GetDeviceState() == kDeviceStateSpeaking;
+    AbortSpeaking(kAbortReasonNone);
+    if (speaking) {
+        audio_service_.ResetDecoder();
+        SetDeviceState(kDeviceStateListening);
+    }
+    nodelio_panel_ui_toast("已暂停朗读");
+    ContinueListeningAfterLocalSkill();
+    nodelio_skill_news_sync_read_btn();
 }
 
 static bool spoken_tts_url_ok(const char *audio_url)
@@ -2417,6 +2464,50 @@ static bool tts_looks_like_app_deny(const char *text)
            strstr(text, "电台") != nullptr || strstr(text, "曲库") != nullptr ||
            strstr(text, "播客") != nullptr || strstr(text, "音乐") != nullptr ||
            strstr(text, "名言") != nullptr;
+}
+
+static bool tts_looks_like_news_instruction(const char *text)
+{
+    if (!text || !text[0]) {
+        return false;
+    }
+    /* 旧回包前缀；或整句几乎只有设备尾标 */
+    if (strstr(text, "逐字朗读") || strstr(text, "不要换篇") || strstr(text, "不要读出这些指令") ||
+        strstr(text, "本轮不要再调") || strstr(text, "请先逐字朗读") ||
+        strstr(text, "设备将在音频播完") || strstr(text, "不要自行调用 continue") ||
+        strstr(text, "Speak ONLY") || strstr(text, "speak_body_only")) {
+        return true;
+    }
+    const char *p = text;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
+        ++p;
+    }
+    static const char *const kTags[] = {"【摘要完】", "【摘要】", "【续】", "【完】", "【等】",
+                                        "【缺】"};
+    for (size_t i = 0; i < sizeof(kTags) / sizeof(kTags[0]); ++i) {
+        const size_t n = strlen(kTags[i]);
+        if (strncmp(p, kTags[i], n) != 0) {
+            continue;
+        }
+        /* 尾标独句才丢；正文里偶然出现【 不在此判 */
+        const char *rest = p + n;
+        while (*rest) {
+            if (*rest == ' ' || *rest == '\t' || *rest == '\n' || *rest == '\r' || *rest == '.' ||
+                *rest == '!') {
+                ++rest;
+                continue;
+            }
+            /* 。 */
+            if ((unsigned char)rest[0] == 0xE3 && (unsigned char)rest[1] == 0x80 &&
+                (unsigned char)rest[2] == 0x82) {
+                rest += 3;
+                continue;
+            }
+            break;
+        }
+        return rest[0] == '\0';
+    }
+    return false;
 }
 
 void Application::ArmPendingConfirmReadNews()
