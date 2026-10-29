@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cstddef>
 
-// SILA's MQTT TLS path needs bounded messages even with PSRAM available.
+// Bound transient MCP allocations on SILA; this is NOT an AES DMA safety check.
+// Internal heap size does not imply DMA-capable heap size. The board build uses
+// software AES so TLS does not depend on hardware-AES DMA bounce buffers.
 // Use the same budget for tools/list and the final, wrapped MQTT message.
 namespace McpPayloadBudget {
 constexpr size_t kMaxWireBytes = 2048;

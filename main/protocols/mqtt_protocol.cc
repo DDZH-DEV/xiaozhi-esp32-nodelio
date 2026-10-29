@@ -135,6 +135,13 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     }
 
     auto network = Board::GetInstance().GetNetwork();
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    ESP_LOGI(TAG, "TLS AES=software; internal_free=%u largest=%u dma_free=%u dma_largest=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
+#endif
     mqtt_ = network->CreateMqtt(0);
     mqtt_->SetKeepAlive(keepalive_interval);
 
@@ -277,7 +284,7 @@ bool MqttProtocol::SendText(const std::string& text) {
             }
             if (mqtt_publish_risky(largest, text.size(), is_mcp, is_listen_detect)) {
                 ESP_LOGW(TAG,
-                         "skip mqtt publish (%u B), largest_dram=%u mcp=%d detect=%d (avoid esp-aes OOM)",
+                         "skip mqtt publish (%u B), largest_dram=%u mcp=%d detect=%d (heap budget)",
                          (unsigned)text.size(), (unsigned)largest, is_mcp ? 1 : 0,
                          is_listen_detect ? 1 : 0);
                 return false; /* 不 SetError，避免「发送失败」误导成断网 */
@@ -289,7 +296,13 @@ bool MqttProtocol::SendText(const std::string& text) {
     }
 #endif
     if (!mqtt_->Publish(publish_topic_, text)) {
-        ESP_LOGE(TAG, "Failed to publish message: %s", text.c_str());
+        ESP_LOGE(TAG,
+                 "Failed to publish message (%u bytes): internal_free=%u largest=%u dma_free=%u "
+                 "dma_largest=%u",
+                 (unsigned)text.size(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
         /* MCP tools/list 失败常见于 OOM；勿弹「检查网络」 */
         if (text.find("\"type\":\"mcp\"") != std::string::npos) {

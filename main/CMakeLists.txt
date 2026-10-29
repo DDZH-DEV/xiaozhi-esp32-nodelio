@@ -1226,6 +1226,15 @@ idf_component_register(SRCS ${SOURCES}
 
 # SILA 墙板：编译前按源码指纹生成 YYYYMMDD.NNN 构建号（改代码才涨，重编不涨）
 if(CONFIG_BOARD_TYPE_SILA_86 AND CONFIG_NODELIO_PANEL AND NOT CMAKE_BUILD_EARLY_EXPANSION)
+    # AFE + RGB/I2S leave too little DMA-capable SRAM for the hardware AES
+    # bounce buffers used by TLS with PSRAM. Existing sdkconfig overrides defaults.
+    if(CONFIG_MBEDTLS_HARDWARE_AES)
+        message(FATAL_ERROR
+            "SILA-86 NodeLio requires CONFIG_MBEDTLS_HARDWARE_AES=n to avoid AES DMA OOM. "
+            "Use scripts/build.py sila/sila-86 --name sila-86 or nodelio-build.bat; "
+            "for an existing idf.py build, disable 'Enable hardware AES acceleration' "
+            "in menuconfig (Component config -> mbedTLS), then reconfigure.")
+    endif()
     set(NODELIO_STAMP_PY ${PROJECT_DIR}/scripts/nodelio_build_stamp.py)
     set(NODELIO_STAMP_H ${CMAKE_CURRENT_SOURCE_DIR}/nodelio/nodelio_build_stamp.h)
     set(NODELIO_STAMP_STATE ${PROJECT_DIR}/.nodelio_build_stamp.json)

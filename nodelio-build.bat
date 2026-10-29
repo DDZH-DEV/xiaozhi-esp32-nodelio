@@ -30,6 +30,15 @@ if errorlevel 1 (
   powershell -NoProfile -Command ^
     "$c=Get-Content sdkconfig -Raw; $c=$c -replace 'CONFIG_SR_MN_CN_MULTINET6_QUANT=y','# CONFIG_SR_MN_CN_MULTINET6_QUANT is not set'; $c=$c -replace '# CONFIG_SR_MN_CN_NONE is not set','CONFIG_SR_MN_CN_NONE=y'; if ($c -notmatch 'CONFIG_SR_MN_CN_NONE=y') { $c=$c + \"`nCONFIG_SR_MN_CN_NONE=y`n\" }; Set-Content sdkconfig -Value $c -Encoding ascii -NoNewline"
 )
+REM Existing sdkconfig overrides defaults. Use software AES: PSRAM TLS buffers
+REM otherwise need DMA bounce buffers after AFE has exhausted internal SRAM.
+findstr /x /c:"# CONFIG_MBEDTLS_HARDWARE_AES is not set" sdkconfig >nul
+if errorlevel 1 (
+  echo [nodelio] disabling hardware AES DMA for low-SRAM voice operation
+  powershell -NoProfile -Command ^
+    "$c=Get-Content sdkconfig -Raw; $c=$c -replace '(?m)^CONFIG_MBEDTLS_HARDWARE_AES=.*\r?\n?',''; $c=$c.TrimEnd()+[Environment]::NewLine+'# CONFIG_MBEDTLS_HARDWARE_AES is not set'+[Environment]::NewLine; Set-Content sdkconfig -Value $c -Encoding ascii -NoNewline"
+  if errorlevel 1 exit /b 1
+)
 echo [nodelio] build stamp (code-change day serial) ...
 python "%~dp0scripts\nodelio_build_stamp.py" --root "%~dp0."
 if errorlevel 1 (

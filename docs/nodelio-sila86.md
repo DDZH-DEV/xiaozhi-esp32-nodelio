@@ -23,6 +23,38 @@ nodelio-build.bat
 nodelio-flash.bat
 ```
 
+## AFE 启动后的 AES / MQTT 内存故障（2026-10-29）
+
+实机日志在 AFE 初始化后显示内部堆 `free=9795 largest=7168`，随后发送
+1859 / 1694 字节的 MCP 工具列表出现 `esp-aes: Failed to allocate memory`、
+TLS `-0x0084` 和 MQTT 断线。此时云端无法完整发现新闻和 DSH 工具，不能先归因于应用未安装。
+
+[ESP-IDF 6.1 AES DMA 实现](https://github.com/espressif/esp-idf/blob/release/v6.1/components/mbedtls/port/aes/dma/esp_aes_dma_core.c)
+会为不满足 DMA/对齐要求的缓冲申请 DMA 中转内存，S3 按最多 1600 字节分块。
+`MALLOC_CAP_INTERNAL` 的最大块不等于可供 DMA 使用的最大块；PSRAM 有余量、
+MCP 小于 2KB 都不能保证硬件 AES 分配成功。原 MCP 预算仅保留为消息内存上限。
+
+本板在 `config.json` 中使用 `CONFIG_MBEDTLS_HARDWARE_AES=n`，由 mbedTLS/PSA
+执行软件 AES，TLS 和 UDP 音频加密仍保留。没有修改其他板型、SDK 源码或生成配置。
+软件加密的 CPU 占用、播音稳定性和功耗需要实机测量；本次不新增后台任务或定时轮询。
+
+构建入口：
+
+- 标准入口：`python scripts/build.py sila/sila-86 --name sila-86`，自动应用板型配置。
+- `nodelio-build.bat`：在构建时迁移已有配置的 AES 选项。
+- 直接使用 `idf.py build`：先 `idf.py menuconfig`，按 `/` 搜索
+  `MBEDTLS_HARDWARE_AES`，关闭并保存，再 `idf.py reconfigure`、`idf.py build`。
+  已有 sdkconfig 会覆盖 defaults，所以仅更新源代码不够。CMake 会明确拒绝本板仍开启
+  硬件 AES 的配置，避免再次生成带有已知故障的固件。
+
+下一次实机验证：
+
+1. MQTT 初始化应出现 `TLS AES=software`，同时打印 internal / DMA free 和 largest。
+2. AFE 初始化之后，所有 `tools/list` 分页应能完成；不再出现 AES 分配失败、TLS 写失败或
+   `MCP response not sent`。若仍失败，提供这些 DMA 数值和完整启动日志。
+3. 验证新闻正文工具调用和朗读、DSH 查看任务/续聊/取消、打断及重连。
+4. MQTT/UDP 和适用的 WebSocket 路径分别验证，检查软件 AES 下连续播音、唤醒和息屏功耗。
+
 ## Bind NodeLio SERVER（LVGL，非 menuconfig）
 1. 烧录后点右下角绿色 **「家」**
 2. **设置** 页填：HTTP/HTTPS、主机、端口、绑定码 → **保存并连接**（会重启）
