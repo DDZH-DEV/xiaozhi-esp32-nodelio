@@ -40,6 +40,7 @@ public:
         // DP row keeps matching O(chunk_chars * sentence_chars), even for repeats.
         uint16_t lengths[1025] = {};
         size_t best_count = 0, best_start_char = 0, best_end = 0, chars = 0, bi = 0;
+        size_t sentence_chars = 0;
         while (const auto bc = Next(chunk_, bi)) {
             ++chars;
             size_t si = 0, j = 0;
@@ -57,13 +58,17 @@ public:
                     best_end = bi;
                 }
             }
+            sentence_chars = j;
         }
         size_t best_start = 0;
         for (size_t n = 0; n < best_start_char; ++n) {
             Next(chunk_, best_start);
         }
         // Avoid aligning incidental words such as "好的" to a long article.
-        const size_t minimum = chars < 4 ? chars : 4;
+        size_t minimum = chars < 4 ? chars : 4;
+        if (sentence_chars < minimum) {
+            minimum = sentence_chars;
+        }
         const bool short_tail = matched_chars_ > 0 && best_start_char == matched_chars_ &&
                                 best_start_char + best_count == chars;
         if (!minimum || (best_count < minimum && !short_tail) || best_end <= matched_end_ ||
