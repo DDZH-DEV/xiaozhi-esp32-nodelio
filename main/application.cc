@@ -387,38 +387,7 @@ void Application::Run() {
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
             CheckNewsReadRequest();
             FinishNewsReadPlayback();
-            /* 聆听中无对话：提示（抽屉按 farewell 即时收）→ 独立 1s 后关通道 */
-            if (!news_awaiting_mcp_ && GetDeviceState() == kDeviceStateListening && protocol_ &&
-                protocol_->IsAudioChannelOpened()) {
-                const int lim = (int)nodelio_listen_idle_seconds();
-                constexpr int kAnnounceHoldS = 1;
-                if (!listen_idle_pending_close_) {
-                    listen_idle_ticks_++;
-                    if (lim > 0 && listen_idle_ticks_ >= lim) {
-                        listen_idle_pending_close_ = true;
-                        listen_announce_hold_ticks_ = 0;
-                        ESP_LOGI(TAG, "listen idle %ds → announce then close", lim);
-                        auto* display = Board::GetInstance().GetDisplay();
-                        /* 「先不聊了/有事再叫我」走 farewell：同帧收抽屉；toast 仍可见 */
-                        display->SetChatMessage("assistant", "先不聊了，有事再叫我");
-                        nodelio_panel_ui_toast("无对话，小智先退下了");
-                        audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
-                    }
-                } else {
-                    listen_announce_hold_ticks_++;
-                    if (listen_announce_hold_ticks_ >= kAnnounceHoldS) {
-                        ESP_LOGI(TAG, "listen idle announce done → close channel");
-                        listen_idle_pending_close_ = false;
-                        listen_idle_ticks_ = 0;
-                        listen_announce_hold_ticks_ = 0;
-                        protocol_->CloseAudioChannel();
-                    }
-                }
-            } else {
-                listen_idle_ticks_ = 0;
-                listen_announce_hold_ticks_ = 0;
-                listen_idle_pending_close_ = false;
-            }
+            HandleListenIdleTick();
 #endif
 
             // Print debug info every 10 seconds（息屏跳过，少打 UART）
@@ -839,6 +808,8 @@ void Application::InitializeProtocol() {
             if (!audio_service_.PushPacketToDecodeQueue(std::move(packet))) {
                 ESP_LOGW(TAG, "drop cloud audio: decode queue full/reset state=%d rx=%u", (int)st,
                          (unsigned)n);
+            } else {
+                cloud_audio_rx_count_.fetch_add(1, std::memory_order_relaxed);
             }
         } else {
             ESP_LOGW(TAG, "drop cloud audio: bad state=%d", (int)st);
@@ -866,6 +837,8 @@ void Application::InitializeProtocol() {
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
             CancelNewsReadPlayback();
             news_awaiting_mcp_ = false;
+            news_reading_ = false;
+            nodelio_skill_news_sync_read_btn();
             news_detect_echo_.clear();
             pending_confirm_read_news_ = false;
 #endif
@@ -1063,9 +1036,7 @@ void Application::InitializeProtocol() {
                             ESP_LOGI(TAG, "drop news instruction tts (ui): %s", message.c_str());
                             return;
                         }
-                        if (const auto token = nodelio_skill_news_on_sentence(message.c_str())) {
-                            news_playback_token_ = token;
-                        }
+                        OnNewsReadSentence(message.c_str());
 #endif
                         display->AddTextGlyphs(glyphs, bpp);
                         display->SetChatMessage("assistant", message.c_str());
@@ -2156,6 +2127,48 @@ void Application::QueueCloudSpeakPrompt(const char *text)
 }
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+void Application::HandleListenIdleTick() {
+    const uint32_t rx_count = cloud_audio_rx_count_.load(std::memory_order_relaxed);
+    const bool received_audio = rx_count != listen_idle_last_audio_rx_count_;
+    listen_idle_last_audio_rx_count_ = rx_count;
+    // Count accepted cloud packets as activity even if the queue is empty at this tick.
+    // During the farewell, only new cloud audio cancels closing: our own popup must not.
+    const bool playing = !listen_idle_pending_close_ && !audio_service_.IsPlaybackIdle();
+    /* 聆听中无对话：提示（抽屉按 farewell 即时收）→ 独立 1s 后关通道 */
+    if (!received_audio && !playing && !news_awaiting_mcp_ &&
+        GetDeviceState() == kDeviceStateListening && protocol_ &&
+        protocol_->IsAudioChannelOpened()) {
+        const int lim = (int)nodelio_listen_idle_seconds();
+        constexpr int kAnnounceHoldS = 1;
+        if (!listen_idle_pending_close_) {
+            listen_idle_ticks_++;
+            if (lim > 0 && listen_idle_ticks_ >= lim) {
+                listen_idle_pending_close_ = true;
+                listen_announce_hold_ticks_ = 0;
+                ESP_LOGI(TAG, "listen idle %ds → announce then close", lim);
+                auto* display = Board::GetInstance().GetDisplay();
+                /* 「先不聊了/有事再叫我」走 farewell：同帧收抽屉；toast 仍可见 */
+                display->SetChatMessage("assistant", "先不聊了，有事再叫我");
+                nodelio_panel_ui_toast("无对话，小智先退下了");
+                audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+            }
+        } else {
+            listen_announce_hold_ticks_++;
+            if (listen_announce_hold_ticks_ >= kAnnounceHoldS) {
+                ESP_LOGI(TAG, "listen idle announce done → close channel");
+                listen_idle_pending_close_ = false;
+                listen_idle_ticks_ = 0;
+                listen_announce_hold_ticks_ = 0;
+                protocol_->CloseAudioChannel();
+            }
+        }
+    } else {
+        listen_idle_ticks_ = 0;
+        listen_announce_hold_ticks_ = 0;
+        listen_idle_pending_close_ = false;
+    }
+}
+
 void Application::CheckNewsReadRequest() {
     if (!news_awaiting_mcp_) {
         return;
@@ -2203,6 +2216,25 @@ void Application::CancelNewsReadPlayback() {
     news_playback_token_ = 0;
     news_tts_stopped_ = false;
     nodelio_skill_news_cancel_read();
+}
+
+void Application::OnNewsReadSentence(const char* text) {
+    // Runs on the application task. A start event can precede tools/call and be
+    // discarded by the MCP gate; the server need not send another start for the body.
+    const auto state = GetDeviceState();
+    if (news_awaiting_mcp_ || aborted_ || IsCloudTtsSuppressed() || !protocol_ ||
+        !protocol_->IsAudioChannelOpened() ||
+        (state != kDeviceStateListening && state != kDeviceStateSpeaking)) {
+        return;
+    }
+    if (const auto token = nodelio_skill_news_on_sentence(text)) {
+        news_playback_token_ = token;
+        news_reading_ = true;
+        if (state == kDeviceStateListening && !news_tts_stopped_) {
+            ESP_LOGI(TAG, "news article sentence: restore speaking token=%u", (unsigned)token);
+            SetDeviceState(kDeviceStateSpeaking);
+        }
+    }
 }
 
 void Application::FinishNewsReadPlayback() {

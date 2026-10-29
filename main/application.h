@@ -215,6 +215,9 @@ private:
     int listen_idle_ticks_ = 0; /* 聆听无语音累计秒；勿复用 clock_ticks_ */
     int listen_announce_hold_ticks_ = 0; /* 已提示后独立计时关通道，不受 VAD 清零 */
     bool listen_idle_pending_close_ = false; /* 已提示，待短暂展示后再关通道 */
+    std::atomic<uint32_t> cloud_audio_rx_count_{0};
+    uint32_t listen_idle_last_audio_rx_count_ = 0;
+    void HandleListenIdleTick();
     int64_t suppress_cloud_tts_until_us_ = 0; /* 本地口令处理后丢弃云端 TTS 截止时间 */
     /** 云端刚问「要不要打开任务应用」：下一句「是的」本地直接开 dsh.status */
     bool pending_confirm_open_dsh_ = false;
@@ -239,6 +242,7 @@ private:
     void CheckNewsReadRequest();
     void SendNewsReadRequest(bool interrupt = true);
     void FinishNewsReadPlayback();
+    void OnNewsReadSentence(const char* text);
     void CancelNewsReadPlayback();
     uint32_t news_playback_token_ = 0;
     uint32_t news_playback_start_count_ = 0;

@@ -30,10 +30,13 @@ class NewsReadProgressTests(unittest.TestCase):
         application = (ROOT / "main/application.cc").read_text(encoding="utf-8")
         finish = function(application, "void Application::FinishNewsReadPlayback()")
         cancel = function(application, "void Application::CancelNewsReadPlayback()")
+        sentence = function(application, "void Application::OnNewsReadSentence(")
+        idle_tick = function(application, "void Application::HandleListenIdleTick()")
         news_ui = (ROOT / "main/nodelio/skill/news_list_ui.inc").read_text(encoding="utf-8")
         chunk_end = function(news_ui, "static size_t news_utf8_chunk_end(")
         driver = r'''
 #include <cassert>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -45,19 +48,37 @@ enum { kDeviceStateSpeaking, kDeviceStateListening, kDeviceStateIdle };
 enum { kListeningModeManualStop, kListeningModeAutoStop };
 NewsReadProgress progress;
 bool current_article = true;
+int idle_limit = 17;
+int nodelio_listen_idle_seconds() { return idle_limit; }
+void nodelio_panel_ui_toast(const char*) {}
+namespace Lang { namespace Sounds { constexpr int OGG_POPUP = 1; } }
+struct Display { void SetChatMessage(const char*, const char*) {} };
+struct Board {
+    Display display;
+    static Board& GetInstance() { static Board board; return board; }
+    Display* GetDisplay() { return &display; }
+};
 void nodelio_skill_news_sync_read_btn() {}
 void nodelio_skill_news_cancel_read() { progress.Cancel(); }
+uint32_t nodelio_skill_news_on_sentence(const char* text) {
+    size_t offset = 0;
+    return current_article && progress.Sentence(text, offset) ? progress.token() : 0;
+}
 bool nodelio_skill_news_finish_chunk(uint32_t token, bool played, bool* more) {
     return current_article && progress.Finish(token, played, *more);
 }
 struct Audio {
     bool idle = false;
     uint32_t count = 0;
+    int popups = 0;
+    void PlaySound(int) { ++popups; idle = false; }
     bool IsPlaybackIdle() const { return idle; }
     uint32_t GetPlaybackCount() const { return count; }
 };
 struct Protocol {
     bool open = true;
+    int closes = 0;
+    void CloseAudioChannel() { ++closes; open = false; }
     bool IsAudioChannelOpened() const { return open; }
 };
 class Application {
@@ -68,7 +89,10 @@ public:
     uint32_t news_playback_token_ = 0, news_playback_start_count_ = 0;
     bool news_tts_stopped_ = false, aborted_ = false, news_read_continue_ = false;
     bool news_reading_ = false, listen_idle_pending_close_ = false;
-    int listen_idle_ticks_ = 0;
+    bool news_awaiting_mcp_ = false, suppressed = false;
+    std::atomic<uint32_t> cloud_audio_rx_count_{0};
+    uint32_t listen_idle_last_audio_rx_count_ = 0;
+    int listen_idle_ticks_ = 0, listen_announce_hold_ticks_ = 0;
     int news_mcp_detect_retries_ = 0, state = kDeviceStateSpeaking;
     int listening_mode_ = kListeningModeAutoStop, requests = 0;
     int GetDeviceState() const { return state; }
@@ -76,8 +100,11 @@ public:
     void SendNewsReadRequest(bool interrupt) { assert(!interrupt); ++requests; }
     void FinishNewsReadPlayback();
     void CancelNewsReadPlayback();
+    void OnNewsReadSentence(const char* text);
+    void HandleListenIdleTick();
+    bool IsCloudTtsSuppressed() const { return suppressed; }
 };
-''' + finish + "\n" + cancel + "\n" + chunk_end + r'''
+''' + finish + "\n" + cancel + "\n" + sentence + "\n" + idle_tick + "\n" + chunk_end + r'''
 int main() {
     size_t offset = 999;
     bool more = false;
@@ -207,13 +234,15 @@ int main() {
     for (int chunk = 0; chunk < 3; ++chunk) {
         const std::string part = "这是一段新闻正文。";
         progress.Begin(part, cursor, chunk < 2);
-        assert(progress.Sentence(part, offset));
-        continuous.news_playback_token_ = progress.token();
+        continuous.state = kDeviceStateListening;
+        continuous.OnNewsReadSentence(part.c_str());
+        assert(continuous.state == kDeviceStateSpeaking);
+        for (int second = 0; second < 40; ++second) continuous.HandleListenIdleTick();
+        assert(continuous.protocol.closes == 0 && continuous.audio_service_.popups == 0);
         continuous.news_playback_start_count_ = continuous.audio_service_.count;
         ++continuous.audio_service_.count;
         continuous.news_tts_stopped_ = true;
         continuous.audio_service_.idle = true;
-        continuous.state = chunk == 1 ? kDeviceStateListening : kDeviceStateSpeaking;
         continuous.FinishNewsReadPlayback();
         cursor += part.size();
         assert(progress.ResumeOffset() == cursor);
@@ -233,6 +262,70 @@ int main() {
         if (scenario == 4) stopped.aborted_ = true;
         stopped.FinishNewsReadPlayback();
         assert(stopped.requests == 0);
+    }
+
+    // Actual log: auto-continue enters Listening, start is gated before tools/call,
+    // then body subtitles/audio arrive without another start. Read >17 seconds.
+    current_article = true;
+    progress.Begin("大众汽车集团董事长兼CEO贝瑞德在台上说。", 440, true);
+    Application resumed;
+    resumed.state = kDeviceStateListening;
+    resumed.audio_service_.idle = true;
+    resumed.news_awaiting_mcp_ = true;
+    resumed.OnNewsReadSentence("大众汽车集团董事长兼CEO贝瑞德在台上说。");
+    assert(resumed.state == kDeviceStateListening && !resumed.news_playback_token_);
+    resumed.news_awaiting_mcp_ = false; // validated tools/call
+    resumed.OnNewsReadSentence("大众汽车集团董事长兼CEO贝瑞德在台上说。");
+    assert(resumed.state == kDeviceStateSpeaking && resumed.news_playback_token_);
+    for (int second = 0; second < 40; ++second) resumed.HandleListenIdleTick();
+    assert(resumed.protocol.closes == 0 && resumed.audio_service_.popups == 0);
+    ++resumed.audio_service_.count;
+    resumed.news_tts_stopped_ = true;
+    resumed.FinishNewsReadPlayback();
+    assert(resumed.requests == 1); // still continues only after stop + actual PCM
+
+    // Incoming audio protects Listening even before a matching subtitle/start.
+    // Sampling a drained queue between packets must not count as user silence.
+    Application packets;
+    packets.state = kDeviceStateListening;
+    packets.audio_service_.idle = true;
+    for (int second = 0; second < 40; ++second) {
+        ++packets.cloud_audio_rx_count_;
+        packets.HandleListenIdleTick();
+    }
+    assert(packets.protocol.closes == 0 && packets.listen_idle_ticks_ == 0);
+    packets.audio_service_.idle = false;
+    for (int second = 0; second < 20; ++second) packets.HandleListenIdleTick();
+    assert(packets.audio_service_.popups == 0); // buffered tail is also protected
+    packets.audio_service_.idle = true;
+    packets.news_reading_ = true; // stale UI flag must NOT suppress genuine idle forever
+    for (int second = 0; second < 17; ++second) packets.HandleListenIdleTick();
+    assert(packets.listen_idle_pending_close_ && packets.protocol.closes == 0);
+    packets.HandleListenIdleTick(); // our own farewell popup does not extend the timeout
+    assert(packets.protocol.closes == 1);
+
+    // Audio arriving during the farewell cancels the pending close immediately.
+    Application late_audio;
+    late_audio.state = kDeviceStateListening;
+    late_audio.audio_service_.idle = true;
+    for (int second = 0; second < 17; ++second) late_audio.HandleListenIdleTick();
+    assert(late_audio.listen_idle_pending_close_);
+    ++late_audio.cloud_audio_rx_count_;
+    late_audio.HandleListenIdleTick();
+    assert(!late_audio.listen_idle_pending_close_ && late_audio.protocol.closes == 0);
+
+    // Late/mismatched subtitles cannot restart a paused/disconnected/read-gated turn.
+    for (int scenario = 0; scenario < 6; ++scenario) {
+        progress.Begin("这是一段新闻正文。", 0, true);
+        Application ignored;
+        ignored.state = kDeviceStateListening;
+        if (scenario == 0) ignored.aborted_ = true;
+        if (scenario == 1) ignored.protocol.open = false;
+        if (scenario == 2) ignored.state = kDeviceStateIdle;
+        if (scenario == 3) ignored.suppressed = true;
+        if (scenario == 4) ignored.news_awaiting_mcp_ = true;
+        ignored.OnNewsReadSentence(scenario == 5 ? "好的，我来朗读" : "这是一段新闻正文。");
+        assert(ignored.state != kDeviceStateSpeaking && !ignored.news_playback_token_);
     }
 }
 '''
