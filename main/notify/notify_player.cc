@@ -10,6 +10,7 @@
 
 #include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 
 #include "application.h"
 #include "board.h"
@@ -31,9 +32,10 @@ constexpr uint32_t kNotifyTaskStackSize = 24576;
  * 6×240 帧（~30ms）深度，解码/下载必须低于它。旧值 7 高于输出任务，非阻塞化后
  * 每个解码突发都会把输出饿穿 30ms → 听感就是周期性「卡一下」。 */
 constexpr UBaseType_t kNotifyTaskPriority = 5;
-/* 认出格式后再多读压缩数据。96KB≈12s@64kbps（曲库默认档），够暖机。
+/* Ogg 保留原预取；MP3/M4A 有独立 PCM 暖机，直播 96KB 预取会额外等约 12s。
  * 禁止按上限截断最后一次 Read：多出来的字节已从套接字拿走，丢掉会在预取边界跳针。 */
 constexpr size_t kPrefetchBytes = 96 * 1024;
+constexpr size_t kCompressedPrefetchBytes = 8 * 1024;
 /* 播中把压缩缓冲维持到此水位，避免「解完 prefetch 才去 Read」→ 约 8–12s 见底跳一下。 */
 constexpr size_t kPendingHighWatermark = 128 * 1024;
 /* 压缩过低则必须 Read；高于此值时若播放侧正饿，先 flush/decode，禁止堵在 Read 上把喇叭抽空。 */
@@ -43,6 +45,19 @@ constexpr uint32_t kMp3WarmupMs = 4000;
 constexpr uint32_t kMp3BatchMs = 2000;
 /* stage 里最多再囤这么多，多了先去拉网/等播放，防解堵死下载。 */
 constexpr uint32_t kMp3StageMaxMs = 10000;
+/* 解码任务优先级高于 AFE fetch，连续解码（含坏帧重同步）须给 fetch 运行机会。 */
+class DecodeTimeslice {
+public:
+    void YieldIfNeeded() {
+        if (esp_timer_get_time() - started_us_ >= 10000) {
+            vTaskDelay(1);
+            started_us_ = esp_timer_get_time();
+        }
+    }
+
+private:
+    int64_t started_us_ = esp_timer_get_time();
+};
 const char* TAG = "NotifyPlayer";
 constexpr int kMaxRedirects = 4;
 
@@ -282,6 +297,7 @@ bool NotifyPlayer::Start(std::string audio_url, std::vector<NotifySubtitle> subt
         cancelled_ = false;
         http_finished_ = false;
         stream_started_ = false;
+        playback_started_ = false;
         playback_drained_ = false;
         completion_reported_ = false;
     }
@@ -331,6 +347,11 @@ bool NotifyPlayer::IsBusy() const {
     return active_ || worker_running_;
 }
 
+bool NotifyPlayer::HasPlaybackStarted() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return active_ && playback_started_;
+}
+
 bool NotifyPlayer::IsCancelled(uint32_t playback_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return cancelled_ || !active_ || playback_id != playback_id_;
@@ -346,6 +367,7 @@ void NotifyPlayer::OnPlaybackProgress(uint32_t playback_id, uint32_t media_posit
             return;
         }
         last_playback_position_ms_ = media_position_ms;
+        playback_started_ = true;
         while (next_subtitle_index_ < subtitles_.size() &&
                subtitles_[next_subtitle_index_].start_ms <= media_position_ms) {
             text = subtitles_[next_subtitle_index_].text;
@@ -499,8 +521,11 @@ void NotifyPlayer::WorkerTask() {
             if (!prefetch_fail && kind == StreamKind::kUnknown && LooksM4aHint(url, ctype)) {
                 kind = StreamKind::kM4a;
             }
+            const size_t prefetch_target = kind == StreamKind::kMp3 || kind == StreamKind::kM4a
+                                               ? kCompressedPrefetchBytes
+                                               : kPrefetchBytes;
             while (!prefetch_fail && !IsCancelled(playback_id) && kind != StreamKind::kUnknown &&
-                   prefetch.size() < kPrefetchBytes) {
+                   prefetch.size() < prefetch_target) {
                 const HttpAppendResult ar = HttpAppend(http.get(), prefetch, buffer);
                 if (ar == HttpAppendResult::kFail) {
                     prefetch_fail = true;
@@ -1022,6 +1047,7 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
         return flush_stage(false);
     };
 
+    DecodeTimeslice timeslice;
     auto decode_pending = [&](bool yield_for_net) -> bool {
         /* 前缀压实一次摊销：旧版每帧 erase 头部，128KB 的 pending 每秒白搬数 MB PSRAM。 */
         if (pending_off > 0) {
@@ -1035,6 +1061,7 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
             }
         }
         while (pending.size() - pending_off >= 4 && !IsCancelled(playback_id)) {
+            timeslice.YieldIfNeeded();
             /* stage 已囤够：停解码，让主循环去补 HTTP。 */
             if (primed && stage_len() >= stage_max_samples) {
                 return true;
@@ -1130,28 +1157,10 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
             !primed || queue_full || stage_len() >= batch_samples;
         const bool must_net = pending_len() < kPendingLowWatermark;
         if (need_net && (play_cushion || must_net)) {
-            /* 未开声可多读；播中每次少读几块就回 flush，避免堵在 Read 上把喇叭抽空。 */
-            const int max_reads = !primed ? 32 : (queue_full ? 4 : 1);
-            bool eos = false;
-            for (int i = 0; i < max_reads && pending_len() < kPendingHighWatermark; ++i) {
-                if (i > 0 && primed && audio_service_.PlaybackQueueHasRoom() &&
-                    stage_len() >= batch_samples) {
-                    break;
-                }
-                const HttpAppendResult ar = HttpAppend(http, pending, buffer);
-                if (ar == HttpAppendResult::kFail) {
-                    failed = true;
-                    break;
-                }
-                if (ar == HttpAppendResult::kEos) {
-                    eos = true;
-                    break;
-                }
-            }
-            if (failed) {
-                break;
-            }
-            if (eos) {
+            /* 每读一块就解码/喂播放队列；直播不能等 32 块凑满才处理。 */
+            const HttpAppendResult ar = HttpAppend(http, pending, buffer);
+            if (ar != HttpAppendResult::kOk) {
+                failed = ar == HttpAppendResult::kFail;
                 break;
             }
         } else if (pending_len() >= kPendingHighWatermark && stage_len() >= batch_samples &&
@@ -1397,6 +1406,7 @@ bool NotifyPlayer::PlayM4a(Http* http, uint32_t playback_id, const uint8_t* firs
         return flush_stage(false);
     };
 
+    DecodeTimeslice timeslice;
     auto decode_chunk = [&](bool eos) -> bool {
         if (pending.empty() && !eos) {
             return true;
@@ -1417,6 +1427,7 @@ bool NotifyPlayer::PlayM4a(Http* http, uint32_t playback_id, const uint8_t* firs
             .frame_recover = ESP_AUDIO_SIMPLE_DEC_RECOVERY_NONE,
         };
         while ((raw.len > 0 || eos) && !IsCancelled(playback_id)) {
+            timeslice.YieldIfNeeded();
             if (primed && stage_len() >= stage_max_samples) {
                 break;
             }
@@ -1492,7 +1503,7 @@ bool NotifyPlayer::PlayM4a(Http* http, uint32_t playback_id, const uint8_t* firs
             failed = true;
             break;
         }
-        if (pending.size() > 256 * 1024 && !played) {
+        if (pending.size() >= kPendingHighWatermark && !played) {
             ESP_LOGE(TAG, "M4A stream has no decodable frame (moov after mdat?)");
             failed = true;
             break;
@@ -1508,27 +1519,10 @@ bool NotifyPlayer::PlayM4a(Http* http, uint32_t playback_id, const uint8_t* firs
             !primed || queue_full || stage_len() >= batch_samples;
         const bool must_net = pending.size() < kPendingLowWatermark;
         if (need_net && (play_cushion || must_net)) {
-            const int max_reads = !primed ? 32 : (queue_full ? 4 : 1);
-            bool eos = false;
-            for (int i = 0; i < max_reads && pending.size() < kPendingHighWatermark; ++i) {
-                if (i > 0 && primed && audio_service_.PlaybackQueueHasRoom() &&
-                    stage_len() >= batch_samples) {
-                    break;
-                }
-                const HttpAppendResult ar = HttpAppend(http, pending, buffer);
-                if (ar == HttpAppendResult::kFail) {
-                    failed = true;
-                    break;
-                }
-                if (ar == HttpAppendResult::kEos) {
-                    eos = true;
-                    break;
-                }
-            }
-            if (failed) {
-                break;
-            }
-            if (eos) {
+            /* 与 MP3 一致，慢速播客也须逐块解码，不能批量阻塞读。 */
+            const HttpAppendResult ar = HttpAppend(http, pending, buffer);
+            if (ar != HttpAppendResult::kOk) {
+                failed = ar == HttpAppendResult::kFail;
                 break;
             }
         } else if (pending.size() >= kPendingHighWatermark && stage_len() >= batch_samples &&

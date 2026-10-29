@@ -54,7 +54,7 @@ static volatile bool s_suppress_ended = false;
 static esp_timer_handle_t s_pause_close_timer;
 /** 语音打断后应在退下时续播（与用户手动暂停区分）。 */
 static volatile bool s_resume_after_voice = false;
-/** 开播稍后武装唤醒。测试：放宽 DRAM 门槛，验证播中唤得起是否稳定。 */
+/** 音频进入输出任务后再武装唤醒，避免与 HTTP/TLS 和解码暖机抢资源。 */
 static esp_timer_handle_t s_wake_arm_timer = nullptr;
 static constexpr int64_t kMediaWakeArmUs = 500000; /* 0.5s（原 1.5s） */
 /** 播中关 AEC 防 WDT，喇叭盖麦 → 武装唤醒时暂压音量提 SNR（不写 NVS）。 */
@@ -126,6 +126,12 @@ static void media_wake_arm_cb(void *arg)
         }
         if (Application::GetInstance().GetDeviceState() != kDeviceStateNotifying) {
             s_wake_arm_retries = 0;
+            return;
+        }
+        if (!Application::GetInstance().HasHttpAudioPlaybackStarted()) {
+            if (s_wake_arm_timer && Application::GetInstance().IsHttpAudioBusy()) {
+                esp_timer_start_once(s_wake_arm_timer, kMediaWakeArmUs);
+            }
             return;
         }
         auto &audio = Application::GetInstance().GetAudioService();

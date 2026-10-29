@@ -136,6 +136,7 @@ public:
     void YieldVoiceForMedia();
     void StopHttpAudio();
     bool IsHttpAudioBusy() const;
+    bool HasHttpAudioPlaybackStarted() const;
     /**
      * 本地已处理口令（开 DSH/曲库等）：Abort + 短时丢弃云端否定 TTS。
      * 勿用过长窗口，否则会卡在 Listening、唤醒无响应。
