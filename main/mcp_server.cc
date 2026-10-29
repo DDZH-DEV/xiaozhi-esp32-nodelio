@@ -18,6 +18,7 @@
 #include <iterator>
 #include <new>
 #include <optional>
+#include "mcp_payload_budget.h"
 
 #include "application.h"
 #include "board.h"
@@ -587,22 +588,13 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
                              const ResponseSender& response_sender) {
     /* 外层再包 session/type/mcp；MQTT TLS 写要整块内部 DRAM。
      * SILA 开音频瞬间 DRAM 更紧，单页必须更小（多页 nextCursor）。 */
-    int max_payload_size = 4500;
+    size_t max_payload_size = 4500;
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-    /* 与 MqttProtocol::SendText MCP 阈值对齐：外层 session/mcp 包装后再发。
-     * largest≈25KB 时旧 cap=900 → 整包≈903B 仍被非 MCP 阈值（≥800）误杀。 */
+    // Match the final MQTT wire budget, including its JSON-RPC/session wrapper.
     const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    if (largest < 20 * 1024) {
-        max_payload_size = 400;
-    } else if (largest < 28 * 1024) {
-        max_payload_size = 900; /* 包装后通常 <1200，MCP 放行至 1400 */
-    } else if (largest < 40 * 1024) {
-        max_payload_size = 1400;
-    } else {
-        max_payload_size = 2000;
-    }
-    ESP_LOGI(TAG, "tools/list page_cap=%d largest_dram=%u cursor='%s' head=%s", max_payload_size,
-             (unsigned)largest, cursor.c_str(),
+    max_payload_size = McpPayloadBudget::ListBytes(largest);
+    ESP_LOGI(TAG, "tools/list page_cap=%u largest_dram=%u cursor='%s' head=%s",
+             (unsigned)max_payload_size, (unsigned)largest, cursor.c_str(),
              tools_.empty() ? "(none)" : tools_.front()->name().c_str());
 #endif
     std::string json = "{\"tools\":[";

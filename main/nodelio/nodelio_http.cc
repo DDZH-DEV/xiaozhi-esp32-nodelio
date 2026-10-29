@@ -658,10 +658,11 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
         io_ms = NOD_HTTP_IO_MS;
     }
 
-    /* 语音刚结束时小智会 MQTT TLS 重连；先让路再抢 LAN short-tcp。
-     * 新闻正文/标已读是弹窗内交互，会话中也要立刻拉，勿空等 quiet。 */
+    /* 用户触发的技能/正文请求不能等语音结束：新闻打开后还要在同一会话问「要读吗」。
+     * 心跳等后台请求仍让路给 MQTT。 */
     const bool ui_content =
-        url && (strstr(url, "/panel/news/") != nullptr || strstr(url, "/panel/snapshot") != nullptr);
+        strstr(url, "/panel/news/") != nullptr || strstr(url, "/panel/snapshot") != nullptr ||
+        (strstr(url, "/panel/skills/") != nullptr && strstr(url, "/invoke") != nullptr);
     if (!ui_content) {
         uint32_t wait_ms = 4000;
         if ((uint32_t)io_ms > wait_ms) {
@@ -680,7 +681,9 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
         if (attempt > 0) {
             ESP_LOGW(TAG, "retry %s %s (%d/%d)", method, url, attempt + 1, kMaxAttempts);
             vTaskDelay(pdMS_TO_TICKS(400u * (uint32_t)attempt));
-            (void)nodelio_http_wait_lan_ready(2000);
+            if (!ui_content) {
+                (void)nodelio_http_wait_lan_ready(2000);
+            }
             if (out_status) {
                 *out_status = 0;
             }

@@ -90,7 +90,7 @@ static char s_speak_title[NL_ENV_NEWS_TITLE];
 static int64_t s_chunk_sent_us = 0;
 /** true=仅摘要/标题，勿让模型声称「全文已读完」 */
 static bool s_speak_from_summary = false;
-/** 分片长达 ~2800B，仅在 chunk 边界滚几乎看不出跟读；定时按语速估算进度 */
+/** 定时按语速估算当前 MCP 段进度。 */
 static esp_timer_handle_t s_news_follow_tmr = nullptr;
 static void news_follow_stop_timer(void);
 static void news_follow_ensure_timer(void);
@@ -431,8 +431,22 @@ static bool news_format_chunk(char *out, size_t out_len, bool with_title)
         }
         return false;
     }
+    // Budget the JSON-escaped text, not just UTF-8 bytes. Quotes, newlines and
+    // control characters otherwise make a small article exceed the MQTT limit.
+    size_t raw_bytes = 0;
+    size_t json_bytes = 0;
+    const char* remaining = s_speak_body + s_speak_off;
+    while (remaining[raw_bytes]) {
+        const unsigned char c = static_cast<unsigned char>(remaining[raw_bytes]);
+        const size_t cost = c < 0x20 ? 6 : (c == '"' || c == '\\' ? 2 : 1);
+        if (json_bytes + cost > NEWS_MCP_CHUNK) {
+            break;
+        }
+        json_bytes += cost;
+        raw_bytes++;
+    }
     bool more = false;
-    char *piece = news_take_piece(&more, NEWS_MCP_CHUNK);
+    char* piece = news_take_piece(&more, raw_bytes);
     if (!piece) {
         return false;
     }
@@ -1512,6 +1526,11 @@ bool nodelio_skill_try_news_pick_phrase(const char *text, bool *keep_cloud_tts)
         *keep_cloud_tts = false;
     }
     if (!text || !text[0] || !nodelio_skill_news_ui_active() || !s_env) {
+        return false;
+    }
+    if (strstr(text, "不要读") || strstr(text, "不用读") || strstr(text, "别读") ||
+        strstr(text, "不读") || strstr(text, "不朗读") || strstr(text, "不要朗读") ||
+        strstr(text, "不用朗读")) {
         return false;
     }
     int ord = parse_ordinal_zh(text);

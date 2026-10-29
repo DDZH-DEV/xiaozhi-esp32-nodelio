@@ -1383,11 +1383,13 @@ static bool try_open_bare_known_app(const char *phrase)
     if (!name[0] || !app_query_plausible(name)) {
         return false;
     }
-    static const char *const kKnown[] = {
-        "电台", "播客", "曲库", "音乐", "新闻", "天气", "空气", "一句", "名言", "网络电台",
-        "radio", "podcast", "music", "news", "weather",
-        "DSH", "dsh", "DSH任务", "DSH进度", "查看任务", "任务情况", "任务列表", "任务详情",
-        "任务应用", "任务表情", /* 表情=情况 ASR 误识 */
+    static const char* const kKnown[] = {
+        "电台",     "播客",     "曲库",     "音乐",     "新闻",     "面板新闻", "新闻面板",
+        "最新新闻", "财经新闻", "财新闻", /* 「看新闻」的常见 ASR 残句；只匹配整个短句。 */
+        "天气",     "空气",     "一句",     "名言",     "网络电台", "radio",    "podcast",
+        "music",    "news",     "weather",  "DSH",      "dsh",      "DSH任务",  "DSH进度",
+        "查看任务", "任务情况", "任务列表", "任务详情", "任务应用", "任务表情", /* 表情=情况 ASR
+                                                                                   误识 */
         "派活",
     };
     bool hit = false;
@@ -1454,6 +1456,15 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
     }
     /* 新闻卡前台：读/续读走云 detect 播原文；翻篇本地切卡。未开卡不吞句 */
     if (nodelio_skill_news_ui_active()) {
+        char news_phrase[96];
+        strip_app_query(news_phrase, sizeof(news_phrase), phrase);
+        const bool decline = strstr(news_phrase, "不要读") || strstr(news_phrase, "不用读") ||
+                             strstr(news_phrase, "别读") || strstr(news_phrase, "不读") ||
+                             strstr(news_phrase, "不朗读") || strstr(news_phrase, "不要朗读") ||
+                             strstr(news_phrase, "不用朗读");
+        if (decline) {
+            return false;
+        }
         const char *news_op = NULL;
         if (strstr(phrase, "继续读") || strstr(phrase, "接着念") || strstr(phrase, "往下读") ||
             strstr(phrase, "继续念") || strstr(phrase, "接着读")) {
@@ -1464,7 +1475,8 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
             news_op = "prev";
         } else if (strstr(phrase, "读这篇") || strstr(phrase, "朗读") || strstr(phrase, "念一下") ||
                    strstr(phrase, "读一下") || strstr(phrase, "念这篇") || strstr(phrase, "读吧") ||
-                   strstr(phrase, "开始读") || strstr(phrase, "要读") || strcmp(phrase, "读") == 0) {
+                   strstr(phrase, "开始读") || strstr(phrase, "要读") ||
+                   strcmp(news_phrase, "读") == 0) {
             news_op = "read";
         }
         if (news_op) {

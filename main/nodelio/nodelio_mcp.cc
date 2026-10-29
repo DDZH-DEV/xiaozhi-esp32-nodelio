@@ -1,4 +1,5 @@
 #include "nodelio_mcp.h"
+#include "application.h"
 
 #include "content_envelope.h"
 #include "device_caps.h"
@@ -898,8 +899,7 @@ void nodelio_mcp_register_tools(void)
 {
     auto &mcp = McpServer::GetInstance();
 
-    /* 注册后由 Application::PromoteTool 挪到列表头：否则 common 置顶后本工具落在第 2+ 页，
-     * SILA page_cap≈400 时模型看不见，会空口说「没有新闻内容」且从不 tools/call。 */
+    // Keep this tool and open_app on the first tools/list page.
     mcp.AddTool(
         "self.skill.news",
         "Always call for 读/读吧/朗读/继续读. op=read|continue|prev|next|close. "
@@ -916,7 +916,9 @@ void nodelio_mcp_register_tools(void)
                 op != "mark" && op != "skip" && op != "close" && op != "dismiss") {
                 return std::unexpected(std::string("op 须为 prev/next/read/continue/mark_read/skip/close"));
             }
-            constexpr size_t kNewsSpokenCap = 4096;
+            auto& app = Application::GetInstance();
+            app.Schedule([]() { Application::GetInstance().OnNewsReadToolCalled(); });
+            constexpr size_t kNewsSpokenCap = 1536;
             char *spoken = static_cast<char *>(
                 heap_caps_malloc(kNewsSpokenCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
             if (!spoken) {
@@ -930,7 +932,12 @@ void nodelio_mcp_register_tools(void)
             const bool ok = nodelio_skill_news_action(op.c_str(), spoken, kNewsSpokenCap);
             std::string out = spoken;
             heap_caps_free(spoken);
+            ESP_LOGI("nl_mcp", "news result op=%s ok=%d bytes=%u", op.c_str(), ok ? 1 : 0,
+                     (unsigned)out.size());
             if (!ok) {
+                if (op == "read") {
+                    return std::unexpected(std::string("暂无可读正文，请先打开新闻"));
+                }
                 if (op == "prev") {
                     return std::unexpected(std::string("没有上一篇"));
                 }

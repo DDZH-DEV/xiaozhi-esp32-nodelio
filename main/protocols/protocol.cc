@@ -111,9 +111,12 @@ void Protocol::SendStopListening() {
 }
 
 void Protocol::SendMcpMessage(const std::string& payload) {
+    // Keep the root type first: MQTT applies a separate budget to MCP replies.
     std::string message =
-        "{\"session_id\":\"" + session_id_ + "\",\"type\":\"mcp\",\"payload\":" + payload + "}";
-    SendText(message);
+        "{\"type\":\"mcp\",\"session_id\":\"" + session_id_ + "\",\"payload\":" + payload + "}";
+    if (!SendText(message)) {
+        ESP_LOGE(TAG, "MCP response not sent (%u bytes)", (unsigned)message.size());
+    }
 }
 
 bool Protocol::IsTimeout() const {

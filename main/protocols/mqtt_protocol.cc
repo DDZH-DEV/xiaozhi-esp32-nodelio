@@ -1,6 +1,7 @@
 #include "mqtt_protocol.h"
 #include "application.h"
 #include "board.h"
+#include "mcp_payload_budget.h"
 #include "settings.h"
 
 #include <esp_heap_caps.h>
@@ -239,9 +240,8 @@ bool MqttProtocol::SendText(const std::string& text) {
         return false;
     }
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-    /* 开 I2S/重采样时内部堆骤降；TLS 写大包可能 esp-aes OOM 拆线。
-     * MCP（尤其 tools/list）被静默丢弃 → 云端整场会话无本机工具（音量/设置/曲库全废）。
-     * 对 MCP 用更宽阈值：先 yield 再测；小包在 largest≥20KB 时仍尝试发送。 */
+    /* 开 I2S/重采样时内部堆骤降；限制 MCP 单包并留出 TLS 内部堆余量。
+     * tools/list 与正文分片使用同一预算，不能在日常 7~12KB 最大块下拒绝所有工具。 */
     /* hello 必须发出（~300B）；本板待机最大块常年 ~7.5KB，不能按 10/12KB 门槛丢掉唤醒。
      * 只拦 MCP 大包。根字段 type=mcp，勿把 features.mcp=true 的 hello 当成 MCP。 */
     const bool is_hello = text.compare(0, 15, "{\"type\":\"hello\"") == 0;
@@ -261,9 +261,7 @@ bool MqttProtocol::SendText(const std::string& text) {
             return largest < 8 * 1024;
         }
         if (mcp) {
-            return (largest < 20 * 1024 && nbytes >= 256) ||
-                   (largest < 28 * 1024 && nbytes >= 1400) ||
-                   (largest < 40 * 1024 && nbytes >= 2200);
+            return nbytes > McpPayloadBudget::WireBytes(largest);
         }
         return (largest < 24 * 1024 && nbytes >= 256) ||
                (largest < 40 * 1024 && nbytes >= 800) ||

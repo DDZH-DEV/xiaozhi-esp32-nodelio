@@ -57,8 +57,8 @@ LV_FONT_DECLARE(font_material_symbols_20_4);
 #define SKILL_LIST_ROW_H 68
 #define SKILL_MUSIC_ROW_H 50
 #define NEWS_ARTICLE_CAP (20 * 1024)
-/* MQTT MCP 回包总长易被对端掐断；约 900 汉字一段，多数文章 1～2 段。 */
-#define NEWS_MCP_CHUNK 2800
+/* JSON 转义后的正文预算；预留标题、提示及 MCP/session 包装，总包控制在 2KB 内。 */
+#define NEWS_MCP_CHUNK 640
 /* 本地 detect 播报：整包 JSON 须 ≤720B（聆听 DRAM~9KB）；正文约 360B ≈120 字，多段「继续读」。 */
 #define NEWS_LOCAL_SPEAK_CHUNK 360
 /* 云端回源拉正文最多约 8s，默认 HTTP 读超时 2.5s 会在状态行到达前断开 */

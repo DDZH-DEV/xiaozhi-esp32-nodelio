@@ -6,12 +6,13 @@
 #include <freertos/task.h>
 #include <esp_timer.h>
 
-#include <string>
-#include <mutex>
-#include <deque>
-#include <memory>
-#include <functional>
+#include <atomic>
 #include <cstdint>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <string>
 #include <vector>
 
 #include "protocol.h"
@@ -167,7 +168,7 @@ public:
     void StartLocalNewsRead(const char *op /* read|continue */);
     /** 新闻列表上屏后：武装「是/读」→ 朗读第一条。 */
     void ArmPendingConfirmReadNews();
-    bool IsLocalNewsReading() const { return news_local_reading_; }
+    void OnNewsReadToolCalled();  // Application task only; validated MCP dispatch.
 #endif
     
     /**
@@ -221,18 +222,14 @@ private:
     std::deque<std::string> spoken_notify_queue_; /* 连续播剩余段 */
     bool spoken_notify_continue_ = false;         /* 接下一段时不弹 OGG */
     std::string pending_cloud_speak_;             /* 当前待发 detect */
-    std::deque<std::string> cloud_speak_queue_;   /* 新闻分段朗读剩余 */
-    std::string news_speak_inflight_;             /* 已发未确认的当前段（否认抢答可重发） */
-    bool news_local_reading_ = false;             /* 旧分段路径残留；MCP 朗读勿置 true */
-    bool news_ignore_next_tts_stop_ = false;      /* 丢掉云端否认 abort 后的假 stop */
-    bool news_reopening_channel_ = false;         /* goodbye 后重开中，防重入 */
-    bool news_awaiting_mcp_ = false;              /* 已 detect，等云端 tools/call self.skill.news */
-    int news_mcp_detect_retries_ = 0;             /* 否认后重 detect 次数 */
+    std::atomic<bool> news_awaiting_mcp_{false};  // Also read by network/audio callbacks.
+    bool news_read_continue_ = false;
+    int news_mcp_detect_retries_ = 0;
+    int64_t news_mcp_deadline_us_ = 0;
+    std::string news_detect_echo_;
     void TryFlushPendingCloudSpeak();
-    void QueueNewsSpeakPlain(const char *plain);
-    void OnCloudSpeakTtsStopped();
-    /** 云端念完一段就 goodbye：重开通道续读。 */
-    void ResumeLocalNewsReadAfterChannelClosed();
+    void CheckNewsReadRequest();
+    void SendNewsReadRequest();
     bool PlayNextSpokenNotify();
 #endif
     TaskHandle_t activation_task_handle_ = nullptr;
