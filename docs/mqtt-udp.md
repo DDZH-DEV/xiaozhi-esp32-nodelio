@@ -36,9 +36,8 @@ sequenceDiagram
     Device->>MQTT: Hello message (type: "hello", transport: "udp")
     MQTT->>Device: Hello response (UDP endpoint + encryption keys)
 
-    Note over Device, UDP: 3. Establish UDP connection
-    Device->>UDP: UDP Connect
-    UDP->>Device: Connected
+    Note over Device: 3. Connect the local UDP socket (no remote handshake)
+    Device->>UDP: Encrypted 60 ms Opus silence (prime the return path)
 
     Note over Device, UDP: 4. Audio streaming
     loop Audio stream
@@ -58,6 +57,15 @@ sequenceDiagram
 ```
 
 ---
+
+UDP channel creation sends one encrypted silence packet before reporting the channel open.
+This gives the server a source endpoint and opens the NAT return path without depending on
+microphone or wake-word audio reaching the encoder before a text-triggered reply. The packet
+uses the normal audio header, AES-CTR encryption and sequence counter; its Opus payload is
+8 bytes (three 20 ms mono CELT silence frames, [RFC 6716 section 3.2.5](https://www.rfc-editor.org/rfc/rfc6716.html#section-3.2.5)).
+No periodic keepalive, encoder initialization or acknowledgement is added. A local send
+failure closes the channel and fails the open operation; a successful send is not proof of
+remote receipt. `UDP audio primed` and `UDP first audio rx` distinguish these two stages.
 
 ## 3. MQTT Control Channel
 

@@ -1,4 +1,5 @@
 #include "skill_result_ui.h"
+#include "news_read_progress.h"
 
 #include "device_caps.h"
 #include "media_player.h"

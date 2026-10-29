@@ -310,6 +310,9 @@ void Application::Run() {
         }
 
         if (bits & MAIN_EVENT_PLAYBACK_DRAINED) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            FinishNewsReadPlayback();
+#endif
             if (audio_service_.IsPlaybackIdle()) {
                 notify_player_.OnPlaybackDrained();
             }
@@ -381,6 +384,7 @@ void Application::Run() {
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
             CheckNewsReadRequest();
+            FinishNewsReadPlayback();
             /* 聆听中无对话：提示（抽屉按 farewell 即时收）→ 独立 1s 后关通道 */
             if (!news_awaiting_mcp_ && GetDeviceState() == kDeviceStateListening && protocol_ &&
                 protocol_->IsAudioChannelOpened()) {
@@ -858,6 +862,7 @@ void Application::InitializeProtocol() {
         /* 先回 idle 再降功耗：避免 goodbye 瞬间 MAX_MODEM 把尾包 UDP 打丢 */
         Schedule([this, &board]() {
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+            CancelNewsReadPlayback();
             news_awaiting_mcp_ = false;
             news_detect_echo_.clear();
             pending_confirm_read_news_ = false;
@@ -971,12 +976,20 @@ void Application::InitializeProtocol() {
                     }
                     ESP_LOGI(TAG, "cloud tts start (pending_dsh=%d)",
                              pending_confirm_open_dsh_ ? 1 : 0);
+                    news_tts_stopped_ = false;
 #endif
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+                    if (news_playback_token_ != 0 && !aborted_) {
+                        news_tts_stopped_ = true;
+                        FinishNewsReadPlayback();
+                        return;
+                    }
+#endif
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
@@ -1037,6 +1050,9 @@ void Application::InitializeProtocol() {
                                      message.c_str());
                             return;
                         }
+                        if (const auto token = nodelio_skill_news_on_sentence(message.c_str())) {
+                            news_playback_token_ = token;
+                        }
 #endif
                         display->AddTextGlyphs(glyphs, bpp);
                         display->SetChatMessage("assistant", message.c_str());
@@ -1077,6 +1093,7 @@ void Application::InitializeProtocol() {
                         return;
                     }
                     // A real user turn supersedes the previous read request, including its retry.
+                    CancelNewsReadPlayback();
                     news_awaiting_mcp_ = false;
                     news_detect_echo_.clear();
                     suppress_cloud_tts_until_us_ = 0;
@@ -1969,6 +1986,9 @@ void Application::Schedule(std::function<void()>&& callback) {
 
 void Application::AbortSpeaking(AbortReason reason) {
     ESP_LOGI(TAG, "Abort speaking");
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    CancelNewsReadPlayback();
+#endif
     aborted_ = true;
     if (protocol_) {
         protocol_->SendAbortSpeaking(reason);
@@ -2155,14 +2175,52 @@ void Application::OnNewsReadToolCalled() {
     news_awaiting_mcp_ = false;
     suppress_cloud_tts_until_us_ = 0;
     aborted_ = false;
+    if (news_playback_token_ == 0) {
+        news_playback_start_count_ = audio_service_.GetPlaybackCount();
+    }
     ESP_LOGI(TAG, "news read: tools/call received, waiting for article result");
 }
 
-void Application::SendNewsReadRequest() {
+void Application::CancelNewsReadPlayback() {
+    news_playback_token_ = 0;
+    news_tts_stopped_ = false;
+    nodelio_skill_news_cancel_read();
+}
+
+void Application::FinishNewsReadPlayback() {
+    if (!news_tts_stopped_ || !audio_service_.IsPlaybackIdle()) {
+        return;
+    }
+    const uint32_t token = news_playback_token_;
+    news_playback_token_ = 0;
+    news_tts_stopped_ = false;
+    bool more = false;
+    const bool played = audio_service_.GetPlaybackCount() != news_playback_start_count_;
+    const bool finished = !aborted_ && nodelio_skill_news_finish_chunk(token, played, &more);
+    ESP_LOGI(TAG, "news playback drained: token=%u audio=%d complete=%d more=%d", (unsigned)token,
+             played, finished, more);
+    if (finished && more && protocol_ && protocol_->IsAudioChannelOpened() &&
+        GetDeviceState() == kDeviceStateSpeaking) {
+        news_read_continue_ = true;
+        news_mcp_detect_retries_ = 0;
+        SendNewsReadRequest(false);
+        return;
+    }
+    // Partial/failed audio must not silently advance the article cursor.
+    nodelio_skill_news_cancel_read();
+    if (GetDeviceState() == kDeviceStateSpeaking) {
+        SetDeviceState(listening_mode_ == kListeningModeManualStop ? kDeviceStateIdle
+                                                                   : kDeviceStateListening);
+    }
+}
+
+void Application::SendNewsReadRequest(bool interrupt) {
     // Cancel the response to the original STT before submitting the explicit tool request,
     // even if its tts.start has not arrived yet.
-    AbortSpeaking(kAbortReasonNone);
-    audio_service_.ResetDecoder();
+    if (interrupt) {
+        AbortSpeaking(kAbortReasonNone);
+        audio_service_.ResetDecoder();
+    }
     if (GetDeviceState() == kDeviceStateSpeaking) {
         SetDeviceState(kDeviceStateListening);
     }

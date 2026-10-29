@@ -35,9 +35,8 @@ sequenceDiagram
     Device->>MQTT: Hello Message (type: "hello", transport: "udp")
     MQTT->>Device: Hello Response (UDP 连接信息 + 加密密钥)
 
-    Note over Device, UDP: 3. 建立 UDP 连接
-    Device->>UDP: UDP Connect
-    UDP->>Device: Connected
+    Note over Device: 3. 连接本地 UDP socket（没有远端握手）
+    Device->>UDP: 加密的 60 ms Opus 静音包（建立回传路径）
 
     Note over Device, UDP: 4. 音频数据传输
     loop 音频流传输
@@ -57,6 +56,14 @@ sequenceDiagram
 ```
 
 ---
+
+创建 UDP 通道后、通知应用通道打开前，先发送一个加密静音包，使服务端获得设备源地址，
+并建立 NAT 回传路径，避免文字触发的回复依赖麦克风或唤醒录音恰好及时上传。
+该包沿用音频包头、AES-CTR 加密和递增序列号，Opus 载荷仅 8 字节，包含三个 20 ms
+单声道 CELT 静音帧（[RFC 6716 §3.2.5](https://www.rfc-editor.org/rfc/rfc6716.html#section-3.2.5)）。
+不新增定时保活、编码器初始化或确认协议。本地发送失败则关闭通道并返回打开失败；
+发送成功不代表远端确认收到。日志 `UDP audio primed` 与 `UDP first audio rx`
+分别表示已发出预热包和已收到首个合法音频包。
 
 ## 3. MQTT 控制通道
 

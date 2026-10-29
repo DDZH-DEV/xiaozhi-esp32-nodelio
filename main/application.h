@@ -229,7 +229,12 @@ private:
     std::string news_detect_echo_;
     void TryFlushPendingCloudSpeak();
     void CheckNewsReadRequest();
-    void SendNewsReadRequest();
+    void SendNewsReadRequest(bool interrupt = true);
+    void FinishNewsReadPlayback();
+    void CancelNewsReadPlayback();
+    uint32_t news_playback_token_ = 0;
+    uint32_t news_playback_start_count_ = 0;
+    bool news_tts_stopped_ = false;
     bool PlayNextSpokenNotify();
 #endif
     TaskHandle_t activation_task_handle_ = nullptr;

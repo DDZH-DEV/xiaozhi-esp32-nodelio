@@ -438,6 +438,7 @@ void AudioService::AudioOutputTask() {
         }
 #endif
         codec_->OutputData(task.pcm);
+        completed_playback_count_.fetch_add(1);
 
         /* Update the last output time */
         last_output_time_ = std::chrono::steady_clock::now();

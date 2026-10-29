@@ -346,7 +346,7 @@ bool MqttProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     memcpy(nonce.data() + 12, &sequence, sizeof(sequence));
 
     std::string encrypted;
-    encrypted.resize(aes_nonce_.size() + packet->payload.size());
+    encrypted.resize(nonce.size() + packet->payload.size());
     memcpy(encrypted.data(), nonce.data(), nonce.size());
 
     if (!CryptAesCtr(reinterpret_cast<const uint8_t*>(packet->payload.data()),
@@ -357,7 +357,7 @@ bool MqttProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     }
 
     // Send without holding channel_mutex_ (see above).
-    return udp->Send(encrypted) > 0;
+    return udp->Send(encrypted) == static_cast<int>(encrypted.size());
 }
 
 void MqttProtocol::CloseAudioChannel(bool send_goodbye) {
@@ -469,12 +469,18 @@ bool MqttProtocol::OpenAudioChannel() {
             ESP_LOGE(TAG, "Failed to decrypt audio data");
             return;
         }
+        bool first_audio = false;
         {
             std::lock_guard<std::mutex> lock(channel_mutex_);
             if (sequence <= remote_sequence_) {
                 return;
             }
+            first_audio = remote_sequence_ == 0;
             remote_sequence_ = sequence;
+        }
+        if (first_audio) {
+            ESP_LOGI(TAG, "UDP first audio rx: seq=%lu bytes=%u", sequence,
+                     static_cast<unsigned>(payload_len));
         }
         last_incoming_time_ = std::chrono::steady_clock::now();
         if (on_incoming_audio_ != nullptr) {
@@ -491,6 +497,26 @@ bool MqttProtocol::OpenAudioChannel() {
         std::lock_guard<std::mutex> lock(channel_mutex_);
         udp_ = std::move(udp);
     }
+
+    // UDP Connect only selects the peer locally. Send a real audio datagram before
+    // the caller can issue listen/detect: the server needs our source endpoint and
+    // NAT needs an outbound packet even when no microphone/wake audio is uploaded.
+    // RFC 6716 section 3.2.5: CBR code 3, three 20 ms mono CELT silence frames.
+    // This avoids starting an encoder or allocating a PCM/wake-word buffer.
+    static_assert(OPUS_FRAME_DURATION_MS == 60, "Update UDP primer for the uplink frame duration");
+    constexpr uint8_t kOpusSilence[] = {0xfb, 0x03, 0xff, 0xfe, 0xff, 0xfe, 0xff, 0xfe};
+    auto primer = std::make_unique<AudioStreamPacket>();
+    primer->sample_rate = 16000;
+    primer->frame_duration = OPUS_FRAME_DURATION_MS;
+    primer->payload.assign(kOpusSilence, kOpusSilence + sizeof(kOpusSilence));
+    if (!SendAudio(std::move(primer))) {
+        ESP_LOGE(TAG, "Failed to prime UDP audio channel");
+        CloseAudioChannel();
+        SetError(Lang::Strings::SERVER_ERROR);
+        return false;
+    }
+    ESP_LOGI(TAG, "UDP audio primed: %zu bytes, %d ms silence", sizeof(kOpusSilence),
+             OPUS_FRAME_DURATION_MS);
 
     if (on_audio_channel_opened_ != nullptr) {
         on_audio_channel_opened_();

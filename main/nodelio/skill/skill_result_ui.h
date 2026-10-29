@@ -59,6 +59,12 @@ bool nodelio_skill_news_local_speak(const char *op, char *plain_out, size_t plai
 /** 仅确保详情打开（列表态进当前/首条），不推进朗读游标。 */
 bool nodelio_skill_news_prepare_read(void);
 
+/** Event-driven news reading; no estimated-speed scroll timer. */
+uint32_t nodelio_skill_news_read_token(void);
+uint32_t nodelio_skill_news_on_sentence(const char* text);
+bool nodelio_skill_news_finish_chunk(uint32_t token, bool played_audio, bool* more);
+void nodelio_skill_news_cancel_read(void);
+
 /** 当前技能是否为 news_list 且卡/播放层仍在前台（语音「下一篇」仅此时命中）。 */
 bool nodelio_skill_news_ui_active(void);
 

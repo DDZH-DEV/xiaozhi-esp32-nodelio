@@ -129,6 +129,7 @@ public:
     bool IsVoiceDetected() const { return voice_detected_; }
     bool IsIdle();
     bool IsPlaybackIdle();
+    uint32_t GetPlaybackCount() const { return completed_playback_count_.load(); }
     bool IsWakeWordRunning() const {
         return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING;
     }
@@ -163,6 +164,7 @@ public:
     srmodel_list_t* GetModelsList() const { return models_list_; }
 
 private:
+    std::atomic<uint32_t> completed_playback_count_{0};
     AudioCodec* codec_ = nullptr;
     AudioServiceCallbacks callbacks_;
     std::unique_ptr<AudioEngine> audio_engine_;
