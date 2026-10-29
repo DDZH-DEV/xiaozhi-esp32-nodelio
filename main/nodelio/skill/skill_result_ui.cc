@@ -3492,12 +3492,18 @@ bool nodelio_skill_reopen_media_list(void)
 
 void nodelio_skill_close_all(void)
 {
+    const bool stop_news = nodelio_skill_news_ui_active();
     nodelio_media_stop();
     DisplayLockGuard lock(nl_ov_disp());
     if (!lock) {
         return;
     }
     dismiss_library_and_player();
+    if (stop_news) {
+        Application::GetInstance().Schedule([]() {
+            Application::GetInstance().AbortNewsSpeak();
+        });
+    }
 }
 
 bool nodelio_skill_try_dismiss_phrase(const char *text)
@@ -3536,6 +3542,9 @@ bool nodelio_skill_try_dismiss_phrase(const char *text)
 
 void nodelio_skill_result_hide(void)
 {
+    /* 新闻卡与云端 TTS 解耦：收起弹出层须掐朗读，否则抽屉底下仍在念。 */
+    const bool stop_news =
+        s_have_env && s_env && strcmp(s_env->card_type, "news_list") == 0 && skill_ui_is_up();
     s_news_gen += 1;
     s_news_detail = -1;
     if (s_news_body_heap) {
@@ -3548,6 +3557,11 @@ void nodelio_skill_result_hide(void)
     s_dsh_detail_ws[0] = '\0';
     s_dsh_detail_sess[0] = '\0';
     nodelio_panel_ui_clear_dsh_arm();
+    if (stop_news) {
+        Application::GetInstance().Schedule([]() {
+            Application::GetInstance().AbortNewsSpeak();
+        });
+    }
     DisplayLockGuard lock(nl_ov_disp());
     if (!lock) {
         s_dsh_phase = DSH_UI_IDLE;

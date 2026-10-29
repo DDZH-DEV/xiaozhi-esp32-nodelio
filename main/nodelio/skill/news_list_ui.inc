@@ -49,6 +49,17 @@ static void news_worker(void *arg)
                 if (lock) {
                     nl_ov_toast(job.nav < 0 ? "没有上一篇" : "没有下一篇");
                 }
+            } else {
+                /* 小缓冲路径只切详情；会话中须停旧 TTS 并朗读新篇。 */
+                Application::GetInstance().Schedule([]() {
+                    auto &app = Application::GetInstance();
+                    const auto st = app.GetDeviceState();
+                    if (st == kDeviceStateListening || st == kDeviceStateSpeaking) {
+                        app.StartLocalNewsRead("read");
+                    } else {
+                        nodelio_skill_news_sync_read_btn();
+                    }
+                });
             }
             continue;
         }
@@ -971,6 +982,10 @@ static void on_news_row(lv_event_t *e)
 static void on_news_back(lv_event_t *e)
 {
     (void)e;
+    /* 详情跟读滚屏依赖当前篇；回列表时停 TTS，避免「看不见却还在念」。 */
+    Application::GetInstance().Schedule([]() {
+        Application::GetInstance().AbortNewsSpeak();
+    });
     s_news_detail = -1;
     fill_list();
 }
@@ -1044,6 +1059,10 @@ static void on_news_nav(lv_event_t *e)
         nl_ov_toast("请稍候");
         return;
     }
+    /* 点翻篇即掐当前云端 TTS；worker 切卡成功后再 StartLocalNewsRead。 */
+    Application::GetInstance().Schedule([]() {
+        Application::GetInstance().AbortNewsSpeak();
+    });
     news_job_t job;
     memset(&job, 0, sizeof(job));
     job.nav = delta;

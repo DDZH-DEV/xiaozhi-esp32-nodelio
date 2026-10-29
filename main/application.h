@@ -168,6 +168,8 @@ public:
     void StartLocalNewsRead(const char *op /* read|continue */);
     /** 停当前段 TTS，不跳过未读原文；之后可点「继续」或说「继续读」。 */
     void PauseNewsRead();
+    /** 翻篇：立即掐 TTS/解码，无「已暂停」toast，不发 detect。 */
+    void AbortNewsSpeak();
     bool IsNewsReading() const { return news_reading_; }
     /** 已发「继续读」detect、等 tools/call：云端若误传 op=read 须设备侧改成 continue。 */
     bool PreferNewsContinue() const {

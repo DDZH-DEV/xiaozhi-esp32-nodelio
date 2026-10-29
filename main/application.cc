@@ -2359,6 +2359,26 @@ void Application::PauseNewsRead()
     nodelio_skill_news_sync_read_btn();
 }
 
+void Application::AbortNewsSpeak()
+{
+    if (!news_reading_ && !news_awaiting_mcp_ && GetDeviceState() != kDeviceStateSpeaking) {
+        return;
+    }
+    ESP_LOGI(TAG, "news read: abort for nav");
+    news_reading_ = false;
+    news_awaiting_mcp_ = false;
+    news_mcp_deadline_us_ = 0;
+    news_mcp_detect_retries_ = 0;
+    news_detect_echo_.clear();
+    const bool speaking = GetDeviceState() == kDeviceStateSpeaking;
+    AbortSpeaking(kAbortReasonNone);
+    if (speaking) {
+        audio_service_.ResetDecoder();
+        SetDeviceState(kDeviceStateListening);
+    }
+    nodelio_skill_news_sync_read_btn();
+}
+
 static bool spoken_tts_url_ok(const char *audio_url)
 {
     if (!audio_url || !audio_url[0]) {
