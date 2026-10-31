@@ -330,6 +330,11 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         return ESP_ERR_INVALID_ARG;
     }
     key = normalize_pref_key(key);
+    if (!nodelio_display_profile()->network_sleep &&
+        (strcasecmp(key, "power_save") == 0 || strcasecmp(key, "idle_wifi_s") == 0)) {
+        pref_err(err, err_len, "此板当前只息屏，保持网络连接");
+        return ESP_ERR_NOT_SUPPORTED;
+    }
 
     if (strcasecmp(key, "brightness") == 0) {
         int v = 0;
@@ -536,7 +541,7 @@ extern "C" esp_err_t nodelio_panel_ui_get_pref(const char *key, char *buf, size_
         return ESP_OK;
     }
     if (strcasecmp(key, "power_save") == 0) {
-        std::snprintf(buf, len, "%s", s_cfg.power_save_en ? "on" : "off");
+        std::snprintf(buf, len, "%s", nodelio_power_save_enabled() ? "on" : "off");
         return ESP_OK;
     }
     if (strcasecmp(key, "idle_sleep_s") == 0) {
@@ -892,6 +897,8 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         title = "播放器";
     } else if (page == SET_PAGE_CTRL) {
         title = "控家";
+    } else if (page == SET_PAGE_DIAGNOSTICS) {
+        title = "硬件自检";
     }
     (void)ui_make_nav_bar(s_settings_detail, UI_NAV_H, title,
                           [](lv_event_t *) { nl_ov_close_settings_detail(); });
@@ -913,7 +920,9 @@ void nl_ov_open_settings_detail(set_page_id_t page)
     lv_obj_add_flag(body, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_OFF);
 
-    if (page == SET_PAGE_DISP) {
+    if (page == SET_PAGE_DIAGNOSTICS) {
+        nl_ov_build_diagnostics(body);
+    } else if (page == SET_PAGE_DISP) {
         lv_obj_clear_flag(body, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_style_pad_row(body, 12, 0);
 
@@ -1082,6 +1091,12 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_label_set_long_mode(ps_hint, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(ps_hint, lv_pct(100));
 
+        if (!nodelio_display_profile()->network_sleep) {
+            ui_set_enabled(ps_sw, false);
+            lv_obj_remove_state(ps_sw, LV_STATE_CHECKED);
+            lv_label_set_text(ps_hint, "此板当前只关闭背光并降低刷新，保持 Hosted 网络连接");
+        }
+
         char sec[16];
         std::snprintf(sec, sizeof(sec), "%ds", (int)s_cfg.idle_sleep_s);
         lv_obj_t *idle_band = audio_ctrl_band(body, "空闲息屏", sec, &s_idle_slp_lbl);
@@ -1111,6 +1126,9 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_label_set_long_mode(wifi_hint, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(wifi_hint, lv_pct(100));
 
+        if (!nodelio_display_profile()->network_sleep) {
+            lv_obj_add_flag(wifi_band, LV_OBJ_FLAG_HIDDEN);
+        }
         std::snprintf(sec, sizeof(sec), "%ds", (int)s_cfg.goodbye_sleep_s);
         lv_obj_t *bye_band = audio_ctrl_band(body, "退下后延迟息屏", sec, &s_bye_slp_lbl);
         lv_obj_t *bye_sl = lv_slider_create(bye_band);
@@ -1450,6 +1468,7 @@ void nl_ov_fill_settings(void)
         settings_tile(s_settings, "智", "语音助手", voice_sub, UI_C_ACCENT, nullptr,
                       [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_VOICE); });
     }
+#if CONFIG_FIRMWARE_OTA_ENABLED
     settings_tile(s_settings, "更", "检查固件更新", "手工查小智云版本，有新版再升级", UI_C_INFO, nullptr,
                   [](lv_event_t *) {
                       char err[64];
@@ -1458,8 +1477,11 @@ void nl_ov_fill_settings(void)
                           nl_ov_toast(err);
                       }
                   });
+#endif
     settings_tile(s_settings, "机", "设备信息", "唤醒词「你好小智」· 状态", UI_C_PURPLE, nullptr,
                   [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_SYS); });
+    settings_tile(s_settings, "测", "硬件自检", "触摸坐标 / 麦克风录音回放", UI_C_INFO, nullptr,
+                  [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_DIAGNOSTICS); });
     settings_tile(s_settings, "复", "恢复出厂", "清空凭证并重启", UI_C_DANGER, nullptr,
                   [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_RESET); });
 }

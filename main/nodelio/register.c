@@ -160,15 +160,42 @@ esp_err_t nodelio_device_register(nodelio_nvs_config_t *cfg)
     char ip[32];
     local_ip(ip, sizeof(ip));
 
-    char body[768];
-    snprintf(body, sizeof(body),
-             "{\"deviceId\":\"%s\",\"ipAddress\":\"%s\",\"mqttId\":\"%s\",\"type\":\"%s\","
-             "\"owner\":\"%s\",\"firmwareVersion\":\"%s\","
-             "\"config\":\"{\\\"board_id\\\":\\\"%s\\\",\\\"display\\\":{\\\"w\\\":%u,\\\"h\\\":%u,\\\"touch\\\":%s},"
-             "\\\"features\\\":[\\\"panel_layout\\\",\\\"offline_cmd\\\",\\\"wake_word\\\",\\\"xiaozhi_chat\\\"],"
-             "\\\"firmware_family\\\":\\\"esp32-idf\\\"}\"}",
-             cfg->device_id, ip, cfg->device_id, CONFIG_NODELIO_TYPE_CODE, cfg->owner, FW_VERSION, board->info.board_id,
-             (unsigned)board->info.display_w, (unsigned)board->info.display_h, board->info.touch ? "true" : "false");
+    const nodelio_display_profile_t* profile = nodelio_display_profile();
+    cJSON* root = cJSON_CreateObject();
+    cJSON* config = cJSON_CreateObject();
+    cJSON* display = config ? cJSON_AddObjectToObject(config, "display") : NULL;
+    cJSON* dp = config ? cJSON_AddObjectToObject(config, "display_profile") : NULL;
+    const char* features[] = {"panel_layout", "offline_cmd", "wake_word", "xiaozhi_chat"};
+    bool ok = root && config && display && dp &&
+              cJSON_AddStringToObject(root, "deviceId", cfg->device_id) &&
+              cJSON_AddStringToObject(root, "ipAddress", ip) &&
+              cJSON_AddStringToObject(root, "mqttId", cfg->device_id) &&
+              cJSON_AddStringToObject(root, "type", CONFIG_NODELIO_TYPE_CODE) &&
+              cJSON_AddStringToObject(root, "owner", cfg->owner) &&
+              cJSON_AddStringToObject(root, "firmwareVersion", FW_VERSION) &&
+              cJSON_AddStringToObject(config, "board_id", board->info.board_id) &&
+              cJSON_AddStringToObject(config, "firmware_family", "esp32-idf") &&
+              cJSON_AddNumberToObject(display, "w", board->info.display_w) &&
+              cJSON_AddNumberToObject(display, "h", board->info.display_h) &&
+              cJSON_AddBoolToObject(display, "touch", board->info.touch) &&
+              cJSON_AddStringToObject(dp, "id", profile->id) &&
+              cJSON_AddNumberToObject(dp, "cols", profile->grid_cols) &&
+              cJSON_AddNumberToObject(dp, "rows", profile->grid_rows) &&
+              cJSON_AddNumberToObject(dp, "nav_width", profile->nav_width);
+    cJSON* feature_array = ok ? cJSON_CreateStringArray(features, 4) : NULL;
+    if (!feature_array || !cJSON_AddItemToObject(config, "features", feature_array)) {
+        cJSON_Delete(feature_array);
+        ok = false;
+    }
+    char* config_json = ok ? cJSON_PrintUnformatted(config) : NULL;
+    ok = config_json && cJSON_AddStringToObject(root, "config", config_json);
+    cJSON_free(config_json);
+    cJSON_Delete(config);
+    char* body = ok ? cJSON_PrintUnformatted(root) : NULL;
+    cJSON_Delete(root);
+    if (!body) {
+        return ESP_ERR_NO_MEM;
+    }
 
     char url[192];
     build_register_url(cfg->server_url, url, sizeof(url));
@@ -181,6 +208,7 @@ esp_err_t nodelio_device_register(nodelio_nvs_config_t *cfg)
     int status = 0;
     ESP_LOGI(TAG, "register device_id=%s owner=%s", cfg->device_id, cfg->owner);
     esp_err_t err = nodelio_http_post_json(url, cfg->device_key, body, &status, resp, resp ? cap : 0);
+    cJSON_free(body);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "registered OK device_id=%s type=%s", cfg->device_id, CONFIG_NODELIO_TYPE_CODE);
         if (resp) {

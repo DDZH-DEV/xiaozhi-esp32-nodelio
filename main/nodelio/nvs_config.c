@@ -1,4 +1,5 @@
 #include "nvs_config.h"
+#include "board_info.h"
 
 #include <esp_log.h>
 #include <nvs.h>
@@ -427,6 +428,9 @@ esp_err_t nodelio_local_cmd_set_enabled(bool on)
 
 bool nodelio_power_save_enabled(void)
 {
+    if (!nodelio_display_profile()->network_sleep) {
+        return false;
+    }
     if (!s_ram_ok) {
         return true;
     }

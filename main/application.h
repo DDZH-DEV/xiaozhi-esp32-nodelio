@@ -112,7 +112,7 @@ public:
     void Reboot();
     void WakeWordInvoke(const std::string& wake_word);
     bool UpgradeFirmware(const std::string& url, const std::string& version = "");
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     /** 设置页手工触发：查小智云固件版本，有新版则升级；后台任务，可重入挡. */
     void RequestManualFirmwareCheck();
 #endif
@@ -128,7 +128,10 @@ public:
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
+    // Call on the application task; the UI posts these through Schedule().
+    bool StartPanelAudioTest(unsigned channel);
+    void CancelPanelAudioTest();
     /** 本机 HTTP 音频（Ogg/Opus）；须在主任务或经 Schedule。与语音会话互斥。
      *  设备非 Idle 或上一首 HTTP 任务未退出时返回 false，调用方需稍后重试。 */
     bool PlayHttpAudio(std::string audio_url, std::string device_key = {});
@@ -189,6 +192,13 @@ public:
     void ResetProtocol();
 
 private:
+#if CONFIG_NODELIO_PANEL
+    bool panel_audio_test_active_ = false;
+    DeviceState panel_audio_test_return_state_ = kDeviceStateIdle;
+    int64_t panel_audio_test_record_until_ = 0;
+    int64_t panel_audio_test_end_by_ = 0;
+    void PollPanelAudioTest();
+#endif
     Application();
     ~Application();
 
@@ -214,7 +224,7 @@ private:
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     bool pending_listening_start_ = false;  // Waiting for playback to drain before starting listening (auto mode)
     int clock_ticks_ = 0;
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     int listen_idle_ticks_ = 0; /* 聆听无语音累计秒；勿复用 clock_ticks_ */
     int listen_announce_hold_ticks_ = 0; /* 已提示后独立计时关通道，不受 VAD 清零 */
     bool listen_idle_pending_close_ = false; /* 已提示，待短暂展示后再关通道 */

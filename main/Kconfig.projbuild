@@ -1187,8 +1187,8 @@ menu "TAIJIPAI_S3_CONFIG"
         启动双声道
 endmenu
 
-menu "NodeLio Panel (SILA-86)"
-    depends on BOARD_TYPE_SILA_86
+menu "NodeLio Panel"
+    depends on BOARD_TYPE_SILA_86 || BOARD_TYPE_SILA_P4C5_62
 
     config NODELIO_PANEL
         bool "Enable NodeLio register / layout / panel/command"
@@ -1215,7 +1215,8 @@ menu "NodeLio Panel (SILA-86)"
     config NODELIO_PANEL_OTA_URL
         string "SILA-86 panel OTA manifest URL"
         depends on NODELIO_PANEL
-        default "http://z-y.site/works/esp32s3-slia-86-update.json"
+        default "http://z-y.site/works/esp32s3-slia-86-update.json" if BOARD_TYPE_SILA_86
+        default ""
         help
             Static JSON: { "firmware": { "version": "YYYYMMDD.NNN", "url": "https://..." } }.
             Compared against NODELIO_BUILD_STAMP (not Xiaozhi PROJECT_VER).

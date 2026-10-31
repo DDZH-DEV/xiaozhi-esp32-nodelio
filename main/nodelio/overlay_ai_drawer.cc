@@ -204,7 +204,10 @@ static void apply_drawer_chrome(bool connect_compact)
             lv_obj_clear_flag(s_ai_drawer_body, LV_OBJ_FLAG_HIDDEN);
         }
     }
-    lv_obj_align(s_ai_drawer, LV_ALIGN_BOTTOM_MID, 0, -UI_AI_DRAWER_BOTTOM);
+    lv_obj_align(s_ai_drawer,
+                 nodelio_display_profile()->nav_width ? LV_ALIGN_BOTTOM_RIGHT : LV_ALIGN_BOTTOM_MID,
+                 nodelio_display_profile()->nav_width ? -UI_PAD : 0,
+                 -nodelio_display_profile()->chat_bottom);
 }
 
 static void start_eq_anims(chat_phase_t phase)
@@ -326,7 +329,10 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
     lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_FLOATING);
     /* 收窄居中胶囊，两侧留白，避免贴边通栏 */
     lv_obj_set_size(s_ai_drawer, UI_AI_DRAWER_W, UI_AI_DRAWER_H);
-    lv_obj_align(s_ai_drawer, LV_ALIGN_BOTTOM_MID, 0, -UI_AI_DRAWER_BOTTOM);
+    lv_obj_align(s_ai_drawer,
+                 nodelio_display_profile()->nav_width ? LV_ALIGN_BOTTOM_RIGHT : LV_ALIGN_BOTTOM_MID,
+                 nodelio_display_profile()->nav_width ? -UI_PAD : 0,
+                 -nodelio_display_profile()->chat_bottom);
     lv_obj_set_style_bg_color(s_ai_drawer, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(s_ai_drawer, UI_AI_DRAWER_BG_OPA, 0);
     lv_obj_set_style_radius(s_ai_drawer, 20, 0);

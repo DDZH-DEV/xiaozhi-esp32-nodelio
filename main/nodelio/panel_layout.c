@@ -295,8 +295,8 @@ static void parse_layout_object(const cJSON *root, int outer_version, nodelio_pa
     const nodelio_board_t *board = nodelio_board_get();
     out->display_w = board->info.display_w;
     out->display_h = board->info.display_h;
-    out->grid_cols = 6;
-    out->grid_rows = 6;
+    out->grid_cols = nodelio_display_profile()->grid_cols;
+    out->grid_rows = nodelio_display_profile()->grid_rows;
     out->layout_version = outer_version > 0 ? outer_version : json_int(root, "layoutVersion", 1);
 
     const cJSON *theme = cJSON_GetObjectItemCaseSensitive(root, "theme");
@@ -313,8 +313,8 @@ static void parse_layout_object(const cJSON *root, int outer_version, nodelio_pa
 
     const cJSON *grid = cJSON_GetObjectItemCaseSensitive(root, "grid");
     if (cJSON_IsObject(grid)) {
-        int gc = json_int(grid, "cols", 6);
-        int gr = json_int(grid, "rows", 6);
+        int gc = json_int(grid, "cols", out->grid_cols);
+        int gr = json_int(grid, "rows", out->grid_rows);
         if (gc >= 2 && gc <= 12) {
             out->grid_cols = (uint8_t)gc;
         }

@@ -2915,8 +2915,8 @@ static bool photo_frame_is_large(const nl_widget_t *w)
     if (!w) {
         return false;
     }
-    int cols = 6;
-    int rows = 6;
+    int cols = nodelio_display_profile()->grid_cols;
+    int rows = nodelio_display_profile()->grid_rows;
     if (s_layout) {
         if (s_layout->grid_cols > 0) {
             cols = s_layout->grid_cols;
@@ -3679,16 +3679,18 @@ void nl_ov_fill_home(void)
     const nl_page_t *home = &s_layout->pages[home_idx];
     home_remember_current_id();
 
-    int cols = s_layout->grid_cols > 0 ? s_layout->grid_cols : 6;
-    int rows = s_layout->grid_rows > 0 ? s_layout->grid_rows : 6;
+    int cols = s_layout->grid_cols > 0 ? s_layout->grid_cols : nodelio_display_profile()->grid_cols;
+    int rows = s_layout->grid_rows > 0 ? s_layout->grid_rows : nodelio_display_profile()->grid_rows;
     lv_obj_update_layout(s_home);
     lv_coord_t area_w = lv_obj_get_content_width(s_home);
     lv_coord_t area_h = lv_obj_get_content_height(s_home);
     if (area_w < 40) {
-        area_w = 452;
+        area_w = nodelio_display_profile()->width - nodelio_display_profile()->nav_width -
+                 2 * NL_UI_HOME_PAD_H;
     }
     if (area_h < 40) {
-        area_h = 380;
+        area_h = nodelio_display_profile()->height - NL_UI_STATUS_H -
+                 (nodelio_display_profile()->nav_width ? 0 : NL_UI_TAB_H) - 2 * NL_UI_HOME_PAD_V;
     }
     /* C4：为底部应用条预留高度，控家网格与 home_tile 同屏不互踩 */
     const int strip_h = nl_ov_home_skill_strip_h();

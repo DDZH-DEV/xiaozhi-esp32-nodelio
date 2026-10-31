@@ -99,6 +99,7 @@ enum AudioTaskType {
 };
 
 struct AudioTask {
+    uint32_t testing_generation = 0;
     AudioTaskType type;
     std::vector<int16_t> pcm;
     uint32_t timestamp = 0;
@@ -143,6 +144,12 @@ public:
     void EnableVoiceProcessing(bool enable);
     void EnableLocalCommandMode(bool enable);
     void EnableAudioTesting(bool enable);
+    bool IsAudioTesting() const {
+        return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_TESTING_RUNNING;
+    }
+    void SetAudioTestChannel(unsigned channel) { audio_test_channel_.store(channel); }
+    uint32_t GetAudioTestLevels() const { return audio_test_levels_.load(); }
+    uint32_t GetAudioTestFrames() const { return audio_test_frames_.load(); }
     void EnableDeviceAec(bool enable);
 
     void SetCallbacks(AudioServiceCallbacks& callbacks);
@@ -156,7 +163,8 @@ public:
     bool PlaybackQueueHasRoom() const;
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
     void PlaySound(const std::string_view& sound);
-    bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
+    bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples,
+                       bool local_test = false);
     void ResetDecoder();
     /** Ogg OpusHead pre-skip：丢掉编码器延迟对应的开头采样，去掉每首歌开头怪声 */
     void ArmOpusPreSkip48k(uint32_t pre_skip_48k);
@@ -164,6 +172,12 @@ public:
     srmodel_list_t* GetModelsList() const { return models_list_; }
 
 private:
+    // Packed unsigned peaks: low 16 bits = channel 1, high 16 = channel 2.
+    // Updated only during an explicit local test, without allocations or logging.
+    std::atomic<uint32_t> audio_test_levels_{0};
+    std::atomic<uint32_t> audio_test_frames_{0};
+    std::atomic<unsigned> audio_test_channel_{0};
+    std::atomic<uint32_t> audio_test_generation_{0};
     std::atomic<uint32_t> completed_playback_count_{0};
     AudioCodec* codec_ = nullptr;
     AudioServiceCallbacks callbacks_;
@@ -234,7 +248,8 @@ private:
     void AudioInputTask();
     void AudioOutputTask();
     void OpusCodecTask();
-    void PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t>&& pcm);
+    void PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t>&& pcm,
+                               uint32_t testing_generation = 0);
     bool InitializeAudioEngine();
     void SetDecodeSampleRate(int sample_rate, int frame_duration);
     void SetDecodeSampleRate(int sample_rate, int frame_us, int frame_count);

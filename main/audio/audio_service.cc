@@ -1,5 +1,6 @@
 #include "audio_service.h"
 #include <esp_log.h>
+#include <algorithm>
 #include <cstring>
 
 #define RATE_CVT_CFG(_src_rate, _dest_rate, _channel)                                        \
@@ -263,7 +264,8 @@ void AudioService::Stop() {
     }
 }
 
-bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples) {
+bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples,
+                                 bool local_test) {
     if (!codec_->input_enabled()) {
         esp_timer_stop(audio_power_timer_);
         esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
@@ -301,10 +303,14 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
 
 #if CONFIG_USE_AUDIO_DEBUGGER
     // 音频调试：发送原始音频数据
-    if (audio_debugger_ == nullptr) {
-        audio_debugger_ = std::make_unique<AudioDebugger>();
+    if (!local_test) {
+        if (audio_debugger_ == nullptr) {
+            audio_debugger_ = std::make_unique<AudioDebugger>();
+        }
+        audio_debugger_->Feed(data);
     }
-    audio_debugger_->Feed(data);
+#else
+    (void)local_test;
 #endif
 
     return true;
@@ -351,6 +357,7 @@ void AudioService::AudioInputTask() {
 
         /* Used for audio testing in NetworkConfiguring mode by clicking the BOOT button */
         if (bits & AS_EVENT_AUDIO_TESTING_RUNNING) {
+            const uint32_t generation = audio_test_generation_.load();
             bool testing_queue_full = false;
             {
                 std::lock_guard<std::mutex> lock(audio_queue_mutex_);
@@ -363,16 +370,34 @@ void AudioService::AudioInputTask() {
             }
             std::vector<int16_t> data;
             int samples = OPUS_FRAME_DURATION_MS * 16000 / 1000;
-            if (ReadAudioData(data, 16000, samples)) {
-                // If input channels is 2, we need to fetch the left channel data
-                if (codec_->input_channels() == 2) {
-                    auto mono_data = std::vector<int16_t>(data.size() / 2);
-                    for (size_t i = 0, j = 0; i < mono_data.size(); ++i, j += 2) {
-                        mono_data[i] = data[j];
-                    }
-                    data = std::move(mono_data);
+            if (ReadAudioData(data, 16000, samples, true)) {
+                if (!IsAudioTesting() || generation != audio_test_generation_.load()) {
+                    continue;
                 }
-                PushTaskToEncodeQueue(kAudioTaskTypeEncodeToTestingQueue, std::move(data));
+                uint32_t peaks[2] = {};
+                const int channels = codec_->input_channels();
+                for (size_t i = 0; i < data.size(); ++i) {
+                    const unsigned channel = i % channels;
+                    if (channel < 2) {
+                        const int value = data[i];
+                        const uint32_t magnitude = value < 0 ? -value : value;
+                        peaks[channel] = std::max(peaks[channel], magnitude);
+                    }
+                }
+                audio_test_levels_.store(peaks[0] | (peaks[1] << 16));
+                audio_test_frames_.fetch_add(1);
+                // Replay one selected channel through the existing bounded Opus queue.
+                if (channels > 1) {
+                    const size_t count = data.size() / channels;
+                    const unsigned selected =
+                        std::min(audio_test_channel_.load(), static_cast<unsigned>(channels - 1));
+                    for (size_t i = 0; i < count; ++i) {
+                        data[i] = data[i * channels + selected];
+                    }
+                    data.resize(count);
+                }
+                PushTaskToEncodeQueue(kAudioTaskTypeEncodeToTestingQueue, std::move(data),
+                                      generation);
                 continue;
             }
         }
@@ -639,7 +664,12 @@ void AudioService::OpusCodecTask() {
                         bool testing_queue_full = false;
                         {
                             std::lock_guard<std::mutex> lock2(audio_queue_mutex_);
-                            testing_queue_full = !audio_testing_queue_.push_back(std::move(packet));
+                            // Stop/replay may race with a final in-flight encode.
+                            if (IsAudioTesting() &&
+                                task.testing_generation == audio_test_generation_.load()) {
+                                testing_queue_full =
+                                    !audio_testing_queue_.push_back(std::move(packet));
+                            }
                         }
                         if (testing_queue_full && callbacks_.on_audio_testing_queue_full) {
                             callbacks_.on_audio_testing_queue_full();
@@ -749,9 +779,11 @@ void AudioService::SetDecodeSampleRate(int sample_rate, int frame_us, int frame_
     }
 }
 
-void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t>&& pcm) {
+void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t>&& pcm,
+                                         uint32_t testing_generation) {
     AudioTask task;
     task.type = type;
+    task.testing_generation = testing_generation;
     task.pcm = std::move(pcm);
 
     uint32_t dropped_total = 0;
@@ -1044,12 +1076,22 @@ void AudioService::EnableLocalCommandMode(bool enable) {
 
 void AudioService::EnableAudioTesting(bool enable) {
     ESP_LOGI(TAG, "%s audio testing", enable ? "Enabling" : "Disabling");
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     if (enable) {
+        if (IsAudioTesting()) {
+            return;
+        }
+        audio_testing_queue_.clear();
+        audio_test_generation_.fetch_add(1);
+        audio_test_levels_.store(0);
+        audio_test_frames_.store(0);
         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING);
     } else {
+        if (!IsAudioTesting()) {
+            return;
+        }
         xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING);
         /* Copy audio_testing_queue_ to audio_decode_queue_ */
-        std::lock_guard<std::mutex> lock(audio_queue_mutex_);
         audio_decode_queue_.clear();
         audio_decode_queue_.swap(audio_testing_queue_);
         if (!audio_decode_queue_.empty()) {

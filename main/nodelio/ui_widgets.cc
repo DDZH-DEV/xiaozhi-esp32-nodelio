@@ -1,4 +1,5 @@
 #include "ui_widgets.h"
+#include "board_info.h"
 
 #include "fonts/font_puhui_14_1.h"
 
@@ -73,7 +74,10 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     /* 一行两列半宽；卡内左右：Icon Pod | 标题/副文 */
     const int pad_x = 16;
     const int gap = UI_GAP;
-    const int tile_w = (LV_HOR_RES - pad_x * 2 - gap) / 2;
+    const auto* profile = nodelio_display_profile();
+    const int columns = profile->nav_width ? 4 : 2;
+    const int tile_w =
+        (profile->width - profile->nav_width - pad_x * 2 - gap * (columns - 1)) / columns;
 
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);

@@ -7,6 +7,11 @@
 #include "config.h"
 #include "display/lcd_display.h"
 #include "wifi_board.h"
+#if CONFIG_NODELIO_PANEL
+#include "board_info.h"
+#include "nvs_config.h"
+#include "panel_ui.h"
+#endif
 
 #include <esp_chip_info.h>
 #include <esp_flash.h>
@@ -108,6 +113,7 @@ private:
     std::atomic<bool> asleep_{false};
     std::atomic<bool> poll_pending_{false};
     std::atomic<int> idle_seconds_{60};
+    std::atomic<int64_t> goodbye_sleep_at_{0};
     bool idle_timer_started_ = false;
 
     static void CreateBus(i2c_port_t port, gpio_num_t sda, gpio_num_t scl,
@@ -179,7 +185,10 @@ private:
                 // one more check, so a wake request is never lost.
                 poll_pending_.store(false);
                 const TickType_t elapsed = xTaskGetTickCount() - last_activity_.load();
-                const bool idle = elapsed >= pdMS_TO_TICKS(idle_seconds_.load() * 1000);
+                const int64_t goodbye_at = goodbye_sleep_at_.load();
+                const bool timeout = elapsed >= pdMS_TO_TICKS(idle_seconds_.load() * 1000) ||
+                                     (goodbye_at > 0 && esp_timer_get_time() >= goodbye_at);
+                const bool idle = timeout && Application::GetInstance().CanEnterSleepMode();
                 if (idle != asleep_.load() && display_->SetIdleRefresh(idle)) {
                     asleep_.store(idle);
                     if (idle) {
@@ -187,6 +196,12 @@ private:
                     } else {
                         backlight_.RestoreBrightness();
                     }
+#if CONFIG_NODELIO_PANEL
+                    DisplayLockGuard lock(display_);
+                    if (lock) {
+                        nodelio_panel_ui_notify_screen(!idle);
+                    }
+#endif
                 }
             });
         }
@@ -230,6 +245,9 @@ public:
                      esp_err_to_name(touch_result));
             touch_.reset();
         }
+#if CONFIG_NODELIO_PANEL
+        nodelio_board_set_touch_available(touch_result == ESP_OK);
+#endif
         boot_button_.OnClick([this]() {
             const bool wake_only = asleep_.load();
             NoteUserActivity();
@@ -275,6 +293,7 @@ public:
     }
 
     void NoteUserActivity() override {
+        goodbye_sleep_at_.store(0);
         last_activity_.store(xTaskGetTickCount());
         if (asleep_.load()) {
             ScheduleIdlePoll();
@@ -297,6 +316,15 @@ public:
 
     void SetIdleSleepSeconds(int seconds) override {
         idle_seconds_.store(std::clamp(seconds, 1, 86400));
+    }
+
+    void RequestGoodbyeSleep() override {
+#if CONFIG_NODELIO_PANEL
+        if (!asleep_.load()) {
+            goodbye_sleep_at_.store(esp_timer_get_time() +
+                                    int64_t(nodelio_goodbye_sleep_seconds()) * 1000000);
+        }
+#endif
     }
 };
 

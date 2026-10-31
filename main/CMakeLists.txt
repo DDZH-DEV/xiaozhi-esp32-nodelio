@@ -945,8 +945,8 @@ file(GLOB BOARD_SOURCES
 )
 list(APPEND SOURCES ${BOARD_SOURCES})
 
-# NodeLio panel overlay (SILA-86 / stage K): register + layout/command client
-if(CONFIG_BOARD_TYPE_SILA_86 AND CONFIG_NODELIO_PANEL)
+# NodeLio wall panels: register + layout/command client
+if(CONFIG_NODELIO_PANEL)
     list(APPEND SOURCES
         "nodelio/board_info.c"
         "nodelio/wifi_shim.c"
@@ -961,6 +961,7 @@ if(CONFIG_BOARD_TYPE_SILA_86 AND CONFIG_NODELIO_PANEL)
         "nodelio/overlay_home_skills.cc"
         "nodelio/overlay_connect.cc"
         "nodelio/overlay_settings.cc"
+        "nodelio/overlay_diagnostics.cc"
         "nodelio/overlay_apps.cc"
         "nodelio/overlay_ai_drawer.cc"
         "nodelio/panel_ui_api.cc"
@@ -1230,10 +1231,10 @@ idf_component_register(SRCS ${SOURCES}
                     )
 
 # SILA 墙板：编译前按源码指纹生成 YYYYMMDD.NNN 构建号（改代码才涨，重编不涨）
-if(CONFIG_BOARD_TYPE_SILA_86 AND CONFIG_NODELIO_PANEL AND NOT CMAKE_BUILD_EARLY_EXPANSION)
+if(CONFIG_NODELIO_PANEL AND NOT CMAKE_BUILD_EARLY_EXPANSION)
     # AFE + RGB/I2S leave too little DMA-capable SRAM for the hardware AES
     # bounce buffers used by TLS with PSRAM. Existing sdkconfig overrides defaults.
-    if(CONFIG_MBEDTLS_HARDWARE_AES)
+    if(CONFIG_BOARD_TYPE_SILA_86 AND CONFIG_MBEDTLS_HARDWARE_AES)
         message(FATAL_ERROR
             "SILA-86 NodeLio requires CONFIG_MBEDTLS_HARDWARE_AES=n to avoid AES DMA OOM. "
             "Use scripts/build.py sila/sila-86 --name sila-86 or nodelio-build.bat; "

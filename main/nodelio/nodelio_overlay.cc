@@ -723,11 +723,26 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_set_style_text_color(s_wifi_lbl, UI_TEXT_MUTED, 0);
     status_bar_relayout();
 
+    // Wide panels use a left rail; square panels retain their bottom tabs.
+    const auto* profile = nodelio_display_profile();
+    lv_obj_t* workspace = s_root;
+    if (profile->nav_width) {
+        workspace = lv_obj_create(s_root);
+        lv_obj_remove_style_all(workspace);
+        lv_obj_set_width(workspace, lv_pct(100));
+        lv_obj_set_flex_grow(workspace, 1);
+        lv_obj_set_flex_flow(workspace, LV_FLEX_FLOW_ROW);
+        lv_obj_clear_flag(workspace, LV_OBJ_FLAG_SCROLLABLE);
+    }
     /* body */
-    s_body = lv_obj_create(s_root);
+    s_body = lv_obj_create(workspace);
     lv_obj_remove_style_all(s_body);
     lv_obj_set_width(s_body, lv_pct(100));
     lv_obj_set_flex_grow(s_body, 1);
+    if (profile->nav_width) {
+        lv_obj_set_width(s_body, 0);
+        lv_obj_set_height(s_body, lv_pct(100));
+    }
     lv_obj_set_style_bg_opa(s_body, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(s_body, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -745,7 +760,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_add_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
 
     /* bottom tabs — custom, not lv_tabview */
-    s_tabbar = lv_obj_create(s_root);
+    s_tabbar = lv_obj_create(workspace);
     lv_obj_remove_style_all(s_tabbar);
     lv_obj_set_size(s_tabbar, lv_pct(100), NL_UI_TAB_H);
     lv_obj_set_style_bg_opa(s_tabbar, LV_OPA_TRANSP, 0);
@@ -758,6 +773,18 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     s_tab_btns[0] = mk_tab(s_tabbar, "首页", NL_TAB_HOME);
     s_tab_btns[1] = mk_tab(s_tabbar, "应用", NL_TAB_APPS);
     s_tab_btns[2] = mk_tab(s_tabbar, "设置", NL_TAB_SET);
+
+    if (profile->nav_width) {
+        lv_obj_move_to_index(s_tabbar, 0);
+        lv_obj_set_size(s_tabbar, profile->nav_width, lv_pct(100));
+        lv_obj_set_flex_flow(s_tabbar, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(s_tabbar, UI_GAP, 0);
+        for (auto* button : s_tab_btns) {
+            lv_obj_set_flex_grow(button, 0);
+            lv_obj_set_size(button, lv_pct(100), UI_BTN_H);
+            lv_obj_set_ext_click_area(button, 0);
+        }
+    }
 
     /* 全局 AI 对话浮层抽屉（唤醒词触发，不依赖 Tab，挂在 lv_layer_top()） */
     nl_ov_create_ai_drawer(lv_layer_top());

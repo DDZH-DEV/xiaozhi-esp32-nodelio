@@ -49,6 +49,7 @@ typedef enum {
     SET_PAGE_POWER = 5,
     SET_PAGE_MEDIA = 6,
     SET_PAGE_CTRL = 7,
+    SET_PAGE_DIAGNOSTICS = 8,
 } set_page_id_t;
 
 #define NL_CHAT_SHOW_LINES 5
@@ -147,6 +148,7 @@ extern lv_style_transition_dsc_t s_tile_trans;
 extern bool s_tile_trans_inited;
 
 /* —— shell helpers —— */
+void nl_ov_build_diagnostics(lv_obj_t* body);
 Display *nl_ov_disp();
 void nl_ov_utf8_copy(char *dst, size_t dst_len, const char *src);
 void nl_ov_set_font(lv_obj_t *obj);

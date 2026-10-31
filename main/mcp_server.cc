@@ -26,7 +26,7 @@
 #include "lvgl_image.h"
 #include "lvgl_theme.h"
 #include "settings.h"
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
 #include "panel_ui.h"
 #endif
 

@@ -34,7 +34,10 @@
                 "CONFIG_ESP_HOSTED_P4_DEV_BOARD_NONE=y",
                 "CONFIG_ESP_HOSTED_SLAVE_RESET_ON_EVERY_HOST_BOOTUP=y",
                 "CONFIG_ESP_CONSOLE_UART_DEFAULT=n",
-                "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y"
+                "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y",
+                "CONFIG_NODELIO_PANEL=y",
+                "CONFIG_LV_USE_KEYBOARD=y",
+                "CONFIG_LV_FONT_MONTSERRAT_20=y"
             ]
         },
         {
@@ -70,7 +73,10 @@
                 "CONFIG_ESP_HOSTED_P4_DEV_BOARD_NONE=y",
                 "CONFIG_ESP_HOSTED_SLAVE_RESET_ON_EVERY_HOST_BOOTUP=y",
                 "CONFIG_ESP_CONSOLE_UART_DEFAULT=n",
-                "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y"
+                "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y",
+                "CONFIG_NODELIO_PANEL=y",
+                "CONFIG_LV_USE_KEYBOARD=y",
+                "CONFIG_LV_FONT_MONTSERRAT_20=y"
             ]
         }
     ]

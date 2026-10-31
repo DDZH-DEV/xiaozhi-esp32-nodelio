@@ -13,6 +13,7 @@
 
 #include "application.h"
 #include "board.h"
+#include "board_info.h"
 #include "display.h"
 #include "offline_cmd.h"
 #include "offline_cmd_map.h"
@@ -36,10 +37,10 @@ LV_FONT_DECLARE(font_material_symbols_20_4);
 
 #define TAG "nl_skill_ui"
 
-#define SKILL_CARD_W 412
+#define SKILL_CARD_W (nodelio_display_profile()->result_width)
 /* 480 屏：顶栏 32 + 间隙 + 卡；含 filter chip 时需约 424 才能露出 4 行完整行高。
  * 有 now_playing 条时须再扣 SKILL_NOW_H+SKILL_GAP，否则卡底会画出屏外。 */
-#define SKILL_CARD_H_MAX 424
+#define SKILL_CARD_H_MAX (nodelio_display_profile()->result_max_height)
 #define SKILL_NOW_H 56
 #define SKILL_GAP 12
 #define SKILL_CARD_H_MIN 180
@@ -197,8 +198,14 @@ static void layout_skill_layers(void)
 {
     int y = NL_UI_STATUS_H + SKILL_GAP;
     if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_align(s_now_bar, LV_ALIGN_TOP_MID, 0, y);
-        y += SKILL_NOW_H + SKILL_GAP;
+        if (nodelio_display_profile()->nav_width) {
+            lv_obj_set_width(s_now_bar, nodelio_display_profile()->width -
+                                            nodelio_display_profile()->nav_width - 2 * SKILL_GAP);
+            lv_obj_align(s_now_bar, LV_ALIGN_BOTTOM_RIGHT, -SKILL_GAP, -SKILL_GAP);
+        } else {
+            lv_obj_align(s_now_bar, LV_ALIGN_TOP_MID, 0, y);
+            y += SKILL_NOW_H + SKILL_GAP;
+        }
     }
     if (s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
         /* 播放条显隐会改 y；同步缩/扩卡高，避免内容顶出屏底 */
@@ -209,7 +216,9 @@ static void layout_skill_layers(void)
             lv_obj_set_height(s_card, h);
             lv_obj_set_style_max_height(s_card, h, 0);
         }
-        lv_obj_align(s_card, LV_ALIGN_TOP_MID, 0, y);
+        lv_obj_align(s_card,
+                     nodelio_display_profile()->nav_width ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_TOP_MID,
+                     nodelio_display_profile()->nav_width ? -SKILL_GAP : 0, y);
     }
     if (s_mini_fab && !lv_obj_has_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_align(s_mini_fab, LV_ALIGN_BOTTOM_RIGHT, -14, -(NL_UI_TAB_H + 14));
@@ -2575,6 +2584,10 @@ static void ensure_card(void)
     lv_obj_remove_style_all(s_scrim);
     lv_obj_set_size(s_scrim, LV_HOR_RES, LV_VER_RES - NL_UI_STATUS_H);
     lv_obj_align(s_scrim, LV_ALIGN_TOP_LEFT, 0, NL_UI_STATUS_H);
+    if (nodelio_display_profile()->nav_width) {
+        lv_obj_set_width(s_scrim, SKILL_CARD_W + 2 * SKILL_GAP);
+        lv_obj_align(s_scrim, LV_ALIGN_TOP_RIGHT, 0, NL_UI_STATUS_H);
+    }
     lv_obj_set_style_bg_color(s_scrim, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_scrim, SKILL_SCRIM_OPA, 0);
     lv_obj_add_flag(s_scrim, LV_OBJ_FLAG_CLICKABLE);

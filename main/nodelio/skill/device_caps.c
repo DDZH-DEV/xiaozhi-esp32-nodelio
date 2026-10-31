@@ -1,4 +1,5 @@
 #include "device_caps.h"
+#include "board_info.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -68,6 +69,9 @@ bool nodelio_caps_has_media(void)
 
 bool nodelio_caps_has(const char *capability)
 {
+    if (capability && strcmp(capability, "input.touch") == 0) {
+        return nodelio_board_get()->info.touch;
+    }
     if (list_has(k_caps_base, capability)) {
         return true;
     }
@@ -101,12 +105,15 @@ int nodelio_caps_max_list_items(void)
 const char *nodelio_caps_profile(void)
 {
     /* 仅本地模板名；线上上报不得带 profile（Protocol 00 §4.1 / PLAN K4） */
-    return "esp32-panel-480";
+    return nodelio_display_profile()->nav_width ? "esp32-panel-1280x452" : "esp32-panel-480";
 }
 
 static int append_str_array(char *buf, size_t cap, int off, const char *const *items, bool *first)
 {
     for (int i = 0; items && items[i]; i++) {
+        if (strcmp(items[i], "input.touch") == 0 && !nodelio_board_get()->info.touch) {
+            continue;
+        }
         int n = snprintf(buf + off, (off < (int)cap) ? (cap - (size_t)off) : 0, "%s\"%s\"",
                          (*first) ? "" : ",", items[i]);
         if (n < 0) {

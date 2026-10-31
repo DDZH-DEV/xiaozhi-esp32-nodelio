@@ -15,7 +15,7 @@
 #include "lvgl_theme.h"
 #include "settings.h"
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
 #include "nodelio_overlay.h"
 #endif
 
@@ -165,7 +165,7 @@ void LvglDisplay::SetStatus(const char* status) {
     lv_obj_remove_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     nodelio_overlay_on_status_locked(status);
 #endif
 

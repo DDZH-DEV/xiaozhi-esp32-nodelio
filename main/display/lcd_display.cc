@@ -18,7 +18,7 @@
 
 #include "board.h"
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
 #include "nodelio_overlay.h"
 #include "ui_theme.h"
 #endif
@@ -82,7 +82,7 @@ LcdDisplay::LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     // Initialize LCD themes
     InitializeLcdThemes();
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     /* 墙板永不亮小智白底：强制 dark，底色对齐曜夜 UI_C_BG */
     if (auto* dark = LvglThemeManager::GetInstance().GetTheme("dark")) {
         dark->set_background_color(lv_color_hex(UI_C_BG));
@@ -404,7 +404,7 @@ bool LcdDisplay::Lock(int timeout_ms) { return lvgl_port_lock(timeout_ms); }
 
 void LcdDisplay::Unlock() { lvgl_port_unlock(); }
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
 void LcdDisplay::HideXiaozhiChromeForNodeLio()
 {
     auto screen = lv_screen_active();
@@ -601,7 +601,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_font(emoji_label_, large_icon_font, 0);
     lv_obj_set_style_text_color(emoji_label_, lvgl_theme->text_color(), 0);
     lv_label_set_text(emoji_label_, MATERIAL_SYMBOLS_ROBOT_2);
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     HideXiaozhiChromeForNodeLio();
 #endif
 }
@@ -616,7 +616,7 @@ void LcdDisplay::SetChatMessage(const char* role, const char* content) {
                  role, content);
     }
     DisplayLockGuard lock(this);
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     /* NodeLio 面板：对话只走深绿 overlay，永不画白底气泡 */
     nodelio_overlay_on_chat_locked(role, content);
     return;
@@ -919,7 +919,7 @@ void LcdDisplay::ClearChatMessages() {
     // Reset chat_message_label_ as it has been deleted
     chat_message_label_ = nullptr;
 
-#if !(CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL)
+#if !(CONFIG_NODELIO_PANEL)
     // Show the centered AI logo (emoji_label_) again
     if (emoji_label_ != nullptr) {
         lv_obj_remove_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
@@ -1123,14 +1123,14 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_color(low_battery_label_, lv_color_white(), 0);
     lv_obj_center(low_battery_label_);
     lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     HideXiaozhiChromeForNodeLio();
 #endif
 }
 
 void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
     DisplayLockGuard lock(this);
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     (void)image;
     return;
 #endif
@@ -1174,7 +1174,7 @@ void LcdDisplay::SetChatMessage(const char* role, const char* content) {
                  role, content);
     }
     DisplayLockGuard lock(this);
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     nodelio_overlay_on_chat_locked(role, content);
     return;
 #endif
@@ -1219,7 +1219,7 @@ void LcdDisplay::ClearChatMessages() {
 #endif
 
 void LcdDisplay::SetEmotion(const char* emotion) {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     (void)emotion;
     return;
 #endif

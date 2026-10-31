@@ -12,7 +12,7 @@
 #include "text_glyph_payload.h"
 #include "websocket_protocol.h"
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
 #include "diol_lan.h"
 #include "media_player.h"
 #include "nl_time.h"
@@ -42,7 +42,7 @@
 
 #define TAG "Application"
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
 extern "C" srmodel_list_t* nodelio_get_srmodels(void) {
     return Application::GetInstance().GetAudioService().GetModelsList();
 }
@@ -97,7 +97,7 @@ void Application::Initialize() {
     // Setup the display
     auto display = board.GetDisplay();
     display->SetupUI();
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     /* 立刻建 NodeLio 壳，勿 Schedule：否则会闪一帧小智白顶+WiFi 栏 */
     (void)nodelio_overlay_init();
     nodelio_overlay_show(false);
@@ -141,7 +141,7 @@ void Application::Initialize() {
 
     // Add MCP common tools (only once during initialization)
     auto& mcp_server = McpServer::GetInstance();
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     /* 先注册再 AddCommonTools：common 置顶（prompt cache），NodeLio 紧随其后，
      * 避免排在 UserOnly 后面被 tools/list 8KB 截断漏掉控家工具。 */
     nodelio_mcp_register_tools();
@@ -161,7 +161,7 @@ void Application::Initialize() {
 #endif
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     // Opening an installed app and reading it must both be visible on the first page.
     mcp_server.PromoteTool("self.nodelio.open_app");
     mcp_server.PromoteTool("self.skill.news");
@@ -230,7 +230,7 @@ void Application::Initialize() {
         }
     });
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     /* Assets：加载 WakeNet 等；MultiNet 已从产品拿掉（省 ~4MB PSRAM），不再 prewarm。
      * 勿 refresh_display_theme：此时 NodeLio 首页已渲染，SetTheme 会整屏脏刷闪白。 */
     {
@@ -248,12 +248,12 @@ void Application::Initialize() {
 
     // Start network asynchronously
     ESP_LOGI(TAG, "boot: start network");
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     nodelio_log_heap("boot start network");
 #endif
     board.StartNetwork();
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     /* 墙板开机跳过小智 OTA（其 server_time 曾是唯一时间源），改由 SNTP 补；
      * 须在 StartNetwork 之后：此时 netif/事件循环已就绪，GOT_IP 处理器能挂上。 */
     (void)nodelio_time_begin();
@@ -278,7 +278,7 @@ void Application::Run() {
         auto bits = xEventGroupWaitBits(event_group_, ALL_EVENTS, pdTRUE, pdFALSE, portMAX_DELAY);
 
         if (bits & MAIN_EVENT_ERROR) {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
             /* 息屏播歌时 MQTT TLS 抢 DRAM 失败会报「发送失败」；勿因此掐 HTTP 流。 */
             if (nodelio_media_is_playing() || notify_player_.IsBusy()) {
                 ESP_LOGW(TAG, "network error during media, keep playing: %s",
@@ -316,7 +316,7 @@ void Application::Run() {
         }
 
         if (bits & MAIN_EVENT_PLAYBACK_DRAINED) {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
             FinishNewsReadPlayback();
 #endif
             if (audio_service_.IsPlaybackIdle()) {
@@ -365,7 +365,7 @@ void Application::Run() {
             if (GetDeviceState() == kDeviceStateListening) {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
                 /* 仅在「开始说话」边沿清零；已提示退下后勿清，否则环境噪声会永远关不掉抽屉 */
                 if (!listen_idle_pending_close_ && audio_service_.IsVoiceDetected()) {
                     listen_idle_ticks_ = 0;
@@ -388,7 +388,8 @@ void Application::Run() {
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
+            PollPanelAudioTest();
             CheckNewsReadRequest();
             FinishNewsReadPlayback();
             HandleListenIdleTick();
@@ -408,10 +409,13 @@ void Application::Run() {
 }
 
 void Application::HandleNetworkConnectedEvent() {
+#if CONFIG_NODELIO_PANEL
+    CancelPanelAudioTest();
+#endif
     ESP_LOGI(TAG, "Network connected");
     auto state = GetDeviceState();
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     /* 有 IP 立刻起局域网 bridge，勿等小智 OTA/MQTT（否则首页再卡数秒） */
     Schedule([]() { (void)nodelio_bridge_start(); });
 #endif
@@ -452,7 +456,7 @@ void Application::HandleNetworkDisconnectedEvent() {
     // Close current conversation when network disconnected
     auto state = GetDeviceState();
     if (state == kDeviceStateNotifying) {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
         /* 真断网后 HTTP 会自己超时；MQTT 抖动勿立刻掐歌 */
         if (!(nodelio_media_is_playing() || notify_player_.IsBusy())) {
             StopNotification();
@@ -514,7 +518,7 @@ void Application::HandleActivationDoneEvent() {
         });
     }
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     /* bridge 已在 NetworkConnected 启动；此处幂等补一次（防漏） */
     Schedule([]() { (void)nodelio_bridge_start(); });
 #endif
@@ -522,7 +526,7 @@ void Application::HandleActivationDoneEvent() {
 
 void Application::ActivationTask() {
     ESP_LOGI(TAG, "boot: activation begin");
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     nodelio_log_heap("activation begin");
 #endif
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
@@ -553,14 +557,14 @@ void Application::ActivationTask() {
 
     // Initialize the protocol
     ESP_LOGI(TAG, "boot: protocol start");
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     nodelio_log_heap("protocol start");
 #endif
     InitializeProtocol();
 
     // Signal completion to main loop
     ESP_LOGI(TAG, "boot: activation done");
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     nodelio_log_heap("activation done");
 #endif
     xEventGroupSetBits(event_group_, MAIN_EVENT_ACTIVATION_DONE);
@@ -620,7 +624,7 @@ void Application::CheckAssetsVersion() {
         }
     }
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     /* 开机已 Apply(false) 过；无新 assets 下载时禁止再 SetTheme（首页会闪）。
      * 刚下载完则只装模型/字库，仍不刷小智 chrome 主题。 */
     if (!download_url.empty()) {
@@ -636,7 +640,7 @@ void Application::CheckAssetsVersion() {
 }
 
 void Application::CheckNewVersion() {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     /* 墙板：少重试、短退避；云端挂了也不能把 Activating 拖成一晚 */
     const int MAX_RETRY = 3;
     int retry_delay = 5;
@@ -690,14 +694,14 @@ void Application::CheckNewVersion() {
             continue;
         }
         retry_count = 0;
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
         retry_delay = 5;
 #else
         retry_delay = 10;  // Reset retry delay
 #endif
 
         if (ota_->HasNewVersion()) {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
             /* 墙板：开机不自动刷固件，改由设置页手工检查 */
             ESP_LOGI(TAG, "New firmware %s available — skip auto OTA (use settings)",
                      ota_->GetFirmwareVersion().c_str());
@@ -739,7 +743,7 @@ void Application::CheckNewVersion() {
                 break;
             }
         }
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
         /* 墙板：一轮激活失败就继续开机，禁止 while(true) 整夜占 Activating 挡息屏 */
         if (!activated) {
             ESP_LOGW(TAG, "activation incomplete — continue panel boot (power save)");
@@ -799,7 +803,7 @@ void Application::InitializeProtocol() {
     });
 
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
         if (news_awaiting_mcp_ || IsCloudTtsSuppressed()) {
             return;
         }
@@ -844,7 +848,7 @@ void Application::InitializeProtocol() {
     protocol_->OnAudioChannelClosed([this, &board]() {
         /* 先回 idle 再降功耗：避免 goodbye 瞬间 MAX_MODEM 把尾包 UDP 打丢 */
         Schedule([this, &board]() {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
             CancelNewsReadPlayback();
             news_awaiting_mcp_ = false;
             news_reading_ = false;
@@ -854,7 +858,7 @@ void Application::InitializeProtocol() {
 #endif
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
             /* 歌已经在播时不要被通道关闭打回 Idle，否则唤醒词重开声卡把流掐掉 */
             if (GetDeviceState() != kDeviceStateNotifying) {
                 SetDeviceState(kDeviceStateIdle);
@@ -862,7 +866,7 @@ void Application::InitializeProtocol() {
 #else
             SetDeviceState(kDeviceStateIdle);
 #endif
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
             /* 听歌 / 本地播报：勿 MAX_MODEM，也勿 goodbye 短息屏。
              * 技能卡仍开 ≠ 用户活动：息屏后省电断 MQTT 会进本回调，若 NoteActivity/
              * PERFORMANCE→WakeUp 会「刚灭又亮」。技能卡只跳过 goodbye，不重置 idle。 */
@@ -938,7 +942,7 @@ void Application::InitializeProtocol() {
             }
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
                     if (news_awaiting_mcp_) {
                         // Acknowledgements/denials are not a news tool result. Do not abort
                         // here: the server may still be dispatching the requested tool.
@@ -968,7 +972,7 @@ void Application::InitializeProtocol() {
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
                     if (news_playback_token_ != 0 && !aborted_) {
                         news_tts_stopped_ = true;
                         FinishNewsReadPlayback();
@@ -986,7 +990,7 @@ void Application::InitializeProtocol() {
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                 auto text = cJSON_GetObjectItem(root, "text");
                 if (cJSON_IsString(text)) {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
                     // Only tool dispatch releases the read gate; article words are irrelevant.
                     if (news_awaiting_mcp_ || IsCloudTtsSuppressed()) {
                         ESP_LOGI(TAG, "drop cloud tts sentence: %s", text->valuestring);
@@ -1049,7 +1053,7 @@ void Application::InitializeProtocol() {
                     ESP_LOGI(TAG, "<< %s", text->valuestring);
                     Schedule([this, display, message = std::string(text->valuestring),
                               glyphs = std::move(glyphs), bpp]() {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
                         if (!nodelio_skill_news_ui_active()) {
                             MaybeArmPendingOpenDshFromTts(message.c_str());
                         }
@@ -1083,7 +1087,7 @@ void Application::InitializeProtocol() {
                           glyphs = std::move(glyphs), bpp]() {
                     display->AddTextGlyphs(glyphs, bpp);
                     display->SetChatMessage("user", message.c_str());
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
                     /* 新一轮识别先清抑制；本地命中后再 SuppressCloudTts。
                      * 勿清 pending_confirm_open_dsh_（要留给「是的」）。 */
                     ESP_LOGI(TAG,
@@ -1235,7 +1239,7 @@ void Application::InitializeProtocol() {
         }
     });
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     if (!nodelio_xiaozhi_enabled()) {
         ESP_LOGI(TAG, "Xiaozhi disabled — skip cloud MQTT start (local cmd only)");
         protocol_->MarkTransportSuspended(true);
@@ -1319,10 +1323,16 @@ void Application::StartListening() { xEventGroupSetBits(event_group_, MAIN_EVENT
 void Application::StopListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_STOP_LISTENING); }
 
 void Application::HandleToggleChatEvent() {
+#if CONFIG_NODELIO_PANEL
+    if (panel_audio_test_active_) {
+        CancelPanelAudioTest();
+        return;
+    }
+#endif
     auto state = GetDeviceState();
 
     if (state == kDeviceStateNotifying) {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
         if (nodelio_media_is_playing()) {
             nodelio_media_pause_for_voice();
             nodelio_offline_cmd_yield_for_cloud_audio();
@@ -1356,7 +1366,7 @@ void Application::HandleToggleChatEvent() {
 
     if (state == kDeviceStateIdle) {
         ListeningMode mode = GetDefaultListeningMode();
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
         /* 点「进入对话」：进聆听后再响提示音（须在 ResetDecoder 之后，见 StartListeningAudio） */
         play_popup_on_listening_ = true;
 #endif
@@ -1374,10 +1384,14 @@ void Application::HandleToggleChatEvent() {
     }
 }
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
 /** 息屏断网后首唤：先起 STA、解除 transport suspend，再 OpenAudioChannel */
 static void EnsureNetReadyAfterScreenSleep()
 {
+#if !CONFIG_BOARD_TYPE_SILA_86
+    // P4 keeps Hosted connected during screen sleep; never wait for DHCP on the main task.
+    return;
+#endif
     auto display = Board::GetInstance().GetDisplay();
     if (nodelio_wifi_is_asleep()) {
         ESP_LOGI(TAG, "screen-off net sleep — wake WiFi for voice");
@@ -1439,7 +1453,7 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     if (!nodelio_xiaozhi_enabled()) {
         ESP_LOGI(TAG, "Xiaozhi disabled — skip cloud listen");
         SetDeviceState(kDeviceStateIdle);
@@ -1465,10 +1479,15 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 }
 
 void Application::HandleStartListeningEvent() {
+#if CONFIG_NODELIO_PANEL
+    if (panel_audio_test_active_) {
+        return;
+    }
+#endif
     auto state = GetDeviceState();
 
     if (state == kDeviceStateNotifying) {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
         if (nodelio_media_is_playing()) {
             nodelio_media_pause_for_voice();
             nodelio_offline_cmd_yield_for_cloud_audio();
@@ -1511,6 +1530,12 @@ void Application::HandleStartListeningEvent() {
 }
 
 void Application::HandleStopListeningEvent() {
+#if CONFIG_NODELIO_PANEL
+    if (panel_audio_test_active_) {
+        CancelPanelAudioTest();
+        return;
+    }
+#endif
     auto state = GetDeviceState();
 
     if (state == kDeviceStateNotifying) {
@@ -1539,7 +1564,7 @@ void Application::HandleWakeWordDetectedEvent() {
     if (state == kDeviceStateIdle) {
         BeginWakeWordInvoke(wake_word);
     } else if (state == kDeviceStateNotifying) {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
         if (nodelio_media_is_playing()) {
             nodelio_media_pause_for_voice();
             /* StopNotification 会 EnableVoiceProcessing；播歌后内部堆碎，MQTT hello/首包 TTS
@@ -1621,7 +1646,7 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     if (!nodelio_xiaozhi_enabled()) {
         ESP_LOGI(TAG, "Xiaozhi disabled — skip cloud wake");
         SetDeviceState(kDeviceStateIdle);
@@ -1670,8 +1695,13 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 
 void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
+#if CONFIG_NODELIO_PANEL
+    if (panel_audio_test_active_ && new_state != kDeviceStateAudioTesting) {
+        CancelPanelAudioTest();
+    }
+#endif
     clock_ticks_ = 0;
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     listen_idle_ticks_ = 0;
     listen_announce_hold_ticks_ = 0;
     listen_idle_pending_close_ = false;
@@ -1693,7 +1723,7 @@ void Application::HandleStateChangedEvent() {
             // otherwise wipe the status, emotion, and chat message.
             if (last_error_message_.empty()) {
                 display->SetStatus(Lang::Strings::STANDBY);
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
                 /* 有待播摘要时勿清对话，否则上屏 spoken 被立刻抹掉 */
                 if (pending_spoken_notify_url_.empty()) {
                     display->ClearChatMessages();
@@ -1706,7 +1736,7 @@ void Application::HandleStateChangedEvent() {
             }
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
             /* 云会话结束：无播歌时重新占唤醒坑，供下次点歌武装 */
             if (!nodelio_media_is_playing() && !nodelio_media_is_paused()) {
                 (void)nodelio_wake_dram_try_reclaim();
@@ -1727,7 +1757,7 @@ void Application::HandleStateChangedEvent() {
             display->SetChatMessage("system", "");
             /* 唤醒建链即亮屏（sila PowerSaveTimer WakeUp） */
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
             /* CONNECT 紧凑「唤醒中」晚 1s 再弹（overlay 内） */
             nodelio_overlay_show_connecting();
 #endif
@@ -1736,7 +1766,7 @@ void Application::HandleStateChangedEvent() {
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
             nodelio_overlay_show_chat();
             /* 首唤问候 UDP 常早于 speaking：先开输出，避免功放/解码未就绪吞掉第一句 */
             if (auto* codec = board.GetAudioCodec()) {
@@ -1758,7 +1788,7 @@ void Application::HandleStateChangedEvent() {
             } else {
                 ConfigureWakeWordForListening();
             }
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
             if (!pending_cloud_speak_.empty()) {
                 Schedule([this]() { TryFlushPendingCloudSpeak(); });
             }
@@ -1822,7 +1852,7 @@ void Application::StartListeningAudio() {
         return;
     }
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     if (news_awaiting_mcp_) {
         // A deferred state/playback event must not overwrite the just-sent detect turn.
         return;
@@ -1922,7 +1952,7 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
 
 void Application::StopNotification() {
     notify_player_.Stop();
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     DeviceState st = GetDeviceState();
     /* 关技能弹窗会 media_stop→这里。聆听/说话中勿 ResetDecoder / EnableVoiceProcessing，
      * 否则 Speaking→Listening 见处理器已在跑会跳过 SendStartListening。
@@ -1959,7 +1989,7 @@ void Application::HandleNotificationFinished(uint32_t playback_id, bool success)
     }
     ESP_LOGI(TAG, "Notification playback %lu %s", static_cast<unsigned long>(playback_id),
              success ? "completed" : "failed");
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     /* 先让媒体决定是否重试/下一首。若已开下一首，勿再 StopNotification 把新流掐掉。 */
     nodelio_media_on_playback_ended(success);
     if (nodelio_media_is_playing() || notification_playback_id_ != playback_id) {
@@ -1997,7 +2027,7 @@ void Application::Schedule(std::function<void()>&& callback) {
 
 void Application::AbortSpeaking(AbortReason reason) {
     ESP_LOGI(TAG, "Abort speaking");
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     CancelNewsReadPlayback();
 #endif
     aborted_ = true;
@@ -2006,7 +2036,7 @@ void Application::AbortSpeaking(AbortReason reason) {
     }
 }
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
 void Application::SuppressCloudTts(int duration_ms)
 {
     if (duration_ms < 500) {
@@ -2081,7 +2111,7 @@ void Application::TryFlushPendingCloudSpeak()
     protocol_->SendWakeWordDetected(text);
 }
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
 /** 云端 detect 约 ≤16 字；超长会 Alert「仅用于唤醒词」。 */
 static size_t utf8_char_count(const char *s)
 {
@@ -2124,7 +2154,7 @@ void Application::QueueCloudSpeakPrompt(const char *text)
         prompt += "：";
         prompt += text;
     }
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     /* 云端拒长 detect；新闻正文改走 self.skill.news，勿再塞 360B 原文 */
     if (utf8_char_count(prompt.c_str()) > kDetectMaxChars) {
         ESP_LOGW(TAG, "drop cloud speak: detect too long chars≈%u text=%.48s",
@@ -2153,7 +2183,7 @@ void Application::QueueCloudSpeakPrompt(const char *text)
     TryFlushPendingCloudSpeak();
 }
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
 void Application::HandleListenIdleTick() {
     const uint32_t rx_count = cloud_audio_rx_count_.load(std::memory_order_relaxed);
     const bool received_audio = rx_count != listen_idle_last_audio_rx_count_;
@@ -2757,8 +2787,69 @@ void Application::Reboot() {
     esp_restart();
 }
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
+bool Application::StartPanelAudioTest(unsigned channel) {
+    const auto state = GetDeviceState();
+    auto* codec = Board::GetInstance().GetAudioCodec();
+    if (panel_audio_test_active_ ||
+        (state != kDeviceStateIdle && state != kDeviceStateWifiConfiguring) ||
+        !audio_service_.IsPlaybackIdle() || notify_player_.IsBusy() || !codec ||
+        channel >= static_cast<unsigned>(codec->input_channels()) ||
+        (channel > 0 && codec->input_reference())) {
+        return false;
+    }
+    if (!SetDeviceState(kDeviceStateAudioTesting)) {
+        return false;
+    }
+    panel_audio_test_return_state_ = state;
+    panel_audio_test_active_ = true;
+    const int64_t now = esp_timer_get_time();
+    panel_audio_test_record_until_ = now + 5000000;
+    panel_audio_test_end_by_ = now + 15000000;
+    audio_service_.EnableVoiceProcessing(false);
+    audio_service_.EnableWakeWordDetection(false);
+    audio_service_.EnableLocalCommandMode(false);
+    audio_service_.ResetDecoder();
+    audio_service_.SetAudioTestChannel(channel);
+    audio_service_.EnableAudioTesting(true);
+    Board::GetInstance().NoteUserActivity();
+    return true;
+}
+
+void Application::CancelPanelAudioTest() {
+    if (!panel_audio_test_active_) {
+        return;
+    }
+    panel_audio_test_active_ = false;
+    audio_service_.EnableAudioTesting(false);
+    audio_service_.ResetDecoder();
+    audio_service_.SetAudioTestChannel(0);
+    if (GetDeviceState() == kDeviceStateAudioTesting) {
+        SetDeviceState(panel_audio_test_return_state_);
+    }
+}
+
+void Application::PollPanelAudioTest() {
+    if (!panel_audio_test_active_) {
+        return;
+    }
+    const int64_t now = esp_timer_get_time();
+    if (GetDeviceState() != kDeviceStateAudioTesting || now >= panel_audio_test_end_by_) {
+        CancelPanelAudioTest();
+        return;
+    }
+    if (audio_service_.IsAudioTesting() && now >= panel_audio_test_record_until_) {
+        audio_service_.EnableAudioTesting(false);
+    } else if (!audio_service_.IsAudioTesting() && audio_service_.IsPlaybackIdle()) {
+        CancelPanelAudioTest();
+    }
+}
+
 void Application::RequestManualFirmwareCheck() {
+#if !CONFIG_FIRMWARE_OTA_ENABLED
+    nodelio_panel_ui_toast_defer("此板暂未开放在线升级，请使用板级烧录包");
+    return;
+#endif
     static std::atomic<bool> busy{false};
     if (busy.exchange(true)) {
         nodelio_panel_ui_toast_defer("正在检查…");
@@ -2851,7 +2942,7 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
         snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress, speed / 1024);
         Schedule([display, message = std::string(buffer)]() {
             display->SetChatMessage("system", message.c_str());
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
             nodelio_panel_ui_toast_defer(message.c_str());
 #endif
         });
@@ -2895,7 +2986,7 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
     } else if (state == kDeviceStateNotifying) {
         Schedule([this, wake_word]() {
             /* pause_for_voice 会把 Notifying→Idle，故不能再要求仍为 Notifying */
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
             if (nodelio_media_is_playing()) {
                 nodelio_media_pause_for_voice();
                 nodelio_offline_cmd_yield_for_cloud_audio();
@@ -2924,7 +3015,7 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
 }
 
 bool Application::CanEnterSleepMode() {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     /* 墙板：息屏只挡对话/升级/配网。Activating（OTA/注册失败重试）不得锁死背光整晚发热。
      * 音乐 Notifying：若开启「播放可息屏」则允许关背光，不停播（断网另挡）。 */
     const bool media_ok = nodelio_media_is_playing() && nodelio_media_sleep_enabled();
@@ -2966,7 +3057,7 @@ void Application::SuspendTransport() {
 }
 
 void Application::ResumeTransport() {
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
     if (!nodelio_xiaozhi_enabled()) {
         ESP_LOGI(TAG, "ResumeTransport skipped (Xiaozhi disabled)");
         return;
@@ -3028,7 +3119,7 @@ void Application::SetAecMode(AecMode mode) {
 
 void Application::PlaySound(const std::string_view& sound) { audio_service_.PlaySound(sound); }
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL
 bool Application::IsHttpAudioBusy() const { return notify_player_.IsBusy(); }
 
 bool Application::HasHttpAudioPlaybackStarted() const {
