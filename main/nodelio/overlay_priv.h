@@ -164,8 +164,21 @@ void nl_ov_build_diagnostics(lv_obj_t* body);
 Display *nl_ov_disp();
 void nl_ov_utf8_copy(char *dst, size_t dst_len, const char *src);
 void nl_ov_set_font(lv_obj_t *obj);
+void nl_ov_set_font_title(lv_obj_t *obj);
 void nl_ov_set_icon_font(lv_obj_t *obj);
+const lv_font_t *nl_ov_ui_font(void);
+const lv_font_t *nl_ov_ui_font_compact(void);
+const lv_font_t *nl_ov_ui_font_title(void);
+/** 一行占位：字库 line_height + 当前文字档行距。 */
+int nl_ov_ui_line_box(void);
+/** 字库行高，不含行距。 */
+int nl_ov_ui_font_line_h(void);
+/** 在 max_w 内排版，最多两行；一行时不预留空行。 */
+int nl_ov_wrapped_text_h(const char *str, int max_w);
+const lv_font_t *nl_ov_read_font(void);
 const lv_font_t *nl_ov_tile_icon_font(bool is_row);
+/** 改显示文字档后刷新首页/应用/设置/技能卡。 */
+void nl_ov_apply_text_scale(void);
 void nl_ov_toast(const char *msg);
 
 static inline bool nl_ov_cfg_http_ready(nodelio_nvs_config_t *out, bool toast)
@@ -250,6 +263,8 @@ void nl_ov_kb_set_visible(bool on);
 
 /* —— settings —— */
 void nl_ov_fill_settings(void);
+/** 工作区宽度变化后重排设置入口卡，不关已打开的子页。 */
+void nl_ov_settings_sync_columns(void);
 void nl_ov_build_apps(void);
 void nl_ov_apps_set_visible(bool on);
 /** 宽屏：技能卡打开/收起时，应用列表收成左轨或展开（带滑动动画）。 */
@@ -265,6 +280,8 @@ void nl_ov_apps_layout_chrome(void);
 /** 有本地缓存则只画列表；无缓存才拉网。 */
 void nl_ov_apps_ensure(void);
 void nl_ov_apps_refresh(void);
+/** 仅按当前字号重排应用列表（不拉网）。 */
+void nl_ov_apps_relayout(void);
 /** 从 GET /skills 或 /bootstrap 的 JSON root 写入已装列表并落盘 */
 void nl_ov_apps_ingest_skills_root(const cJSON *root);
 /** 从同上 JSON 写入首页钉选 */
@@ -273,6 +290,8 @@ void nl_ov_home_skills_ingest_skills_root(const cJSON *root);
 lv_obj_t *nl_ov_apps_scroll_obj(void);
 void nl_ov_close_settings_detail(void);
 void nl_ov_open_settings_detail(set_page_id_t page);
+/** 字号变更后重建设置列表；若子页开着则按原页重开。 */
+void nl_ov_settings_reapply_text_scale(void);
 void nl_ov_stop_sys_monitor(void);
 /** 按应用名/app_id 子串打开已装应用（语音）；未命中返回 false */
 bool nl_ov_apps_open_by_query(const char *query);

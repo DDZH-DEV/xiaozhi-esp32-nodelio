@@ -26,6 +26,7 @@
 #include <cstdlib>
 
 LV_FONT_DECLARE(font_material_symbols_20_4);
+LV_FONT_DECLARE(font_material_symbols_30_4);
 
 #define TAG "nl_apps"
 #define APP_MAX 17 /* 16 cloud entries plus the built-in daily view. */
@@ -87,7 +88,7 @@ static bool s_split;
 static int s_focus_idx = -1;
 
 static constexpr int kAppsPagePadH = 16;
-static constexpr int kAppsAnimMs = 240;
+static constexpr int kAppsAnimMs = 180;
 static constexpr int kAppsBrowseTileH = 84;
 static constexpr int kAppsRailTileH = 84;
 
@@ -376,8 +377,14 @@ static void render_list(void)
         card_w = list_w;
         cols = 1;
     }
-    const int card_h = s_split ? kAppsRailTileH : kAppsBrowseTileH;
-    const int pod_sz = s_split ? 36 : 40;
+    const int text_line = nl_ov_ui_line_box();
+    /* 标题 1 行 + 描述 2 行，与设置页同一套行框，大字不再被卡片裁切。 */
+    int card_h = 12 + text_line + 4 + text_line * 2 + 12;
+    const int floor_h = s_split ? kAppsRailTileH : kAppsBrowseTileH;
+    if (card_h < floor_h) {
+        card_h = floor_h;
+    }
+    const int pod_sz = s_split ? 44 : 48;
 
     for (int i = 0; i < s_item_n; i++) {
         const nl_app_item *it = &s_items[i];
@@ -392,7 +399,7 @@ static void render_list(void)
         lv_obj_set_style_border_color(card, focused ? UI_ACCENT : UI_TILE_OFF_BORDER, 0);
         lv_obj_set_style_border_opa(card, focused ? LV_OPA_COVER : LV_OPA_80, 0);
         lv_obj_set_style_pad_hor(card, 12, 0);
-        lv_obj_set_style_pad_column(card, 10, 0);
+        lv_obj_set_style_pad_column(card, 16, 0);
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
@@ -420,7 +427,7 @@ static void render_list(void)
         lv_obj_set_style_bg_opa(pod, it->enabled ? LV_OPA_40 : LV_OPA_COVER, 0);
         lv_obj_clear_flag(pod, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_t *ic = lv_label_create(pod);
-        lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
+        lv_obj_set_style_text_font(ic, &font_material_symbols_30_4, 0);
         lv_label_set_text(ic, apps_glyph_for(it->id));
         lv_obj_set_style_text_color(ic, it->enabled ? UI_ACCENT_SOFT : UI_TEXT_MUTED, 0);
         lv_obj_center(ic);
@@ -434,36 +441,44 @@ static void render_list(void)
         lv_obj_set_style_pad_row(txt, 2, 0);
         lv_obj_clear_flag(txt, LV_OBJ_FLAG_CLICKABLE);
 
+        const int text_w = card_w - 12 * 2 - 16 - pod_sz;
+        const char *desc = "点按打开";
+        if (!it->enabled) {
+            desc = "不可用";
+        } else if (it->desc[0]) {
+            desc = it->desc;
+        }
+
         lv_obj_t *title = lv_label_create(txt);
         nl_ov_set_font(title);
         lv_label_set_text(title, it->name[0] ? it->name : it->id);
         lv_obj_set_style_text_color(title, it->enabled ? UI_TEXT : UI_TEXT_MUTED, 0);
         lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
         lv_obj_set_width(title, lv_pct(100));
-        const lv_font_t *card_font = lv_obj_get_style_text_font(title, LV_PART_MAIN);
-        const int32_t line_h = card_font ? lv_font_get_line_height(card_font) : 16;
-        lv_obj_set_height(title, line_h);
+        lv_obj_set_height(title, nl_ov_ui_font_line_h());
 
         {
             lv_obj_t *sub = lv_label_create(txt);
             nl_ov_set_font(sub);
-            if (!it->enabled) {
-                lv_label_set_text(sub, "不可用");
-            } else if (it->desc[0]) {
-                lv_label_set_text(sub, it->desc);
-            } else {
-                lv_label_set_text(sub, "点按打开");
-            }
+            lv_label_set_text(sub, desc);
             lv_obj_set_style_text_color(sub, it->enabled ? UI_TEXT_DIM : UI_TEXT_MUTED, 0);
             lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
             lv_obj_set_width(sub, lv_pct(100));
-            lv_obj_set_height(sub, line_h);
+            lv_obj_set_height(sub, nl_ov_wrapped_text_h(desc, text_w));
         }
     }
     if (keep_y > 0) {
         lv_obj_update_layout(s_list);
         lv_obj_scroll_to_y(s_list, keep_y, LV_ANIM_OFF);
     }
+}
+
+static void apps_split_anim_ready(lv_anim_t *a)
+{
+    (void)a;
+    render_list();
+    nodelio_skill_result_layout();
+    nl_ov_apps_layout_chrome();
 }
 
 static void apps_set_split(bool on, bool animate)
@@ -488,10 +503,10 @@ static void apps_set_split(bool on, bool animate)
         lv_obj_set_width(s_list_pane, to_w);
         render_list();
         nodelio_skill_result_layout();
+        nl_ov_apps_layout_chrome();
         return;
     }
-    /* 先按目标宽重排卡片，再做宽度滑动，避免动画中途乱折行 */
-    render_list();
+    /* 先只滑轨宽（旧卡 flex 折行），完成后再 clean 重排——开卡瞬间勿双开重布局 */
     int from_w = (int)lv_obj_get_width(s_list_pane);
     if (from_w < 80) {
         from_w = apps_pane_target_w(!on);
@@ -503,9 +518,22 @@ static void apps_set_split(bool on, bool animate)
     lv_anim_set_time(&a, kAppsAnimMs);
     lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
     lv_anim_set_exec_cb(&a, apps_exec_pane_w);
+    lv_anim_set_completed_cb(&a, apps_split_anim_ready);
     lv_anim_start(&a);
-    /* 左轨定宽后，右侧技能卡/播放条跟着重算，避免中间留黑洞 */
     nodelio_skill_result_layout();
+    nl_ov_apps_layout_chrome();
+}
+
+void nl_ov_apps_relayout(void)
+{
+    if (!s_list) {
+        return;
+    }
+    if (s_hint) {
+        nl_ov_set_font(s_hint);
+    }
+    render_list();
+    nl_ov_apps_layout_chrome();
 }
 
 int nl_ov_apps_split_rail_w(void)
@@ -890,19 +918,16 @@ void nl_ov_apps_layout_chrome(void)
     if (!s_refresh) {
         return;
     }
-    /* 与音乐缩小球同右缘上下叠：页 pad_hor=16 / pad_ver=8，对齐全屏球 (右 14 / 底 TAB+14)。 */
+    /* s_page 已被 workspace_reserve 收成左工作区，贴页右下即可；勿再减 result 宽（会漂到屏中）。 */
     constexpr int kEdge = 14;
     constexpr int kPagePadH = 16;
     constexpr int kPagePadV = 8;
     constexpr int kFabSz = 52; /* 与 SKILL_MINI_SZ 一致 */
     constexpr int kStackGap = 10;
-    const int reserved =
-        apps_wide() && s_split ? apps_pane_target_w(false) - apps_pane_target_w(true) : 0;
-    const int ox = kPagePadH - kEdge - reserved;
-    const int oy_base = -(kEdge - kPagePadV); /* -6 → 视觉底边距 14 */
+    const int ox = kPagePadH - kEdge; /* ≈2，抵消页 pad 后视觉右边距 14 */
+    const int oy_base = -(kEdge - kPagePadV);
     if (nodelio_skill_mini_fab_visible()) {
-        lv_obj_align(s_refresh, LV_ALIGN_BOTTOM_RIGHT, ox,
-                     oy_base - kFabSz - kStackGap);
+        lv_obj_align(s_refresh, LV_ALIGN_BOTTOM_RIGHT, ox, oy_base - kFabSz - kStackGap);
     } else {
         lv_obj_align(s_refresh, LV_ALIGN_BOTTOM_RIGHT, ox, oy_base);
     }

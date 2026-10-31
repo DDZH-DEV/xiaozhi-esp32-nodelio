@@ -74,6 +74,19 @@ bool LvglDisplay::SetTextFont(std::shared_ptr<LvglFont> text_font) {
     if (current_theme_ != nullptr) {
         SetTheme(current_theme_);
     }
+#if CONFIG_NODELIO_PANEL
+    /* 墙板控件存的是 lv_font_t*。先改指向新字库，再放掉旧对象。 */
+    const lv_font_t* neu = text_font->font();
+    const lv_font_t* olds[2] = {
+        previous_light_font ? previous_light_font->font() : nullptr,
+        previous_dark_font ? previous_dark_font->font() : nullptr,
+    };
+    for (const lv_font_t* old : olds) {
+        if (old != nullptr && old != neu) {
+            nodelio_overlay_retarget_font(old, neu);
+        }
+    }
+#endif
     previous_light_font.reset();
     previous_dark_font.reset();
     return true;

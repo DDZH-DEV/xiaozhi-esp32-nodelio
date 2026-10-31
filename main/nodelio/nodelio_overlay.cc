@@ -156,33 +156,186 @@ Display *nl_ov_disp()
     return Board::GetInstance().GetDisplay();
 }
 
-const lv_font_t *nl_ov_ui_font(void)
+static const lv_font_t *ui_font_base(void)
 {
     return &font_puhui_14_1;
 }
 
-const lv_font_t *nl_ov_read_font(void)
+const lv_font_t *nl_ov_ui_font_compact(void)
+{
+    return ui_font_base();
+}
+
+static const lv_font_t *ui_font_large(void)
 {
     Display *d = nl_ov_disp();
     if (!d) {
-        return nl_ov_ui_font();
+        return ui_font_base();
     }
     Theme *th = d->GetTheme();
     if (!th) {
-        return nl_ov_ui_font();
+        return ui_font_base();
     }
     std::shared_ptr<LvglFont> tf = th->GetTextFont();
     if (!tf || tf->font() == nullptr) {
-        return nl_ov_ui_font();
+        return ui_font_base();
     }
     return tf->font();
 }
 
+const lv_font_t *nl_ov_ui_font(void)
+{
+    /* 0=14px 普惠；1/2=资源真字库（约 20px），禁止 transform 放大点阵 */
+    return nodelio_text_scale() == 0 ? ui_font_base() : ui_font_large();
+}
+
+const lv_font_t *nl_ov_ui_font_title(void)
+{
+    return nl_ov_ui_font();
+}
+
+const lv_font_t *nl_ov_read_font(void)
+{
+    return ui_font_large();
+}
+
+static int32_t ui_line_space(void)
+{
+    switch (nodelio_text_scale()) {
+    case 2:
+        return 8;
+    case 1:
+        return 4;
+    default:
+        return 0;
+    }
+}
+
+static int32_t ui_letter_space(void)
+{
+    return nodelio_text_scale() >= 2 ? 1 : 0;
+}
+
+int nl_ov_ui_line_box(void)
+{
+    const lv_font_t *f = nl_ov_ui_font();
+    const int32_t lh = f ? lv_font_get_line_height(f) : 18;
+    return (int)(lh + ui_line_space());
+}
+
+int nl_ov_ui_font_line_h(void)
+{
+    const lv_font_t *f = nl_ov_ui_font();
+    return f ? (int)lv_font_get_line_height(f) : 18;
+}
+
+int nl_ov_wrapped_text_h(const char *str, int max_w)
+{
+    const lv_font_t *font = nl_ov_ui_font();
+    const int font_h = nl_ov_ui_font_line_h();
+    const int lsp = (int)ui_line_space();
+    if (!str || !str[0] || !font || max_w < 8) {
+        return font_h;
+    }
+    lv_point_t sz;
+    lv_text_get_size(&sz, str, font, ui_letter_space(), lsp, max_w, LV_TEXT_FLAG_NONE);
+    if (sz.y <= font_h + 1) {
+        return font_h;
+    }
+    return font_h * 2 + lsp;
+}
+
 void nl_ov_set_font(lv_obj_t *obj)
 {
-    if (obj) {
-        lv_obj_set_style_text_font(obj, nl_ov_ui_font(), 0);
+    if (!obj) {
+        return;
     }
+    lv_obj_set_style_text_font(obj, nl_ov_ui_font(), 0);
+    lv_obj_set_style_text_line_space(obj, ui_line_space(), 0);
+    lv_obj_set_style_text_letter_space(obj, ui_letter_space(), 0);
+}
+
+void nl_ov_set_font_title(lv_obj_t *obj)
+{
+    if (!obj) {
+        return;
+    }
+    lv_obj_set_style_text_font(obj, nl_ov_ui_font_title(), 0);
+    lv_obj_set_style_text_line_space(obj, ui_line_space() > 4 ? 4 : ui_line_space(), 0);
+    lv_obj_set_style_text_letter_space(obj, 0, 0);
+}
+
+static void status_bar_relayout(void);
+
+static void apply_font_if(lv_obj_t *obj)
+{
+    if (obj) {
+        nl_ov_set_font(obj);
+    }
+}
+
+static void retarget_font_tree(lv_obj_t *obj, const lv_font_t *from, const lv_font_t *to)
+{
+    if (!obj) {
+        return;
+    }
+    static const lv_style_selector_t k_sel[] = {0, LV_PART_TEXTAREA_PLACEHOLDER};
+    for (lv_style_selector_t sel : k_sel) {
+        lv_style_value_t v;
+        if (lv_obj_get_local_style_prop(obj, LV_STYLE_TEXT_FONT, &v, sel) == LV_STYLE_RES_FOUND &&
+            v.ptr == from) {
+            lv_obj_set_style_text_font(obj, to, sel);
+        }
+    }
+    uint32_t n = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < n; i++) {
+        retarget_font_tree(lv_obj_get_child(obj, i), from, to);
+    }
+}
+
+extern "C" void nodelio_overlay_retarget_font(const void *from_font, const void *to_font)
+{
+    const lv_font_t *from = static_cast<const lv_font_t *>(from_font);
+    const lv_font_t *to = static_cast<const lv_font_t *>(to_font);
+    if (!from || !to || from == to) {
+        return;
+    }
+    /* 首页在 layer_top；小智底屏的 screen 也单独设过 text font。两边都要改完再销毁旧字库。 */
+    retarget_font_tree(lv_screen_active(), from, to);
+    retarget_font_tree(lv_layer_top(), from, to);
+}
+
+void nl_ov_apply_text_scale(void)
+{
+    if (s_root) {
+        lv_obj_set_style_text_font(s_root, nl_ov_ui_font(), 0);
+    }
+    apply_font_if(s_brand_lbl);
+    apply_font_if(s_clock_lbl);
+    apply_font_if(s_status_lbl);
+    status_bar_relayout();
+    for (int i = 0; i < NL_TAB_N; i++) {
+        lv_obj_t *btn = s_tab_btns[i];
+        if (!btn) {
+            continue;
+        }
+        lv_obj_set_style_text_font(btn, nl_ov_ui_font(), 0);
+        uint32_t n = lv_obj_get_child_count(btn);
+        for (uint32_t c = 0; c < n; c++) {
+            lv_obj_t *ch = lv_obj_get_child(btn, c);
+            if (ch && lv_obj_check_type(ch, &lv_label_class)) {
+                nl_ov_set_font(ch);
+            }
+        }
+    }
+    apply_font_if(s_ai_drawer_status);
+    apply_font_if(s_ai_drawer_text);
+    if (s_have_layout && s_home) {
+        nl_ov_fill_home();
+    }
+    nl_ov_apps_relayout();
+    nl_ov_settings_reapply_text_scale();
+    nodelio_skill_result_reapply_text_scale();
 }
 
 void nl_ov_set_icon_font(lv_obj_t *obj)
@@ -593,6 +746,7 @@ void nl_ov_workspace_reserve(int right, int bottom) {
     const int w = p->width - p->nav_width - right;
     const int h = p->height - NL_UI_STATUS_H - bottom;
     bool home_changed = s_home && (lv_obj_get_width(s_home) != w || lv_obj_get_height(s_home) != h);
+    const bool settings_w_changed = s_settings && lv_obj_get_width(s_settings) != w;
     if (s_home)
         lv_obj_set_size(s_home, w, h);
     if (s_settings)
@@ -605,6 +759,10 @@ void nl_ov_workspace_reserve(int right, int bottom) {
     if (home_changed && s_home && s_have_layout && !s_building) {
         lv_obj_update_layout(s_home);
         nl_ov_fill_home();
+    }
+    if (settings_w_changed && s_settings && !s_building) {
+        lv_obj_update_layout(s_settings);
+        nl_ov_settings_sync_columns();
     }
 }
 

@@ -113,6 +113,7 @@ void nodelio_nvs_cache_get(nodelio_nvs_config_t *out)
     out->listen_idle_s = NODELIO_LISTEN_IDLE_DEFAULT;
     out->media_pause_s = NODELIO_MEDIA_PAUSE_DEFAULT;
     out->media_wake_duck_pct = NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
+    out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
 }
 
 static esp_err_t get_str(nvs_handle_t h, const char *key, char *buf, size_t len)
@@ -194,6 +195,12 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     out->media_wake_duck_pct =
         clamp_u8(out->media_wake_duck_pct, NODELIO_MEDIA_WAKE_DUCK_MIN, NODELIO_MEDIA_WAKE_DUCK_MAX,
                  NODELIO_MEDIA_WAKE_DUCK_DEFAULT);
+    if (out->text_scale > NODELIO_TEXT_SCALE_MAX) {
+        out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
+    }
+    if (out->ai_pos_set > 1) {
+        out->ai_pos_set = 0;
+    }
 }
 
 /* 避免 save 路径把「关闭小智/省电」(0) 误当成未初始化 */
@@ -235,6 +242,12 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     if (out->media_sleep_en > 1) {
         out->media_sleep_en = 1;
     }
+    if (out->text_scale > NODELIO_TEXT_SCALE_MAX) {
+        out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
+    }
+    if (out->ai_pos_set > 1) {
+        out->ai_pos_set = 0;
+    }
 }
 
 esp_err_t nodelio_nvs_init(void)
@@ -263,6 +276,7 @@ static esp_err_t load_config(nodelio_nvs_config_t* out) {
     out->listen_idle_s = NODELIO_LISTEN_IDLE_DEFAULT;
     out->media_pause_s = NODELIO_MEDIA_PAUSE_DEFAULT;
     out->media_wake_duck_pct = NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
+    out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NODELIO_NVS_NS, NVS_READONLY, &h);
@@ -346,6 +360,22 @@ static esp_err_t load_config(nodelio_nvs_config_t* out) {
         if (nvs_get_u8(h, "md_duck", &v) == ESP_OK) {
             out->media_wake_duck_pct = v;
         }
+        v = NODELIO_TEXT_SCALE_DEFAULT;
+        if (nvs_get_u8(h, "txt_scl", &v) == ESP_OK) {
+            out->text_scale = v;
+        } else {
+            out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
+        }
+        v = 0;
+        if (nvs_get_u8(h, "ai_pos", &v) == ESP_OK && v == 1) {
+            int16_t x = 0;
+            int16_t y = 0;
+            if (nvs_get_i16(h, "ai_x", &x) == ESP_OK && nvs_get_i16(h, "ai_y", &y) == ESP_OK) {
+                out->ai_pos_set = 1;
+                out->ai_x = x;
+                out->ai_y = y;
+            }
+        }
     }
     nvs_close(h);
     apply_defaults(out);
@@ -405,6 +435,10 @@ static esp_err_t save_config(const nodelio_nvs_config_t* in, bool preferences_on
     NL_ACCUM(nvs_set_u16(h, "lis_idle", tmp.listen_idle_s));
     NL_ACCUM(nvs_set_u16(h, "md_pause", tmp.media_pause_s));
     NL_ACCUM(nvs_set_u8(h, "md_duck", tmp.media_wake_duck_pct));
+    NL_ACCUM(nvs_set_u8(h, "txt_scl", tmp.text_scale));
+    NL_ACCUM(nvs_set_u8(h, "ai_pos", tmp.ai_pos_set ? 1 : 0));
+    NL_ACCUM(nvs_set_i16(h, "ai_x", tmp.ai_x));
+    NL_ACCUM(nvs_set_i16(h, "ai_y", tmp.ai_y));
 #undef NL_ACCUM
 
     err = nvs_commit(h);
@@ -670,6 +704,26 @@ uint8_t nodelio_media_wake_duck_pct(void)
     }
     return s_ram.media_wake_duck_pct ? s_ram.media_wake_duck_pct
                                      : NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
+}
+
+uint8_t nodelio_text_scale(void)
+{
+    if (!s_ram_ok) {
+        return NODELIO_TEXT_SCALE_DEFAULT;
+    }
+    return s_ram.text_scale > NODELIO_TEXT_SCALE_MAX ? NODELIO_TEXT_SCALE_DEFAULT
+                                                     : s_ram.text_scale;
+}
+
+esp_err_t nodelio_text_scale_set(uint8_t scale)
+{
+    nodelio_nvs_config_t cfg;
+    esp_err_t err = nodelio_nvs_load(&cfg);
+    if (err != ESP_OK) {
+        return err;
+    }
+    cfg.text_scale = scale > NODELIO_TEXT_SCALE_MAX ? NODELIO_TEXT_SCALE_DEFAULT : scale;
+    return nodelio_nvs_save_preferences(&cfg);
 }
 
 esp_err_t nodelio_set_sleep_seconds(uint16_t idle_s, uint16_t goodbye_s)

@@ -669,6 +669,15 @@ static bool news_pull_article_text(int idx, char **out_heap, const char **out_vi
 /** 详情字号档：0=14px，1/2=20px 真字库（会话内记住）。默认较大，墙板远读。 */
 static uint8_t s_news_zoom = 1;
 static lv_obj_t *s_news_zoom_hint = nullptr;
+
+static void news_sync_global_text_scale(void)
+{
+    uint8_t z = nodelio_text_scale();
+    if (z > UI_NEWS_ZOOM_MAX) {
+        z = UI_NEWS_ZOOM_MAX;
+    }
+    s_news_zoom = z;
+}
 static lv_obj_t *s_news_title_lbl = nullptr;
 
 static void on_news_zoom(lv_event_t *e);
@@ -741,7 +750,7 @@ static void set_news_zoom_hdr_visible(bool on)
 
 static const char *news_zoom_name(void)
 {
-    static const char *k_name[] = {"标准", "较大", "疏朗"};
+    static const char *k_name[] = {"标准", "较大", "更大"};
     if (s_news_zoom > UI_NEWS_ZOOM_MAX) {
         return k_name[0];
     }
@@ -750,7 +759,7 @@ static const char *news_zoom_name(void)
 
 static const lv_font_t *news_body_font(void)
 {
-    return s_news_zoom == 0 ? nl_ov_ui_font() : nl_ov_read_font();
+    return s_news_zoom == 0 ? nl_ov_ui_font_compact() : nl_ov_read_font();
 }
 
 static int32_t news_body_line_space(void)

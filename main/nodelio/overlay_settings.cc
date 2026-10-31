@@ -247,6 +247,64 @@ static void persist_cfg_async(void)
     Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save_preferences(&snap); });
 }
 
+static const char *text_scale_name(uint8_t scale)
+{
+    static const char *k_name[] = {"标准", "较大", "更大"};
+    if (scale > NODELIO_TEXT_SCALE_MAX) {
+        scale = NODELIO_TEXT_SCALE_DEFAULT;
+    }
+    return k_name[scale];
+}
+
+static bool parse_text_scale(const char *value, uint8_t *out, char *err, size_t err_len)
+{
+    if (!value || !value[0] || !out) {
+        pref_err(err, err_len, "文字档须为 0–2");
+        return false;
+    }
+    if (strcmp(value, "0") == 0 || strcmp(value, "标准") == 0) {
+        *out = 0;
+        return true;
+    }
+    if (strcmp(value, "1") == 0 || strcmp(value, "较大") == 0) {
+        *out = 1;
+        return true;
+    }
+    if (strcmp(value, "2") == 0 || strcmp(value, "更大") == 0 || strcmp(value, "疏朗") == 0) {
+        *out = 2;
+        return true;
+    }
+    pref_err(err, err_len, "文字档须为 0–2（标准/较大/更大）");
+    return false;
+}
+
+static void commit_text_scale(uint8_t scale)
+{
+    if (scale > NODELIO_TEXT_SCALE_MAX) {
+        scale = NODELIO_TEXT_SCALE_DEFAULT;
+    }
+    if (nodelio_text_scale() == scale) {
+        s_cfg.text_scale = scale;
+        return;
+    }
+    s_cfg.text_scale = scale;
+    persist_cfg_async();
+    char toast[32];
+    std::snprintf(toast, sizeof(toast), "文字 %s", text_scale_name(scale));
+    nl_ov_toast(toast);
+    Application::GetInstance().Schedule([]() {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            nl_ov_apply_text_scale();
+        }
+    });
+}
+
+static void on_text_scale_chip(lv_event_t *e)
+{
+    commit_text_scale((uint8_t)(intptr_t)lv_event_get_user_data(e));
+}
+
 /** 小智 / 本地口令切换后内存占用不同，须重启才按新组合加载。
  * 两个开关常连着拨：合并成一次延迟重启，避免关一个重启、再开另一个又重启。 */
 static esp_timer_handle_t s_voice_reboot_tmr;
@@ -320,6 +378,10 @@ static const char *normalize_pref_key(const char *key)
     if (strcasecmp(key, "bye_sleep_s") == 0 || strcasecmp(key, "bye_sleep") == 0 ||
         strcasecmp(key, "goodbye_sleep_s") == 0 || strcasecmp(key, "goodbye_s") == 0) {
         return "bye_sleep_s";
+    }
+    if (strcasecmp(key, "text_scale") == 0 || strcasecmp(key, "font_scale") == 0 ||
+        strcasecmp(key, "txt_scl") == 0 || strcmp(key, "字号") == 0) {
+        return "text_scale";
     }
     return key;
 }
@@ -508,6 +570,14 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         nl_ov_toast("唤醒时音量已保存");
         return ESP_OK;
     }
+    if (strcasecmp(key, "text_scale") == 0) {
+        uint8_t scale = 0;
+        if (!parse_text_scale(value, &scale, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        commit_text_scale(scale);
+        return ESP_OK;
+    }
     /* 动作键：value 可空，只触发 */
     if (strcasecmp(key, "layout_sync") == 0) {
         nl_ov_toast("正在刷新布局…");
@@ -530,7 +600,7 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
     }
 
     pref_err(err, err_len,
-             "未知 key。空闲断网=idle_wifi_s；息屏=idle_sleep_s；退下=bye_sleep_s");
+             "未知 key。空闲断网=idle_wifi_s；息屏=idle_sleep_s；退下=bye_sleep_s；文字=text_scale");
     return ESP_ERR_NOT_SUPPORTED;
 }
 
@@ -595,6 +665,10 @@ extern "C" esp_err_t nodelio_panel_ui_get_pref(const char *key, char *buf, size_
         std::snprintf(buf, len, "%d",
                       (int)(s_cfg.media_wake_duck_pct ? s_cfg.media_wake_duck_pct
                                                       : NODELIO_MEDIA_WAKE_DUCK_DEFAULT));
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "text_scale") == 0) {
+        std::snprintf(buf, len, "%d", (int)nodelio_text_scale());
         return ESP_OK;
     }
     return ESP_ERR_NOT_FOUND;
@@ -684,7 +758,7 @@ static lv_obj_t *audio_ctrl_band(lv_obj_t *parent, const char *title, const char
     lv_obj_t *head = lv_obj_create(band);
     lv_obj_remove_style_all(head);
     lv_obj_set_width(head, lv_pct(100));
-    lv_obj_set_height(head, 28);
+    lv_obj_set_height(head, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(head, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(head, LV_OBJ_FLAG_SCROLLABLE);
@@ -876,8 +950,11 @@ static lv_obj_t *settings_card(lv_obj_t *parent, const char *title)
     return card;
 }
 
+static set_page_id_t s_open_set_page = SET_PAGE_DISP;
+
 void nl_ov_open_settings_detail(set_page_id_t page)
 {
+    s_open_set_page = page;
     nl_ov_close_settings_detail();
     if (!s_root) {
         return;
@@ -937,7 +1014,6 @@ void nl_ov_open_settings_detail(set_page_id_t page)
     if (page == SET_PAGE_DIAGNOSTICS) {
         nl_ov_build_diagnostics(body);
     } else if (page == SET_PAGE_DISP) {
-        lv_obj_clear_flag(body, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_style_pad_row(body, 12, 0);
 
         char pct[12];
@@ -962,6 +1038,43 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_label_set_text(hint, "本机扬声器音量");
         nl_ov_set_font(hint);
         lv_obj_set_style_text_color(hint, UI_TEXT_TIP, 0);
+
+        const uint8_t cur = nodelio_text_scale();
+        lv_obj_t *txt_band = audio_ctrl_band(body, "文字大小", text_scale_name(cur), nullptr);
+        lv_obj_t *row = lv_obj_create(txt_band);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_width(row, lv_pct(100));
+        lv_obj_set_height(row, 44);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(row, 8, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        static const char *k_scale[] = {"标准", "较大", "更大"};
+        for (int i = 0; i < 3; i++) {
+            const bool on = cur == (uint8_t)i;
+            lv_obj_t *chip = lv_obj_create(row);
+            lv_obj_remove_style_all(chip);
+            lv_obj_set_flex_grow(chip, 1);
+            lv_obj_set_height(chip, 44);
+            lv_obj_set_style_radius(chip, 12, 0);
+            lv_obj_set_style_bg_color(chip, on ? UI_ACCENT : UI_CAPSULE_OFF, 0);
+            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(chip, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+            lv_obj_set_style_translate_y(chip, 1, LV_STATE_PRESSED);
+            lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(chip, UI_EXT_CLICK);
+            lv_obj_add_event_cb(chip, on_text_scale_chip, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            lv_obj_t *lab = lv_label_create(chip);
+            nl_ov_set_font(lab);
+            lv_label_set_text(lab, k_scale[i]);
+            lv_obj_set_style_text_color(lab, on ? UI_ON_TILE : UI_TEXT, 0);
+            lv_obj_center(lab);
+        }
+        lv_obj_t *txt_hint = lv_label_create(txt_band);
+        lv_label_set_text(txt_hint, "远距离阅读可调大");
+        nl_ov_set_font(txt_hint);
+        lv_obj_set_style_text_color(txt_hint, UI_TEXT_TIP, 0);
     } else if (page == SET_PAGE_SYS) {
         load_audio_prefs();
         const nodelio_board_t *b = nodelio_board_get();
@@ -1420,12 +1533,14 @@ static void settings_tile(lv_obj_t *parent, const char *glyph, const char *title
     (void)ui_make_settings_tile(parent, glyph, title, sub, accent, right_icon, cb);
 }
 
-void nl_ov_fill_settings(void)
+static int s_hub_host_w = -1;
+
+static void fill_settings_hub(void)
 {
     if (!s_settings) {
         return;
     }
-    nl_ov_close_settings_detail();
+    const lv_coord_t keep_y = lv_obj_get_scroll_y(s_settings);
     lv_obj_clean(s_settings);
     /* 一行两列；卡内左右布局 */
     lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_ROW_WRAP);
@@ -1442,8 +1557,9 @@ void nl_ov_fill_settings(void)
     lv_obj_set_scrollbar_mode(s_settings, LV_SCROLLBAR_MODE_OFF);
 
     load_audio_prefs();
-    char bri_sub[32];
-    std::snprintf(bri_sub, sizeof(bri_sub), "亮度 %d%% · 音量 %d%%", s_brightness, s_volume);
+    char bri_sub[48];
+    std::snprintf(bri_sub, sizeof(bri_sub), "亮度 %d%% · 音量 %d%% · %s", s_brightness, s_volume,
+                  text_scale_name(nodelio_text_scale()));
 
     settings_tile(s_settings, "显", "显示与声音", bri_sub, UI_C_ACCENT, nullptr,
                   [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_DISP); });
@@ -1498,4 +1614,43 @@ void nl_ov_fill_settings(void)
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_DIAGNOSTICS); });
     settings_tile(s_settings, "复", "恢复出厂", "清空凭证并重启", UI_C_DANGER, nullptr,
                   [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_RESET); });
+    s_hub_host_w = (int)lv_obj_get_width(s_settings);
+    if (keep_y > 0) {
+        lv_obj_update_layout(s_settings);
+        lv_obj_scroll_to_y(s_settings, keep_y, LV_ANIM_OFF);
+    }
+}
+
+void nl_ov_fill_settings(void)
+{
+    if (!s_settings) {
+        return;
+    }
+    nl_ov_close_settings_detail();
+    s_hub_host_w = -1;
+    fill_settings_hub();
+}
+
+void nl_ov_settings_sync_columns(void)
+{
+    if (!s_settings) {
+        return;
+    }
+    const int host = (int)lv_obj_get_width(s_settings);
+    if (host > 0 && host == s_hub_host_w && lv_obj_get_child_count(s_settings) > 0) {
+        return;
+    }
+    fill_settings_hub();
+}
+
+void nl_ov_settings_reapply_text_scale(void)
+{
+    const bool detail = s_settings_detail != nullptr;
+    const set_page_id_t page = s_open_set_page;
+    if (s_settings) {
+        nl_ov_fill_settings();
+    }
+    if (detail) {
+        nl_ov_open_settings_detail(page);
+    }
 }

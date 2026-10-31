@@ -35,6 +35,7 @@
 #include <ctime>
 
 LV_FONT_DECLARE(font_material_symbols_20_4);
+LV_FONT_DECLARE(font_material_symbols_30_4);
 
 #define TAG "nl_skill_ui"
 
@@ -42,13 +43,14 @@ LV_FONT_DECLARE(font_material_symbols_20_4);
 /* 480 屏：顶栏 32 + 间隙 + 卡；含 filter chip 时需约 424 才能露出 4 行完整行高。
  * 有 now_playing 条时须再扣 SKILL_NOW_H+SKILL_GAP，否则卡底会画出屏外。 */
 #define SKILL_CARD_H_MAX (nodelio_display_profile()->result_max_height)
-#define SKILL_NOW_H 56
+#define SKILL_NOW_H 64
 #define SKILL_GAP 12
 #define SKILL_CARD_H_MIN 180
 #define SKILL_BORDER_OPA 200
 #define SKILL_SCRIM_OPA 170
 #define SKILL_EQ_N 4
-#define SKILL_CTRL_SZ 34
+#define SKILL_CTRL_SZ 44
+#define SKILL_PLAY_CTRL_SZ 48
 #define SKILL_MINI_SZ 52
 #define SKILL_ANIM_MS 240
 #define SKILL_ANIM_SLIDE 16
@@ -235,16 +237,17 @@ static void layout_skill_layers(void)
     const int panel_w = skill_panel_w();
     const bool card_up = s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN);
     const bool bar_up = s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
-    nl_ov_workspace_reserve(card_up ? panel_w + 2 * SKILL_GAP : 0,
-                            bar_up ? SKILL_NOW_H + 2 * SKILL_GAP : 0);
+    const bool wide = nodelio_display_profile()->nav_width != 0;
+    /* 宽屏：播放条只占右侧技能列，勿再砍左轨应用列表一行高 */
+    const int reserve_bottom = (!wide && bar_up) ? (SKILL_NOW_H + 2 * SKILL_GAP) : 0;
+    nl_ov_workspace_reserve(card_up ? panel_w + 2 * SKILL_GAP : 0, reserve_bottom);
     int y = NL_UI_STATUS_H + SKILL_GAP;
     if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
-        if (nodelio_display_profile()->nav_width) {
-            const int bar_w = nodelio_display_profile()->width -
-                              nodelio_display_profile()->nav_width - 2 * SKILL_GAP;
+        if (wide) {
+            const int bar_w = panel_w;
             lv_obj_set_width(s_now_bar, bar_w);
             if (s_now_lbl) {
-                lv_obj_set_width(s_now_lbl, bar_w - 200);
+                lv_obj_set_width(s_now_lbl, bar_w - 240);
             }
             lv_obj_align(s_now_bar, LV_ALIGN_BOTTOM_RIGHT, -SKILL_GAP, -SKILL_GAP);
         } else {
@@ -252,8 +255,7 @@ static void layout_skill_layers(void)
             y += SKILL_NOW_H + SKILL_GAP;
         }
     }
-    if (s_scrim && !lv_obj_has_flag(s_scrim, LV_OBJ_FLAG_HIDDEN) &&
-        nodelio_display_profile()->nav_width) {
+    if (s_scrim && !lv_obj_has_flag(s_scrim, LV_OBJ_FLAG_HIDDEN) && wide) {
         // On wide screens only block the occupied lane, never the left workspace.
         lv_obj_set_size(s_scrim, card_up ? panel_w + 2 * SKILL_GAP : 0,
                         nodelio_display_profile()->height - NL_UI_STATUS_H -
@@ -270,9 +272,7 @@ static void layout_skill_layers(void)
             lv_obj_set_height(s_card, h);
             lv_obj_set_style_max_height(s_card, h, 0);
         }
-        lv_obj_align(s_card,
-                     nodelio_display_profile()->nav_width ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_TOP_MID,
-                     nodelio_display_profile()->nav_width ? -SKILL_GAP : 0, y);
+        lv_obj_align(s_card, wide ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_TOP_MID, wide ? -SKILL_GAP : 0, y);
     }
     if (s_mini_fab && !lv_obj_has_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_align(s_mini_fab, LV_ALIGN_BOTTOM_RIGHT, -14, -(NL_UI_TAB_H + 14));
@@ -281,6 +281,34 @@ static void layout_skill_layers(void)
 }
 
 void nodelio_skill_result_layout(void) { layout_skill_layers(); }
+
+static void fill_list(void);
+static void news_sync_global_text_scale(void);
+
+void nodelio_skill_result_reapply_text_scale(void)
+{
+    /* 新闻详情字号跟全局档走；卡未打开时也先记下，下次打开用新档。A± 仍可临时改。 */
+    news_sync_global_text_scale();
+    if (!s_card || lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN) || !s_have_env || !s_env) {
+        return;
+    }
+    if (s_card_title) {
+        nl_ov_set_font_title(s_card_title);
+        lv_obj_set_height(s_card_title, nl_ov_ui_font_line_h());
+    }
+    if (s_card_sub) {
+        nl_ov_set_font(s_card_sub);
+        lv_obj_set_height(s_card_sub, nl_ov_ui_font_line_h());
+    }
+    if (s_now_lbl) {
+        nl_ov_set_font(s_now_lbl);
+    }
+    if (s_now_sub) {
+        nl_ov_set_font(s_now_sub);
+    }
+    fill_list();
+    layout_skill_layers();
+}
 
 bool nodelio_skill_mini_fab_visible(void)
 {
@@ -1071,7 +1099,20 @@ static int list_cols(void)
 
 static int list_row_h(void)
 {
-    return list_use_comfortable() ? SKILL_LIST_ROW_H : SKILL_MUSIC_ROW_H;
+    if (list_use_comfortable()) {
+        return SKILL_LIST_ROW_H;
+    }
+    /* 曲库：标题 1 行 + 简介 2 行。大字档行框变高，行高跟着长，避免叠到下一行。 */
+    const int font_h = nl_ov_ui_font_line_h();
+    int lsp = nl_ov_ui_line_box() - font_h;
+    if (lsp < 0) {
+        lsp = 0;
+    }
+    int h = font_h + 4 + (font_h * 2 + lsp) + 8;
+    if (h < SKILL_MUSIC_ROW_H) {
+        h = SKILL_MUSIC_ROW_H;
+    }
+    return h;
 }
 
 /** 曲库按卡内剩余高度算本页行数，避免 now_playing 让位后末行被裁 */
@@ -1082,7 +1123,10 @@ static int list_page_rows(void)
     }
     const int row_h = list_row_h();
     const int gap = 4;
-    const int list_avail = skill_card_h_max() - SKILL_LIST_CHROME_PAD - SKILL_LIST_HDR_BUDGET;
+    const int hdr_budget = nl_ov_ui_font_line_h() * 2 + 12;
+    const int list_avail =
+        skill_card_h_max() - SKILL_LIST_CHROME_PAD -
+        (hdr_budget > SKILL_LIST_HDR_BUDGET ? hdr_budget : SKILL_LIST_HDR_BUDGET);
     int fit = SKILL_PAGE_ROWS;
     if (list_avail > 0 && row_h + gap > 0) {
         fit = (list_avail + gap) / (row_h + gap);
@@ -2213,7 +2257,7 @@ static lv_obj_t *make_icon_btn(lv_obj_t *parent, lv_color_t bg, lv_color_t fg, c
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
     }
     lv_obj_t *ic = lv_label_create(btn);
-    lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
+    lv_obj_set_style_text_font(ic, &font_material_symbols_30_4, 0);
     lv_label_set_text(ic, sym);
     lv_obj_set_style_text_color(ic, fg, 0);
     lv_obj_center(ic);
@@ -2226,8 +2270,8 @@ static lv_obj_t *make_play_ctrl_btn(lv_obj_t *parent, lv_color_t bg, lv_color_t 
 {
     lv_obj_t *btn = lv_obj_create(parent);
     lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, 44, 44);
-    lv_obj_set_style_radius(btn, 22, 0);
+    lv_obj_set_size(btn, SKILL_PLAY_CTRL_SZ, SKILL_PLAY_CTRL_SZ);
+    lv_obj_set_style_radius(btn, SKILL_PLAY_CTRL_SZ / 2, 0);
     lv_obj_set_style_bg_color(btn, bg, 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
@@ -2236,7 +2280,7 @@ static lv_obj_t *make_play_ctrl_btn(lv_obj_t *parent, lv_color_t bg, lv_color_t 
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
     }
     lv_obj_t *ic = lv_label_create(btn);
-    lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
+    lv_obj_set_style_text_font(ic, &font_material_symbols_30_4, 0);
     lv_label_set_text(ic, sym);
     lv_obj_set_style_text_color(ic, fg, 0);
     lv_obj_center(ic);
@@ -2732,17 +2776,25 @@ static void ensure_card(void)
     lv_obj_remove_style_all(hdr_txt);
     lv_obj_set_flex_grow(hdr_txt, 1);
     lv_obj_set_height(hdr_txt, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_width(hdr_txt, 0, 0);
+    lv_obj_set_style_pad_right(hdr_txt, 12, 0);
     lv_obj_set_flex_flow(hdr_txt, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(hdr_txt, 2, 0);
 
     s_card_title = lv_label_create(hdr_txt);
     nl_ov_set_font(s_card_title);
     lv_label_set_text(s_card_title, "曲库");
+    lv_label_set_long_mode(s_card_title, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(s_card_title, lv_pct(100));
+    lv_obj_set_height(s_card_title, nl_ov_ui_font_line_h());
     lv_obj_set_style_text_color(s_card_title, UI_TEXT, 0);
 
     s_card_sub = lv_label_create(hdr_txt);
     nl_ov_set_font(s_card_sub);
     lv_label_set_text(s_card_sub, "");
+    lv_label_set_long_mode(s_card_sub, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(s_card_sub, lv_pct(100));
+    lv_obj_set_height(s_card_sub, nl_ov_ui_font_line_h());
     lv_obj_set_style_text_color(s_card_sub, UI_TEXT_MUTED, 0);
 
     s_hdr_btns = lv_obj_create(hdr);
@@ -3510,9 +3562,12 @@ static void fill_list(void)
             lv_obj_set_style_text_color(t, UI_TEXT, 0);
             lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
             lv_obj_set_width(t, lv_pct(100));
-            const lv_font_t *row_font = lv_obj_get_style_text_font(t, LV_PART_MAIN);
-            const int32_t line_h = row_font ? lv_font_get_line_height(row_font) : 16;
-            lv_obj_set_height(t, line_h);
+            const int font_h = nl_ov_ui_font_line_h();
+            int lsp = nl_ov_ui_line_box() - font_h;
+            if (lsp < 0) {
+                lsp = 0;
+            }
+            lv_obj_set_height(t, font_h);
 
             lv_obj_t *a = lv_label_create(txt);
             nl_ov_set_font(a);
@@ -3530,7 +3585,7 @@ static void fill_list(void)
             const bool sub_two_lines =
                 music_card ||
                 (comfortable && s_env->app_id[0] && strstr(s_env->app_id, "dsh") != nullptr);
-            lv_obj_set_height(a, sub_two_lines ? (line_h * 2) : line_h);
+            lv_obj_set_height(a, sub_two_lines ? (font_h * 2 + lsp) : font_h);
 
             if (can_play && s_env->tracks[i].playback_url[0]) {
                 const char *icon = (i == s_play_idx) ? MATERIAL_SYMBOLS_PAUSE : MATERIAL_SYMBOLS_PLAY_ARROW;

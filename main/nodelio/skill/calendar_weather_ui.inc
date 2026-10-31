@@ -184,7 +184,7 @@ static void daily_calendar(lv_obj_t* body) {
             lv_obj_set_style_bg_opa(cell, LV_OPA_COVER, 0);
             lv_obj_set_style_radius(cell, UI_RADIUS_XS, 0);
         }
-        char number[8];
+        char number[12];
         snprintf(number, sizeof(number), "%d", day);
         lv_obj_t* label =
             daily_label(cell, valid ? number : " ", current ? UI_ACCENT_SOFT : UI_TEXT);

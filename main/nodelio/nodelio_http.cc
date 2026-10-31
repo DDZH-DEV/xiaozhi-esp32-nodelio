@@ -459,10 +459,8 @@ static esp_err_t http_exchange_once(const char *method, const char *url, const c
     int fd = tcp_connect_ms(host.c_str(), port, connect_ms, io_ms);
     if (fd < 0) {
         ESP_LOGW(TAG, "TCP %s:%d fail (within %dms)", host.c_str(), port, connect_ms);
-        if (out_empty_recv) {
-            *out_empty_recv = true;
-        }
-        return ESP_FAIL;
+        /* 连不上 ≠ 空收：勿标 empty_recv，外层不应再刷 3×connect */
+        return ESP_ERR_TIMEOUT;
     }
 
     const char *payload = body ? body : "";
@@ -708,9 +706,13 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
         if (last == ESP_OK) {
             return last;
         }
-        /* 业务 4xx（Envelope 已写入）不重试；锁忙 / 空收 / 连不上才重试 */
+        /* 业务 4xx（Envelope 已写入）不重试；锁忙 / 空收才重试 */
         if (last == ESP_ERR_INVALID_ARG || last == ESP_ERR_NOT_SUPPORTED || last == ESP_ERR_NO_MEM ||
             last == ESP_ERR_INVALID_SIZE) {
+            break;
+        }
+        /* 主机不可达：开机 register 再刷 2×2s 只会拖死 Xiaozhi MQTT；deferred/hb 稍后补 */
+        if (last == ESP_ERR_TIMEOUT) {
             break;
         }
         if (last == ESP_ERR_INVALID_STATE || empty) {

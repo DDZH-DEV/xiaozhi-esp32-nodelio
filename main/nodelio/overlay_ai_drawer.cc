@@ -185,6 +185,120 @@ static void stop_eq_anims(void)
     }
 }
 
+static lv_point_t s_drag_press;
+static lv_coord_t s_drag_x;
+static lv_coord_t s_drag_y;
+static bool s_drag_moved;
+
+static void clamp_drawer_xy(lv_coord_t *x, lv_coord_t *y)
+{
+    const nodelio_display_profile_t *profile = nodelio_display_profile();
+    lv_coord_t w = lv_obj_get_width(s_ai_drawer);
+    lv_coord_t h = lv_obj_get_height(s_ai_drawer);
+    if (w < 40) {
+        w = UI_AI_DRAWER_W;
+    }
+    if (h < 40) {
+        h = UI_AI_DRAWER_H;
+    }
+    lv_coord_t max_x = (lv_coord_t)profile->width - w;
+    lv_coord_t max_y = (lv_coord_t)profile->height - h;
+    if (max_x < 0) {
+        max_x = 0;
+    }
+    if (max_y < 0) {
+        max_y = 0;
+    }
+    if (*x < 0) {
+        *x = 0;
+    } else if (*x > max_x) {
+        *x = max_x;
+    }
+    if (*y < 0) {
+        *y = 0;
+    } else if (*y > max_y) {
+        *y = max_y;
+    }
+}
+
+/** 未拖过：贴底默认位。拖过后用记住的左上角，并按当前宽高夹进屏幕。 */
+static void place_ai_drawer(void)
+{
+    if (!s_ai_drawer) {
+        return;
+    }
+    nodelio_nvs_config_t cfg;
+    nodelio_nvs_cache_get(&cfg);
+    if (!cfg.ai_pos_set) {
+        const nodelio_display_profile_t *profile = nodelio_display_profile();
+        lv_obj_align(s_ai_drawer, profile->nav_width ? LV_ALIGN_BOTTOM_RIGHT : LV_ALIGN_BOTTOM_MID,
+                     profile->nav_width ? -UI_PAD : 0, -(lv_coord_t)profile->chat_bottom);
+        return;
+    }
+    lv_coord_t x = cfg.ai_x;
+    lv_coord_t y = cfg.ai_y;
+    clamp_drawer_xy(&x, &y);
+    /* 绝对坐标。留着 BOTTOM_* 时 x/y 只是偏移，下次布局会弹回贴底。 */
+    lv_obj_align(s_ai_drawer, LV_ALIGN_TOP_LEFT, x, y);
+}
+
+static void persist_ai_pos(lv_coord_t x, lv_coord_t y)
+{
+    nodelio_nvs_config_t cfg;
+    nodelio_nvs_cache_get(&cfg);
+    cfg.ai_pos_set = 1;
+    cfg.ai_x = (int16_t)x;
+    cfg.ai_y = (int16_t)y;
+    s_cfg.ai_pos_set = 1;
+    s_cfg.ai_x = cfg.ai_x;
+    s_cfg.ai_y = cfg.ai_y;
+    nodelio_nvs_cache_put_preferences(&cfg);
+    Application::GetInstance().Schedule([]() {
+        nodelio_nvs_config_t snap;
+        nodelio_nvs_cache_get(&snap);
+        (void)nodelio_nvs_save_preferences(&snap);
+    });
+}
+
+static void on_ai_drawer_drag(lv_event_t *e)
+{
+    if (!s_ai_drawer) {
+        return;
+    }
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) {
+        return;
+    }
+    if (code == LV_EVENT_PRESSED) {
+        lv_obj_update_layout(s_ai_drawer);
+        lv_indev_get_point(indev, &s_drag_press);
+        s_drag_x = lv_obj_get_x(s_ai_drawer);
+        s_drag_y = lv_obj_get_y(s_ai_drawer);
+        s_drag_moved = false;
+        return;
+    }
+    if (code == LV_EVENT_PRESSING) {
+        lv_point_t p;
+        lv_indev_get_point(indev, &p);
+        lv_coord_t dx = p.x - s_drag_press.x;
+        lv_coord_t dy = p.y - s_drag_press.y;
+        if (!s_drag_moved && LV_ABS(dx) < 8 && LV_ABS(dy) < 8) {
+            return;
+        }
+        s_drag_moved = true;
+        lv_coord_t x = s_drag_x + dx;
+        lv_coord_t y = s_drag_y + dy;
+        clamp_drawer_xy(&x, &y);
+        lv_obj_align(s_ai_drawer, LV_ALIGN_TOP_LEFT, x, y);
+        return;
+    }
+    if (code == LV_EVENT_RELEASED && s_drag_moved) {
+        s_drag_moved = false;
+        persist_ai_pos(lv_obj_get_x(s_ai_drawer), lv_obj_get_y(s_ai_drawer));
+    }
+}
+
 /** CONNECT 用紧凑条，不再刷长正文（首屏太快读不完） */
 static void apply_drawer_chrome(bool connect_compact)
 {
@@ -204,10 +318,7 @@ static void apply_drawer_chrome(bool connect_compact)
             lv_obj_clear_flag(s_ai_drawer_body, LV_OBJ_FLAG_HIDDEN);
         }
     }
-    lv_obj_align(s_ai_drawer,
-                 nodelio_display_profile()->nav_width ? LV_ALIGN_BOTTOM_RIGHT : LV_ALIGN_BOTTOM_MID,
-                 nodelio_display_profile()->nav_width ? -UI_PAD : 0,
-                 -nodelio_display_profile()->chat_bottom);
+    place_ai_drawer();
 }
 
 static void start_eq_anims(chat_phase_t phase)
@@ -329,10 +440,7 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
     lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_FLOATING);
     /* 收窄居中胶囊，两侧留白，避免贴边通栏 */
     lv_obj_set_size(s_ai_drawer, UI_AI_DRAWER_W, UI_AI_DRAWER_H);
-    lv_obj_align(s_ai_drawer,
-                 nodelio_display_profile()->nav_width ? LV_ALIGN_BOTTOM_RIGHT : LV_ALIGN_BOTTOM_MID,
-                 nodelio_display_profile()->nav_width ? -UI_PAD : 0,
-                 -nodelio_display_profile()->chat_bottom);
+    place_ai_drawer();
     lv_obj_set_style_bg_color(s_ai_drawer, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(s_ai_drawer, UI_AI_DRAWER_BG_OPA, 0);
     lv_obj_set_style_radius(s_ai_drawer, 20, 0);
@@ -360,8 +468,14 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
     lv_obj_set_size(hdr, lv_pct(100), UI_AI_DRAWER_HDR_H);
     lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_radius(hdr, 12, 0);
+    lv_obj_set_style_bg_color(hdr, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(hdr, LV_OPA_COVER, LV_STATE_PRESSED);
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(hdr, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(hdr, on_ai_drawer_drag, LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_event_cb(hdr, on_ai_drawer_drag, LV_EVENT_PRESSING, nullptr);
+    lv_obj_add_event_cb(hdr, on_ai_drawer_drag, LV_EVENT_RELEASED, nullptr);
 
     lv_obj_t *left_box = lv_obj_create(hdr);
     lv_obj_remove_style_all(left_box);

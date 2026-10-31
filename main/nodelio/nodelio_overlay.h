@@ -31,6 +31,12 @@ void nodelio_overlay_on_chat_locked(const char *role, const char *text);
 /** 已持锁时更新对话页状态（聆听/说话/待命）. */
 void nodelio_overlay_on_status_locked(const char *status);
 
+/**
+ * 主题字库对象即将销毁前调用（已持显示锁）。
+ * 把仍指向旧 lv_font_t 的控件改到新字库，避免下一帧字形回调用悬空指针。
+ */
+void nodelio_overlay_retarget_font(const void *from_font, const void *to_font);
+
 #ifdef __cplusplus
 }
 #endif

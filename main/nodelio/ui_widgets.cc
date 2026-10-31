@@ -1,7 +1,10 @@
 #include "ui_widgets.h"
 #include "board_info.h"
 
-#include "fonts/font_puhui_14_1.h"
+void nl_ov_set_font(lv_obj_t *obj);
+int nl_ov_ui_line_box(void);
+int nl_ov_ui_font_line_h(void);
+int nl_ov_wrapped_text_h(const char *str, int max_w);
 
 static lv_style_t st_btn_base;
 static lv_style_t st_btn_pressed;
@@ -11,16 +14,9 @@ static lv_style_t st_tab_base;
 static lv_style_t st_tab_checked;
 static bool s_inited;
 
-static const lv_font_t *ui_font(void)
-{
-    return &font_puhui_14_1;
-}
-
 static void apply_font(lv_obj_t *obj)
 {
-    if (obj) {
-        lv_obj_set_style_text_font(obj, ui_font(), 0);
-    }
+    nl_ov_set_font(obj);
 }
 
 void ui_styles_init(void)
@@ -71,17 +67,34 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
 {
     ui_styles_init();
 
-    /* 一行两列半宽；卡内左右：Icon Pod | 标题/副文 */
-    const int pad_x = 16;
+    /* 按当前容器宽度分列。技能卡占住右侧时左区变窄，仍要铺满，避免一列旁边空出半张卡。 */
     const int gap = UI_GAP;
     const auto* profile = nodelio_display_profile();
-    const int columns = profile->nav_width ? 4 : 2;
-    const int tile_w =
-        (profile->width - profile->nav_width - pad_x * 2 - gap * (columns - 1)) / columns;
+    int avail = parent ? (int)lv_obj_get_content_width(parent) : 0;
+    if (avail < 160) {
+        avail = profile->width - profile->nav_width - 16 * 2;
+    }
+    const int max_cols = profile->nav_width ? 4 : 2;
+    const int min_tile = 220;
+    int columns = max_cols;
+    while (columns > 1) {
+        const int tw = (avail - gap * (columns - 1)) / columns;
+        if (tw >= min_tile) {
+            break;
+        }
+        columns--;
+    }
+    const int tile_w = (avail - gap * (columns - 1)) / columns;
 
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, tile_w, UI_SETTINGS_TILE_H);
+    /* 标题 1 行 + 副文 2 行。大字档行框变高，卡片跟着长，避免副文被底边裁掉。 */
+    const int line = nl_ov_ui_line_box();
+    int tile_h = 12 + line + 4 + line * 2 + 12;
+    if (tile_h < UI_SETTINGS_TILE_H) {
+        tile_h = UI_SETTINGS_TILE_H;
+    }
+    lv_obj_set_size(btn, tile_w, tile_h);
     lv_obj_set_ext_click_area(btn, 6);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
@@ -95,7 +108,9 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_set_style_pad_right(btn, 8, 0);
     lv_obj_set_style_pad_top(btn, 0, 0);
     lv_obj_set_style_pad_bottom(btn, 0, 0);
-    lv_obj_set_style_pad_column(btn, 8, 0);
+    const int pod_sz = 46;
+    const int col_gap = 16;
+    lv_obj_set_style_pad_column(btn, col_gap, 0);
 
     lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
     lv_obj_set_style_border_color(btn, lv_color_hex(accent_c), LV_STATE_PRESSED);
@@ -109,8 +124,8 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
 
     lv_obj_t *pod = lv_obj_create(btn);
     lv_obj_remove_style_all(pod);
-    lv_obj_set_size(pod, 36, 36);
-    lv_obj_set_style_radius(pod, 10, 0);
+    lv_obj_set_size(pod, pod_sz, pod_sz);
+    lv_obj_set_style_radius(pod, 12, 0);
     lv_obj_set_style_bg_color(pod, lv_color_hex(accent_c), 0);
     lv_obj_set_style_bg_opa(pod, LV_OPA_20, 0);
     lv_obj_set_style_border_width(pod, 1, 0);
@@ -136,10 +151,15 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_clear_flag(text, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(text, LV_OBJ_FLAG_SCROLLABLE);
 
+    /* 文字区宽 = 卡宽 - 左右内边距 - 列间距 - 图标底座 */
+    const int text_w = tile_w - 10 - 8 - col_gap - pod_sz;
+    const int font_h = nl_ov_ui_font_line_h();
+
     lv_obj_t *t = lv_label_create(text);
     lv_label_set_text(t, title ? title : "");
     lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
     lv_obj_set_width(t, lv_pct(100));
+    lv_obj_set_height(t, font_h);
     apply_font(t);
     lv_obj_set_style_text_align(t, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_color(t, UI_TEXT, 0);
@@ -149,6 +169,7 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_label_set_text(s, sub ? sub : "");
     lv_label_set_long_mode(s, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s, lv_pct(100));
+    lv_obj_set_height(s, nl_ov_wrapped_text_h(sub, text_w));
     apply_font(s);
     lv_obj_set_style_text_align(s, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_color(s, UI_TEXT_MUTED, 0);
