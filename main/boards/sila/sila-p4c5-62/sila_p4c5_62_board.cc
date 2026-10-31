@@ -215,6 +215,15 @@ private:
     PwmBacklight backlight_{DISPLAY_BACKLIGHT_PIN, false, 20000, 0};
     Button boot_button_{BOOT_BUTTON_GPIO};
     std::unique_ptr<SilaAxs15260Touch> touch_;
+    i2c_master_dev_handle_t pmu_dev_ = nullptr;
+    bool pmu_ready_ = false;
+    bool batt_present_ = false;
+    bool batt_absent_logged_ = false;
+    bool pmu_read_warned_ = false;
+    int batt_level_ = -1;
+    bool batt_charging_ = false;
+    bool batt_discharging_ = false;
+    int64_t batt_cached_at_ = 0;
     SilaP4Display* display_ = nullptr;
     esp_timer_handle_t idle_timer_ = nullptr;
     std::atomic<TickType_t> last_activity_{0};
@@ -337,10 +346,13 @@ public:
                   &codec_bus_);
         CreateBus(PERIPHERAL_I2C_PORT, PERIPHERAL_I2C_SDA_PIN, PERIPHERAL_I2C_SCL_PIN,
                   &peripheral_bus_);
-        // Presence only: do not change regulator, charge or battery configuration.
+        // Read fuel gauge only. Do not write regulator, charge, or gauge registers.
         const esp_err_t pmu = i2c_master_probe(peripheral_bus_, PMU_I2C_ADDRESS, 50);
-        ESP_LOGI(kTag, "PMU address 0x34 %s; rails/charging left at hardware defaults",
-                 pmu == ESP_OK ? "ACK" : "not responding");
+        if (pmu == ESP_OK) {
+            AttachPmu();
+        } else {
+            ESP_LOGI(kTag, "PMU address 0x34 not responding; battery icon off");
+        }
         InitializeDisplay();
         touch_ = std::make_unique<SilaAxs15260Touch>();
         const esp_err_t touch_result = touch_->Start(peripheral_bus_, display_->Handle(), [this]() {
@@ -425,6 +437,109 @@ public:
         // A network reconnect in idle does not wake the display. Screen timeout
         // never disconnects Hosted or stops the current playback.
         WifiBoard::SetPowerSaveLevel(level);
+    }
+
+    bool ReadPmuReg(uint8_t reg, uint8_t* value) {
+        if (!pmu_dev_ || value == nullptr) {
+            return false;
+        }
+        const esp_err_t err = i2c_master_transmit_receive(pmu_dev_, &reg, 1, value, 1, 50);
+        if (err != ESP_OK) {
+            if (!pmu_read_warned_) {
+                pmu_read_warned_ = true;
+                ESP_LOGW(kTag, "PMU reg 0x%02X read: %s", reg, esp_err_to_name(err));
+            }
+            return false;
+        }
+        return true;
+    }
+
+    void AttachPmu() {
+        i2c_device_config_t device = {};
+        device.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+        device.device_address = PMU_I2C_ADDRESS;
+        device.scl_speed_hz = 100000;
+        if (i2c_master_bus_add_device(peripheral_bus_, &device, &pmu_dev_) != ESP_OK) {
+            ESP_LOGW(kTag, "PMU 0x34 ACK but device add failed; battery icon off");
+            return;
+        }
+        uint8_t id = 0;
+        if (!ReadPmuReg(0x03, &id) || id != 0x4A) {
+            ESP_LOGW(kTag, "PMU 0x34 ACK but chip id 0x%02X (want 0x4A); battery icon off", id);
+            return;
+        }
+        pmu_ready_ = true;
+        ESP_LOGI(kTag, "AXP2101 id 0x4A; fuel gauge read-only, rails/charging left at defaults");
+    }
+
+    bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
+        if (!pmu_ready_) {
+            return false;
+        }
+        if (asleep_.load()) {
+            if (!batt_present_) {
+                return false;
+            }
+            level = batt_level_;
+            charging = batt_charging_;
+            discharging = batt_discharging_;
+            return true;
+        }
+        const int64_t now = esp_timer_get_time();
+        constexpr int64_t kFreshUs = 15LL * 1000 * 1000;
+        if (batt_cached_at_ != 0 && now - batt_cached_at_ < kFreshUs) {
+            if (!batt_present_) {
+                return false;
+            }
+            level = batt_level_;
+            charging = batt_charging_;
+            discharging = batt_discharging_;
+            return true;
+        }
+        uint8_t st1 = 0;
+        uint8_t st2 = 0;
+        uint8_t pct = 0;
+        if (!ReadPmuReg(0x00, &st1) || !ReadPmuReg(0x01, &st2) || !ReadPmuReg(0xA4, &pct)) {
+            // Keep the last good sample; retry sooner than a full fresh window.
+            batt_cached_at_ = now - (kFreshUs - 5LL * 1000 * 1000);
+            if (!batt_present_) {
+                return false;
+            }
+            level = batt_level_;
+            charging = batt_charging_;
+            discharging = batt_discharging_;
+            return true;
+        }
+        batt_cached_at_ = now;
+        pmu_read_warned_ = false;
+        const bool present = (st1 & 0x08) != 0;
+        if (!present) {
+            batt_present_ = false;
+            if (!batt_absent_logged_) {
+                batt_absent_logged_ = true;
+                ESP_LOGI(kTag, "AXP2101 battery absent (status1=0x%02X); status bar hidden", st1);
+            }
+            return false;
+        }
+        const int direction = (st2 >> 5) & 0x3;
+        const int charge_state = st2 & 0x7;
+        const bool is_charging =
+            direction == 1 || charge_state == 1 || charge_state == 2 || charge_state == 3;
+        const bool is_discharging = direction == 2 && !is_charging;
+        const int lv = pct > 100 ? 100 : pct;
+        if (!batt_present_ || lv != batt_level_ || is_charging != batt_charging_) {
+            ESP_LOGI(kTag, "battery %d%% %s status1=0x%02X status2=0x%02X", lv,
+                     is_charging ? "charging" : (is_discharging ? "discharging" : "idle"), st1, st2);
+        }
+        batt_absent_logged_ = false;
+        batt_present_ = true;
+        batt_level_ = lv;
+        batt_charging_ = is_charging;
+        batt_discharging_ = is_discharging;
+        level = lv;
+        charging = is_charging;
+        discharging = is_discharging;
+        return true;
     }
 
     void SetIdleSleepSeconds(int seconds) override {

@@ -116,7 +116,7 @@ GPIO30的LEDC占用提示、MAC读取错误也需后续验证，当前未据此�
 [SDIO接收实现](https://github.com/espressif/esp-hosted-mcu/blob/v2.13.1/host/drivers/transport/sdio/sdio_drv.c)、
 [官方从机OTA示例](https://github.com/espressif/esp-hosted-mcu/tree/v2.13.1/examples/host_performs_slave_ota)。
 
-AXP2101 总线只做地址 ACK 探测，不将 ACK 当作芯片 ID 验证，也不虚报电量。
+AXP2101 先做地址 ACK，再读芯片 ID（`0x03 == 0x4A`）。电池在位（status1 bit3）才把电量百分比和充电状态画到顶栏；不写供电、充电或电量计寄存器。
 图中 DCDC1=3.3V，ALDO2/3/4 为摄像头相关 C1V8/C1V5/C3V3；电池容量、充电限制与
 实际贴装仍需确认。首期保持硬件电源默认配置，不初始化摄像头、陀螺仪和 TF 卡。
 

@@ -109,6 +109,7 @@ extern lv_obj_t *s_clock_lbl;
 extern lv_obj_t *s_status_lbl;
 extern lv_obj_t *s_wifi_lbl;
 extern lv_obj_t *s_cloud_lbl;
+extern lv_obj_t *s_batt_lbl;
 extern lv_obj_t *s_status_bar;
 extern esp_timer_handle_t s_status_tmr;
 extern lv_timer_t *s_activity_tmr;

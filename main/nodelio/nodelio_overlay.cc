@@ -90,6 +90,7 @@ lv_obj_t *s_clock_lbl;
 lv_obj_t *s_status_lbl;
 lv_obj_t *s_wifi_lbl;
 lv_obj_t *s_cloud_lbl;
+lv_obj_t *s_batt_lbl;
 lv_obj_t *s_status_bar;
 esp_timer_handle_t s_status_tmr;
 lv_timer_t *s_activity_tmr;
@@ -373,7 +374,7 @@ static void status_bar_relayout(void)
     if (s_status_lbl && s_brand_lbl) {
         lv_obj_align_to(s_status_lbl, s_brand_lbl, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
     }
-    /* 右：时钟 · WiFi · 云，时钟贴图标只留一点空 */
+    /* 右：电量 · 时钟 · WiFi · 云。无电池时电量隐藏，时钟贴回 WiFi。 */
     if (s_cloud_lbl) {
         lv_obj_align(s_cloud_lbl, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD, NL_STATUS_Y);
     }
@@ -384,6 +385,9 @@ static void status_bar_relayout(void)
         lv_obj_align_to(s_clock_lbl, s_wifi_lbl, LV_ALIGN_OUT_LEFT_MID, -4, 0);
     } else if (s_clock_lbl) {
         lv_obj_align(s_clock_lbl, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD - 40, NL_STATUS_Y);
+    }
+    if (s_batt_lbl && s_clock_lbl && !lv_obj_has_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_align_to(s_batt_lbl, s_clock_lbl, LV_ALIGN_OUT_LEFT_MID, -6, 0);
     }
 }
 
@@ -425,6 +429,71 @@ static const char *wifi_status_glyph(bool wifi_ok)
     return MATERIAL_SYMBOLS_WIFI_1_BAR;
 }
 
+/** 无电池 / 读失败为 -1，顶栏不画图标。 */
+static int s_batt_level = -1;
+static bool s_batt_charging = false;
+
+static const char *battery_status_glyph(int level, bool charging)
+{
+    if (charging) {
+        return MATERIAL_SYMBOLS_BATTERY_ANDROID_FRAME_BOLT;
+    }
+    const char *levels[] = {
+        MATERIAL_SYMBOLS_BATTERY_ANDROID_0,
+        MATERIAL_SYMBOLS_BATTERY_ANDROID_FRAME_1,
+        MATERIAL_SYMBOLS_BATTERY_ANDROID_FRAME_2,
+        MATERIAL_SYMBOLS_BATTERY_ANDROID_FRAME_3,
+        MATERIAL_SYMBOLS_BATTERY_ANDROID_FRAME_4,
+        MATERIAL_SYMBOLS_BATTERY_ANDROID_FRAME_5,
+        MATERIAL_SYMBOLS_BATTERY_ANDROID_FRAME_6,
+        MATERIAL_SYMBOLS_BATTERY_ANDROID_FRAME_FULL,
+    };
+    const int idx = level <= 0 ? 0 : (level >= 100 ? 7 : 1 + ((level - 1) * 6 / 99));
+    return levels[idx];
+}
+
+static void sample_battery_cache(void)
+{
+    int level = 0;
+    bool charging = false;
+    bool discharging = false;
+    if (!Board::GetInstance().GetBatteryLevel(level, charging, discharging)) {
+        s_batt_level = -1;
+        s_batt_charging = false;
+        return;
+    }
+    if (level < 0) {
+        level = 0;
+    } else if (level > 100) {
+        level = 100;
+    }
+    s_batt_level = level;
+    s_batt_charging = charging;
+    (void)discharging;
+}
+
+static void refresh_battery_lbl(void)
+{
+    if (!s_batt_lbl) {
+        return;
+    }
+    if (s_batt_level < 0) {
+        lv_obj_add_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    const char *glyph = battery_status_glyph(s_batt_level, s_batt_charging);
+    lv_obj_set_style_text_font(s_batt_lbl, &font_material_symbols_20_4, 0);
+    lv_label_set_text(s_batt_lbl, glyph);
+    lv_color_t color = UI_TEXT_SUB;
+    if (s_batt_charging) {
+        color = UI_ACCENT;
+    } else if (s_batt_level <= 15) {
+        color = UI_WARN;
+    }
+    lv_obj_set_style_text_color(s_batt_lbl, color, 0);
+    lv_obj_remove_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN);
+}
+
 void nl_ov_refresh_status_icons(bool wifi_ok, bool cloud_ok, const char *msg)
 {
     s_wifi_ok = wifi_ok;
@@ -443,6 +512,7 @@ void nl_ov_refresh_status_icons(bool wifi_ok, bool cloud_ok, const char *msg)
     /* msg 不再刷布局版本；左挂编译戳开机写死，避免断网变 v0 */
     (void)msg;
     refresh_clock_lbl();
+    refresh_battery_lbl();
     status_bar_relayout();
 }
 
@@ -456,6 +526,8 @@ static void status_poll_cb(void *arg)
     if (nodelio_voice_session_active()) {
         return;
     }
+    /* I2C 在显示锁之外。无电池时 GetBatteryLevel 返回 false，图标保持隐藏。 */
+    sample_battery_cache();
     /* 勿 esp_wifi_sta_get_ap_info：未关联时 IDF 会刷 Haven't to connect…，像抢网 */
     bool wifi_ok = nodelio_wifi_has_ip();
     bool cloud_ok = nodelio_mqtt_panel_connected();
@@ -861,7 +933,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_clear_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_root, LV_OBJ_FLAG_HIDDEN);
 
-    /* top chrome：左品牌+编译戳 · 右 时钟/WiFi/云 */
+    /* top chrome：左品牌+编译戳 · 右 电量/时钟/WiFi/云 */
     s_status_bar = lv_obj_create(s_root);
     lv_obj_t *bar = s_status_bar;
     lv_obj_remove_style_all(bar);
@@ -903,6 +975,12 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_set_style_text_font(s_wifi_lbl, &font_material_symbols_20_4, 0);
     lv_label_set_text(s_wifi_lbl, MATERIAL_SYMBOLS_WIFI_OFF);
     lv_obj_set_style_text_color(s_wifi_lbl, UI_TEXT_MUTED, 0);
+
+    s_batt_lbl = lv_label_create(bar);
+    lv_obj_set_style_text_font(s_batt_lbl, &font_material_symbols_20_4, 0);
+    lv_label_set_text(s_batt_lbl, MATERIAL_SYMBOLS_BATTERY_ANDROID_FRAME_FULL);
+    lv_obj_set_style_text_color(s_batt_lbl, UI_TEXT_SUB, 0);
+    lv_obj_add_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN);
     status_bar_relayout();
 
     // Wide panels use a left rail; square panels retain their bottom tabs.

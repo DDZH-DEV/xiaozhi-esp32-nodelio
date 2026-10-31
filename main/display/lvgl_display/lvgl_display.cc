@@ -285,6 +285,8 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
             lv_label_set_text(battery_label_, battery_icon_);
         }
 
+        // Wall panel draws its own status-bar glyph and must not raise this popup.
+#if !CONFIG_NODELIO_PANEL
         // Check low battery popup only when clock tick event is triggered
         // Because when initializing, the battery level is not ready yet.
         if (low_battery_popup_ != nullptr && !update_all) {
@@ -302,6 +304,7 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
                 }
             }
         }
+#endif
     }
 
     // Update network icon every 10 seconds
