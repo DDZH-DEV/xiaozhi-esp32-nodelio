@@ -371,6 +371,10 @@ void Ota::MarkCurrentVersionValid() {
 }
 
 bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progress, size_t speed)> callback) {
+#if !CONFIG_FIRMWARE_OTA_ENABLED
+    ESP_LOGW(TAG, "Firmware installation disabled by build configuration");
+    return false;
+#endif
     ESP_LOGI(TAG, "Upgrading firmware from %s", firmware_url.c_str());
     esp_ota_handle_t update_handle = 0;
     auto update_partition = esp_ota_get_next_update_partition(NULL);

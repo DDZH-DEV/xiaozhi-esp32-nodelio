@@ -6,6 +6,15 @@ config OTA_URL
     help
         The application will access this URL to check for new firmwares and server address.
 
+config FIRMWARE_OTA_ENABLED
+    bool "Allow firmware installation over the network"
+    default n if BOARD_TYPE_SILA_P4C5_62
+    default y
+    help
+        Disable during board bring-up until the firmware channel checks the
+        board identity, flash layout and companion firmware compatibility.
+        Activation and retrieval of voice server settings remain available.
+
 choice
     prompt "Flash Assets"
     default FLASH_DEFAULT_ASSETS if !USE_EMOTE_MESSAGE_STYLE
@@ -440,6 +449,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_SILA_86
         bool "SILA-86 (NodeLio wall panel)"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_SILA_P4C5_62
+        bool "SILA-P4C5 6.2-inch (P4X v3, AXS15260, bring-up)"
+        depends on IDF_TARGET_ESP32P4
     config BOARD_TYPE_SPOTPEAR_ESP32_S3_1_28_BOX
         bool "Spotpear ESP32-S3 1.28 Box"
         depends on IDF_TARGET_ESP32S3

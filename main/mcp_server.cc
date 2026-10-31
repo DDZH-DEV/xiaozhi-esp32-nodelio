@@ -212,6 +212,7 @@ void McpServer::AddUserOnlyTools() {
                     });
 
     // Firmware upgrade
+#if CONFIG_FIRMWARE_OTA_ENABLED
     AddUserOnlyTool(
         "self.upgrade_firmware",
         "Upgrade firmware from a specific URL. This will download and install the firmware, then "
@@ -232,6 +233,8 @@ void McpServer::AddUserOnlyTools() {
 
             return true;
         });
+
+#endif
 
     // Display control
 #ifdef HAVE_LVGL

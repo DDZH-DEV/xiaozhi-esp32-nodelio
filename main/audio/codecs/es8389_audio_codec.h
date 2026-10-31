@@ -3,11 +3,12 @@
 
 #include "audio_codec.h"
 
-#include <driver/i2c_master.h>
 #include <driver/gpio.h>
+#include <driver/i2c_master.h>
 #include <esp_codec_dev.h>
 #include <esp_codec_dev_defaults.h>
 #include <mutex>
+#include <vector>
 
 class Es8389AudioCodec : public AudioCodec {
 private:
@@ -21,6 +22,8 @@ private:
     bool output_device_opened_ = false;
     gpio_num_t pa_pin_ = GPIO_NUM_NC;
     std::mutex data_if_mutex_;
+    // One playback writer (AudioService); allocated once, reused for mono -> L/R.
+    std::vector<int16_t> output_buffer_;
 
     void CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din);
 

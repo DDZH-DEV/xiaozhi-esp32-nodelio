@@ -2804,6 +2804,10 @@ void Application::RequestManualFirmwareCheck() {
 #endif
 
 bool Application::UpgradeFirmware(const std::string& url, const std::string& version) {
+#if !CONFIG_FIRMWARE_OTA_ENABLED
+    ESP_LOGW(TAG, "Firmware installation disabled by build configuration");
+    return false;
+#endif
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
 

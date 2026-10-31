@@ -1,6 +1,7 @@
 #include "es8389_audio_codec.h"
 
 #include <esp_log.h>
+#include <algorithm>
 
 static const char TAG[] = "Es8389AudioCodec";
 
@@ -11,6 +12,9 @@ Es8389AudioCodec::Es8389AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
     input_reference_ = false; // 是否使用参考输入，实现回声消除
     input_channels_ = input_channels; // 输入通道数
     output_channels_ = output_channels; // 输出通道数
+    if (output_channels_ > 1) {
+        output_buffer_.resize(240 * output_channels_);
+    }
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
     input_gain_ = 40;
@@ -215,14 +219,23 @@ int Es8389AudioCodec::Write(const int16_t* data, int samples) {
         if (output_channels_ > 1) {
             // xiaozhi 全链路产出单声道 PCM；双声道输出时复制到 L/R 两路，
             // 否则样本数不匹配会导致 I2S 欠载/杂音。
-            std::vector<int16_t> stereo(static_cast<size_t>(samples) * output_channels_);
-            for (int i = 0; i < samples; ++i) {
-                for (int c = 0; c < output_channels_; ++c) {
-                    stereo[static_cast<size_t>(i) * output_channels_ + c] = data[i];
+            int written = 0;
+            while (written < samples) {
+                const int chunk = std::min(samples - written, 240);
+                for (int i = 0; i < chunk; ++i) {
+                    for (int c = 0; c < output_channels_; ++c) {
+                        output_buffer_[static_cast<size_t>(i) * output_channels_ + c] =
+                            data[written + i];
+                    }
                 }
+                const int result = esp_codec_dev_write(output_dev_, output_buffer_.data(),
+                                                       chunk * output_channels_ * sizeof(int16_t));
+                if (result != ESP_CODEC_DEV_OK) {
+                    ESP_LOGE(TAG, "Playback write failed: %d", result);
+                    return written;
+                }
+                written += chunk;
             }
-            ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(
-                output_dev_, stereo.data(), stereo.size() * sizeof(int16_t)));
         } else {
             ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
         }

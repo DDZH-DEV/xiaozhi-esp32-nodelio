@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <esp_err.h>
+#include <sdkconfig.h>
 #include "board.h"
 #include "network_error.h"
 
@@ -18,7 +19,13 @@ public:
     NetworkResult<> CheckVersion();
     esp_err_t Activate();
     bool HasActivationChallenge() { return has_activation_challenge_; }
-    bool HasNewVersion() { return has_new_version_; }
+    bool HasNewVersion() {
+#if CONFIG_FIRMWARE_OTA_ENABLED
+        return has_new_version_;
+#else
+        return false;
+#endif
+    }
     bool HasMqttConfig() { return has_mqtt_config_; }
     bool HasWebsocketConfig() { return has_websocket_config_; }
     bool HasActivationCode() { return has_activation_code_; }
