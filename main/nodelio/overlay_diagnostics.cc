@@ -85,13 +85,14 @@ void nl_ov_build_diagnostics(lv_obj_t* body) {
         },
         LV_EVENT_PRESSING, state);
 
-    Label(body,
-          "选择一路麦克风，录音 5 "
-          "秒后通过扬声器回放。只在本机处理，不上传；可分别靠近两颗麦克风说话。");
-    state->status = Label(body, "等待测试（需处于待机或配网状态）");
     auto* codec = Board::GetInstance().GetAudioCodec();
     const int microphones =
         codec ? codec->input_channels() - (codec->input_reference() ? 1 : 0) : 0;
+    Label(body, "选择麦克风，录音 5 秒后通过扬声器回放。只在本机处理，不上传。");
+    if (codec && codec->input_reference()) {
+        Label(body, "播放参考通道不作为麦克风测试；此页只显示实际配置的麦克风通道。");
+    }
+    state->status = Label(body, "等待测试（需处于待机或配网状态）");
     for (unsigned i = 0; i < 2; ++i) {
         if (static_cast<int>(i) >= microphones) {
             break;

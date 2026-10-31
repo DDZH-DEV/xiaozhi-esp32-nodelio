@@ -257,8 +257,9 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
     const char* detector = wake_detector_ == WakeDetector::kWakeNet
                                ? "WakeNet"
                                : (wake_detector_ == WakeDetector::kMultiNet ? "MultiNet" : "none");
-    ESP_LOGI(TAG, "Initialized FD AFE, detector: %s, NS: off, feed: %d, fetch: %d", detector,
-             afe_iface_->get_feed_chunksize(afe_data_), afe_iface_->get_fetch_chunksize(afe_data_));
+    ESP_LOGI(TAG, "Initialized FD AFE, input: %s, detector: %s, NS: off, feed: %d, fetch: %d",
+             input_format.c_str(), detector, afe_iface_->get_feed_chunksize(afe_data_),
+             afe_iface_->get_fetch_chunksize(afe_data_));
     ESP_LOGI(TAG, "After AFE create: free=%u min=%u largest=%u",
              heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
@@ -387,9 +388,8 @@ void AfeAudioEngine::OnVadStateChange(std::function<void(bool speaking)> callbac
 void AfeAudioEngine::UpdateActiveState() {
     EventBits_t bits = xEventGroupGetBits(event_group_);
     const bool afe_active =
-        afe_data_ != nullptr &&
-        ((bits & kWakeWordEnabled) || (bits & kLocalCommandEnabled) ||
-         (kUseAfeForVoiceProcessing && (bits & kVoiceProcessingEnabled)));
+        afe_data_ != nullptr && ((bits & kWakeWordEnabled) || (bits & kLocalCommandEnabled) ||
+                                 (kUseAfeForVoiceProcessing && (bits & kVoiceProcessingEnabled)));
     if (afe_active) {
         xEventGroupSetBits(event_group_, kAfeActive);
     } else {
@@ -438,9 +438,8 @@ void AfeAudioEngine::ApplyAfeControls() {
         const bool media_playing = false;
 #endif
         const bool enable_aec =
-            !media_playing &&
-            ((device_aec_enabled_.load() && (bits & kVoiceProcessingEnabled)) ||
-             ((bits & kWakeWordEnabled) && codec_->output_enabled()));
+            !media_playing && ((device_aec_enabled_.load() && (bits & kVoiceProcessingEnabled)) ||
+                               ((bits & kWakeWordEnabled) && codec_->output_enabled()));
         if (enable_aec) {
             afe_iface_->enable_aec(afe_data_);
         } else {

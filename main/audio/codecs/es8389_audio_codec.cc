@@ -5,13 +5,18 @@
 
 static const char TAG[] = "Es8389AudioCodec";
 
-Es8389AudioCodec::Es8389AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port, int input_sample_rate, int output_sample_rate,
-    gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din,
-    gpio_num_t pa_pin, uint8_t es8389_addr, bool use_mclk, int input_channels, int output_channels) {
-    duplex_ = true; // 是否双工
-    input_reference_ = false; // 是否使用参考输入，实现回声消除
-    input_channels_ = input_channels; // 输入通道数
-    output_channels_ = output_channels; // 输出通道数
+Es8389AudioCodec::Es8389AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
+                                   int input_sample_rate, int output_sample_rate, gpio_num_t mclk,
+                                   gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din,
+                                   gpio_num_t pa_pin, uint8_t es8389_addr, bool use_mclk,
+                                   int input_channels, int output_channels) {
+    duplex_ = true;  // 是否双工
+    // esp_codec_dev routes ADCL + DACR with no_dac_ref=false. The second
+    // captured slot is playback reference, never a second microphone.
+    assert(input_channels == 1 || input_channels == 2);
+    input_reference_ = input_channels == 2;
+    input_channels_ = input_channels;    // 输入通道数
+    output_channels_ = output_channels;  // 输出通道数
     if (output_channels_ > 1) {
         output_buffer_.resize(240 * output_channels_);
     }
@@ -48,6 +53,7 @@ Es8389AudioCodec::Es8389AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
     es8389_cfg.codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH;
     es8389_cfg.pa_pin = pa_pin;
     es8389_cfg.use_mclk = use_mclk;
+    es8389_cfg.no_dac_ref = false;
     es8389_cfg.hw_gain.pa_voltage = 5.0;
     es8389_cfg.hw_gain.codec_dac_voltage = 3.3;
     codec_if_ = es8389_codec_new(&es8389_cfg);
@@ -71,7 +77,9 @@ Es8389AudioCodec::Es8389AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
     assert(input_dev_ != NULL);
     esp_codec_set_disable_when_closed(output_dev_, false);
     esp_codec_set_disable_when_closed(input_dev_, false);
-    ESP_LOGI(TAG, "Es8389AudioCodec initialized");
+    ESP_LOGI(TAG, "Es8389AudioCodec initialized: capture=%s, rate=%d, output_channels=%d",
+             input_reference_ ? "MR (mic + DAC reference)" : "M", input_sample_rate_,
+             output_channels_);
 }
 
 Es8389AudioCodec::~Es8389AudioCodec() {
@@ -86,7 +94,8 @@ Es8389AudioCodec::~Es8389AudioCodec() {
     audio_codec_delete_data_if(data_if_);
 }
 
-void Es8389AudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din) {
+void Es8389AudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws,
+                                            gpio_num_t dout, gpio_num_t din) {
     assert(input_sample_rate_ == output_sample_rate_);
 
     i2s_chan_config_t chan_cfg = {
@@ -101,39 +110,31 @@ void Es8389AudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gp
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_handle_, &rx_handle_));
 
     i2s_std_config_t std_cfg = {
-        .clk_cfg = {
-            .sample_rate_hz = (uint32_t)output_sample_rate_,
-            .clk_src = I2S_CLK_SRC_DEFAULT,
+        .clk_cfg =
+            {
+                .sample_rate_hz = (uint32_t)output_sample_rate_,
+                .clk_src = I2S_CLK_SRC_DEFAULT,
 #if SOC_I2S_HW_VERSION_2
-            .ext_clk_freq_hz = 0,
+                .ext_clk_freq_hz = 0,
 #endif
-            .mclk_multiple = I2S_MCLK_MULTIPLE_256,
-        },
-        .slot_cfg = {
-            .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
-            .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
-            .slot_mode = I2S_SLOT_MODE_STEREO,
-            .slot_mask = I2S_STD_SLOT_BOTH,
-            .ws_width = I2S_DATA_BIT_WIDTH_16BIT,
-            .ws_pol = false,
-            .bit_shift = true,
-            .left_align = true,
-            .big_endian = false,
-            .bit_order_lsb = false
-        },
-        .gpio_cfg = {
-            .mclk = mclk,
-            .bclk = bclk,
-            .ws = ws,
-            .dout = dout,
-            .din = din,
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv = false
-            }
-        }
-    };
+                .mclk_multiple = I2S_MCLK_MULTIPLE_256,
+            },
+        .slot_cfg = {.data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
+                     .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
+                     .slot_mode = I2S_SLOT_MODE_STEREO,
+                     .slot_mask = I2S_STD_SLOT_BOTH,
+                     .ws_width = I2S_DATA_BIT_WIDTH_16BIT,
+                     .ws_pol = false,
+                     .bit_shift = true,
+                     .left_align = true,
+                     .big_endian = false,
+                     .bit_order_lsb = false},
+        .gpio_cfg = {.mclk = mclk,
+                     .bclk = bclk,
+                     .ws = ws,
+                     .dout = dout,
+                     .din = din,
+                     .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false}}};
 
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle_, &std_cfg));
@@ -187,7 +188,7 @@ void Es8389AudioCodec::EnableOutput(bool enable) {
             output_device_opened_ = true;
         }
         ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(output_dev_, output_volume_));
-        ESP_ERROR_CHECK(esp_codec_dev_set_out_mute(output_dev_, false));
+        SetDacMute(false);
         if (pa_pin_ != GPIO_NUM_NC) {
             gpio_set_level(pa_pin_, 1);
         }
@@ -198,7 +199,7 @@ void Es8389AudioCodec::EnableOutput(bool enable) {
         // channel silent even though esp_codec_dev_open reports success.
         // Muting preserves the logical power state without reconfiguring I2S.
         if (output_device_opened_) {
-            ESP_ERROR_CHECK(esp_codec_dev_set_out_mute(output_dev_, true));
+            SetDacMute(true);
         }
         if (pa_pin_ != GPIO_NUM_NC) {
             gpio_set_level(pa_pin_, 0);
@@ -207,9 +208,26 @@ void Es8389AudioCodec::EnableOutput(bool enable) {
     AudioCodec::EnableOutput(enable);
 }
 
+void Es8389AudioCodec::SetDacMute(bool mute) {
+    // esp_codec_dev 1.6.2's ES8389 mute callback writes ADC register 0x20.
+    // Control DAC mute at 0x40 directly so speaker power saving cannot mute
+    // capture. Keep the data-format bits and the shared I2S clock unchanged.
+    constexpr int kDacFormatMuteRegister = 0x40;
+    constexpr int kMuteMask = 0x03;
+    int value = 0;
+    ESP_ERROR_CHECK(esp_codec_dev_read_reg(output_dev_, kDacFormatMuteRegister, &value));
+    value = (value & ~kMuteMask) | (mute ? kMuteMask : 0);
+    ESP_ERROR_CHECK(esp_codec_dev_write_reg(output_dev_, kDacFormatMuteRegister, value));
+}
+
 int Es8389AudioCodec::Read(int16_t* dest, int samples) {
-    if (input_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t)));
+    if (!input_enabled_) {
+        return 0;
+    }
+    const int result = esp_codec_dev_read(input_dev_, dest, samples * sizeof(int16_t));
+    if (result != ESP_CODEC_DEV_OK) {
+        ESP_LOGE(TAG, "Capture read failed: %d", result);
+        return 0;
     }
     return samples;
 }
@@ -237,7 +255,8 @@ int Es8389AudioCodec::Write(const int16_t* data, int samples) {
                 written += chunk;
             }
         } else {
-            ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
+            ESP_ERROR_CHECK_WITHOUT_ABORT(
+                esp_codec_dev_write(output_dev_, (void*)data, samples * sizeof(int16_t)));
         }
     }
     return samples;

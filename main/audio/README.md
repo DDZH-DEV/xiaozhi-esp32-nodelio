@@ -43,9 +43,11 @@ still derives its format from the codec's microphone and reference counts.
 For Box Lite, the final `BoxAudioCodecLite` constructor parameter is
 `microphone_channels`, defaulting to `1`. Pass `2` explicitly to test `MMR`
 with reference enabled, or `MM` without it. `EnableInput()` and `Read()` use this
-count for capture and interleaving. On ESP32-S31-Korvo-1, developers can change
-the board's `AUDIO_INPUT_CHANNELS` from `1` to `2` to test `MM`; its codec has no
-playback reference. Neither experimental layout is enabled in default builds.
+count for capture and interleaving. ES8389 uses the driver's internal DAC-reference
+routing (`no_dac_ref=false`): one captured slot is `M`, two slots are `MR`, not
+`MM`. SILA-P4C5-62 captures `MR`; ESP32-S31-Korvo-1 defaults to one slot.
+Independent dual-microphone capture requires a separate verified codec routing
+configuration; declaring two slots alone does not enable it.
 
 Single-microphone defaults do not imply that ESP-SR FD lacks dual-microphone
 support, or guarantee hardware operation. Validate capture, playback, wake/VAD,

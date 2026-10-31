@@ -381,7 +381,8 @@ public:
     Backlight* GetBacklight() override { return &backlight_; }
 
     AudioCodec* GetAudioCodec() override {
-        // Two microphone channels, no fabricated hardware reference channel.
+        // ES8389's configured serial output is MR (ADCL + internal DACR reference).
+        // Two I2S slots do not imply two microphone channels.
         // Both speakers receive the assistant's mono stream. MCLK is wired on P4X.
         static Es8389AudioCodec codec(codec_bus_, AUDIO_CODEC_I2C_PORT, AUDIO_SAMPLE_RATE,
                                       AUDIO_SAMPLE_RATE, AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK,

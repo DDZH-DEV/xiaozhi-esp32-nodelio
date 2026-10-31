@@ -25,15 +25,19 @@ private:
     // One playback writer (AudioService); allocated once, reused for mono -> L/R.
     std::vector<int16_t> output_buffer_;
 
-    void CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din);
+    void SetDacMute(bool mute);
+
+    void CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout,
+                              gpio_num_t din);
 
     virtual int Read(int16_t* dest, int samples) override;
     virtual int Write(const int16_t* data, int samples) override;
 
 public:
-    Es8389AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port, int input_sample_rate, int output_sample_rate,
-        gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din,
-        gpio_num_t pa_pin, uint8_t es8389_addr, bool use_mclk = true, int input_channels = 1, int output_channels = 1);
+    Es8389AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port, int input_sample_rate,
+                     int output_sample_rate, gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws,
+                     gpio_num_t dout, gpio_num_t din, gpio_num_t pa_pin, uint8_t es8389_addr,
+                     bool use_mclk = true, int input_channels = 1, int output_channels = 1);
     virtual ~Es8389AudioCodec();
 
     virtual void SetOutputVolume(int volume) override;
@@ -41,4 +45,4 @@ public:
     virtual void EnableOutput(bool enable) override;
 };
 
-#endif // _ES8389_AUDIO_CODEC_H
+#endif  // _ES8389_AUDIO_CODEC_H

@@ -19,7 +19,7 @@
 #define AUDIO_CODEC_PA_PIN GPIO_NUM_7
 #define AUDIO_CODEC_ES8389_ADDR ES8389_CODEC_DEFAULT_ADDR
 #define AUDIO_CODEC_USE_MCLK false
-#define AUDIO_INPUT_CHANNELS 1   // 默认单麦；设为 2 可测试双麦 MM（没有播放参考）
+#define AUDIO_INPUT_CHANNELS 1   // 默认单麦；当前 ES8389 路由设为 2 时是 MR（麦克风+DAC参考）
 #define AUDIO_OUTPUT_CHANNELS 2  // 立体声输出，双 NS4150B 功放
 
 // 板载用户控件
