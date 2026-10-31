@@ -62,6 +62,13 @@ esp_err_t nodelio_nvs_init(void);
 /** Flash 读写：禁止在 PSRAM 栈任务调用（LVGL / mcp_http / nl_* invoke）。用 cache_get。 */
 esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out);
 esp_err_t nodelio_nvs_save(const nodelio_nvs_config_t *in);
+/** Save preferences without writing connection/registration fields from a stale UI snapshot. */
+esp_err_t nodelio_nvs_save_preferences(const nodelio_nvs_config_t* in);
+void nodelio_nvs_cache_put_preferences(const nodelio_nvs_config_t* in);
+/** Merge registration credentials only if the server and account are still current. */
+esp_err_t nodelio_nvs_save_registration(const nodelio_nvs_config_t* in);
+/** Save connection fields, preserve current preferences, then verify persisted URL/account. */
+esp_err_t nodelio_nvs_save_connection(const nodelio_nvs_config_t* in);
 esp_err_t nodelio_nvs_clear(void);
 /** 仅更新 RAM 镜像（LVGL 安全）；随后应由主任务 nodelio_nvs_save。 */
 void nodelio_nvs_cache_put(const nodelio_nvs_config_t *in);

@@ -7,12 +7,14 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/lock.h>
 
 static const char *TAG = "nl_nvs";
 
 /* LVGL 任务栈在 PSRAM：禁 cache 读 flash 时不可用 → 回调内禁止 nvs_load/save */
 static nodelio_nvs_config_t s_ram;
 static bool s_ram_ok;
+static _lock_t s_config_lock;
 
 /** 可重建缓存：腾空间保住 server_url / 凭证。NVS 仅 16KB，易被 lan/apps 占满。 */
 static void reclaim_ephemeral(nvs_handle_t h)
@@ -46,7 +48,23 @@ static void ram_put(const nodelio_nvs_config_t *in)
 
 void nodelio_nvs_cache_put(const nodelio_nvs_config_t *in)
 {
+    _lock_acquire(&s_config_lock);
     ram_put(in);
+    _lock_release(&s_config_lock);
+}
+
+static void copy_preferences(nodelio_nvs_config_t* out, const nodelio_nvs_config_t* in) {
+    // Preferences are the tail of this RAM structure; connection fields precede it.
+    const size_t offset = offsetof(nodelio_nvs_config_t, brightness);
+    memcpy((uint8_t*)out + offset, (const uint8_t*)in + offset, sizeof(*out) - offset);
+}
+
+void nodelio_nvs_cache_put_preferences(const nodelio_nvs_config_t* in) {
+    if (!in)
+        return;
+    _lock_acquire(&s_config_lock);
+    copy_preferences(&s_ram, in);
+    _lock_release(&s_config_lock);
 }
 
 void nodelio_nvs_cache_get(nodelio_nvs_config_t *out)
@@ -54,10 +72,13 @@ void nodelio_nvs_cache_get(nodelio_nvs_config_t *out)
     if (!out) {
         return;
     }
+    _lock_acquire(&s_config_lock);
     if (s_ram_ok) {
         *out = s_ram;
+        _lock_release(&s_config_lock);
         return;
     }
+    _lock_release(&s_config_lock);
     memset(out, 0, sizeof(*out));
     out->xiaozhi_en = 1;
     out->local_cmd_en = 0;
@@ -204,8 +225,7 @@ esp_err_t nodelio_nvs_init(void)
     return (err == ESP_OK || err == ESP_ERR_INVALID_STATE) ? ESP_OK : err;
 }
 
-esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out)
-{
+static esp_err_t load_config(nodelio_nvs_config_t* out) {
     if (!out) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -225,6 +245,7 @@ esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out)
     nvs_handle_t h;
     esp_err_t err = nvs_open(NODELIO_NVS_NS, NVS_READONLY, &h);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ram_put(out);
         return ESP_OK;
     }
     if (err != ESP_OK) {
@@ -310,8 +331,7 @@ esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out)
     return ESP_OK;
 }
 
-esp_err_t nodelio_nvs_save(const nodelio_nvs_config_t *in)
-{
+static esp_err_t save_config(const nodelio_nvs_config_t* in, bool preferences_only) {
     if (!in) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -334,18 +354,20 @@ esp_err_t nodelio_nvs_save(const nodelio_nvs_config_t *in)
         }                                                                                              \
     } while (0)
 
-    NL_ACCUM(set_str_checked(h, "server_url", tmp.server_url));
-    NL_ACCUM(set_str_checked(h, "owner", tmp.owner));
-    NL_ACCUM(set_str_checked(h, "device_id", tmp.device_id));
-    NL_ACCUM(set_str_checked(h, "device_key", tmp.device_key));
-    NL_ACCUM(set_str_checked(h, "wifi_ssid", tmp.wifi_ssid));
-    NL_ACCUM(set_str_checked(h, "wifi_pass", tmp.wifi_pass));
-    NL_ACCUM(set_str_checked(h, "asst_ws", tmp.assistant_ws_url));
-    NL_ACCUM(set_str_checked(h, "mqtt_server", tmp.mqtt_server));
-    NL_ACCUM(set_str_checked(h, "mqtt_port", tmp.mqtt_port));
-    NL_ACCUM(set_str_checked(h, "mqtt_user", tmp.mqtt_user));
-    NL_ACCUM(set_str_checked(h, "mqtt_pass", tmp.mqtt_pass));
-    NL_ACCUM(set_str_checked(h, "topic_prefix", tmp.topic_prefix));
+    if (!preferences_only) {
+        NL_ACCUM(set_str_checked(h, "server_url", tmp.server_url));
+        NL_ACCUM(set_str_checked(h, "owner", tmp.owner));
+        NL_ACCUM(set_str_checked(h, "device_id", tmp.device_id));
+        NL_ACCUM(set_str_checked(h, "device_key", tmp.device_key));
+        NL_ACCUM(set_str_checked(h, "wifi_ssid", tmp.wifi_ssid));
+        NL_ACCUM(set_str_checked(h, "wifi_pass", tmp.wifi_pass));
+        NL_ACCUM(set_str_checked(h, "asst_ws", tmp.assistant_ws_url));
+        NL_ACCUM(set_str_checked(h, "mqtt_server", tmp.mqtt_server));
+        NL_ACCUM(set_str_checked(h, "mqtt_port", tmp.mqtt_port));
+        NL_ACCUM(set_str_checked(h, "mqtt_user", tmp.mqtt_user));
+        NL_ACCUM(set_str_checked(h, "mqtt_pass", tmp.mqtt_pass));
+        NL_ACCUM(set_str_checked(h, "topic_prefix", tmp.topic_prefix));
+    }
     NL_ACCUM(nvs_set_u8(h, "brightness", tmp.brightness));
     NL_ACCUM(nvs_set_u8(h, "volume", tmp.volume));
     NL_ACCUM(nvs_set_u8(h, "xz_en", tmp.xiaozhi_en ? 1 : 0));
@@ -375,6 +397,87 @@ esp_err_t nodelio_nvs_save(const nodelio_nvs_config_t *in)
     return ESP_OK;
 }
 
+esp_err_t nodelio_nvs_load(nodelio_nvs_config_t* out) {
+    _lock_acquire(&s_config_lock);
+    esp_err_t err = load_config(out);
+    _lock_release(&s_config_lock);
+    return err;
+}
+
+esp_err_t nodelio_nvs_save(const nodelio_nvs_config_t* in) {
+    _lock_acquire(&s_config_lock);
+    esp_err_t err = save_config(in, false);
+    _lock_release(&s_config_lock);
+    return err;
+}
+
+esp_err_t nodelio_nvs_save_preferences(const nodelio_nvs_config_t* in) {
+    if (!in)
+        return ESP_ERR_INVALID_ARG;
+    _lock_acquire(&s_config_lock);
+    nodelio_nvs_config_t current;
+    esp_err_t err = load_config(&current);
+    if (err == ESP_OK) {
+        copy_preferences(&current, in);
+        err = save_config(&current, true);
+    }
+    _lock_release(&s_config_lock);
+    return err;
+}
+
+esp_err_t nodelio_nvs_save_registration(const nodelio_nvs_config_t* in) {
+    if (!in)
+        return ESP_ERR_INVALID_ARG;
+    _lock_acquire(&s_config_lock);
+    nodelio_nvs_config_t current;
+    esp_err_t err = load_config(&current);
+    if (err == ESP_OK && (strcmp(current.server_url, in->server_url) != 0 ||
+                          strcmp(current.owner, in->owner) != 0)) {
+        // An HTTP response for the previous server/account must not undo a user save.
+        ESP_LOGW(TAG, "Discard registration settings for a replaced connection");
+        err = ESP_ERR_INVALID_STATE;
+    }
+    if (err == ESP_OK) {
+#define COPY_FIELD(field) memcpy(current.field, in->field, sizeof(current.field))
+        COPY_FIELD(device_id);
+        COPY_FIELD(device_key);
+        COPY_FIELD(mqtt_server);
+        COPY_FIELD(mqtt_port);
+        COPY_FIELD(mqtt_user);
+        COPY_FIELD(mqtt_pass);
+        COPY_FIELD(topic_prefix);
+#undef COPY_FIELD
+        err = save_config(&current, false);
+    }
+    _lock_release(&s_config_lock);
+    return err;
+}
+
+esp_err_t nodelio_nvs_save_connection(const nodelio_nvs_config_t* in) {
+    if (!in)
+        return ESP_ERR_INVALID_ARG;
+    _lock_acquire(&s_config_lock);
+    nodelio_nvs_config_t current;
+    esp_err_t err = load_config(&current);
+    if (err == ESP_OK) {
+        nodelio_nvs_config_t updated = *in;
+        copy_preferences(&updated, &current);
+        err = save_config(&updated, false);
+    }
+    if (err == ESP_OK) {
+        err = load_config(&current);
+        if (err == ESP_OK && (strcmp(current.server_url, in->server_url) != 0 ||
+                              strcmp(current.owner, in->owner) != 0 ||
+                              strcmp(current.wifi_ssid, in->wifi_ssid) != 0 ||
+                              strcmp(current.wifi_pass, in->wifi_pass) != 0)) {
+            ESP_LOGE(TAG, "Connection readback does not match saved settings");
+            err = ESP_FAIL;
+        }
+    }
+    _lock_release(&s_config_lock);
+    return err;
+}
+
 bool nodelio_xiaozhi_enabled(void)
 {
     if (!s_ram_ok) {
@@ -386,17 +489,12 @@ bool nodelio_xiaozhi_enabled(void)
 esp_err_t nodelio_xiaozhi_set_enabled(bool on)
 {
     nodelio_nvs_config_t cfg;
-    if (s_ram_ok) {
-        cfg = s_ram;
-    } else {
-        esp_err_t err = nodelio_nvs_load(&cfg);
-        if (err != ESP_OK) {
-            return err;
-        }
+    esp_err_t err = nodelio_nvs_load(&cfg);
+    if (err != ESP_OK) {
+        return err;
     }
     cfg.xiaozhi_en = on ? 1 : 0;
-    ram_put(&cfg);
-    return nodelio_nvs_save(&cfg);
+    return nodelio_nvs_save_preferences(&cfg);
 }
 
 bool nodelio_local_cmd_enabled(void)
@@ -410,20 +508,15 @@ esp_err_t nodelio_local_cmd_set_enabled(bool on)
 {
     (void)on;
     nodelio_nvs_config_t cfg;
-    if (s_ram_ok) {
-        cfg = s_ram;
-    } else {
-        esp_err_t err = nodelio_nvs_load(&cfg);
-        if (err != ESP_OK) {
-            return err;
-        }
+    esp_err_t err = nodelio_nvs_load(&cfg);
+    if (err != ESP_OK) {
+        return err;
     }
     if (cfg.local_cmd_en == 0) {
         return ESP_OK;
     }
     cfg.local_cmd_en = 0;
-    ram_put(&cfg);
-    return nodelio_nvs_save(&cfg);
+    return nodelio_nvs_save_preferences(&cfg);
 }
 
 bool nodelio_power_save_enabled(void)
@@ -440,17 +533,12 @@ bool nodelio_power_save_enabled(void)
 esp_err_t nodelio_power_save_set_enabled(bool on)
 {
     nodelio_nvs_config_t cfg;
-    if (s_ram_ok) {
-        cfg = s_ram;
-    } else {
-        esp_err_t err = nodelio_nvs_load(&cfg);
-        if (err != ESP_OK) {
-            return err;
-        }
+    esp_err_t err = nodelio_nvs_load(&cfg);
+    if (err != ESP_OK) {
+        return err;
     }
     cfg.power_save_en = on ? 1 : 0;
-    ram_put(&cfg);
-    return nodelio_nvs_save(&cfg);
+    return nodelio_nvs_save_preferences(&cfg);
 }
 
 bool nodelio_controls_enabled(void)
@@ -464,17 +552,12 @@ bool nodelio_controls_enabled(void)
 esp_err_t nodelio_controls_set_enabled(bool on)
 {
     nodelio_nvs_config_t cfg;
-    if (s_ram_ok) {
-        cfg = s_ram;
-    } else {
-        esp_err_t err = nodelio_nvs_load(&cfg);
-        if (err != ESP_OK) {
-            return err;
-        }
+    esp_err_t err = nodelio_nvs_load(&cfg);
+    if (err != ESP_OK) {
+        return err;
     }
     cfg.controls_en = on ? 1 : 0;
-    ram_put(&cfg);
-    return nodelio_nvs_save(&cfg);
+    return nodelio_nvs_save_preferences(&cfg);
 }
 
 uint16_t nodelio_idle_sleep_seconds(void)
@@ -537,13 +620,9 @@ uint8_t nodelio_media_wake_duck_pct(void)
 esp_err_t nodelio_set_sleep_seconds(uint16_t idle_s, uint16_t goodbye_s)
 {
     nodelio_nvs_config_t cfg;
-    if (s_ram_ok) {
-        cfg = s_ram;
-    } else {
-        esp_err_t err = nodelio_nvs_load(&cfg);
-        if (err != ESP_OK) {
-            return err;
-        }
+    esp_err_t err = nodelio_nvs_load(&cfg);
+    if (err != ESP_OK) {
+        return err;
     }
     if (idle_s != 0) {
         cfg.idle_sleep_s = idle_s;
@@ -552,46 +631,35 @@ esp_err_t nodelio_set_sleep_seconds(uint16_t idle_s, uint16_t goodbye_s)
         cfg.goodbye_sleep_s = goodbye_s;
     }
     apply_defaults_for_save(&cfg);
-    ram_put(&cfg);
-    return nodelio_nvs_save(&cfg);
+    return nodelio_nvs_save_preferences(&cfg);
 }
 
 esp_err_t nodelio_set_idle_wifi_seconds(uint16_t wifi_s)
 {
     nodelio_nvs_config_t cfg;
-    if (s_ram_ok) {
-        cfg = s_ram;
-    } else {
-        esp_err_t err = nodelio_nvs_load(&cfg);
-        if (err != ESP_OK) {
-            return err;
-        }
+    esp_err_t err = nodelio_nvs_load(&cfg);
+    if (err != ESP_OK) {
+        return err;
     }
     if (wifi_s != 0) {
         cfg.idle_wifi_s = wifi_s;
     }
     apply_defaults_for_save(&cfg);
-    ram_put(&cfg);
-    return nodelio_nvs_save(&cfg);
+    return nodelio_nvs_save_preferences(&cfg);
 }
 
 esp_err_t nodelio_set_listen_idle_seconds(uint16_t listen_s)
 {
     nodelio_nvs_config_t cfg;
-    if (s_ram_ok) {
-        cfg = s_ram;
-    } else {
-        esp_err_t err = nodelio_nvs_load(&cfg);
-        if (err != ESP_OK) {
-            return err;
-        }
+    esp_err_t err = nodelio_nvs_load(&cfg);
+    if (err != ESP_OK) {
+        return err;
     }
     if (listen_s != 0) {
         cfg.listen_idle_s = listen_s;
     }
     apply_defaults_for_save(&cfg);
-    ram_put(&cfg);
-    return nodelio_nvs_save(&cfg);
+    return nodelio_nvs_save_preferences(&cfg);
 }
 
 esp_err_t nodelio_nvs_clear(void)

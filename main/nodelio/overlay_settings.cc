@@ -128,23 +128,31 @@ static void apply_volume(uint8_t pct)
     }
 }
 
-static void persist_ui_prefs(void)
-{
+static void persist_ui_prefs(bool volume_changed) {
     /* s_cfg 为权威镜像；LVGL 禁止 flash，主任务落盘（含 audio/display Settings） */
     s_cfg.brightness = s_brightness;
     s_cfg.volume = s_volume;
-    nodelio_nvs_cache_put(&s_cfg);
+    nodelio_nvs_cache_put_preferences(&s_cfg);
     nodelio_nvs_config_t snap = s_cfg;
     uint8_t bri = s_brightness;
     uint8_t vol = s_volume;
-    Application::GetInstance().Schedule([snap, bri, vol]() {
-        (void)nodelio_nvs_save(&snap);
+    Application::GetInstance().Schedule([snap, bri, vol, volume_changed]() {
+        esp_err_t err = nodelio_nvs_save_preferences(&snap);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Preference save failed: %s", esp_err_to_name(err));
+            nodelio_panel_ui_toast_defer("设置保存失败，请检查设备存储");
+            return;
+        }
         auto *bl = Board::GetInstance().GetBacklight();
         if (bl) {
-            bl->SetBrightness(bri, true);
+            err = bl->SaveBrightness(bri);
+            if (err != ESP_OK) {
+                nodelio_panel_ui_toast_defer("亮度保存失败，请检查设备存储");
+                return;
+            }
         }
         auto *codec = Board::GetInstance().GetAudioCodec();
-        if (codec) {
+        if (codec && volume_changed) {
             codec->SetOutputVolume((int)vol);
         }
     });
@@ -233,9 +241,9 @@ static bool parse_int_range(const char *value, int min_v, int max_v, int *out, c
 
 static void persist_cfg_async(void)
 {
-    nodelio_nvs_cache_put(&s_cfg);
+    nodelio_nvs_cache_put_preferences(&s_cfg);
     nodelio_nvs_config_t snap = s_cfg;
-    Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
+    Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save_preferences(&snap); });
 }
 
 /** 小智 / 本地口令切换后内存占用不同，须重启才按新组合加载。
@@ -248,7 +256,7 @@ static void voice_reboot_cb(void *arg)
     Application::GetInstance().Schedule([]() {
         nodelio_nvs_config_t snap;
         nodelio_nvs_cache_get(&snap);
-        (void)nodelio_nvs_save(&snap);
+        (void)nodelio_nvs_save_preferences(&snap);
         vTaskDelay(pdMS_TO_TICKS(200));
         esp_restart();
     });
@@ -256,9 +264,9 @@ static void voice_reboot_cb(void *arg)
 
 static void persist_voice_and_reboot(void)
 {
-    nodelio_nvs_cache_put(&s_cfg);
+    nodelio_nvs_cache_put_preferences(&s_cfg);
     nodelio_nvs_config_t snap = s_cfg;
-    Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save(&snap); });
+    Application::GetInstance().Schedule([snap]() { (void)nodelio_nvs_save_preferences(&snap); });
 
     if (!s_voice_reboot_tmr) {
         esp_timer_create_args_t args = {
@@ -344,7 +352,7 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         /* 下限钳 5：0–4 → 5，其余不静默夹 */
         uint8_t pct = (uint8_t)((v < 5) ? 5 : v);
         apply_brightness(pct);
-        persist_ui_prefs();
+        persist_ui_prefs(false);
         refresh_bri_vol_labels();
         char toast[32];
         std::snprintf(toast, sizeof(toast), "亮度 %d%%", (int)s_brightness);
@@ -357,7 +365,7 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
             return ESP_ERR_INVALID_ARG;
         }
         apply_volume((uint8_t)v);
-        persist_ui_prefs();
+        persist_ui_prefs(true);
         refresh_bri_vol_labels();
         char toast[32];
         std::snprintf(toast, sizeof(toast), "音量 %d%%", (int)s_volume);
@@ -709,7 +717,7 @@ static void on_bri_changed(lv_event_t *e)
 static void on_bri_release(lv_event_t *e)
 {
     (void)e;
-    persist_ui_prefs();
+    persist_ui_prefs(false);
 }
 
 static void on_vol_changed(lv_event_t *e)
@@ -726,8 +734,7 @@ static void on_vol_changed(lv_event_t *e)
 static void on_vol_release(lv_event_t *e)
 {
     (void)e;
-    persist_ui_prefs();
-    nl_ov_toast("音量已保存");
+    persist_ui_prefs(true);
 }
 
 static void sys_label_set_if_changed(lv_obj_t *lbl, char *last, size_t last_sz, const char *neu)

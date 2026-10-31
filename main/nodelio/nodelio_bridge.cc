@@ -165,7 +165,6 @@ static void bring_up_cloud_if_needed(void)
             ESP_LOGW(TAG, "cloud register: %s", esp_err_to_name(reg));
             return;
         }
-        (void)nodelio_nvs_save(&s_cfg);
         ensure_hb_task();
     }
     if (!nodelio_layout_cloud_ready()) {
@@ -417,7 +416,6 @@ static esp_err_t start_client(void)
         ensure_deferred_cloud();
         return err;
     }
-    (void)nodelio_nvs_save(&cfg);
     s_cfg = cfg;
     cloud = true;
     ensure_hb_task();

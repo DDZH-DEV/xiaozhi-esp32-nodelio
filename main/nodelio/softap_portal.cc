@@ -175,11 +175,14 @@ extern "C" void nodelio_softap_on_wifi_submit(cJSON *json)
     if (server_changed) {
         nodelio_nvs_clear_mqtt(&cfg);
     }
-    nodelio_nvs_cache_put(&cfg);
-    esp_err_t err = nodelio_nvs_save(&cfg);
+    esp_err_t err = nodelio_nvs_save_connection(&cfg);
     ESP_LOGI(TAG, "SoftAP WiFi+server save err=%s url=%s owner=%s", esp_err_to_name(err),
              cfg.server_url, cfg.owner);
-    schedule_reboot();
+    if (err == ESP_OK) {
+        schedule_reboot();
+    } else {
+        ESP_LOGE(TAG, "Provision save failed; reboot cancelled");
+    }
 }
 
 static esp_err_t handle_config_get(httpd_req_t *req)
@@ -250,8 +253,7 @@ static esp_err_t handle_server_submit(httpd_req_t *req)
     if (server_changed) {
         nodelio_nvs_clear_mqtt(&cfg);
     }
-    nodelio_nvs_cache_put(&cfg);
-    esp_err_t err = nodelio_nvs_save(&cfg);
+    esp_err_t err = nodelio_nvs_save_connection(&cfg);
     if (err != ESP_OK) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send(req, "{\"success\":false,\"error\":\"NVS 失败\"}", HTTPD_RESP_USE_STRLEN);

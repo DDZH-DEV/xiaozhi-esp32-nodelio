@@ -392,14 +392,17 @@ static void on_save(lv_event_t *e)
     std::string port_s = port ? port : "8899";
     std::string owner_s = owner ? owner : "";
     const bool https = s_https;
-    nodelio_nvs_config_t cfg = s_cfg;
+    nodelio_nvs_config_t cfg;
+    nodelio_nvs_cache_get(&cfg);
     char new_url[sizeof(cfg.server_url)];
     std::snprintf(new_url, sizeof(new_url), "%s://%s:%s", https ? "https" : "http", host_s.c_str(),
                   port_s.c_str());
-    bool server_changed = std::strcmp(cfg.server_url, new_url) != 0;
+    bool server_changed =
+        std::strcmp(cfg.server_url, new_url) != 0 || std::strcmp(cfg.owner, owner_s.c_str()) != 0;
     std::snprintf(cfg.server_url, sizeof(cfg.server_url), "%s", new_url);
     std::snprintf(cfg.owner, sizeof(cfg.owner), "%s", owner_s.c_str());
-    if (ssid_s[0]) {
+    const bool wifi_changed = !ssid_s.empty() && (ssid_s != cfg.wifi_ssid || !pass_s.empty());
+    if (!ssid_s.empty()) {
         std::snprintf(cfg.wifi_ssid, sizeof(cfg.wifi_ssid), "%s", ssid_s.c_str());
         if (pass_s[0]) {
             std::snprintf(cfg.wifi_pass, sizeof(cfg.wifi_pass), "%s", pass_s.c_str());
@@ -408,37 +411,62 @@ static void on_save(lv_event_t *e)
     if (server_changed) {
         nodelio_nvs_clear_mqtt(&cfg);
     }
-    s_cfg = cfg;
-    nodelio_nvs_cache_put(&cfg);
     nodelio_conn_hist_t hist;
     nodelio_conn_hist_cache_get(&hist);
     nodelio_conn_hist_push(&hist, https, host_s.c_str(), port_s.c_str(), owner_s.c_str());
     nodelio_conn_hist_cache_put(&hist);
     nl_ov_toast("正在保存…");
-    Application::GetInstance().Schedule([cfg, ssid_s, pass_s, hist, server_changed]() mutable {
+    Application::GetInstance().Schedule([cfg, ssid_s, pass_s, hist, server_changed,
+                                         wifi_changed]() mutable {
         nodelio_nvs_config_t out = cfg;
-        apply_wifi_creds(ssid_s.c_str(), pass_s.c_str(), &out);
         /* 换服务器：先清可重建缓存，腾出 16KB NVS，避免 server_url 写失败仍重启 */
         if (server_changed) {
             (void)nodelio_layout_cache_clear();
             (void)nodelio_apps_cache_clear();
         }
-        esp_err_t err = nodelio_nvs_save(&out);
+        esp_err_t err = nodelio_nvs_save_connection(&out);
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "nvs save failed: %s — keep old server", esp_err_to_name(err));
+            ESP_LOGE(TAG, "connection save/readback failed: %s — cancel reboot",
+                     esp_err_to_name(err));
             nodelio_nvs_config_t revert{};
             if (nodelio_nvs_load(&revert) == ESP_OK) {
-                s_cfg = revert;
-                nodelio_nvs_cache_put(&revert);
+                DisplayLockGuard lock(nl_ov_disp());
+                if (lock) {
+                    s_cfg = revert;
+                }
             }
             nl_ov_toast(err == ESP_ERR_NVS_NOT_ENOUGH_SPACE ? "保存失败：存储已满" : "保存失败");
             return;
         }
+        if (wifi_changed) {
+            apply_wifi_creds(ssid_s.c_str(), pass_s.c_str(), &out);
+        }
+        {
+            DisplayLockGuard lock(nl_ov_disp());
+            if (lock) {
+                s_cfg = out;
+            }
+        }
         (void)nodelio_conn_hist_save(&hist);
         ESP_LOGI(TAG, "saved server=%s — reboot", out.server_url);
         nl_ov_toast(server_changed ? "已保存，将重新注册…" : "已保存，重启…");
-        vTaskDelay(pdMS_TO_TICKS(400));
-        esp_restart();
+        static esp_timer_handle_t reboot_timer = nullptr;
+        if (!reboot_timer) {
+            esp_timer_create_args_t args = {};
+            args.callback = [](void*) {
+                Application::GetInstance().Schedule([]() { esp_restart(); });
+            };
+            args.name = "nl_conn_reboot";
+            err = esp_timer_create(&args, &reboot_timer);
+        }
+        if (err == ESP_OK) {
+            (void)esp_timer_stop(reboot_timer);
+            err = esp_timer_start_once(reboot_timer, 400000);
+        }
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Reboot scheduling failed: %s", esp_err_to_name(err));
+            nl_ov_toast("已保存，请手动重启");
+        }
     });
 }
 
@@ -448,7 +476,8 @@ void nl_ov_open_connect(void)
         return;
     }
     nl_ov_close_settings_detail();
-    /* s_cfg 开机已加载；禁止在 LVGL 任务 nvs_load */
+    // Refresh from the RAM cache: background registration may have changed it.
+    nodelio_nvs_cache_get(&s_cfg);
     char host[96] = {0};
     char port[8] = {0};
     nl_url_parse_server(s_cfg.server_url, host, sizeof(host), port, sizeof(port), &s_https);
@@ -520,10 +549,10 @@ void nl_ov_build_connect(void)
     lv_obj_set_scrollbar_mode(s_connect_scroll, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scroll_dir(s_connect_scroll, LV_DIR_VER);
 
-    (void)nodelio_nvs_load(&s_cfg);
+    nodelio_nvs_cache_get(&s_cfg);
     {
         nodelio_conn_hist_t hist;
-        (void)nodelio_conn_hist_load(&hist);
+        nodelio_conn_hist_cache_get(&hist);
         /* 首次：把当前已配服务器写入历史，便于回填 */
         if (hist.n == 0 && s_cfg.server_url[0]) {
             char h0[96] = {0};

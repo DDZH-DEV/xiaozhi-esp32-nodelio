@@ -875,6 +875,8 @@ esp_err_t nodelio_overlay_init(void)
     }
     (void)nodelio_nvs_init();
     (void)nodelio_nvs_load(&s_cfg);
+    nodelio_conn_hist_t history{};
+    (void)nodelio_conn_hist_load(&history);
     if (s_cfg.volume <= 100) {
         s_volume = s_cfg.volume;
     }

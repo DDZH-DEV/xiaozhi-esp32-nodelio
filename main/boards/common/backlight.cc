@@ -1,8 +1,10 @@
 #include "backlight.h"
 #include "settings.h"
 
-#include <esp_log.h>
 #include <driver/ledc.h>
+#include <esp_log.h>
+#include <nvs.h>
+#include <algorithm>
 
 #define TAG "Backlight"
 
@@ -30,6 +32,7 @@ Backlight::~Backlight() {
 }
 
 void Backlight::PreloadSavedBrightness() {
+    std::lock_guard<std::mutex> lock(brightness_mutex_);
     if (saved_on_loaded_) {
         return;
     }
@@ -41,13 +44,34 @@ void Backlight::PreloadSavedBrightness() {
                  saved_brightness);
         saved_brightness = 10;
     }
-    saved_on_brightness_ = static_cast<uint8_t>(saved_brightness);
+    saved_on_brightness_ = static_cast<uint8_t>(std::min(saved_brightness, 100));
     saved_on_loaded_ = true;
 }
 
 void Backlight::RestoreBrightness() {
     PreloadSavedBrightness();
-    SetBrightness(saved_on_brightness_);
+    uint8_t saved;
+    {
+        std::lock_guard<std::mutex> lock(brightness_mutex_);
+        saved = saved_on_brightness_;
+    }
+    SetBrightness(saved);
+}
+
+esp_err_t Backlight::SaveBrightness(uint8_t brightness) {
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open("display", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_i32(handle, "brightness", std::min<int>(brightness, 100));
+        if (err == ESP_OK) {
+            err = nvs_commit(handle);
+        }
+        nvs_close(handle);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Save brightness failed: %s", esp_err_to_name(err));
+    }
+    return err;
 }
 
 void Backlight::SetBrightness(uint8_t brightness, bool permanent) {
@@ -55,36 +79,23 @@ void Backlight::SetBrightness(uint8_t brightness, bool permanent) {
         brightness = 100;
     }
 
-    if (brightness_ == brightness) {
-        return;
-    }
-
-    /* 息屏不要 5ms 一档往下爬：爬的过程升压电容一直被充，最后一档才关。 */
-    if (brightness == 0) {
-        if (permanent) {
-            Settings settings("display", true);
-            settings.SetInt("brightness", brightness);
-        }
-        if (transition_timer_ != nullptr) {
-            esp_timer_stop(transition_timer_);
-        }
-        target_brightness_ = 0;
-        brightness_ = 0;
-        SetBrightnessImpl(0);
-        ESP_LOGI(TAG, "Set brightness to 0");
-        return;
-    }
-
-    saved_on_brightness_ = brightness;
-    saved_on_loaded_ = true;
-
+    // A preview may already have reached this value. Persistence must still run.
     if (permanent) {
-        Settings settings("display", true);
-        settings.SetInt("brightness", brightness);
+        SaveBrightness(brightness);
+    }
+    std::lock_guard<std::mutex> lock(brightness_mutex_);
+
+    if (brightness != 0) {
+        saved_on_brightness_ = brightness;
+        saved_on_loaded_ = true;
     }
 
     target_brightness_ = brightness;
-    step_ = (target_brightness_ > brightness_) ? 1 : -1;
+    // Also cancel an older target when a drag returns to the current value.
+    if (brightness_ == brightness) {
+        esp_timer_stop(transition_timer_);
+        return;
+    }
 
     if (transition_timer_ != nullptr) {
         // 启动定时器，每 5ms 更新一次
@@ -94,17 +105,25 @@ void Backlight::SetBrightness(uint8_t brightness, bool permanent) {
 }
 
 void Backlight::OnTransitionTimer() {
-    if (brightness_ == target_brightness_) {
-        esp_timer_stop(transition_timer_);
-        return;
+    uint8_t next;
+    {
+        std::lock_guard<std::mutex> lock(brightness_mutex_);
+        if (brightness_ == target_brightness_) {
+            esp_timer_stop(transition_timer_);
+            return;
+        }
+        // Switch off in one tick, without fading through every intermediate duty.
+        brightness_ = target_brightness_ == 0
+                          ? 0
+                          : (brightness_ < target_brightness_ ? brightness_ + 1 : brightness_ - 1);
+        next = brightness_;
+        if (brightness_ == target_brightness_) {
+            esp_timer_stop(transition_timer_);
+        }
     }
-
-    brightness_ += step_;
-    SetBrightnessImpl(brightness_);
-
-    if (brightness_ == target_brightness_) {
-        esp_timer_stop(transition_timer_);
-    }
+    // Only the timer writes hardware. Never hold the state lock across a display
+    // driver's own lock: callers may already hold the LVGL/display lock.
+    SetBrightnessImpl(next);
 }
 
 void PwmBacklight::BindChannel(uint32_t duty) {

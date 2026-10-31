@@ -20,12 +20,18 @@ static const char *TAG = "nl_reg";
 
 #define FW_VERSION "0.3.18"
 
-static void ensure_ids(nodelio_nvs_config_t *cfg)
-{
+static esp_err_t ensure_ids(nodelio_nvs_config_t* cfg) {
     bool dirty = false;
     if (cfg->device_id[0] == '\0') {
         uint8_t mac[6];
-        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        esp_err_t err = esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        if (err != ESP_OK) {
+            // P4 has no native Wi-Fi MAC; use its stable factory base MAC.
+            err = esp_efuse_mac_get_default(mac);
+        }
+        if (err != ESP_OK) {
+            return err;
+        }
         snprintf(cfg->device_id, sizeof(cfg->device_id), "WP-%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2],
                  mac[3], mac[4], mac[5]);
         dirty = true;
@@ -39,9 +45,13 @@ static void ensure_ids(nodelio_nvs_config_t *cfg)
         dirty = true;
     }
     if (dirty) {
-        nodelio_nvs_save(cfg);
+        esp_err_t err = nodelio_nvs_save_registration(cfg);
+        if (err != ESP_OK) {
+            return err;
+        }
         ESP_LOGI(TAG, "issued device_id=%s", cfg->device_id);
     }
+    return ESP_OK;
 }
 
 static void local_ip(char *buf, size_t len)
@@ -138,8 +148,8 @@ static bool apply_mqtt_provision(nodelio_nvs_config_t *cfg, const char *body)
     snprintf(cfg->mqtt_user, sizeof(cfg->mqtt_user), "%s", user);
     snprintf(cfg->mqtt_pass, sizeof(cfg->mqtt_pass), "%s", pass);
     snprintf(cfg->topic_prefix, sizeof(cfg->topic_prefix), "%s", prefix);
-    nodelio_nvs_save(cfg);
-    ESP_LOGI(TAG, "mqtt provision saved host=%s:%s prefix=%s", cfg->mqtt_server, cfg->mqtt_port, cfg->topic_prefix);
+    ESP_LOGI(TAG, "mqtt provision received host=%s:%s prefix=%s", cfg->mqtt_server, cfg->mqtt_port,
+             cfg->topic_prefix);
     return true;
 }
 
@@ -154,7 +164,11 @@ esp_err_t nodelio_device_register(nodelio_nvs_config_t *cfg)
         return ESP_ERR_INVALID_STATE;
     }
 
-    ensure_ids(cfg);
+    esp_err_t ids_err = ensure_ids(cfg);
+    if (ids_err != ESP_OK) {
+        ESP_LOGE(TAG, "Device identity persistence failed: %s", esp_err_to_name(ids_err));
+        return ids_err;
+    }
 
     const nodelio_board_t *board = nodelio_board_get();
     char ip[32];
@@ -213,6 +227,10 @@ esp_err_t nodelio_device_register(nodelio_nvs_config_t *cfg)
         ESP_LOGI(TAG, "registered OK device_id=%s type=%s", cfg->device_id, CONFIG_NODELIO_TYPE_CODE);
         if (resp) {
             apply_mqtt_provision(cfg, resp);
+        }
+        err = nodelio_nvs_save_registration(cfg);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Registration persistence failed: %s", esp_err_to_name(err));
         }
     } else {
         ESP_LOGW(TAG, "POST %s failed: %s http=%d body=%s", url, esp_err_to_name(err), status,
