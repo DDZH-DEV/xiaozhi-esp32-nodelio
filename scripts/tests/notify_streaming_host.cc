@@ -182,8 +182,15 @@ struct Http {
     void Close() {}
 };
 enum class HttpAppendResult { kOk, kEos, kFail };
+struct NotifyIcyState {
+    int metaint = 0;
+    size_t audio_since_meta = 0;
+    size_t meta_left = 0;
+    bool await_len = false;
+};
 HttpAppendResult HttpAppend(Http* http, PsramBytes& pending,
-                            std::array<char, kHttpReadBufferSize>&) {
+                            std::array<char, kHttpReadBufferSize>&,
+                            NotifyIcyState* = nullptr) {
     max_read_run = std::max(max_read_run, ++read_run);
     if (http->on_read)
         http->on_read();
@@ -195,12 +202,16 @@ HttpAppendResult HttpAppend(Http* http, PsramBytes& pending,
     pending.insert(pending.end(), bytes, 0);
     return bytes ? HttpAppendResult::kOk : HttpAppendResult::kEos;
 }
+size_t FindNextMp3Sync(const uint8_t*, size_t n, size_t from) {
+    return from < n ? from : n;
+}
 struct NotifySubtitle {
     uint32_t start_ms;
     std::string text;
 };
 struct NotifyPlayer {
     using SubtitleCallback = std::function<void(uint32_t, const std::string&)>;
+    using IcyState = NotifyIcyState;
     AudioService audio_service_;
     mutable std::mutex mutex_;
     bool active_ = true, cancelled_ = false, playback_drained_ = false;
@@ -211,7 +222,7 @@ struct NotifyPlayer {
     std::vector<NotifySubtitle> subtitles_;
     std::string displayed_text_;
     SubtitleCallback subtitle_callback_, finished_callback_;
-    bool PlayMp3(Http*, uint32_t, const uint8_t*, size_t);
+    bool PlayMp3(Http*, uint32_t, const uint8_t*, size_t, IcyState* = nullptr);
     bool PlayM4a(Http*, uint32_t, const uint8_t*, size_t);
     bool HasPlaybackStarted() const;
     bool IsCancelled(uint32_t) const;

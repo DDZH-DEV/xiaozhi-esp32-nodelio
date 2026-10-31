@@ -19,6 +19,14 @@ struct NotifySubtitle {
     std::string text;
 };
 
+/** 电台/Icecast：每 metaint 音频字节后夹一段元数据，须剥掉再解码。 */
+struct NotifyIcyState {
+    int metaint = 0;
+    size_t audio_since_meta = 0;
+    size_t meta_left = 0;
+    bool await_len = false;
+};
+
 class NotifyPlayer {
 public:
     using SubtitleCallback = std::function<void(uint32_t playback_id, const std::string& text)>;
@@ -66,7 +74,8 @@ private:
     static void WorkerEntry(void* arg);
     void WorkerTask();
     bool PlayOgg(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n);
-    bool PlayMp3(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n);
+    bool PlayMp3(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n,
+                 NotifyIcyState* icy = nullptr);
     bool PlayM4a(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n);
     bool PlayWav(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n);
     bool IsCancelled(uint32_t playback_id) const;

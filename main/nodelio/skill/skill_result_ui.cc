@@ -58,7 +58,10 @@ LV_FONT_DECLARE(font_material_symbols_20_4);
 #define SKILL_LIST_COLS 1
 #define SKILL_LIST_ROWS 4
 #define SKILL_LIST_ROW_H 68
-#define SKILL_MUSIC_ROW_H 50
+/* 曲库/电台：主标题 + 两行简介；矮屏有 now_playing 时靠动态行数分页，勿裁末行 */
+#define SKILL_MUSIC_ROW_H 64
+#define SKILL_LIST_HDR_BUDGET 48
+#define SKILL_LIST_CHROME_PAD 32 /* card pad_all×2 + pad_row */
 #define NEWS_ARTICLE_CAP (20 * 1024)
 /* JSON 转义后的正文预算；预留标题、提示及 MCP/session 包装，总包控制在 2KB 内。 */
 #define NEWS_MCP_CHUNK 640
@@ -184,30 +187,71 @@ static void ensure_chrome_order(void)
 
 static void apply_card_chrome(void);
 
-/** 列表卡可用高度：now_playing 可见时为顶条让位 */
+/** 列表卡可用高度：now_playing 可见时让位（宽屏底栏按屏几何扣，勿与条重叠） */
 static int skill_card_h_max(void)
 {
-    int h = SKILL_CARD_H_MAX;
+    const auto *p = nodelio_display_profile();
+    int h = (int)p->result_max_height;
     if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
-        h -= SKILL_NOW_H + SKILL_GAP;
+        if (p->nav_width) {
+            /* 顶：status+gap；底：gap+now+gap，多留 1×gap 防末行贴条 */
+            const int top = NL_UI_STATUS_H + SKILL_GAP;
+            const int bottom = SKILL_NOW_H + 3 * SKILL_GAP;
+            h = (int)p->height - top - bottom;
+        } else {
+            h -= SKILL_NOW_H + SKILL_GAP;
+        }
     }
     return h < SKILL_CARD_H_MIN ? SKILL_CARD_H_MIN : h;
 }
 
+/** 宽屏：应用分栏时右侧吃满剩余宽度；播放条与卡同宽贴底，勿拉通整屏。 */
+static int skill_panel_w(void)
+{
+    const auto *p = nodelio_display_profile();
+    const int base = (int)p->result_width;
+    if (!p->nav_width) {
+        return base;
+    }
+    const int rail = nl_ov_apps_split_rail_w();
+    if (rail <= 0) {
+        return base;
+    }
+    /* [nav][pad16][rail][gap][panel][gap] */
+    const int left = (int)p->nav_width + 16 + rail + SKILL_GAP;
+    int w = (int)p->width - left - SKILL_GAP;
+    if (w < base) {
+        w = base;
+    }
+    if (w > 820) {
+        w = 820;
+    }
+    return w;
+}
+
 static void layout_skill_layers(void)
 {
+    const int panel_w = skill_panel_w();
     int y = NL_UI_STATUS_H + SKILL_GAP;
     if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
         if (nodelio_display_profile()->nav_width) {
-            lv_obj_set_width(s_now_bar, nodelio_display_profile()->width -
-                                            nodelio_display_profile()->nav_width - 2 * SKILL_GAP);
+            lv_obj_set_width(s_now_bar, panel_w);
+            if (s_now_lbl) {
+                lv_obj_set_width(s_now_lbl, panel_w - 200);
+            }
             lv_obj_align(s_now_bar, LV_ALIGN_BOTTOM_RIGHT, -SKILL_GAP, -SKILL_GAP);
         } else {
             lv_obj_align(s_now_bar, LV_ALIGN_TOP_MID, 0, y);
             y += SKILL_NOW_H + SKILL_GAP;
         }
     }
+    if (s_scrim && !lv_obj_has_flag(s_scrim, LV_OBJ_FLAG_HIDDEN) &&
+        nodelio_display_profile()->nav_width) {
+        lv_obj_set_width(s_scrim, panel_w + 2 * SKILL_GAP);
+        lv_obj_align(s_scrim, LV_ALIGN_TOP_RIGHT, 0, NL_UI_STATUS_H);
+    }
     if (s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_set_width(s_card, panel_w);
         /* 播放条显隐会改 y；同步缩/扩卡高，避免内容顶出屏底 */
         if (s_have_env && s_env) {
             apply_card_chrome();
@@ -226,6 +270,14 @@ static void layout_skill_layers(void)
     nl_ov_apps_layout_chrome();
 }
 
+void nodelio_skill_result_layout(void)
+{
+    if (!s_card && !s_now_bar) {
+        return;
+    }
+    layout_skill_layers();
+}
+
 bool nodelio_skill_mini_fab_visible(void)
 {
     return s_mini_fab && !lv_obj_has_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN);
@@ -236,12 +288,12 @@ static void raise_skill_layers(void)
     if (s_scrim && !lv_obj_has_flag(s_scrim, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_move_foreground(s_scrim);
     }
-    /* now_bar 在 Y 上高于卡片；z 序让卡在上，避免关音乐后残留条盖住新闻列表抢点 */
-    if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_move_foreground(s_now_bar);
-    }
     if (s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_move_foreground(s_card);
+    }
+    /* 宽屏 now 贴底：条必须在卡之上，否则重叠时点不到暂停；卡高已为条让位 */
+    if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_move_foreground(s_now_bar);
     }
     if (s_mini_fab && !lv_obj_has_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_move_foreground(s_mini_fab);
@@ -1009,18 +1061,59 @@ static int list_cols(void)
     return list_use_comfortable() ? SKILL_LIST_COLS : SKILL_PAGE_COLS;
 }
 
-static int list_page_size(void)
-{
-    if (list_use_comfortable()) {
-        /* 单列指滑看全部，不再切页（曲库仍用双列分页） */
-        return s_env->track_n > 0 ? s_env->track_n : (SKILL_LIST_COLS * SKILL_LIST_ROWS);
-    }
-    return SKILL_PAGE_SIZE;
-}
-
 static int list_row_h(void)
 {
     return list_use_comfortable() ? SKILL_LIST_ROW_H : SKILL_MUSIC_ROW_H;
+}
+
+/** 曲库按卡内剩余高度算本页行数，避免 now_playing 让位后末行被裁 */
+static int list_page_rows(void)
+{
+    if (list_use_comfortable()) {
+        return SKILL_LIST_ROWS;
+    }
+    const int row_h = list_row_h();
+    const int gap = 4;
+    const int list_avail = skill_card_h_max() - SKILL_LIST_CHROME_PAD - SKILL_LIST_HDR_BUDGET;
+    int fit = SKILL_PAGE_ROWS;
+    if (list_avail > 0 && row_h + gap > 0) {
+        fit = (list_avail + gap) / (row_h + gap);
+    }
+    if (fit < 2) {
+        fit = 2;
+    }
+    if (fit > SKILL_PAGE_ROWS) {
+        fit = SKILL_PAGE_ROWS;
+    }
+    return fit;
+}
+
+static int list_page_size(void)
+{
+    /* 曲库/电台：双列一次铺全量 + 指滑，避免矮屏分页估行仍裁末行 */
+    if (list_use_comfortable() || strcmp(s_env->card_type, "music_list") == 0) {
+        return s_env->track_n > 0 ? s_env->track_n : (SKILL_LIST_COLS * SKILL_LIST_ROWS);
+    }
+    return list_cols() * list_page_rows();
+}
+
+/** 播放条显隐改卡高后重排曲库，并跳到当前在播页 */
+static void reflow_music_list_if_open(void)
+{
+    if (!s_have_env || !s_env || !s_card || !s_card_list) {
+        return;
+    }
+    if (lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
+        return;
+    }
+    if (strcmp(s_env->card_type, "music_list") != 0) {
+        return;
+    }
+    const int ps = list_page_size();
+    if (ps > 0 && s_play_idx >= 0) {
+        s_list_page = s_play_idx / ps;
+    }
+    fill_list();
 }
 
 static int list_page_count(void)
@@ -2356,6 +2449,7 @@ static void dismiss_library_and_player(void)
     stop_now_anims();
     hide_mini_fab();
     set_drawer_for_skill(false);
+    nl_ov_apps_notify_skill_open(false);
 
     lv_obj_t *done_on = nullptr;
     if (s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
@@ -2464,6 +2558,7 @@ static void minimize_to_fab(void)
     }
     set_drawer_for_skill(false);
     show_mini_fab(nodelio_media_is_playing());
+    nl_ov_apps_notify_skill_open(false);
     ensure_chrome_order();
 }
 
@@ -2514,6 +2609,9 @@ static void expand_from_fab(void)
     layout_skill_layers();
     raise_skill_layers();
     ensure_chrome_order();
+    if (have_list) {
+        nl_ov_apps_notify_skill_open(true);
+    }
 }
 
 static void stop_now_anims(void)
@@ -2914,18 +3012,19 @@ static void apply_card_chrome(void)
     const bool news = strcmp(s_env->card_type, "news_list") == 0;
     const bool dsh_detail =
         s_env->detail_body && s_env->detail_body[0] && strstr(s_env->app_id, "dsh") != nullptr;
-    const bool paged = music || news || list_page_count() > 1;
-    /* 有顶栏 chip 时勿 compact：否则列表 SIZE_CONTENT 被 max_h 裁切且难滚，第 4 行露不全 */
-    const bool compact = !paged && !dsh_detail && s_env->filter_n == 0 && s_env->track_n <= 4;
+    /* 曲库改全量滚动后不再占分页钮；新闻中间钮=收起 */
+    const bool mid_btn = news || list_page_count() > 1;
+    const bool compact =
+        !music && !news && !mid_btn && !dsh_detail && s_env->filter_n == 0 && s_env->track_n <= 4;
     /* 字号条仅新闻详情；切到其它卡或列表时收起 */
     if (!news || s_news_detail < 0) {
         set_news_zoom_hdr_visible(false);
     }
     if (s_hdr_mid_btn) {
-        /* DSH 详情：中间钮与左侧刷新易混，改用底栏「返回列表」；仅曲库/新闻分页显示 */
+        /* DSH 详情：中间钮与左侧刷新易混，改用底栏「返回列表」 */
         if (dsh_detail) {
             lv_obj_add_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
-        } else if (paged) {
+        } else if (mid_btn) {
             lv_obj_clear_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
@@ -3214,17 +3313,19 @@ static void fill_list(void)
     bzero(s_row_btns, sizeof(s_row_btns));
     const bool can_play = nodelio_caps_has_media();
     const bool comfortable = list_use_comfortable();
-    /* 舒适单列允许指滑；紧凑双列仍分页、禁滚以免误触 */
-    if (comfortable) {
+    const bool music_card = strcmp(s_env->card_type, "music_list") == 0;
+    /* 舒适单列 / 曲库双列：指滑看全量，禁再靠估行分页硬裁 */
+    if (comfortable || music_card) {
         lv_obj_add_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_scroll_dir(s_card_list, LV_DIR_VER);
+        lv_obj_set_scrollbar_mode(s_card_list, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_set_style_pad_bottom(s_card_list, music_card ? 12 : 8, 0);
     } else {
         lv_obj_clear_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_pad_bottom(s_card_list, 0, 0);
     }
 
     set_hdr_mid_icon(MATERIAL_SYMBOLS_SKIP_NEXT);
-
-    const bool music_card = strcmp(s_env->card_type, "music_list") == 0;
 
     if (s_card_sub) {
         if (s_env->track_n > 0) {
@@ -3396,10 +3497,11 @@ static void fill_list(void)
             }
             lv_obj_set_style_text_color(a, UI_TEXT_MUTED, 0);
             lv_obj_set_width(a, lv_pct(100));
-            /* DSH 副文可能两行；天气/空气等单行。勿用 WRAP——限高后会硬裁无省略号 */
+            /* 曲库/电台/DSH：简介两行；天气等单行。勿用 WRAP——限高后会硬裁无省略号 */
             lv_label_set_long_mode(a, LV_LABEL_LONG_DOT);
             const bool sub_two_lines =
-                comfortable && s_env->app_id[0] && strstr(s_env->app_id, "dsh") != nullptr;
+                music_card ||
+                (comfortable && s_env->app_id[0] && strstr(s_env->app_id, "dsh") != nullptr);
             lv_obj_set_height(a, sub_two_lines ? (line_h * 2) : line_h);
 
             if (can_play && s_env->tracks[i].playback_url[0]) {
@@ -3448,6 +3550,14 @@ static void fill_list(void)
         dsh_clear_ui_phase();
     }
     apply_card_chrome();
+    /* 在播项可能在折下：卡高确定后滚入视野 */
+    if (music_card && s_play_idx >= 0 && s_play_idx < 64 && s_row_btns[s_play_idx] &&
+        lv_obj_has_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE)) {
+        lv_obj_t *row = lv_obj_get_parent(s_row_btns[s_play_idx]);
+        if (row) {
+            lv_obj_scroll_to_view(row, LV_ANIM_OFF);
+        }
+    }
 }
 
 static bool skill_ui_is_up(void)
@@ -3602,6 +3712,7 @@ void nodelio_skill_result_hide(void)
         apply_now_media_chrome(nodelio_media_is_playing(), nodelio_media_is_paused(), false);
     }
     set_drawer_for_skill(false);
+    nl_ov_apps_notify_skill_open(false);
     /* 保留歌单：hide 只收起卡片；点播放条仍可 reopen_list */
     if (!s_env || s_env->track_n <= 0) {
         s_have_env = false;
@@ -3786,6 +3897,7 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
     layout_skill_layers();
     raise_skill_layers();
     ensure_chrome_order();
+    nl_ov_apps_notify_skill_open(true);
 
     /* 已开卡静默刷新：勿重置 ttl，否则永远关不掉 */
     if (!card_already_open) {
@@ -3839,6 +3951,7 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
         stop_now_anims();
         set_pause_btn_icon(true);
         clear_play_mark();
+        const bool bar_was_up = s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
         if (s_minimized) {
             if (s_have_env && s_env->track_n > 0) {
@@ -3850,6 +3963,9 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
         }
         sync_player_block_scrim();
         layout_skill_layers();
+        if (bar_was_up) {
+            reflow_music_list_if_open();
+        }
         raise_skill_layers();
         ensure_chrome_order();
         return;
@@ -3881,6 +3997,9 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
     }
     sync_player_block_scrim();
     layout_skill_layers();
+    if (was_hidden) {
+        reflow_music_list_if_open();
+    }
     raise_skill_layers();
     ensure_chrome_order();
 }

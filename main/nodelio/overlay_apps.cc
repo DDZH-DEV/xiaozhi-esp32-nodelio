@@ -1,6 +1,7 @@
 #include "overlay_priv.h"
 
 #include "application.h"
+#include "board_info.h"
 #include "device_caps.h"
 #include "layout_cache.h"
 #include "media_player.h"
@@ -46,6 +47,7 @@ struct nl_app_snap {
 };
 
 static lv_obj_t *s_page;
+static lv_obj_t *s_list_pane; /* 宽屏可收成左侧轨，给技能卡让位 */
 static lv_obj_t *s_list;
 static lv_obj_t *s_hint;
 static lv_obj_t *s_refresh;
@@ -59,6 +61,43 @@ static bool skill_is_button_only(const char *id)
 static int s_item_n;
 static bool s_loading;
 static bool s_have_list;
+static bool s_split;
+static int s_focus_idx = -1;
+
+static constexpr int kAppsPagePadH = 16;
+/** 分栏左轨：单列横向行卡；略收窄给右侧曲库/电台多一点标题+简介宽 */
+static constexpr int kAppsRailW = 300;
+static constexpr int kAppsAnimMs = 240;
+static constexpr int kAppsBrowseTileH = 84;
+static constexpr int kAppsRailTileH = 68;
+
+static bool apps_wide(void)
+{
+    return nodelio_display_profile()->nav_width != 0;
+}
+
+static int apps_body_w(void)
+{
+    const auto *p = nodelio_display_profile();
+    return (int)p->width - (int)p->nav_width;
+}
+
+static int apps_pane_target_w(bool split)
+{
+    const int full = apps_body_w() - 2 * kAppsPagePadH;
+    if (apps_wide() && split) {
+        return kAppsRailW;
+    }
+    return full > 120 ? full : 120;
+}
+
+static void apps_exec_pane_w(void *obj, int32_t v)
+{
+    lv_obj_set_width(static_cast<lv_obj_t *>(obj), v);
+}
+
+static void apps_set_split(bool on, bool animate);
+static void render_list(void);
 
 static void copy_field(char *dst, size_t n, const cJSON *obj, const char *key)
 {
@@ -102,216 +141,318 @@ static bool apps_list_eq(const nl_app_item *items, int n)
     return true;
 }
 
+static void apps_split_failed(void)
+{
+    Application::GetInstance().Schedule([]() { nl_ov_apps_notify_skill_open(false); });
+}
+
+static void open_app_at(int idx)
+{
+    if (idx < 0 || idx >= s_item_n) {
+        return;
+    }
+    if (!s_items[idx].enabled) {
+        nl_ov_toast("本机暂不支持");
+        return;
+    }
+    /* 派活须带 instruction；点应用只提示口令 */
+    if (strstr(s_items[idx].id, "dsh.task") != nullptr) {
+        (void)nl_ov_apps_invoke_dsh_task(nullptr);
+        return;
+    }
+    s_focus_idx = idx;
+    if (apps_wide()) {
+        if (s_split) {
+            render_list();
+        } else {
+            apps_set_split(true, true);
+        }
+    }
+    auto *cfgp = static_cast<nodelio_nvs_config_t *>(malloc(sizeof(nodelio_nvs_config_t)));
+    if (!cfgp) {
+        nl_ov_toast("内存不足");
+        apps_set_split(false, true);
+        return;
+    }
+    if (!nl_ov_cfg_http_ready(cfgp, true)) {
+        free(cfgp);
+        apps_set_split(false, true);
+        return;
+    }
+    struct invoke_arg {
+        nodelio_nvs_config_t *cfg;
+        char id[72];
+    };
+    auto *arg = static_cast<invoke_arg *>(malloc(sizeof(invoke_arg)));
+    if (!arg) {
+        free(cfgp);
+        nl_ov_toast("内存不足");
+        apps_set_split(false, true);
+        return;
+    }
+    arg->cfg = cfgp;
+    snprintf(arg->id, sizeof(arg->id), "%s", s_items[idx].id);
+    nl_ov_toast("正在打开…");
+    constexpr uint32_t kStackWords = 16384 / sizeof(StackType_t);
+    if (xTaskCreateWithCaps(
+            [](void *p) {
+                auto *a = static_cast<invoke_arg *>(p);
+                const bool music_app = nodelio_skill_id_is_music(a->id);
+                if (music_app) {
+                    Application::GetInstance().Schedule([]() {
+                        auto st = Application::GetInstance().GetDeviceState();
+                        if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
+                            st == kDeviceStateConnecting) {
+                            Application::GetInstance().EndVoiceSessionAfterLocalSkill();
+                        }
+                    });
+                } else if (nodelio_media_preempt_for_heavy_app()) {
+                    nodelio_panel_ui_toast_defer("已停止音乐以打开应用");
+                }
+                char base[160];
+                nl_url_strip_base(a->cfg->server_url, base, sizeof(base));
+                char url[400];
+                snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/%s/invoke", base,
+                         a->cfg->device_id, a->id);
+                const int cap = nodelio_caps_max_content_bytes() + 512;
+                char *resp = static_cast<char *>(
+                    heap_caps_malloc((size_t)cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                if (!resp) {
+                    resp = static_cast<char *>(malloc((size_t)cap));
+                }
+                bool ok = false;
+                if (!resp) {
+                    nodelio_panel_ui_toast_defer("内存不足");
+                } else {
+                    resp[0] = '\0';
+                    int status = 0;
+                    esp_err_t err = nodelio_http_post_json_ms(
+                        url, a->cfg->device_key, "{\"keyword\":\"\"}", &status, resp, cap - 1, 10000);
+                    if (err == ESP_OK && resp[0] &&
+                        (status == 200 || status == 201 ||
+                         (status >= 400 && strstr(resp, "\"schema_version\"") != nullptr))) {
+                        ESP_LOGI(TAG, "deliver id=%s music=%d status=%d", a->id, music_app ? 1 : 0,
+                                 status);
+                        char spoken[NL_ENV_SPOKEN];
+                        spoken[0] = '\0';
+                        nodelio_skill_deliver_json(a->cfg, resp, false, spoken, sizeof(spoken));
+                        if (strstr(a->id, "dsh") != nullptr && spoken[0]) {
+                            const char *au = nodelio_skill_last_spoken_audio_url();
+                            nodelio_panel_ui_announce_spoken_ex(spoken, au);
+                        }
+                        ok = true;
+                    } else if (err != ESP_OK || status == 0 || !resp[0]) {
+                        nl_ov_toast_invoke_unreachable(a->id);
+                    } else {
+                        nodelio_panel_ui_toast_defer("打开失败");
+                    }
+                    free(resp);
+                }
+                if (!ok) {
+                    apps_split_failed();
+                }
+                free(a->cfg);
+                free(a);
+                vTaskDeleteWithCaps(nullptr);
+            },
+            "nl_app_open", kStackWords, arg, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) !=
+        pdPASS) {
+        free(arg->cfg);
+        free(arg);
+        nl_ov_toast("无法打开");
+        apps_set_split(false, true);
+    }
+}
+
+static const char *apps_glyph_for(const char *id)
+{
+    if (id && (strstr(id, "radio.stations") != nullptr || strstr(id, "podcast.latest") != nullptr)) {
+        return MATERIAL_SYMBOLS_VOLUME_UP;
+    }
+    if (id && nodelio_skill_id_is_music(id)) {
+        return MATERIAL_SYMBOLS_MUSIC_NOTE;
+    }
+    return MATERIAL_SYMBOLS_EXPLORE;
+}
+
 static void render_list(void)
 {
     if (!s_list) {
         return;
     }
-    /* 重建前记下滚动位置，避免刷新后跳顶/闪一下像闪屏 */
     const lv_coord_t keep_y = lv_obj_get_scroll_y(s_list);
     lv_obj_clean(s_list);
     if (s_item_n <= 0) {
         return;
     }
-    /* 与设置页一致：半宽两列 */
-    const int pad_x = 16;
-    const int tile_w = (LV_HOR_RES - pad_x * 2 - UI_GAP) / 2;
+    /* 浏览：横向大卡（图标|标题+描述）；分栏：左轨单列行卡。勿用竖向小方块。 */
+    const int list_w = apps_pane_target_w(s_split);
+    const int gap = UI_GAP;
+    int cols = 2;
+    if (apps_wide() && !s_split) {
+        cols = 3;
+    }
+    if (s_split) {
+        cols = 1;
+    }
+    int card_w = (list_w - gap * (cols - 1)) / cols;
+    if (card_w < 160) {
+        card_w = list_w;
+        cols = 1;
+    }
+    const int card_h = s_split ? kAppsRailTileH : kAppsBrowseTileH;
+    const int pod_sz = s_split ? 36 : 40;
+
     for (int i = 0; i < s_item_n; i++) {
         const nl_app_item *it = &s_items[i];
-        lv_obj_t *row = lv_obj_create(s_list);
-        lv_obj_remove_style_all(row);
-        lv_obj_set_size(row, tile_w, UI_SETTINGS_TILE_H);
-        lv_obj_set_style_bg_color(row, UI_SURFACE, 0);
-        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(row, UI_RADIUS_MD, 0);
-        lv_obj_set_style_border_width(row, 1, 0);
-        lv_obj_set_style_border_color(row, UI_TILE_OFF_BORDER, 0);
-        lv_obj_set_style_border_opa(row, LV_OPA_80, 0);
-        lv_obj_set_style_pad_hor(row, 10, 0);
-        lv_obj_set_style_pad_column(row, 8, 0);
-        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        const bool focused = s_split && i == s_focus_idx;
+        lv_obj_t *card = lv_obj_create(s_list);
+        lv_obj_remove_style_all(card);
+        lv_obj_set_size(card, card_w, card_h);
+        lv_obj_set_style_bg_color(card, focused ? UI_TILE_SWITCH : UI_SURFACE, 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
+        lv_obj_set_style_border_width(card, focused ? 2 : 1, 0);
+        lv_obj_set_style_border_color(card, focused ? UI_ACCENT : UI_TILE_OFF_BORDER, 0);
+        lv_obj_set_style_border_opa(card, focused ? LV_OPA_COVER : LV_OPA_80, 0);
+        lv_obj_set_style_pad_hor(card, 12, 0);
+        lv_obj_set_style_pad_column(card, 10, 0);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
         if (it->enabled) {
-            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_ext_click_area(row, 6);
-            lv_obj_set_style_bg_color(row, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
-            lv_obj_set_style_translate_y(row, 1, LV_STATE_PRESSED);
+            lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(card, 8);
+            lv_obj_set_style_bg_color(card, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+            lv_obj_set_style_translate_y(card, 1, LV_STATE_PRESSED);
             lv_obj_add_event_cb(
-                row,
+                card,
                 [](lv_event_t *e) {
                     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
                         return;
                     }
-                    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-                    if (idx < 0 || idx >= s_item_n) {
-                        return;
-                    }
-                    if (!s_items[idx].enabled) {
-                        nl_ov_toast("本机暂不支持");
-                        return;
-                    }
-                    /* 派活须带 instruction；点应用只提示口令 */
-                    if (strstr(s_items[idx].id, "dsh.task") != nullptr) {
-                        (void)nl_ov_apps_invoke_dsh_task(nullptr);
-                        return;
-                    }
-                    auto *cfgp = static_cast<nodelio_nvs_config_t *>(malloc(sizeof(nodelio_nvs_config_t)));
-                    if (!cfgp) {
-                        nl_ov_toast("内存不足");
-                        return;
-                    }
-                    *cfgp = s_cfg;
-                    char sid[72];
-                    snprintf(sid, sizeof(sid), "%s", s_items[idx].id);
-                    struct invoke_arg {
-                        nodelio_nvs_config_t *cfg;
-                        char id[72];
-                    };
-                    auto *arg = static_cast<invoke_arg *>(malloc(sizeof(invoke_arg)));
-                    if (!arg) {
-                        free(cfgp);
-                        nl_ov_toast("内存不足");
-                        return;
-                    }
-                    arg->cfg = cfgp;
-                    snprintf(arg->id, sizeof(arg->id), "%s", sid);
-                    nl_ov_toast("正在打开…");
-                    /* PSRAM 栈由 WithCaps 分配并在删除时回收。禁止 xTaskCreateStatic 后再 free TCB：
-                     * idle 的 prvDeleteTCB 会撞上已释放内存（ucStaticallyAllocated assert）。 */
-                    constexpr uint32_t kStackWords = 16384 / sizeof(StackType_t);
-                    if (xTaskCreateWithCaps(
-                            [](void *p) {
-                                auto *a = static_cast<invoke_arg *>(p);
-                                const bool music_app = nodelio_skill_id_is_music(a->id);
-                                /* 仅媒体退会话；天气等保留云端 TTS */
-                                if (music_app) {
-                                    Application::GetInstance().Schedule([]() {
-                                        auto st = Application::GetInstance().GetDeviceState();
-                                        if (st == kDeviceStateListening ||
-                                            st == kDeviceStateSpeaking ||
-                                            st == kDeviceStateConnecting) {
-                                            Application::GetInstance()
-                                                .EndVoiceSessionAfterLocalSkill();
-                                        }
-                                    });
-                                } else if (nodelio_media_preempt_for_heavy_app()) {
-                                    nodelio_panel_ui_toast_defer("已停止音乐以打开应用");
-                                }
-                                char base[160];
-                                nl_url_strip_base(a->cfg->server_url, base, sizeof(base));
-                                char url[400];
-                                snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/%s/invoke", base,
-                                         a->cfg->device_id, a->id);
-                                const int cap = nodelio_caps_max_content_bytes() + 512;
-                                char *resp = static_cast<char *>(
-                                    heap_caps_malloc((size_t)cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-                                if (!resp) {
-                                    resp = static_cast<char *>(malloc((size_t)cap));
-                                }
-                                if (!resp) {
-                                    nodelio_panel_ui_toast_defer("内存不足");
-                                } else {
-                                    resp[0] = '\0';
-                                    int status = 0;
-                                    /* 天气/空气等要回源公网，默认 2.5s 读超时会 recv=0 → 假「打开失败」 */
-                                    /* 打开即播与否由 Host Envelope display.auto_play（技能配置）决定 */
-                                    esp_err_t err = nodelio_http_post_json_ms(
-                                        url, a->cfg->device_key, "{\"keyword\":\"\"}", &status, resp, cap - 1,
-                                        10000);
-                                    /* E5：4xx/5xx 若体仍是 Envelope（error）也要上屏，不假成功 */
-                                    if (err == ESP_OK && resp[0] &&
-                                        (status == 200 || status == 201 ||
-                                         (status >= 400 && strstr(resp, "\"schema_version\"") != nullptr))) {
-                                        ESP_LOGI(TAG, "deliver id=%s music=%d status=%d", a->id,
-                                                 music_app ? 1 : 0, status);
-                                        char spoken[NL_ENV_SPOKEN];
-                                        spoken[0] = '\0';
-                                        nodelio_skill_deliver_json(a->cfg, resp, false, spoken,
-                                                                   sizeof(spoken));
-                                        /* DSH 列表：无 spoken.audio 仅 toast；详情 WAV 另走 announce_ex */
-                                        if (strstr(a->id, "dsh") != nullptr && spoken[0]) {
-                                            const char *au = nodelio_skill_last_spoken_audio_url();
-                                            nodelio_panel_ui_announce_spoken_ex(spoken, au);
-                                        }
-                                    } else if (err != ESP_OK || status == 0 || !resp[0]) {
-                                        nl_ov_toast_invoke_unreachable(a->id);
-                                    } else {
-                                        nodelio_panel_ui_toast_defer("打开失败");
-                                    }
-                                    free(resp);
-                                }
-                                free(a->cfg);
-                                free(a);
-                                vTaskDeleteWithCaps(nullptr);
-                            },
-                            "nl_app_open", kStackWords, arg, 3, nullptr,
-                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
-                        free(arg->cfg);
-                        free(arg);
-                        nl_ov_toast("无法打开");
-                    }
+                    open_app_at((int)(intptr_t)lv_event_get_user_data(e));
                 },
                 LV_EVENT_CLICKED, (void *)(intptr_t)i);
         }
 
-        lv_obj_t *pod = lv_obj_create(row);
+        lv_obj_t *pod = lv_obj_create(card);
         lv_obj_remove_style_all(pod);
-        lv_obj_set_size(pod, 36, 36);
-        lv_obj_set_style_radius(pod, 10, 0);
-        lv_obj_set_style_bg_color(pod, it->enabled ? UI_TILE_SWITCH : UI_CAPSULE_OFF, 0);
-        lv_obj_set_style_bg_opa(pod, LV_OPA_COVER, 0);
+        lv_obj_set_size(pod, pod_sz, pod_sz);
+        lv_obj_set_style_radius(pod, 12, 0);
+        lv_obj_set_style_bg_color(pod, it->enabled ? UI_CAPSULE_ON : UI_CAPSULE_OFF, 0);
+        lv_obj_set_style_bg_opa(pod, it->enabled ? LV_OPA_40 : LV_OPA_COVER, 0);
         lv_obj_clear_flag(pod, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_t *ic = lv_label_create(pod);
         lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
-        const char *glyph = MATERIAL_SYMBOLS_EXPLORE;
-        if (strstr(it->id, "radio.stations") != NULL || strstr(it->id, "podcast.latest") != NULL) {
-            glyph = MATERIAL_SYMBOLS_VOLUME_UP;
-        } else if (nodelio_skill_id_is_music(it->id)) {
-            glyph = MATERIAL_SYMBOLS_MUSIC_NOTE;
-        }
-        lv_label_set_text(ic, glyph);
+        lv_label_set_text(ic, apps_glyph_for(it->id));
         lv_obj_set_style_text_color(ic, it->enabled ? UI_ACCENT_SOFT : UI_TEXT_MUTED, 0);
         lv_obj_center(ic);
 
-        lv_obj_t *txt = lv_obj_create(row);
+        lv_obj_t *txt = lv_obj_create(card);
         lv_obj_remove_style_all(txt);
         lv_obj_set_flex_grow(txt, 1);
-        lv_obj_set_height(txt, lv_pct(100));
+        lv_obj_set_height(txt, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(txt, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
         lv_obj_set_style_pad_row(txt, 2, 0);
         lv_obj_clear_flag(txt, LV_OBJ_FLAG_CLICKABLE);
+
         lv_obj_t *title = lv_label_create(txt);
         nl_ov_set_font(title);
         lv_label_set_text(title, it->name[0] ? it->name : it->id);
-        lv_obj_set_style_text_color(title, UI_TEXT, 0);
+        lv_obj_set_style_text_color(title, it->enabled ? UI_TEXT : UI_TEXT_MUTED, 0);
         lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
         lv_obj_set_width(title, lv_pct(100));
         const lv_font_t *card_font = lv_obj_get_style_text_font(title, LV_PART_MAIN);
         const int32_t line_h = card_font ? lv_font_get_line_height(card_font) : 16;
         lv_obj_set_height(title, line_h);
-        lv_obj_t *sub = lv_label_create(txt);
-        nl_ov_set_font(sub);
-        if (!it->enabled) {
-            lv_label_set_text(sub, "不可用");
-            lv_obj_set_style_text_color(sub, UI_TEXT_MUTED, 0);
-        } else if (it->desc[0]) {
-            lv_label_set_text(sub, it->desc);
-            lv_obj_set_style_text_color(sub, UI_TEXT_MUTED, 0);
-        } else {
-            lv_label_set_text(sub, "可用");
-            lv_obj_set_style_text_color(sub, UI_ACCENT_SOFT, 0);
+
+        if (!s_split) {
+            lv_obj_t *sub = lv_label_create(txt);
+            nl_ov_set_font(sub);
+            if (!it->enabled) {
+                lv_label_set_text(sub, "不可用");
+            } else if (it->desc[0]) {
+                lv_label_set_text(sub, it->desc);
+            } else {
+                lv_label_set_text(sub, "点按打开");
+            }
+            lv_obj_set_style_text_color(sub, it->enabled ? UI_TEXT_MUTED : UI_TEXT_MUTED, 0);
+            lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(sub, lv_pct(100));
+            lv_obj_set_height(sub, line_h);
         }
-        /* 标题 1 行 + 描述 2 行打点；超长省略，不挤成第三行标题 */
-        lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(sub, lv_pct(100));
-        lv_obj_set_height(sub, line_h * 2);
     }
     if (keep_y > 0) {
         lv_obj_update_layout(s_list);
         lv_obj_scroll_to_y(s_list, keep_y, LV_ANIM_OFF);
     }
+}
+
+static void apps_set_split(bool on, bool animate)
+{
+    if (!apps_wide()) {
+        on = false;
+    }
+    if (!s_list_pane) {
+        s_split = on;
+        return;
+    }
+    if (s_split == on) {
+        return;
+    }
+    s_split = on;
+    if (!on) {
+        s_focus_idx = -1;
+    }
+    const int to_w = apps_pane_target_w(on);
+    lv_anim_delete(s_list_pane, apps_exec_pane_w);
+    if (!animate) {
+        lv_obj_set_width(s_list_pane, to_w);
+        render_list();
+        nodelio_skill_result_layout();
+        return;
+    }
+    /* 先按目标宽重排卡片，再做宽度滑动，避免动画中途乱折行 */
+    render_list();
+    int from_w = (int)lv_obj_get_width(s_list_pane);
+    if (from_w < 80) {
+        from_w = apps_pane_target_w(!on);
+    }
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_list_pane);
+    lv_anim_set_values(&a, from_w, to_w);
+    lv_anim_set_time(&a, kAppsAnimMs);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&a, apps_exec_pane_w);
+    lv_anim_start(&a);
+    /* 左轨定宽后，右侧技能卡/播放条跟着重算，避免中间留黑洞 */
+    nodelio_skill_result_layout();
+}
+
+int nl_ov_apps_split_rail_w(void)
+{
+    if (!s_split || !apps_wide() || !s_page || lv_obj_has_flag(s_page, LV_OBJ_FLAG_HIDDEN)) {
+        return 0;
+    }
+    return kAppsRailW;
+}
+
+void nl_ov_apps_notify_skill_open(bool open)
+{
+    if (!s_page || lv_obj_has_flag(s_page, LV_OBJ_FLAG_HIDDEN)) {
+        if (!open) {
+            apps_set_split(false, false);
+        }
+        return;
+    }
+    /* 已分栏时技能卡静默刷新勿重摆列表 */
+    if (open && s_split) {
+        return;
+    }
+    apps_set_split(open, true);
 }
 
 static bool items_from_json(const char *json)
@@ -566,9 +707,11 @@ void nl_ov_apps_refresh(void)
     if (s_loading) {
         return;
     }
-    if (!s_cfg.server_url[0] || !s_cfg.device_id[0]) {
+    nodelio_nvs_config_t http_cfg{};
+    nl_ov_cfg_for_http(&http_cfg);
+    if (!http_cfg.server_url[0] || !http_cfg.device_id[0]) {
         s_item_n = 0;
-        set_hint("未绑定服务器");
+        set_hint(!http_cfg.server_url[0] ? "未绑定服务器" : "设备未注册");
         render_list();
         return;
     }
@@ -580,7 +723,7 @@ void nl_ov_apps_refresh(void)
         set_hint("内存不足");
         return;
     }
-    *cfgp = s_cfg;
+    *cfgp = http_cfg;
     /* 栈深按字；16KB 放 PSRAM。删除必须 WithCaps，勿事后 free TCB。 */
     constexpr uint32_t kListStackWords = 16384 / sizeof(StackType_t);
     if (xTaskCreateWithCaps(
@@ -703,6 +846,7 @@ void nl_ov_apps_set_visible(bool on)
         }
     } else {
         lv_obj_add_flag(s_page, LV_OBJ_FLAG_HIDDEN);
+        apps_set_split(false, false);
     }
 }
 
@@ -909,7 +1053,7 @@ void nl_ov_build_apps(void)
     lv_obj_set_size(s_page, lv_pct(100), lv_pct(100));
     lv_obj_set_style_bg_color(s_page, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_page, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_hor(s_page, 16, 0);
+    lv_obj_set_style_pad_hor(s_page, kAppsPagePadH, 0);
     lv_obj_set_style_pad_ver(s_page, 8, 0);
     lv_obj_set_style_pad_row(s_page, 4, 0);
     lv_obj_set_flex_flow(s_page, LV_FLEX_FLOW_COLUMN);
@@ -917,13 +1061,21 @@ void nl_ov_build_apps(void)
     lv_obj_add_flag(s_page, LV_OBJ_FLAG_HIDDEN);
     load_disk_cache();
 
-    s_hint = lv_label_create(s_page);
+    s_list_pane = lv_obj_create(s_page);
+    lv_obj_remove_style_all(s_list_pane);
+    lv_obj_set_width(s_list_pane, apps_pane_target_w(false));
+    lv_obj_set_flex_grow(s_list_pane, 1);
+    lv_obj_set_flex_flow(s_list_pane, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_list_pane, 4, 0);
+    lv_obj_clear_flag(s_list_pane, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_hint = lv_label_create(s_list_pane);
     nl_ov_set_font(s_hint);
     lv_label_set_text(s_hint, "");
     lv_obj_set_style_text_color(s_hint, UI_TEXT_MUTED, 0);
     lv_obj_add_flag(s_hint, LV_OBJ_FLAG_HIDDEN);
 
-    s_list = lv_obj_create(s_page);
+    s_list = lv_obj_create(s_list_pane);
     lv_obj_remove_style_all(s_list);
     lv_obj_set_width(s_list, lv_pct(100));
     lv_obj_set_flex_grow(s_list, 1);
