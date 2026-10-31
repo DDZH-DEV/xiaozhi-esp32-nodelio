@@ -2,7 +2,7 @@
 setlocal
 chcp 65001 >nul
 
-rem SILA-86 — monitor only (re-attach after reset / port change)
+rem SILA-86 - monitor only (re-attach after reset / port change)
 rem   nodelio-monitor.bat
 rem   nodelio-monitor.bat COM15
 

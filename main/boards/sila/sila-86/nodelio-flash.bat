@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 chcp 65001 >nul
 
-rem SILA-86 — build then flash+monitor
+rem SILA-86 - build then flash+monitor
 rem   nodelio-flash.bat              default COM12, build then flash
 rem   nodelio-flash.bat COM15        set port
 rem   nodelio-flash.bat --nofresh    skip build, flash existing build dir
@@ -10,16 +10,13 @@ rem   nodelio-flash.bat COM15 --nofresh
 
 set "PORT=COM12"
 set "NOFRESH=0"
+rem NOTE: do not put SHIFT inside if (...); it does not affect %1 there -> infinite parse loop
 :parse
-if "%~1"=="" goto parsed
-if /i "%~1"=="--nofresh" (
-  set "NOFRESH=1"
-  shift
-  goto parse
-)
+if "%~1"=="" goto :parsed
+if /I "%~1"=="--nofresh" set "NOFRESH=1"& shift& goto :parse
 set "PORT=%~1"
 shift
-goto parse
+goto :parse
 :parsed
 
 set "REPO=D:\xz25"

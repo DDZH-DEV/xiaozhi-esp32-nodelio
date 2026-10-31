@@ -92,12 +92,23 @@ public:
 #endif
             lvgl_port_unlock();
         }
+        /* vendor PPA_IMG 依赖 LV_USE_PPA；关 PPA 时宏可能根本不生成 */
+#if defined(LV_USE_PPA)
+        constexpr int kVendorPpa = LV_USE_PPA;
+#else
+        constexpr int kVendorPpa = 0;
+#endif
+#if defined(LV_USE_PPA_IMG)
+        constexpr int kImagePpa = LV_USE_PPA_IMG;
+#else
+        constexpr int kImagePpa = 0;
+#endif
         ESP_LOGI(kTag,
                  "LVGL %d.%d.%d: RGB888 partial, draw=%lu pixels x2, rotate=%s, "
                  "board_fill_PPA=%d vendor_PPA=%d image_PPA=%d align=%d stride_align=%d",
                  LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH,
                  static_cast<unsigned long>(kDrawBufferPixels), kRotationBackend, fill_acceleration,
-                 LV_USE_PPA, LV_USE_PPA_IMG, LV_DRAW_BUF_ALIGN, LV_DRAW_BUF_STRIDE_ALIGN);
+                 kVendorPpa, kImagePpa, LV_DRAW_BUF_ALIGN, LV_DRAW_BUF_STRIDE_ALIGN);
         LogMemory("display buffers");
     }
 

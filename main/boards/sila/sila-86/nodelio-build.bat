@@ -1,7 +1,7 @@
 @echo off
 setlocal
 chcp 65001 >nul
-rem SILA-86 — build only
+rem SILA-86 - build only
 
 set "REPO=D:\xz25"
 set "IDF_PATH=D:\Espressif\frameworks\esp-idf-v6.1"

@@ -2,7 +2,7 @@
 setlocal
 chcp 65001 >nul
 
-rem SILA P4C5 6.2" — monitor only (USB Serial/JTAG; port may change after reset)
+rem SILA P4C5 6.2" - monitor only (USB Serial/JTAG; port may change after reset)
 rem   nodelio-monitor.bat
 rem   nodelio-monitor.bat COM15
 

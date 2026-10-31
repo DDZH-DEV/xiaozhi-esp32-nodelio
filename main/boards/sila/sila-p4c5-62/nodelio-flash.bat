@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 chcp 65001 >nul
 
-rem SILA P4C5 6.2" — P4 host flash only (does NOT program C5 slave)
+rem SILA P4C5 6.2" - P4 host flash only (does NOT program C5 slave)
 rem   nodelio-flash.bat                 COM8, 32m, build then flash+monitor
 rem   nodelio-flash.bat COM15
 rem   nodelio-flash.bat --16m           Flash>=16MiB board (capacity must be confirmed)
@@ -12,30 +12,20 @@ rem   nodelio-flash.bat COM15 --16m --nofresh
 rem
 rem Do NOT use sila-86 nodelio-build.bat. Full flash via flash_args;
 rem never treat a lone xiaozhi.bin as a first-flash package.
+rem C5 slave: nodelio-flash-c5.bat COMx  (U14 UART; separate from this script)
 
 set "PORT=COM8"
 set "NOFRESH=0"
 set "VARIANT=32m"
+rem NOTE: do not put SHIFT inside if (...); it does not affect %1 there -> infinite parse loop
 :parse
-if "%~1"=="" goto parsed
-if /i "%~1"=="--nofresh" (
-  set "NOFRESH=1"
-  shift
-  goto parse
-)
-if /i "%~1"=="--16m" (
-  set "VARIANT=16m"
-  shift
-  goto parse
-)
-if /i "%~1"=="--32m" (
-  set "VARIANT=32m"
-  shift
-  goto parse
-)
+if "%~1"=="" goto :parsed
+if /I "%~1"=="--nofresh" set "NOFRESH=1"& shift& goto :parse
+if /I "%~1"=="--16m" set "VARIANT=16m"& shift& goto :parse
+if /I "%~1"=="--32m" set "VARIANT=32m"& shift& goto :parse
 set "PORT=%~1"
 shift
-goto parse
+goto :parse
 :parsed
 
 set "BOARD_DIR=sila/sila-p4c5-62"

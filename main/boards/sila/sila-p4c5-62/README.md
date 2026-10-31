@@ -43,6 +43,17 @@ U14 引出其 UART/EN/BOOT。**COM8 探测的是 P4，不证明 C5 已有 Hosted
 首烧/恢复应使用匹配版本的 C5 从机工程和实际 U14 接线，不把 P4 合并镜像写给 C5，
 也不自动更改 C5 的 strap/eFuse。P4 bring-up 固件不会自动烧写 C5。
 
+本目录 `nodelio-flash-c5.bat`：从 `managed_components/espressif__esp_hosted/slave`
+编 **esp32c5** Hosted 从机到独立目录 `build-c5-hosted-slave/`，经 **U14 UART** 烧录。
+Host 已是 2.13.x 时必须把 C5 升到同代，否则会出现 Version mismatch + SDIO RX 分配失败重启。
+
+```bat
+nodelio-flash-c5.bat COM9
+nodelio-flash-c5.bat COM9 --monitor
+```
+
+C5 SDIO 固定脚：CLK9、CMD10、D0=8、D1=7、D2=14、D3=13（与模组图一致）。
+
 AXP2101 总线只做地址 ACK 探测，不将 ACK 当作芯片 ID 验证，也不虚报电量。
 图中 DCDC1=3.3V，ALDO2/3/4 为摄像头相关 C1V8/C1V5/C3V3；电池容量、充电限制与
 实际贴装仍需确认。首期保持硬件电源默认配置，不初始化摄像头、陀螺仪和 TF 卡。
