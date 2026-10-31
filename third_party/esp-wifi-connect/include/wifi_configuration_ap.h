@@ -12,6 +12,7 @@
 #include <esp_timer.h>
 #include <esp_netif.h>
 #include <esp_wifi_types_generic.h>
+#include <cJSON.h>
 
 #include "dns_server.h"
 #include "sdkconfig.h"
@@ -53,6 +54,15 @@ public:
      * This is called when user requests to exit config mode (e.g., via /exit endpoint)
      */
     void OnExitRequested(std::function<void()> callback);
+    /** 覆盖门户首页 HTML；空则用内置 wifi_configuration.html。须在 Start() 前设置。 */
+    void SetCustomIndexHtml(const char *html);
+    /** /submit 在 WiFi Save 成功后、释放 JSON 前调用（可读取 host/owner）。 */
+    void OnWifiSubmitted(std::function<void(cJSON *)> callback);
+    /** Web 服务起来后回调，便于注册额外 URI。 */
+    void OnWebServerStarted(std::function<void(httpd_handle_t)> callback);
+    httpd_handle_t GetHttpServer() const { return server_; }
+    const char *IndexHtml() const;
+    void NotifyWifiSubmitted(cJSON *json);
 
 private:
     std::mutex mutex_;
@@ -79,6 +89,9 @@ private:
 
     // Callbacks
     std::function<void()> on_exit_requested_;
+    std::function<void(cJSON *)> on_wifi_submitted_;
+    std::function<void(httpd_handle_t)> on_web_server_started_;
+    const char *custom_index_html_ = nullptr;
 
     void StartAccessPoint();
     void StartWebServer();

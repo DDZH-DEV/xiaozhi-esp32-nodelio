@@ -12,6 +12,8 @@ extern "C" {
 
 /** Init LVGL on board panel+touch；建壳（状态栏/底栏/三页）. */
 esp_err_t nodelio_panel_ui_start(const nodelio_nvs_config_t *cfg);
+/** 注册完成后同步 overlay / NVS 缓存（勿只更新 bridge 私有 cfg）. */
+void nodelio_panel_ui_apply_cfg(const nodelio_nvs_config_t *cfg);
 
 /** 用 layout 重建首页控件；须在 LVGL 锁内或由本函数加锁. */
 esp_err_t nodelio_panel_ui_apply_layout(const nodelio_panel_layout_t *layout);

@@ -21,8 +21,13 @@ SilaAxs15260Touch::~SilaAxs15260Touch() {
     if (task_) {
         vTaskDelete(task_);
     }
-    if (indev_ && lvgl_port_lock(0)) {
-        lv_indev_delete(indev_);
+    if (lvgl_port_lock(0)) {
+        lv_async_call_cancel(ReadIndevAsync, this);
+        read_pending_ = false;
+        if (indev_) {
+            lv_indev_delete(indev_);
+            indev_ = nullptr;
+        }
         lvgl_port_unlock();
     }
     if (device_) {
@@ -88,14 +93,26 @@ void SilaAxs15260Touch::ReadCache(lv_indev_t* indev, lv_indev_data_t* data) {
     data->state = self->state_;
 }
 
+void SilaAxs15260Touch::ReadIndevAsync(void* arg) {
+    auto* self = static_cast<SilaAxs15260Touch*>(arg);
+    self->read_pending_ = false;
+    if (self->indev_) {
+        lv_indev_read(self->indev_);
+    }
+}
+
 void SilaAxs15260Touch::Publish(bool pressed, int x, int y) {
-    // Cache update and read happen under the same lock. LVGL applies the display
-    // rotation; the controller reports physical 452x1280 coordinates here.
+    /* 只更新缓存。lv_indev_read 会派发点击回调，禁止在 4KB sila_touch 栈上跑。 */
     if (lvgl_port_lock(0)) {
         point_.x = x;
         point_.y = y;
         state_ = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-        lv_indev_read(indev_);
+        if (indev_ && !read_pending_) {
+            read_pending_ = true;
+            if (lv_async_call(ReadIndevAsync, this) != LV_RESULT_OK) {
+                read_pending_ = false;
+            }
+        }
         lvgl_port_unlock();
     }
 }
@@ -103,6 +120,8 @@ void SilaAxs15260Touch::Publish(bool pressed, int x, int y) {
 void SilaAxs15260Touch::Run() {
     int last_x = 0;
     int last_y = 0;
+    bool was_pressed = false;
+    int consecutive_errors = 0;
     bool reported_error = false;
     for (;;) {
         ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
@@ -120,15 +139,27 @@ void SilaAxs15260Touch::Run() {
                            (count == 0 || (event <= 2 && x < DISPLAY_PHYSICAL_WIDTH &&
                                            y < DISPLAY_PHYSICAL_HEIGHT));
         if (err != ESP_OK || (!empty && !valid)) {
+            consecutive_errors++;
             if (!reported_error) {
-                ESP_LOGW(kTag, "Touch read/frame error (%s); release pointer",
+                ESP_LOGW(kTag, "Touch read/frame error (%s); keep last point",
                          esp_err_to_name(err));
+                reported_error = true;
             }
-            reported_error = true;
-            Publish(false, last_x, last_y);
-            // Swallow the rest of this uncertain gesture until a valid release.
-            suppress_gesture_ = true;
-        } else if (!empty) {
+            /* 单帧坏包勿抬手/勿掐整段手势，否则点按像卡顿；连续多次才强制释放防粘滞 */
+            if (consecutive_errors >= 5 && was_pressed) {
+                was_pressed = false;
+                Publish(false, last_x, last_y);
+            }
+        } else if (empty) {
+            consecutive_errors = 0;
+            reported_error = false;
+            if (was_pressed) {
+                was_pressed = false;
+                Publish(false, last_x, last_y);
+                suppress_gesture_ = false;
+            }
+        } else {
+            consecutive_errors = 0;
             reported_error = false;
             const bool pressed = count > 0 && event != 1;
             if (pressed) {
@@ -136,9 +167,12 @@ void SilaAxs15260Touch::Run() {
                 last_y = y;
                 suppress_gesture_ = on_activity_() || suppress_gesture_;
             }
-            Publish(pressed && !suppress_gesture_, last_x, last_y);
+            const bool report = pressed && !suppress_gesture_;
+            was_pressed = report;
+            Publish(report, last_x, last_y);
             if (!pressed) {
                 suppress_gesture_ = false;
+                was_pressed = false;
             }
         }
         // Bound CPU use even with a noisy interrupt line.

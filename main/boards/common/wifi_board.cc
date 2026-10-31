@@ -28,6 +28,7 @@
 #endif
 #if defined(CONFIG_NODELIO_PANEL)
 #include "nodelio_overlay.h"
+#include "softap_portal.h"
 #include "wifi_provision.h"
 #endif
 
@@ -354,6 +355,15 @@ void WifiBoard::StartWifiConfigMode() {
     Application::GetInstance().SetDeviceState(kDeviceStateWifiConfiguring);
 #ifdef CONFIG_USE_HOTSPOT_WIFI_PROVISIONING
     auto& wifi_manager = WifiManager::GetInstance();
+#if defined(CONFIG_NODELIO_PANEL)
+    wifi_manager.SetConfigApIndexHtml(nodelio_softap_index_html());
+    wifi_manager.SetConfigApSubmitHook([](void *json) {
+        nodelio_softap_on_wifi_submit(static_cast<cJSON *>(json));
+    });
+    wifi_manager.SetConfigApWebStarted([](void *server) {
+        nodelio_softap_register_handlers(static_cast<httpd_handle_t>(server));
+    });
+#endif
 
     wifi_manager.StartConfigAp();
 

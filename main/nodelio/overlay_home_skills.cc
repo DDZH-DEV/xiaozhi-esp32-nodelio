@@ -128,8 +128,8 @@ bool nl_ov_invoke_skill_async(const char* skill_id, const char* body) {
         nl_ov_toast("内容过长，未发送，请缩短后重说");
         return false;
     }
-    if (!s_cfg.server_url[0] || !s_cfg.device_id[0]) {
-        nl_ov_toast("未绑定服务器");
+    nodelio_nvs_config_t http_cfg{};
+    if (!nl_ov_cfg_http_ready(&http_cfg, true)) {
         return false;
     }
 
@@ -147,7 +147,7 @@ bool nl_ov_invoke_skill_async(const char* skill_id, const char* body) {
         nl_ov_toast("内存不足");
         return false;
     }
-    arg->cfg = s_cfg;
+    arg->cfg = http_cfg;
     snprintf(arg->id, sizeof(arg->id), "%s", skill_id);
     snprintf(arg->body, sizeof(arg->body), "%s", (body && body[0]) ? body : "{}");
     nl_ov_toast("正在打开…");
@@ -319,7 +319,12 @@ void nl_ov_skill_widget_prefetch(const char *skill_id, const char *body, int ref
         slot->fetching = false;
         return;
     }
-    arg->cfg = s_cfg;
+    nl_ov_cfg_for_http(&arg->cfg);
+    if (!arg->cfg.device_id[0] || !arg->cfg.server_url[0]) {
+        slot->fetching = false;
+        free(arg);
+        return;
+    }
     snprintf(arg->id, sizeof(arg->id), "%s", skill_id);
     snprintf(arg->body, sizeof(arg->body), "%s", (body && body[0]) ? body : "{}");
 
@@ -643,7 +648,9 @@ void nl_ov_home_skills_ensure_fetched(void)
     if (s_fetching || !s_dirty) {
         return;
     }
-    if (!s_cfg.server_url[0] || !s_cfg.device_id[0] || !s_cfg.device_key[0]) {
+    nodelio_nvs_config_t http_cfg{};
+    nl_ov_cfg_for_http(&http_cfg);
+    if (!http_cfg.server_url[0] || !http_cfg.device_id[0] || !http_cfg.device_key[0]) {
         s_dirty = false;
         s_pin_n = 0;
         return;
@@ -658,7 +665,7 @@ void nl_ov_home_skills_ensure_fetched(void)
         s_fetching = false;
         return;
     }
-    *cfgp = s_cfg;
+    *cfgp = http_cfg;
     constexpr uint32_t kStackWords = 16384 / sizeof(StackType_t);
     if (xTaskCreateWithCaps(
             [](void *p) {

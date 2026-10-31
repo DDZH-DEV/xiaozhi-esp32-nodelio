@@ -13,7 +13,7 @@ static const nodelio_display_profile_t s_profile = {
     .grid_rows = 3,
     .nav_width = 96,
     .network_sleep = false,
-    .result_width = 420,
+    .result_width = 560,
     .result_max_height = 396,
     .chat_bottom = 80,
 };

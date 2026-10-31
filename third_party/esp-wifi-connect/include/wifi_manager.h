@@ -97,6 +97,12 @@ public:
     
     void StartConfigAp();  // Non-blocking, auto-stops station if active
     void StopConfigAp();   // Non-blocking
+    /** 覆盖配网页 HTML；StartConfigAp 前调用。 */
+    void SetConfigApIndexHtml(const char *html);
+    /** /submit 成功后回调，参数为 cJSON*。 */
+    void SetConfigApSubmitHook(std::function<void(void *)> hook);
+    /** HTTP 服务起来后回调，参数为 httpd_handle_t。 */
+    void SetConfigApWebStarted(std::function<void(void *)> hook);
     
     bool IsConfigMode() const;
     std::string GetApSsid() const;
@@ -132,6 +138,9 @@ private:
 
     std::function<void(WifiEvent, const std::string&)> event_callback_;
     mutable std::string mac_address_;
+    const char *config_ap_index_html_ = nullptr;
+    std::function<void(void *)> config_ap_submit_hook_;
+    std::function<void(void *)> config_ap_web_started_;
 };
 
 #endif // _WIFI_MANAGER_H_

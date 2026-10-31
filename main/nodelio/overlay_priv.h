@@ -58,6 +58,18 @@ typedef enum {
 
 /* —— shared state (defined in nodelio_overlay.cc) —— */
 extern nodelio_nvs_config_t s_cfg;
+
+/** HTTP 用最新 RAM 凭证；overlay s_cfg 可能仍是开机未注册快照。 */
+static inline void nl_ov_cfg_for_http(nodelio_nvs_config_t *out)
+{
+    if (!out) {
+        return;
+    }
+    nodelio_nvs_cache_get(out);
+    if (out->device_id[0] == '\0' && s_cfg.device_id[0]) {
+        *out = s_cfg;
+    }
+}
 extern nodelio_panel_layout_t *s_layout;
 extern bool s_have_layout;
 extern bool s_fab_ready;
@@ -155,6 +167,18 @@ void nl_ov_set_font(lv_obj_t *obj);
 void nl_ov_set_icon_font(lv_obj_t *obj);
 const lv_font_t *nl_ov_tile_icon_font(bool is_row);
 void nl_ov_toast(const char *msg);
+
+static inline bool nl_ov_cfg_http_ready(nodelio_nvs_config_t *out, bool toast)
+{
+    nl_ov_cfg_for_http(out);
+    if (out->device_id[0] && out->server_url[0]) {
+        return true;
+    }
+    if (toast) {
+        nl_ov_toast(out->server_url[0] ? "设备未注册" : "未绑定服务器");
+    }
+    return false;
+}
 void nl_ov_refresh_status_icons(bool wifi_ok, bool cloud_ok, const char *msg);
 void nl_ov_status_poll_set_period(bool awake);
 void nl_ov_show_page(int tab);
@@ -228,6 +252,10 @@ void nl_ov_kb_set_visible(bool on);
 void nl_ov_fill_settings(void);
 void nl_ov_build_apps(void);
 void nl_ov_apps_set_visible(bool on);
+/** 宽屏：技能卡打开/收起时，应用列表收成左轨或展开（带滑动动画）。 */
+void nl_ov_apps_notify_skill_open(bool open);
+/** 应用页分栏左轨宽度；未分栏或方屏返回 0（技能卡用来算右侧可用宽）。 */
+int nl_ov_apps_split_rail_w(void);
 /** 应用列表刷新 FAB 落位（左下；与右下音乐球错开）。 */
 void nl_ov_apps_layout_chrome(void);
 /** 有本地缓存则只画列表；无缓存才拉网。 */

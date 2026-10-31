@@ -163,8 +163,10 @@ static void bring_up_cloud_if_needed(void)
         esp_err_t reg = nodelio_device_register(&s_cfg);
         if (reg != ESP_OK) {
             ESP_LOGW(TAG, "cloud register: %s", esp_err_to_name(reg));
+            nodelio_panel_ui_apply_cfg(&s_cfg);
             return;
         }
+        nodelio_panel_ui_apply_cfg(&s_cfg);
         ensure_hb_task();
     }
     if (!nodelio_layout_cloud_ready()) {
@@ -408,6 +410,7 @@ static esp_err_t start_client(void)
         ESP_LOGW(TAG, "register: %s — keep local UI, defer cloud retry",
                  esp_err_to_name(err));
         s_cfg = cfg;
+        nodelio_panel_ui_apply_cfg(&cfg);
         s_started = true;
         s_starting = false;
         nodelio_mqtt_panel_stop();
@@ -417,6 +420,7 @@ static esp_err_t start_client(void)
         return err;
     }
     s_cfg = cfg;
+    nodelio_panel_ui_apply_cfg(&cfg);
     cloud = true;
     ensure_hb_task();
 

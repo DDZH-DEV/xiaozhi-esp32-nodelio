@@ -1368,8 +1368,8 @@ static void capture_and_upload_screenshot(void)
         nl_ov_toast("未检测到显示屏");
         return;
     }
-    if (s_cfg.server_url[0] == '\0' || s_cfg.device_id[0] == '\0') {
-        nl_ov_toast("未配置服务器");
+    nodelio_nvs_config_t shot_cfg{};
+    if (!nl_ov_cfg_http_ready(&shot_cfg, true)) {
         return;
     }
     const size_t dram_before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
@@ -1407,7 +1407,7 @@ static void capture_and_upload_screenshot(void)
         return;
     }
     job->jpeg = jpeg;
-    job->cfg = s_cfg;
+    job->cfg = shot_cfg;
     nl_ov_toast("正在上传截图…");
     constexpr uint32_t kStackWords = 12288 / sizeof(StackType_t);
     if (xTaskCreateWithCaps(
@@ -1691,8 +1691,10 @@ static void async_cmd_worker(void *arg)
             continue;
         }
         int http = 0;
+        nodelio_nvs_config_t cmd_cfg{};
+        nl_ov_cfg_for_http(&cmd_cfg);
         /* 点按已写缓存；HTTP 成功不再二次乐观（DIOL 成功仍会落真态） */
-        esp_err_t err = nodelio_panel_command_ex(&s_cfg, item.widget_id, "set", &item.bind, item.value, &http,
+        esp_err_t err = nodelio_panel_command_ex(&cmd_cfg, item.widget_id, "set", &item.bind, item.value, &http,
                                                  !item.rollback_on_fail);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "async cmd %s http=%d err=%s", item.widget_id, http, esp_err_to_name(err));
@@ -2683,7 +2685,7 @@ static void photo_fetch_async(const nl_widget_t *w, uint8_t idx)
     if (!arg) {
         return;
     }
-    arg->cfg = s_cfg;
+    nl_ov_cfg_for_http(&arg->cfg);
     snprintf(arg->widget_id, sizeof(arg->widget_id), "%s", w->id);
     snprintf(arg->photo_id, sizeof(arg->photo_id), "%s", w->photo_ids[idx]);
     arg->fit_contain = w->photo_fit_contain;

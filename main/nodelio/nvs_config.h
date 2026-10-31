@@ -69,6 +69,8 @@ void nodelio_nvs_cache_put_preferences(const nodelio_nvs_config_t* in);
 esp_err_t nodelio_nvs_save_registration(const nodelio_nvs_config_t* in);
 /** Save connection fields, preserve current preferences, then verify persisted URL/account. */
 esp_err_t nodelio_nvs_save_connection(const nodelio_nvs_config_t* in);
+/** NVS 剩余条目是否够写历史等非关键 blob；不够则跳过以免占满后开机整区擦除。 */
+bool nodelio_nvs_has_headroom(void);
 esp_err_t nodelio_nvs_clear(void);
 /** 仅更新 RAM 镜像（LVGL 安全）；随后应由主任务 nodelio_nvs_save。 */
 void nodelio_nvs_cache_put(const nodelio_nvs_config_t *in);

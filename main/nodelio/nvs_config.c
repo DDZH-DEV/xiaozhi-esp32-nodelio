@@ -16,12 +16,34 @@ static nodelio_nvs_config_t s_ram;
 static bool s_ram_ok;
 static _lock_t s_config_lock;
 
-/** 可重建缓存：腾空间保住 server_url / 凭证。NVS 仅 16KB，易被 lan/apps 占满。 */
+/** 可重建缓存：腾空间保住 server_url / 凭证。NVS 仅 16KB，易被 lan/apps/hist 占满。 */
 static void reclaim_ephemeral(nvs_handle_t h)
 {
     (void)nvs_erase_key(h, "lan_devs");
     (void)nvs_erase_key(h, "apps_list");
     (void)nvs_erase_key(h, "oc_dyn");
+    (void)nvs_erase_key(h, "conn_hist");
+}
+
+#define NL_NVS_HEADROOM_MIN 64
+
+static void log_nvs_stats(const char *where)
+{
+    nvs_stats_t st;
+    if (nvs_get_stats(NULL, &st) != ESP_OK) {
+        return;
+    }
+    ESP_LOGI(TAG, "nvs %s used=%u free=%u ns=%u", where ? where : "", (unsigned)st.used_entries,
+             (unsigned)st.free_entries, (unsigned)st.namespace_count);
+}
+
+bool nodelio_nvs_has_headroom(void)
+{
+    nvs_stats_t st;
+    if (nvs_get_stats(NULL, &st) != ESP_OK) {
+        return false;
+    }
+    return st.free_entries >= NL_NVS_HEADROOM_MIN;
 }
 
 static esp_err_t set_str_checked(nvs_handle_t h, const char *key, const char *val)
@@ -355,6 +377,8 @@ static esp_err_t save_config(const nodelio_nvs_config_t* in, bool preferences_on
     } while (0)
 
     if (!preferences_only) {
+        /* 先清可重建 blob，避免写完凭证后无空页，下次开机 nvs_flash_erase 把连接冲掉 */
+        reclaim_ephemeral(h);
         NL_ACCUM(set_str_checked(h, "server_url", tmp.server_url));
         NL_ACCUM(set_str_checked(h, "owner", tmp.owner));
         NL_ACCUM(set_str_checked(h, "device_id", tmp.device_id));
@@ -394,6 +418,16 @@ static esp_err_t save_config(const nodelio_nvs_config_t* in, bool preferences_on
         return first;
     }
     ram_put(&tmp);
+    log_nvs_stats(preferences_only ? "prefs" : "conn");
+    if (!preferences_only && !nodelio_nvs_has_headroom()) {
+        nvs_handle_t h2;
+        if (nvs_open(NODELIO_NVS_NS, NVS_READWRITE, &h2) == ESP_OK) {
+            reclaim_ephemeral(h2);
+            (void)nvs_commit(h2);
+            nvs_close(h2);
+            log_nvs_stats("reclaim");
+        }
+    }
     return ESP_OK;
 }
 
@@ -462,6 +496,27 @@ esp_err_t nodelio_nvs_save_connection(const nodelio_nvs_config_t* in) {
     if (err == ESP_OK) {
         nodelio_nvs_config_t updated = *in;
         copy_preferences(&updated, &current);
+        /* 连接表单不带注册凭证；空字段勿覆盖已有 device_id / key */
+        if (updated.device_id[0] == '\0') {
+            memcpy(updated.device_id, current.device_id, sizeof(updated.device_id));
+        }
+        if (updated.device_key[0] == '\0') {
+            memcpy(updated.device_key, current.device_key, sizeof(updated.device_key));
+        }
+        if (strcmp(updated.server_url, current.server_url) == 0 &&
+            strcmp(updated.owner, current.owner) == 0) {
+            if (updated.mqtt_server[0] == '\0') {
+                memcpy(updated.mqtt_server, current.mqtt_server, sizeof(updated.mqtt_server));
+                memcpy(updated.mqtt_port, current.mqtt_port, sizeof(updated.mqtt_port));
+                memcpy(updated.mqtt_user, current.mqtt_user, sizeof(updated.mqtt_user));
+                memcpy(updated.mqtt_pass, current.mqtt_pass, sizeof(updated.mqtt_pass));
+                memcpy(updated.topic_prefix, current.topic_prefix, sizeof(updated.topic_prefix));
+            }
+            if (updated.assistant_ws_url[0] == '\0') {
+                memcpy(updated.assistant_ws_url, current.assistant_ws_url,
+                       sizeof(updated.assistant_ws_url));
+            }
+        }
         err = save_config(&updated, false);
     }
     if (err == ESP_OK) {
@@ -760,6 +815,13 @@ esp_err_t nodelio_conn_hist_save(const nodelio_conn_hist_t *in)
     esp_err_t err = nvs_open(NODELIO_NVS_NS, NVS_READWRITE, &h);
     if (err != ESP_OK) {
         return err;
+    }
+    if (!nodelio_nvs_has_headroom()) {
+        ESP_LOGW(TAG, "conn_hist skip: nvs low headroom");
+        nvs_close(h);
+        s_conn_hist = tmp;
+        s_conn_hist_ok = true;
+        return ESP_ERR_NVS_NOT_ENOUGH_SPACE;
     }
     err = nvs_set_blob(h, CONN_HIST_KEY, &tmp, sizeof(tmp));
     if (err == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {

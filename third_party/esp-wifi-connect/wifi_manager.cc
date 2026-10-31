@@ -61,7 +61,8 @@ bool WifiManager::Initialize(const WifiManagerConfig& config) {
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "Erasing NVS...");
+        ESP_LOGE(TAG, "NVS %s — erase wipes WiFi and NodeLio credentials",
+                 esp_err_to_name(ret));
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
@@ -244,6 +245,24 @@ std::string WifiManager::GetMacAddress() const {
 
 // ==================== Config AP Mode ====================
 
+void WifiManager::SetConfigApIndexHtml(const char *html)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    config_ap_index_html_ = html;
+}
+
+void WifiManager::SetConfigApSubmitHook(std::function<void(void *)> hook)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    config_ap_submit_hook_ = std::move(hook);
+}
+
+void WifiManager::SetConfigApWebStarted(std::function<void(void *)> hook)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    config_ap_web_started_ = std::move(hook);
+}
+
 void WifiManager::StartConfigAp() {
     std::unique_lock<std::mutex> lock(mutex_);
 
@@ -272,6 +291,23 @@ void WifiManager::StartConfigAp() {
     config_ap_->SetLanguage(config_.language);
     config_ap_->SetShowOtaConfig(config_.show_ota_config);
     config_ap_->SetShowSleepConfig(config_.show_sleep_config);
+    if (config_ap_index_html_) {
+        config_ap_->SetCustomIndexHtml(config_ap_index_html_);
+    }
+    if (config_ap_submit_hook_) {
+        config_ap_->OnWifiSubmitted([this](cJSON *json) {
+            if (config_ap_submit_hook_) {
+                config_ap_submit_hook_(json);
+            }
+        });
+    }
+    if (config_ap_web_started_) {
+        config_ap_->OnWebServerStarted([this](httpd_handle_t server) {
+            if (config_ap_web_started_) {
+                config_ap_web_started_(server);
+            }
+        });
+    }
 
     // Web handler calls this when user submits config
     config_ap_->OnExitRequested([this]() {

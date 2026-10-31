@@ -224,7 +224,7 @@ void WifiConfigurationAp::StartWebServer()
 {
     // Start the web server
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 24;
+    config.max_uri_handlers = 28;
     config.uri_match_fn = httpd_uri_match_wildcard;
     // 5G Network takes longer to connect
     config.recv_wait_timeout = 15;
@@ -236,11 +236,13 @@ void WifiConfigurationAp::StartWebServer()
         .uri = "/",
         .method = HTTP_GET,
         .handler = [](httpd_req_t *req) -> esp_err_t {
+            auto *self = static_cast<WifiConfigurationAp *>(req->user_ctx);
+            const char *html = self ? self->IndexHtml() : index_html_start;
             httpd_resp_set_hdr(req, "Connection", "close");
-            httpd_resp_send(req, index_html_start, strlen(index_html_start));
+            httpd_resp_send(req, html, strlen(html));
             return ESP_OK;
         },
-        .user_ctx = NULL
+        .user_ctx = this
     };
     ESP_ERROR_CHECK(httpd_register_uri_handler(server_, &index_html));
 
@@ -414,6 +416,7 @@ void WifiConfigurationAp::StartWebServer()
             }
 
             this_->Save(ssid_str, password_str);
+            this_->NotifyWifiSubmitted(json);
             cJSON_Delete(json);
             // 设置成功响应
             httpd_resp_set_type(req, "application/json");
@@ -671,6 +674,9 @@ void WifiConfigurationAp::StartWebServer()
     ESP_ERROR_CHECK(httpd_register_uri_handler(server_, &advanced_submit));
 
     ESP_LOGI(TAG, "Web server started");
+    if (on_web_server_started_) {
+        on_web_server_started_(server_);
+    }
 }
 
 bool WifiConfigurationAp::ConnectToWifi(const std::string &ssid, const std::string &password)
@@ -834,6 +840,33 @@ void WifiConfigurationAp::Save(const std::string &ssid, const std::string &passw
 void WifiConfigurationAp::OnExitRequested(std::function<void()> callback)
 {
     on_exit_requested_ = callback;
+}
+
+void WifiConfigurationAp::SetCustomIndexHtml(const char *html)
+{
+    custom_index_html_ = html;
+}
+
+void WifiConfigurationAp::OnWifiSubmitted(std::function<void(cJSON *)> callback)
+{
+    on_wifi_submitted_ = std::move(callback);
+}
+
+void WifiConfigurationAp::OnWebServerStarted(std::function<void(httpd_handle_t)> callback)
+{
+    on_web_server_started_ = std::move(callback);
+}
+
+const char *WifiConfigurationAp::IndexHtml() const
+{
+    return custom_index_html_ ? custom_index_html_ : index_html_start;
+}
+
+void WifiConfigurationAp::NotifyWifiSubmitted(cJSON *json)
+{
+    if (on_wifi_submitted_ && json) {
+        on_wifi_submitted_(json);
+    }
 }
 
 void WifiConfigurationAp::WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)

@@ -58,8 +58,24 @@ extern "C" esp_err_t nodelio_panel_ui_start(const nodelio_nvs_config_t *cfg)
 {
     if (cfg) {
         s_cfg = *cfg;
+        nodelio_nvs_cache_put(cfg);
     }
     return nodelio_overlay_init();
+}
+
+extern "C" void nodelio_panel_ui_apply_cfg(const nodelio_nvs_config_t *cfg)
+{
+    if (!cfg) {
+        return;
+    }
+    nodelio_nvs_cache_put(cfg);
+    Display *disp = nl_ov_disp();
+    if (disp) {
+        DisplayLockGuard lock(disp);
+        s_cfg = *cfg;
+    } else {
+        s_cfg = *cfg;
+    }
 }
 
 static esp_err_t alloc_layout_buf(void)

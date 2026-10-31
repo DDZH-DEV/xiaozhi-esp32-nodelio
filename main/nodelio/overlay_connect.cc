@@ -210,13 +210,71 @@ static lv_keyboard_mode_t kb_home_mode(lv_obj_t *ta)
     return LV_KEYBOARD_MODE_TEXT_LOWER;
 }
 
-/** 键盘弹出时加底垫，才能把绑定码等滚到键盘上方 */
-static void connect_scroll_kb_pad(bool kb_on)
+/** 横屏用侧栏键盘（nav_width≠0）；方屏仍贴底。 */
+static bool kb_side_layout(void)
 {
-    if (!s_connect_scroll) {
+    return nodelio_display_profile()->nav_width != 0;
+}
+
+/** 1280 宽屏：右侧约一半（上限 640）给键盘，键帽更宽。 */
+static int kb_side_width(void)
+{
+    const int w = (int)nodelio_display_profile()->width;
+    int kb_w = w / 2;
+    if (kb_w > 640) {
+        kb_w = 640;
+    }
+    if (kb_w < 360) {
+        kb_w = w / 2;
+    }
+    return kb_w;
+}
+
+/** 键盘弹出：宽屏左表单 / 右键盘；方屏贴底并给表单加底垫 */
+static void kb_apply_layout(bool kb_on)
+{
+    if (!s_kb) {
         return;
     }
-    lv_obj_set_style_pad_bottom(s_connect_scroll, kb_on ? 220 : NL_UI_SETTINGS_DETAIL_PAD, 0);
+    if (kb_side_layout()) {
+        const int kb_w = kb_side_width();
+        const int form_h = LV_VER_RES - NL_UI_STATUS_H;
+        /* 高度约宽的一半，贴底；避免 form 全高把 4 行键拉成细长条 */
+        int kb_h = kb_w / 2;
+        if (kb_h > form_h - 12) {
+            kb_h = form_h - 12;
+        }
+        if (kb_h < 240) {
+            kb_h = form_h - 12;
+        }
+        lv_obj_set_size(s_kb, kb_w, kb_h);
+        lv_obj_align(s_kb, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+        lv_obj_set_style_min_height(s_kb, 44, LV_PART_ITEMS);
+        lv_obj_set_style_pad_all(s_kb, 8, 0);
+        lv_obj_set_style_pad_row(s_kb, 5, 0);
+        lv_obj_set_style_pad_column(s_kb, 5, 0);
+        if (s_connect) {
+            lv_obj_set_size(s_connect, kb_on ? (LV_HOR_RES - kb_w) : LV_HOR_RES, form_h);
+            lv_obj_align(s_connect, LV_ALIGN_TOP_LEFT, 0, NL_UI_STATUS_H);
+        }
+        if (s_connect_scroll) {
+            lv_obj_set_style_pad_bottom(s_connect_scroll, NL_UI_SETTINGS_DETAIL_PAD, 0);
+            lv_obj_set_style_pad_right(s_connect_scroll, kb_on ? 12 : NL_UI_SETTINGS_DETAIL_PAD, 0);
+        }
+        return;
+    }
+    lv_obj_set_width(s_kb, lv_pct(100));
+    lv_obj_set_height(s_kb, lv_pct(42));
+    lv_obj_align(s_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_min_height(s_kb, 36, LV_PART_ITEMS);
+    if (s_connect) {
+        lv_obj_set_size(s_connect, LV_HOR_RES, LV_VER_RES - NL_UI_STATUS_H);
+        lv_obj_align(s_connect, LV_ALIGN_TOP_LEFT, 0, NL_UI_STATUS_H);
+    }
+    if (s_connect_scroll) {
+        lv_obj_set_style_pad_bottom(s_connect_scroll, kb_on ? 220 : NL_UI_SETTINGS_DETAIL_PAD, 0);
+        lv_obj_set_style_pad_right(s_connect_scroll, NL_UI_SETTINGS_DETAIL_PAD, 0);
+    }
 }
 
 static void wifi_list_hide(void)
@@ -233,17 +291,19 @@ void nl_ov_kb_set_visible(bool on)
     if (!s_kb) {
         return;
     }
+    kb_apply_layout(on);
     if (on) {
         lv_obj_clear_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
         if (s_tabbar) {
             lv_obj_add_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
         }
-        connect_scroll_kb_pad(true);
+        if (s_connect) {
+            lv_obj_move_foreground(s_connect);
+        }
         lv_obj_move_foreground(s_kb);
     } else {
         lv_obj_add_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
         lv_keyboard_set_textarea(s_kb, nullptr);
-        connect_scroll_kb_pad(false);
         bool form_open = s_connect && !lv_obj_has_flag(s_connect, LV_OBJ_FLAG_HIDDEN);
         if (s_tabbar && s_visible && !form_open) {
             lv_obj_clear_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
@@ -256,17 +316,20 @@ static void ensure_kb(void)
     if (s_kb) {
         return;
     }
-    /* 连接页在 lv_layer_top()，键盘必须同层才能盖在表单上面 */
+    /* 连接页在 lv_layer_top()，键盘必须同层；宽屏侧栏、方屏贴底见 kb_apply_layout */
     s_kb = lv_keyboard_create(lv_layer_top());
     lv_obj_add_flag(s_kb, LV_OBJ_FLAG_FLOATING);
-    lv_obj_set_width(s_kb, lv_pct(100));
-    lv_obj_set_height(s_kb, lv_pct(42));
-    lv_obj_align(s_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_text_font(s_kb, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_pad_all(s_kb, 6, 0);
-    lv_obj_set_style_pad_row(s_kb, 6, 0);
-    lv_obj_set_style_pad_column(s_kb, 6, 0);
-    lv_obj_set_style_min_height(s_kb, 36, LV_PART_ITEMS);
+    lv_obj_set_style_pad_all(s_kb, 8, 0);
+    lv_obj_set_style_pad_row(s_kb, 8, 0);
+    lv_obj_set_style_pad_column(s_kb, 8, 0);
+    lv_obj_set_style_bg_color(s_kb, UI_SURFACE, 0);
+    lv_obj_set_style_bg_opa(s_kb, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_kb, kb_side_layout() ? 1 : 0, 0);
+    lv_obj_set_style_border_side(s_kb, LV_BORDER_SIDE_LEFT, 0);
+    lv_obj_set_style_border_color(s_kb, UI_BORDER, 0);
+    lv_obj_set_style_radius(s_kb, 0, 0);
+    kb_apply_layout(false);
     lv_keyboard_set_map(s_kb, LV_KEYBOARD_MODE_USER_1, s_kb_map_host, s_kb_ctrl_host);
     lv_keyboard_set_map(s_kb, LV_KEYBOARD_MODE_USER_2, s_kb_map_port, s_kb_ctrl_port);
     lv_obj_add_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
@@ -364,110 +427,193 @@ static void apply_wifi_creds(const char *ssid, const char *pass, nodelio_nvs_con
     }
 }
 
-static void on_save(lv_event_t *e)
+static void trim_cstr(char *s)
 {
-    (void)e;
-    const char *ssid = s_ta_ssid ? lv_textarea_get_text(s_ta_ssid) : "";
-    const char *pass = s_ta_pass ? lv_textarea_get_text(s_ta_pass) : "";
-    const char *host = s_ta_host ? lv_textarea_get_text(s_ta_host) : "";
-    const char *port = s_ta_port ? lv_textarea_get_text(s_ta_port) : "8899";
-    const char *owner = s_ta_owner ? lv_textarea_get_text(s_ta_owner) : "";
-    if (!host || !host[0] || !owner || !owner[0]) {
-        nl_ov_toast("请填写主机与绑定码");
+    if (!s) {
         return;
     }
-    /* 已保存过的网络可以不填密码。SsidManager 首次会读 NVS，不能在 LVGL 任务上做。 */
-    if (ssid && ssid[0] && (!pass || !pass[0]) && std::strcmp(ssid, s_cfg.wifi_ssid) != 0) {
-        nl_ov_toast("新网络请填密码");
-        return;
+    char *p = s;
+    while (*p == ' ' || *p == '\t') {
+        p++;
     }
-    if (!port || !port[0]) {
-        port = "8899";
+    if (p != s) {
+        std::memmove(s, p, std::strlen(p) + 1);
     }
+    size_t n = std::strlen(s);
+    while (n > 0 && (s[n - 1] == ' ' || s[n - 1] == '\t')) {
+        s[--n] = '\0';
+    }
+}
 
-    /* LVGL 栈在 PSRAM，禁止此处 flash / WiFi NVS；拷贝表单后主任务落盘重启 */
-    std::string ssid_s = ssid ? ssid : "";
-    std::string pass_s = pass ? pass : "";
-    std::string host_s = host ? host : "";
-    std::string port_s = port ? port : "8899";
-    std::string owner_s = owner ? owner : "";
-    const bool https = s_https;
-    nodelio_nvs_config_t cfg;
+typedef struct {
+    char ssid[33];
+    char pass[65];
+    char host[96];
+    char port[8];
+    char owner[64];
+    uint8_t https;
+    uint8_t reboot;
+} nl_conn_save_job_t;
+
+static void persist_connect_job(nl_conn_save_job_t *job)
+{
+    if (!job) {
+        return;
+    }
+    nodelio_nvs_config_t cfg{};
     nodelio_nvs_cache_get(&cfg);
     char new_url[sizeof(cfg.server_url)];
-    std::snprintf(new_url, sizeof(new_url), "%s://%s:%s", https ? "https" : "http", host_s.c_str(),
-                  port_s.c_str());
-    bool server_changed =
-        std::strcmp(cfg.server_url, new_url) != 0 || std::strcmp(cfg.owner, owner_s.c_str()) != 0;
+    std::snprintf(new_url, sizeof(new_url), "%s://%s:%s", job->https ? "https" : "http", job->host,
+                  job->port[0] ? job->port : "8899");
+    const bool server_changed =
+        std::strcmp(cfg.server_url, new_url) != 0 || std::strcmp(cfg.owner, job->owner) != 0;
     std::snprintf(cfg.server_url, sizeof(cfg.server_url), "%s", new_url);
-    std::snprintf(cfg.owner, sizeof(cfg.owner), "%s", owner_s.c_str());
-    const bool wifi_changed = !ssid_s.empty() && (ssid_s != cfg.wifi_ssid || !pass_s.empty());
-    if (!ssid_s.empty()) {
-        std::snprintf(cfg.wifi_ssid, sizeof(cfg.wifi_ssid), "%s", ssid_s.c_str());
-        if (pass_s[0]) {
-            std::snprintf(cfg.wifi_pass, sizeof(cfg.wifi_pass), "%s", pass_s.c_str());
+    std::snprintf(cfg.owner, sizeof(cfg.owner), "%s", job->owner);
+    const bool wifi_changed =
+        job->ssid[0] && (std::strcmp(job->ssid, cfg.wifi_ssid) != 0 || job->pass[0]);
+    if (job->ssid[0]) {
+        std::snprintf(cfg.wifi_ssid, sizeof(cfg.wifi_ssid), "%s", job->ssid);
+        if (job->pass[0]) {
+            std::snprintf(cfg.wifi_pass, sizeof(cfg.wifi_pass), "%s", job->pass);
         }
     }
     if (server_changed) {
         nodelio_nvs_clear_mqtt(&cfg);
+        (void)nodelio_layout_cache_clear();
+        (void)nodelio_apps_cache_clear();
     }
-    nodelio_conn_hist_t hist;
+    nodelio_conn_hist_t hist{};
     nodelio_conn_hist_cache_get(&hist);
-    nodelio_conn_hist_push(&hist, https, host_s.c_str(), port_s.c_str(), owner_s.c_str());
+    nodelio_conn_hist_push(&hist, job->https != 0, job->host, job->port[0] ? job->port : "8899",
+                           job->owner);
     nodelio_conn_hist_cache_put(&hist);
-    nl_ov_toast("正在保存…");
-    Application::GetInstance().Schedule([cfg, ssid_s, pass_s, hist, server_changed,
-                                         wifi_changed]() mutable {
-        nodelio_nvs_config_t out = cfg;
-        /* 换服务器：先清可重建缓存，腾出 16KB NVS，避免 server_url 写失败仍重启 */
-        if (server_changed) {
-            (void)nodelio_layout_cache_clear();
-            (void)nodelio_apps_cache_clear();
-        }
-        esp_err_t err = nodelio_nvs_save_connection(&out);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "connection save/readback failed: %s — cancel reboot",
-                     esp_err_to_name(err));
-            nodelio_nvs_config_t revert{};
-            if (nodelio_nvs_load(&revert) == ESP_OK) {
-                DisplayLockGuard lock(nl_ov_disp());
-                if (lock) {
-                    s_cfg = revert;
-                }
-            }
-            nl_ov_toast(err == ESP_ERR_NVS_NOT_ENOUGH_SPACE ? "保存失败：存储已满" : "保存失败");
-            return;
-        }
-        if (wifi_changed) {
-            apply_wifi_creds(ssid_s.c_str(), pass_s.c_str(), &out);
-        }
-        {
+
+    nodelio_nvs_config_t out = cfg;
+    esp_err_t err = nodelio_nvs_save_connection(&out);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "connection save/readback failed: %s", esp_err_to_name(err));
+        nodelio_nvs_config_t revert{};
+        if (nodelio_nvs_load(&revert) == ESP_OK) {
             DisplayLockGuard lock(nl_ov_disp());
             if (lock) {
-                s_cfg = out;
+                s_cfg = revert;
             }
         }
+        nl_ov_toast(err == ESP_ERR_NVS_NOT_ENOUGH_SPACE ? "保存失败：存储已满" : "保存失败");
+        heap_caps_free(job);
+        return;
+    }
+    if (wifi_changed) {
+        apply_wifi_creds(job->ssid, job->pass, &out);
+    }
+    {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            s_cfg = out;
+        }
+    }
+    nodelio_nvs_cache_put(&out);
+    if (nodelio_nvs_has_headroom()) {
         (void)nodelio_conn_hist_save(&hist);
-        ESP_LOGI(TAG, "saved server=%s — reboot", out.server_url);
-        nl_ov_toast(server_changed ? "已保存，将重新注册…" : "已保存，重启…");
-        static esp_timer_handle_t reboot_timer = nullptr;
-        if (!reboot_timer) {
-            esp_timer_create_args_t args = {};
-            args.callback = [](void*) {
-                Application::GetInstance().Schedule([]() { esp_restart(); });
-            };
-            args.name = "nl_conn_reboot";
-            err = esp_timer_create(&args, &reboot_timer);
+    } else {
+        ESP_LOGW(TAG, "skip conn_hist flash (keep credentials)");
+    }
+    ESP_LOGI(TAG, "saved server=%s reboot=%u", out.server_url, (unsigned)job->reboot);
+    const bool reboot = job->reboot != 0;
+    heap_caps_free(job);
+    job = nullptr;
+    if (!reboot) {
+        nl_ov_toast("已保存");
+        return;
+    }
+    nl_ov_toast(server_changed ? "已保存，将重新注册…" : "已保存，重启…");
+    static esp_timer_handle_t reboot_timer = nullptr;
+    if (!reboot_timer) {
+        esp_timer_create_args_t args = {};
+        args.callback = [](void *) {
+            Application::GetInstance().Schedule([]() { esp_restart(); });
+        };
+        args.name = "nl_conn_reboot";
+        err = esp_timer_create(&args, &reboot_timer);
+    }
+    if (err == ESP_OK) {
+        (void)esp_timer_stop(reboot_timer);
+        err = esp_timer_start_once(reboot_timer, 800000);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Reboot scheduling failed: %s", esp_err_to_name(err));
+        nl_ov_toast("已保存，请手动重启");
+    }
+}
+
+/**
+ * 从连接表单落盘。reboot=true 为「保存并重启」；false 为返回时静默保存。
+ * 点击回调可能跑在 sila_touch 的 4KB 栈上：此处只拷短字段，重活丢主任务。
+ */
+static bool persist_connect_from_form(bool reboot)
+{
+    auto *job = static_cast<nl_conn_save_job_t *>(
+        heap_caps_malloc(sizeof(nl_conn_save_job_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (!job) {
+        nl_ov_toast("保存失败");
+        return false;
+    }
+    std::memset(job, 0, sizeof(*job));
+    if (s_ta_ssid) {
+        std::snprintf(job->ssid, sizeof(job->ssid), "%s", lv_textarea_get_text(s_ta_ssid));
+    }
+    if (s_ta_pass) {
+        std::snprintf(job->pass, sizeof(job->pass), "%s", lv_textarea_get_text(s_ta_pass));
+    }
+    if (s_ta_host) {
+        std::snprintf(job->host, sizeof(job->host), "%s", lv_textarea_get_text(s_ta_host));
+    }
+    if (s_ta_port) {
+        std::snprintf(job->port, sizeof(job->port), "%s", lv_textarea_get_text(s_ta_port));
+    }
+    if (s_ta_owner) {
+        std::snprintf(job->owner, sizeof(job->owner), "%s", lv_textarea_get_text(s_ta_owner));
+    }
+    trim_cstr(job->ssid);
+    trim_cstr(job->pass);
+    trim_cstr(job->host);
+    trim_cstr(job->port);
+    trim_cstr(job->owner);
+    if (!job->host[0] || !job->owner[0]) {
+        heap_caps_free(job);
+        if (reboot) {
+            nl_ov_toast("请填写主机与绑定码");
         }
-        if (err == ESP_OK) {
-            (void)esp_timer_stop(reboot_timer);
-            err = esp_timer_start_once(reboot_timer, 400000);
+        return false;
+    }
+    if (job->ssid[0] && !job->pass[0] && std::strcmp(job->ssid, s_cfg.wifi_ssid) != 0) {
+        heap_caps_free(job);
+        if (reboot) {
+            nl_ov_toast("新网络请填密码");
         }
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Reboot scheduling failed: %s", esp_err_to_name(err));
-            nl_ov_toast("已保存，请手动重启");
-        }
-    });
+        return false;
+    }
+    if (!job->port[0]) {
+        std::snprintf(job->port, sizeof(job->port), "8899");
+    }
+    job->https = s_https ? 1 : 0;
+    job->reboot = reboot ? 1 : 0;
+    nl_ov_toast("正在保存…");
+    Application::GetInstance().Schedule([job]() { persist_connect_job(job); });
+    return true;
+}
+
+static void on_save(lv_event_t *e)
+{
+    (void)e;
+    (void)persist_connect_from_form(true);
+}
+
+static void on_nav_back(lv_event_t *e)
+{
+    (void)e;
+    (void)persist_connect_from_form(false);
+    nl_ov_close_connect();
 }
 
 void nl_ov_open_connect(void)
@@ -532,8 +678,7 @@ void nl_ov_build_connect(void)
     lv_obj_clear_flag(s_connect, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_connect, LV_OBJ_FLAG_HIDDEN);
 
-    (void)ui_make_nav_bar(s_connect, UI_NAV_H, "连接",
-                          [](lv_event_t *) { nl_ov_close_connect(); });
+    (void)ui_make_nav_bar(s_connect, UI_NAV_H, "连接", on_nav_back);
 
     s_connect_scroll = lv_obj_create(s_connect);
     lv_obj_set_width(s_connect_scroll, lv_pct(100));
@@ -728,7 +873,7 @@ void nl_ov_build_connect(void)
     lv_obj_center(sl);
 
     lv_obj_t *tip = lv_label_create(s_connect_scroll);
-    lv_label_set_text(tip, "先点「扫描」选 WiFi，再填密码与服务器；主机填局域网 IP；历史可点选回填");
+    lv_label_set_text(tip, "先点「扫描」选 WiFi，再填密码与服务器；点「保存并重启」写入闪存。返回也会保存已填主机与绑定码");
     nl_ov_set_font(tip);
     lv_obj_set_style_text_color(tip, UI_TEXT_TIP, 0);
     lv_label_set_long_mode(tip, LV_LABEL_LONG_WRAP);
