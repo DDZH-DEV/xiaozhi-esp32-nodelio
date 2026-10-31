@@ -92,10 +92,58 @@ NodeLio 产品身份为 `board_id=sila_p4c5_62`、`type_code=WALL_PANEL`，注�
 激活/语音服务器配置获取不受影响。待板型、分区、资源和 P4/C5 版本校验落实后才能重新启用。
 它不等于已经实现可靠 OTA/回滚，也不修改安全 eFuse。
 
-依赖继续使用仓库 `main/idf_component.yml`：LVGL ~9.5.0、esp_lvgl_port ~2.9.0、
+本板在 `main/idf_component.yml` 固定 LVGL **9.5.0**、esp_lvgl_port **2.9.0**，
+通过板型 Kconfig 条件选择；其它板仍使用原来的 ~9.5.0 / ~2.9.0。
 esp_codec_dev ~1.6.2、esp-sr ==2.4.7、Hosted ^2.12.11、wifi_remote ^1.6.4。
 这些是约束，不是本机解析到的精确版本。第一次成功构建时保存 `dependencies.lock`、生成配置、
 IDF SHA、C5 固件版本/摘要及串口日志，后续按该组合重建。不要把 Hosted 3.x 的配置示例混进 2.x。
+
+## 渲染对照实验（源码已接入，未做目标构建/实测）
+
+在用户提交 `07bb8989` 上增加以下 32MB 实验构建，均保持 RGB888、90° port PPA 旋转、
+PARTIAL 模式和原分区。普通 16m/32m 构建不开填充实验或周期性能日志。
+
+| 构建名后缀（前缀均为 `sila-p4c5-62-32m-`） | LVGL 绘制 | 每个 LVGL 缓冲 | 性能日志 |
+|---|---|---|---|
+| `render-sw` | 软件 | 四分之一屏 | 开 |
+| `render-ppa` | 板级 PPA 填充 + 软件 | 四分之一屏 | 开 |
+| `render-ppa-full` | 板级 PPA 填充 + 软件 | 完整屏 | 开 |
+
+```sh
+python scripts/build.py sila/sila-p4c5-62 --name sila-p4c5-62-32m-render-sw
+# 留存上述产物与日志后，再构建下一组；每次 build.py 会更换当前构建配置。
+python scripts/build.py sila/sila-p4c5-62 --name sila-p4c5-62-32m-render-ppa
+python scripts/build.py sila/sila-p4c5-62 --name sila-p4c5-62-32m-render-ppa-full
+```
+
+实验仅用于已确认容量的32MB板。现有 `nodelio-flash.bat` 默认会重新构建普通变体，
+不用于选择这些实验；烧录时使用相应构建保存的产物。所有变体仍禁用网络固件更新。
+
+- 启动打印实际 LVGL 版本、像素缓冲大小、旋转后端、板级填充是否成功注册及对齐配置。
+- `NODELIO_P4_RENDER_STATS` 使用 LVGL refresh 事件汇总有绘制的刷新耗时，每隔至少5秒在下一次
+  有绘制的刷新结束时输出平均/最大值和堆内存；无额外定时器、任务或强制重绘。
+  `wall_us` 包含 LVGL 本次刷新内等待，不代表 CPU 利用率、完整屏幕扫描时间或触摸端到端延迟。
+- `PPA fill total` 是启动以来成功的填充次数；`fallback` 是已接管任务转回软件的次数，
+  不包括一开始就由软件处理的圆角/渐变/图片。计数持续为0时不得声称绘制已得到加速。
+- 在同一布局、亮度、网络和音频条件下依次比较 sw→ppa、ppa→ppa-full；测试首页切换、滚动、
+  技能卡+播放器、双麦自检、联网语音、息屏唤醒，记录错色/花屏、音频欠载和内存最低值。
+  加速能否默认启用由结果决定，目前不宣称性能提升。
+
+### 为何没有直接开启 LVGL 9.5 自带 PPA / 升到9.6
+
+审查官方 9.5.0 `lv_draw_ppa_buf.c` 发现其同一缓存回调在 DMA 前后均执行 C2M，
+不具备此处需要的明确 DMA→CPU 无效化步骤。因此 `CONFIG_LV_USE_PPA` 保持关闭，
+实验使用本板 `ppa_fill.cc` 的独立 draw unit（`NODELIO_P4_PPA_FILL`），不修改 vendor 文件。
+它仅接管至少4096像素、无圆角/渐变、完全不透明的 RGB888 填充；缓冲必须在 PSRAM、
+地址与长度均按缓存行对齐、stride 紧密。DMA 前 C2M、结束后 M2C，单软件绘制单元串行执行。
+其它任务留给软件；PPA 初始化失败保持软件路径，运行错误会停用加速并重绘当前区域。
+不注册额外 SRM/混合客户端，输出旋转仍由 port 独占自己的 SRM 客户端。
+该适配明确依赖固定的9.5内部 draw-unit API，升级版本时必须重新审查，不能悄悄套用。
+
+9.6.0~1 已发布，但 `78/xiaozhi-fonts 2.0.0` 的 manifest 限定 `lvgl/lvgl: ~9.5.0`，
+`cbin_font.c` 又按 `sizeof(lv_font_t)` / `sizeof(lv_font_fmt_txt_dsc_t)` 读取二进制资源。
+不强行覆盖这条依赖。下一轮9.6迁移需同时处理字体提供方、二进制格式/重生成/加载校验，
+再处理公开头文件、内存配置与截图等接口；不能只改 LVGL 版本号。本轮未升级到9.6。
 
 ## 显示、音频与任务预算
 
@@ -103,7 +151,11 @@ IDF SHA、C5 固件版本/摘要及串口日志，后续按该组合重建。不
 - 2-lane DSI / 1000Mbps，DPI 48MHz，RGB888；HBP/HFP/HSW=90/90/10，VBP/VFP/VSW=10/250/50。
   按总时序计算约47Hz；参考宏名称的“60Hz”不是本板实测帧率。
 - DPI 两完整帧，LVGL 两个四分之一屏 buffer，均24bpp；仅这些约4.14MiB，另需 PPA/对齐/资源空间。
-  PPA 开启，`sw_rotate=true`，`direct_mode/full_refresh/avoid_tearing=false`。
+  开启的是 port 输出旋转 PPA（`CONFIG_LVGL_PORT_ENABLE_PPA=y`），`sw_rotate=true`，
+  `direct_mode/full_refresh/avoid_tearing=false`；这不表示启用了 LVGL PPA 绘制单元。
+  普通变体明确关闭 LVGL 自带 PPA 绘制；板级填充实验见上节。
+  计入 port 的一份旋转缓冲后，普通配置像素内存约4.55MiB，完整缓冲实验约8.28MiB；
+  尚不含其它资源、对齐和运行时分配。完整缓冲实验仍不是 `full_refresh` 或 `direct_mode`。
 - 继承 P4 默认 PSRAM 200MHz/XIP，并开启启动内存检查。这是待实测的起点；若不稳定，
   使用新的板级配置进行单变量验证，不通过关闭 WDT 掩盖问题。生产 WDT 保留，超时20s。
 - `sila_touch`：4KiB 内部栈、优先级4、IRQ通知唤醒；I²C超时50ms，错误释放指针、吞掉不确定手势。

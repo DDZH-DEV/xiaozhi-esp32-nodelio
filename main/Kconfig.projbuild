@@ -1190,6 +1190,35 @@ endmenu
 menu "NodeLio Panel"
     depends on BOARD_TYPE_SILA_86 || BOARD_TYPE_SILA_P4C5_62
 
+    config NODELIO_P4_PPA_FILL
+        bool "P4 experiment: synchronous PPA fill draw unit"
+        depends on BOARD_TYPE_SILA_P4C5_62
+        default n
+        help
+            Board-owned RGB888 opaque fill acceleration with explicit DMA cache
+            ownership. Requires the pinned LVGL 9.5, one software draw unit and
+            LV_OS_NONE. Keep LV_USE_PPA disabled: its 9.5 cache callbacks are not
+            used here. Unsupported tasks and failed PPA operations use software.
+
+    config NODELIO_P4_FULL_DRAW_BUFFERS
+        bool "P4 experiment: full-screen LVGL draw buffers"
+        depends on BOARD_TYPE_SILA_P4C5_62
+        default n
+        help
+            Allocate two full-screen RGB888 draw buffers instead of two quarter
+            screens. Rendering stays PARTIAL because the panel rotates 90 degrees.
+            This also enlarges the port rotation buffer; measure PSRAM and audio
+            concurrency before using this configuration in a release.
+
+    config NODELIO_P4_RENDER_STATS
+        bool "P4 experiment: log LVGL refresh timings"
+        depends on BOARD_TYPE_SILA_P4C5_62
+        default n
+        help
+            Aggregate active refresh wall times from LVGL display events and log
+            at most once per five seconds of activity. No extra timer or task.
+            These are LVGL timings, not panel scan FPS or PPA hardware counters.
+
     config NODELIO_PANEL
         bool "Enable NodeLio register / layout / panel/command"
         default y

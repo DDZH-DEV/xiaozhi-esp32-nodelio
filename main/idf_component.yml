@@ -73,8 +73,20 @@ dependencies:
     rules:
     - if: target in [esp32s31]
   espressif/esp_lcd_touch_cst816s: ^1.1.2
-  lvgl/lvgl: ~9.5.0
-  esp_lvgl_port: ~2.9.0
+  lvgl/lvgl:
+    matches:
+    # PPA A/B uses one reproducible renderer. xiaozhi-fonts 2.0.0 also requires
+    # 9.5; migrate its raw-structure binary assets before attempting LVGL 9.6.
+    - if: 'target == "esp32p4" && $CONFIG{BOARD_TYPE_SILA_P4C5_62} == True'
+      version: "==9.5.0"
+    - if: 'target != "esp32p4" || $CONFIG{BOARD_TYPE_SILA_P4C5_62} == False'
+      version: "~9.5.0"
+  esp_lvgl_port:
+    matches:
+    - if: 'target == "esp32p4" && $CONFIG{BOARD_TYPE_SILA_P4C5_62} == True'
+      version: "==2.9.0"
+    - if: 'target != "esp32p4" || $CONFIG{BOARD_TYPE_SILA_P4C5_62} == False'
+      version: "~2.9.0"
   espressif/esp_io_expander_tca95xx_16bit: ^2.0.2
   espressif2022/image_player: ^1.1.1
   espressif2022/esp_emote_expression: ^1.0.2
