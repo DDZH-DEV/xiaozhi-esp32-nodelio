@@ -92,85 +92,51 @@ The build script changes local `sdkconfig` and build state. Do not assume the bu
 
 Keep detailed or fast-changing information in those files, not here. Add a nested `AGENTS.md` only when a subsystem needs specialized instructions.
 
-## NodeLio Panel（SILA-86 叠层）
+## NodeLio Panel（WALL_PANEL 多板叠层）
 
-> 本仓库（`D:\xz25`）同时承载 NodeLio 墙板固件（`main/nodelio/`、`main/boards/sila/sila-86/`）。
+> 本仓库承载 NodeLio 墙板：`main/nodelio/` + `main/boards/sila/*`。  
+> 完整规则：`D:\SITES\NodeLio\.codex\rules\esp32-idf-panel.md`（与 `.cursor/rules/esp32-idf-panel.mdc` 同步）。
 
-- **固件根**：本仓库（`main/nodelio/`、`main/boards/sila/sila-86/`）
-- **计划/协议**：`D:\SITES\NodeLio\ESP32-IDF\PLAN-PLATFORM.md`、`D:\SITES\NodeLio\ESP32-IDF\docs\hw-constraints.md`
-- **动态技能规划**：`D:\SITES\NodeLio\ESP32-IDF\docs\panel-skills.md`（PLAN 阶段 L）
-- UI 令牌：`main/nodelio/ui_theme.h`；控件：`ui_widgets.*`；壳：`nodelio_overlay.cc`；**禁止**散落裸 hex
-- **禁止** `idf.py flash`（代烧录）；本机 OOM 时用 `idf.py build -- -j2`
-- **禁止**擅自恢复定时拉布局；勿把 `ESP32-IDF/base-design.jpg` 当唯一真理
+| board_id | 目录 | 要点 |
+|----------|------|------|
+| `sila_86` | `main/boards/sila/sila-86/` | S3；480×480；ES8311+ES7210；`nodelio-build.bat`；强制软件 AES |
+| `sila_p4c5_62` | `main/boards/sila/sila-p4c5-62/` | P4+C5 Hosted；逻辑 1280×452；**ES8389 必留**；grid 默认 10×3 |
 
-### 省电优先（每次改固件默认按「省电优先」评审）
+- **type_code**：`WALL_PANEL`；硬件用 `board_id`。**禁止**为换屏新开 type_code；**禁止**改 sila-86 引脚迁就 P4。
+- **计划/协议**：`D:\SITES\NodeLio\ESP32-IDF\`（`hw-constraints.md`、`board-hal.md`、`panel-skills.md`）
+- UI：`ui_theme.h` / `ui_widgets.*` / `nodelio_overlay.cc`；几何走 **`display_profile`**；禁止裸 hex
+- **禁止** `idf.py flash`；OOM 时 `idf.py build -- -j2`；禁止擅自定时拉布局
+- 一次只编一块板；OTA 按 `board_id` 分流
+
+### 省电优先
 
 | 优先级 | 耗电大户 | 要求 |
 |--------|----------|------|
-| P0 | RGB 屏 + 背光 | 超时息屏关背光；触摸唤醒；禁止常亮调试背光留生产路径 |
-| P1 | WiFi / HTTP / TLS | layout/snapshot **开机一次 + 手动刷新 + MQTT 推送**；未联网跳过 HTTP |
-| P2 | LVGL / 轮询 | 息屏降刷新；忌短周期空转 |
-| P3 | 音频 / AFE | 唤醒与 TLS/OTA **互斥**；会话结束释放 |
+| P0 | 屏 + 背光 | 息屏关背光；触摸唤醒；禁常亮调试背光 |
+| P1 | WiFi / Hosted / TLS | layout **开机+手动+MQTT**；未联网跳过 HTTP |
+| P2 | LVGL | 息屏降刷新 |
+| P3 | AFE | 与 TLS/OTA 互斥；会话结束释放 |
 
-- **禁止**用 `deep sleep` 冒充本板「关机」。
-- 新常驻任务须在 `hw-constraints.md` 写清亮屏/息屏电流影响（可定性）。
+禁止 deep sleep 冒充关机。新常驻任务写 `hw-constraints.md`（P4 含 DSI+Hosted 并发）。
 
-### 双电源方案区分
+### 技能 / Flash / UI
 
-同批手板方案 A（TP4057）与 B（IP5306）勿混结论；CHRG 灯非 MCU GPIO。  
-SILA-86 背光以板级 `config` 为准；勿盲目照抄旧叉 invert。
+- 技能走云清单；勿每 API fork 页面；控家 = layout + `panel/command`。
+- 分区：`partitions/v2/16m.csv`。86：`nodelio-build.bat`。62：板级构建，**勿套用 86 裁掉 es8389**。
+- 曜夜微晶 + Icon Pod；APP 与实机按 **display_profile** 1:1（480 方屏 vs 1280×452 侧轨）。
 
-### 动态技能约束
+### 调度 / 口令 / 截图 / 播放 / 语音
 
-- 第三方接口进面板：**走云技能清单**（`docs/panel-skills.md` / PLAN 阶段 L），**默认不发固件**。
-- 固件只保留通用 invoke + 通用列表 UI；**勿为每个 API fork 页面**。
-- 控家仍用 layout + `panel/command`；技能为平行通道。
+- 禁 LVGL 回调同步 HTTP/MQTT；乐观更新 + 异步 Job（`nl_cmd_async` / JobScheduler）；PSRAM 栈 ≥10KB；资源成对释放。
+- MultiNet 窗已下线；layout 拼音服务 **云 STT 旁路**，勿写死静态口令唯一源。
+- 截图拍 `lv_layer_top()`。播放中可息屏、不断网、不息屏关功放。
+- MCP/口令：`NodeLio/ESP32-IDF/docs/xiaozhi-mcp.md`。`goto_page home` 不关技能浮层；聆听/说话禁错误 `StopNotification`。
+- 语音默认官方小智云，设置可切自建服。
 
-### Flash / 功能落点（加功能先看）
+### 踩坑硬约束
 
-- 分区：`partitions/v2/16m.csv`；产物 `build/`（`nodelio-build.bat`）。`xiaozhi.bin`→`ota_0`（~3.875MB）；`storage`→`0x800000`（1MB，layout/apps 等可写缓存）；`generated_assets.bin`→`0x900000`（7MB，WakeNet+字库）。整片：`flash_args`。
-- 板级：`main/boards/sila/sila-86/`；控家 UI：`main/nodelio/`；离线口令：`offline_cmd*.c`。SILA 已在 `main/CMakeLists.txt` 裁掉 camera / 4G 板 / OLED / Emote / 未用 codec；勿无条件加回。`EspNetwork`（esp-ml307）服务 WiFi HTTP/MQTT，保留。完整表：`NodeLio/.codex/rules/esp32-idf-panel.md` §4.1。
+全文：`NodeLio/.codex/rules/esp32-idf-panel.md` §11；86 排障：`docs/nodelio-sila86.md`。
 
-### UI 视觉规范（曜夜微晶体系）
-
-- 画布底色 `0x0c0f14`；关态卡片统一深石板 `0x161b24`，禁止各自着色；开态采用深环境微光底 + 高饱和 Icon Pod 胶囊底座 + 右上角药丸微标。
-- 控件代码只读 `ui_theme.h`，严禁散落裸 hex；APP `wall-panel-layout.uvue` 须 1:1 骨架同构（Icon Pod + 右上微标 + 双行标题）。
-
-### 触摸并发与命令队列（严禁阻塞 UI）
-
-- **禁止在 LVGL 回调内同步阻塞调用 HTTP/MQTT**；必须先翻本地缓存 `refresh_home_tiles()` 乐观响应（0ms），再将命令投入后台 FreeRTOS 异步队列 `nl_cmd_async`；失败时回滚并 toast。
-- 异步队列任务栈必须放在 PSRAM 且大小 >= 10KB（10240 bytes），严禁 4KB 局部栈引发 `stack overflow` 崩溃。
-
-### 离线语音动态词表注入
-
-- 引脚/设备重命名时，服务端下发拼音（`pinyinOn`/`pinyinOff`），`offline_cmd.c` 启动时动态注册 MultiNet 词表，严禁写死静态口令。
-
-### 实机截图层级
-
-- 播放器 / 技能卡 / 设置内页挂在 `lv_layer_top()`，与首页 `s_root` 同级。
-- 截图必须拍 `lv_layer_top()`，禁止只拍 `s_root`（否则截不到播放器）。
-
-### 音乐播放与息屏
-
-- 播放中可息屏（不停播）；播放中禁止断网；息屏勿关功放。
-- 设置页「播放器」：是否允许播放中息屏、暂停多久关播放器（NVS）。
-
-### 语音导航 / 关技能弹窗
-
-口令与 MCP 表：`NodeLio/ESP32-IDF/docs/xiaozhi-mcp.md`。
-
-- 首页多屏：左右滑 / 「上一屏·下一屏」。有控家网格的首页不竖滚。
-- 竖滚：设置、内页、连接、应用列表、启动台（「往上翻·往下翻」）。
-- `goto_page home` **不关** `lv_layer_top()` 上的技能弹窗；关电台/新闻用 `self.skill.close`。
-- **禁止**在聆听/说话/连接中走 `StopNotification()` 收尾（`ResetDecoder` + `EnableVoiceProcessing(true)`）。否则下一轮跳过 `SendStartListening`，云端不再出字。只在 `Notifying` 停 HTTP 播歌。
-
-### 实机踩坑硬约束（2026-10-29）
-
-完整条文：`NodeLio/.codex/rules/esp32-idf-panel.md` §11；排障长文：`docs/nodelio-sila86.md`。
-
-- SILA **关硬件 AES**（`CONFIG_MBEDTLS_HARDWARE_AES=n`）；PSRAM 余量不能代替内部堆/DMA；MCP 预算 ≠ AES 安全。
-- MCP 消息须能被 MQTT 按 `type` 识别；新闻/技能是否调用只认 `tools/call`，勿把云端口播当正文。
-- 新建 MQTT/UDP 通道先发 **60ms 加密静音预热** 再报打开；分阶段看 `UDP audio primed` / `first audio rx` / `pcm out`。
-- 新闻自动续段：末句匹配 + TTS stop + PCM 确已排空；**禁止**为续段 `abort`/`ResetDecoder`；跟读按句匹配。
-- DSH：指令/确认优先于序号与系统口令并保持聆听；「让它…」当正文；禁静默截长、禁 `dsh.task`/`answer` 自动重试。
+- **86** 关硬件 AES；**P4 勿盲抄**，以实测为准。PSRAM ≠ DMA。
+- MCP 只认 `tools/call`；UDP 60ms 静音预热；新闻续段禁 abort；DSH 硬约束。
 
