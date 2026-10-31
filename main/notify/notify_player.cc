@@ -15,7 +15,9 @@
 #include "application.h"
 #include "board.h"
 #include "esp_aac_dec.h"
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
 #include "offline_cmd.h"
+#endif
 #include "esp_ae_rate_cvt.h"
 #include "esp_audio_simple_dec.h"
 #include "esp_audio_simple_dec_default.h"
@@ -433,8 +435,13 @@ void NotifyPlayer::WorkerEntry(void* arg) {
 void NotifyPlayer::WorkerTask() {
     /* 每次播放重置 PSRAM 分配失败标志；播放中检测到即中止（emit/decode 路径）。 */
     s_psram_alloc_failed = false;
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     dram_epoch_ = nodelio_offline_cmd_dram_epoch();
     const bool yielded = nodelio_offline_cmd_yield_slot();
+#else
+    dram_epoch_ = 0;
+    const bool yielded = false;
+#endif
     std::string audio_url;
     std::string device_key;
     uint32_t playback_id = 0;
@@ -568,6 +575,7 @@ void NotifyPlayer::WorkerTask() {
         http.reset();
     }
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     if (yielded) {
         nodelio_offline_cmd_finish_playback_dram(dram_epoch_);
         const int epoch = dram_epoch_;
@@ -575,6 +583,9 @@ void NotifyPlayer::WorkerTask() {
             nodelio_offline_cmd_restore_after_media(epoch);
         });
     }
+#else
+    (void)yielded;
+#endif
 
     FinishedCallback callback;
     uint32_t completed_playback_id = 0;
@@ -601,7 +612,9 @@ void NotifyPlayer::WorkerTask() {
 }
 
 bool NotifyPlayer::PlayOgg(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     nodelio_offline_cmd_shield_up();
+#endif
     auto demuxer = std::make_unique<OggDemuxer>();
     uint32_t media_position_ms = 0;
     bool packet_error = false;
@@ -858,7 +871,9 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
         ESP_LOGE(TAG, "MP3 decoder open failed");
         return false;
     }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     nodelio_offline_cmd_shield_up();
+#endif
 
     const int out_rate = Board::GetInstance().GetAudioCodec()->output_sample_rate();
     const size_t warmup_samples =
@@ -902,7 +917,9 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
             esp_mp3_dec_close(decoder);
             decoder = nullptr;
         }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
         nodelio_offline_cmd_finish_playback_dram(dram_epoch_);
+#endif
     };
 
     auto flush_stage = [&](bool force) -> bool {
@@ -1217,7 +1234,9 @@ bool NotifyPlayer::PlayM4a(Http* http, uint32_t playback_id, const uint8_t* firs
         ESP_LOGE(TAG, "M4A decoder open failed");
         return false;
     }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     nodelio_offline_cmd_shield_up();
+#endif
 
     const int out_rate = Board::GetInstance().GetAudioCodec()->output_sample_rate();
     const size_t warmup_samples =
@@ -1260,7 +1279,9 @@ bool NotifyPlayer::PlayM4a(Http* http, uint32_t playback_id, const uint8_t* firs
             esp_audio_simple_dec_close(decoder);
             decoder = nullptr;
         }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
         nodelio_offline_cmd_finish_playback_dram(dram_epoch_);
+#endif
     };
 
     auto flush_stage = [&](bool force) -> bool {

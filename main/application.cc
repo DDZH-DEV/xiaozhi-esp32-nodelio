@@ -248,7 +248,9 @@ void Application::Initialize() {
 
     // Start network asynchronously
     ESP_LOGI(TAG, "boot: start network");
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     nodelio_log_heap("boot start network");
+#endif
     board.StartNetwork();
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
@@ -520,7 +522,9 @@ void Application::HandleActivationDoneEvent() {
 
 void Application::ActivationTask() {
     ESP_LOGI(TAG, "boot: activation begin");
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     nodelio_log_heap("activation begin");
+#endif
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     /* AFE 创建前占 12KB 片内坑；播中武装唤醒时再释放，减轻碎片导致 largest 过小 */
     (void)nodelio_wake_dram_reserve();
@@ -549,12 +553,16 @@ void Application::ActivationTask() {
 
     // Initialize the protocol
     ESP_LOGI(TAG, "boot: protocol start");
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     nodelio_log_heap("protocol start");
+#endif
     InitializeProtocol();
 
     // Signal completion to main loop
     ESP_LOGI(TAG, "boot: activation done");
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     nodelio_log_heap("activation done");
+#endif
     xEventGroupSetBits(event_group_, MAIN_EVENT_ACTIVATION_DONE);
 }
 
@@ -1913,9 +1921,9 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
 }
 
 void Application::StopNotification() {
-    DeviceState st = GetDeviceState();
     notify_player_.Stop();
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    DeviceState st = GetDeviceState();
     /* 关技能弹窗会 media_stop→这里。聆听/说话中勿 ResetDecoder / EnableVoiceProcessing，
      * 否则 Speaking→Listening 见处理器已在跑会跳过 SendStartListening。
      * 但仍须解除播歌时的 transport suspend，否则 MQTT 假死。 */
