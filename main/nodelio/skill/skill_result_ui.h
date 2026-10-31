@@ -20,8 +20,16 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
 
 void nodelio_skill_result_hide(void);
 
+/** Built-in calendar opens offline; refresh may only update this open session. */
+uint32_t nodelio_skill_daily_open(bool reset_view);
+void nodelio_skill_daily_update(const nodelio_nvs_config_t* cfg, nl_content_envelope_t* env,
+                                uint32_t generation);
+/** Reuse the shell clock tick; updates date highlighting only, never requests weather. */
+void nodelio_skill_daily_clock_tick(void);
+
 /** 技能列表/结果卡是否仍显示（本地开应用后勿 goodbye 息屏）。 */
 bool nodelio_skill_result_is_visible(void);
+bool nodelio_skill_result_card_visible(void);
 
 /** 停播并收起技能卡/播放条/悬浮球（语音「关闭电台」或 MCP close）。 */
 void nodelio_skill_close_all(void);

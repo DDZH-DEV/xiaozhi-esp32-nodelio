@@ -1,4 +1,5 @@
 #include "overlay_priv.h"
+#include "skill_result_ui.h"
 
 #include "application.h"
 #include "board.h"
@@ -887,6 +888,7 @@ void nl_ov_open_settings_detail(set_page_id_t page)
     s_settings_detail = lv_obj_create(lv_layer_top());
     lv_obj_set_size(s_settings_detail, LV_HOR_RES, LV_VER_RES - NL_UI_STATUS_H);
     lv_obj_align(s_settings_detail, LV_ALIGN_TOP_LEFT, 0, NL_UI_STATUS_H);
+    nodelio_skill_result_layout();
     lv_obj_set_style_bg_color(s_settings_detail, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_settings_detail, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_settings_detail, 0, 0);
@@ -1406,7 +1408,7 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
     }
 
-    if (s_tabbar) {
+    if (s_tabbar && !nodelio_display_profile()->nav_width) {
         lv_obj_add_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
     }
     /* s_settings_detail 已挂在 lv_layer_top()，无需 move_foreground */

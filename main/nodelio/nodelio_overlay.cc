@@ -253,6 +253,7 @@ static void refresh_clock_lbl(void)
     }
     std::snprintf(s_clock_last, sizeof(s_clock_last), "%s", buf);
     lv_label_set_text(s_clock_lbl, s_clock_last);
+    nodelio_skill_daily_clock_tick();
 }
 
 /** 按 RSSI 选格数；阈值与 WifiBoard::GetNetworkStateIcon 一致。未关联不读 AP info。 */
@@ -581,7 +582,30 @@ void nl_ov_show_page(int tab)
     /* 切 Tab 不再藏小智；听/说中保持底部胶囊 */
     nl_ov_restore_ai_drawer_if_session();
     /* 播放器/曲库与 s_root 同层：切页后抬回最前，避免点到应用卡 */
+    nodelio_skill_result_layout();
     nodelio_skill_result_raise();
+}
+
+void nl_ov_workspace_reserve(int right, int bottom) {
+    const auto* p = nodelio_display_profile();
+    if (!p->nav_width || !s_body)
+        return;
+    const int w = p->width - p->nav_width - right;
+    const int h = p->height - NL_UI_STATUS_H - bottom;
+    bool home_changed = s_home && (lv_obj_get_width(s_home) != w || lv_obj_get_height(s_home) != h);
+    if (s_home)
+        lv_obj_set_size(s_home, w, h);
+    if (s_settings)
+        lv_obj_set_size(s_settings, w, h);
+    if (s_settings_detail) {
+        lv_obj_set_size(s_settings_detail, w, h);
+        lv_obj_align(s_settings_detail, LV_ALIGN_TOP_LEFT, p->nav_width, NL_UI_STATUS_H);
+    }
+    nl_ov_apps_reserve_bottom(bottom);
+    if (home_changed && s_home && s_have_layout && !s_building) {
+        lv_obj_update_layout(s_home);
+        nl_ov_fill_home();
+    }
 }
 
 static bool s_boot_bl_revealed = false;

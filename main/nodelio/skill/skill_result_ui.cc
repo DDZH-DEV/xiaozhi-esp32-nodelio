@@ -32,6 +32,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <ctime>
 
 LV_FONT_DECLARE(font_material_symbols_20_4);
 
@@ -205,7 +206,7 @@ static int skill_card_h_max(void)
     return h < SKILL_CARD_H_MIN ? SKILL_CARD_H_MIN : h;
 }
 
-/** 宽屏：应用分栏时右侧吃满剩余宽度；播放条与卡同宽贴底，勿拉通整屏。 */
+/** 宽屏：右侧应用宽度由 profile 与左侧工作区共同决定；播放器另占底栏。 */
 static int skill_panel_w(void)
 {
     const auto *p = nodelio_display_profile();
@@ -232,12 +233,18 @@ static int skill_panel_w(void)
 static void layout_skill_layers(void)
 {
     const int panel_w = skill_panel_w();
+    const bool card_up = s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN);
+    const bool bar_up = s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
+    nl_ov_workspace_reserve(card_up ? panel_w + 2 * SKILL_GAP : 0,
+                            bar_up ? SKILL_NOW_H + 2 * SKILL_GAP : 0);
     int y = NL_UI_STATUS_H + SKILL_GAP;
     if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
         if (nodelio_display_profile()->nav_width) {
-            lv_obj_set_width(s_now_bar, panel_w);
+            const int bar_w = nodelio_display_profile()->width -
+                              nodelio_display_profile()->nav_width - 2 * SKILL_GAP;
+            lv_obj_set_width(s_now_bar, bar_w);
             if (s_now_lbl) {
-                lv_obj_set_width(s_now_lbl, panel_w - 200);
+                lv_obj_set_width(s_now_lbl, bar_w - 200);
             }
             lv_obj_align(s_now_bar, LV_ALIGN_BOTTOM_RIGHT, -SKILL_GAP, -SKILL_GAP);
         } else {
@@ -247,7 +254,10 @@ static void layout_skill_layers(void)
     }
     if (s_scrim && !lv_obj_has_flag(s_scrim, LV_OBJ_FLAG_HIDDEN) &&
         nodelio_display_profile()->nav_width) {
-        lv_obj_set_width(s_scrim, panel_w + 2 * SKILL_GAP);
+        // On wide screens only block the occupied lane, never the left workspace.
+        lv_obj_set_size(s_scrim, card_up ? panel_w + 2 * SKILL_GAP : 0,
+                        nodelio_display_profile()->height - NL_UI_STATUS_H -
+                            (bar_up ? SKILL_NOW_H + 2 * SKILL_GAP : 0));
         lv_obj_align(s_scrim, LV_ALIGN_TOP_RIGHT, 0, NL_UI_STATUS_H);
     }
     if (s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
@@ -270,13 +280,7 @@ static void layout_skill_layers(void)
     nl_ov_apps_layout_chrome();
 }
 
-void nodelio_skill_result_layout(void)
-{
-    if (!s_card && !s_now_bar) {
-        return;
-    }
-    layout_skill_layers();
-}
+void nodelio_skill_result_layout(void) { layout_skill_layers(); }
 
 bool nodelio_skill_mini_fab_visible(void)
 {
@@ -1033,6 +1037,10 @@ static void on_reshuffle(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
         return;
     }
+    if (s_have_env && s_env && strcmp(s_env->card_type, "calendar_weather") == 0) {
+        nl_ov_apps_refresh_daily();
+        return;
+    }
     /* DSH：刷新按钮回到/重拉进度列表（详情页也走这里） */
     if (s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr) {
         dsh_refresh_list();
@@ -1200,6 +1208,7 @@ static void reopen_list(void)
     lv_obj_clear_flag(s_card, LV_OBJ_FLAG_HIDDEN);
     anim_show_obj(s_card, true);
     apply_now_media_chrome(true, false, true);
+    nl_ov_apps_notify_skill_open(true);
     layout_skill_layers();
     raise_skill_layers();
     ensure_chrome_order();
@@ -2382,6 +2391,7 @@ static void free_skill_widgets(void)
         lv_obj_delete(fab);
     }
     set_drawer_for_skill(false);
+    layout_skill_layers();
     ensure_chrome_order();
 }
 
@@ -3005,6 +3015,7 @@ static void ensure_card(void)
 }
 
 #include "news_list_ui.inc"
+#include "calendar_weather_ui.inc"
 
 static void apply_card_chrome(void)
 {
@@ -3014,8 +3025,8 @@ static void apply_card_chrome(void)
         s_env->detail_body && s_env->detail_body[0] && strstr(s_env->app_id, "dsh") != nullptr;
     /* 曲库改全量滚动后不再占分页钮；新闻中间钮=收起 */
     const bool mid_btn = news || list_page_count() > 1;
-    const bool compact =
-        !music && !news && !mid_btn && !dsh_detail && s_env->filter_n == 0 && s_env->track_n <= 4;
+    const bool compact = !music && !news && strcmp(s_env->card_type, "calendar_weather") != 0 &&
+                         !mid_btn && !dsh_detail && s_env->filter_n == 0 && s_env->track_n <= 4;
     /* 字号条仅新闻详情；切到其它卡或列表时收起 */
     if (!news || s_news_detail < 0) {
         set_news_zoom_hdr_visible(false);
@@ -3284,6 +3295,23 @@ static void fill_list(void)
         return;
     }
     fill_filters(); /* news 等无 filters 时收起横条 */
+    if (strcmp(s_env->card_type, "calendar_weather") == 0) {
+        stop_dsh_detail_poll();
+        stop_dsh_status_anims();
+        s_dsh_focus_row = nullptr;
+        dsh_hide_confirm_bar();
+        if (s_dsh_status) {
+            lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_height(s_dsh_status, 0);
+        }
+        if (s_dsh_detail_bar) {
+            lv_obj_add_flag(s_dsh_detail_bar, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_height(s_dsh_detail_bar, 0);
+        }
+        fill_calendar_weather();
+        apply_card_chrome();
+        return;
+    }
     if (strcmp(s_env->card_type, "news_list") == 0) {
         stop_dsh_detail_poll();
         if (s_dsh_detail_bar) {
@@ -3586,6 +3614,10 @@ static bool skill_ui_is_up(void)
 bool nodelio_skill_result_is_visible(void)
 {
     return skill_ui_is_up();
+}
+
+bool nodelio_skill_result_card_visible(void) {
+    return s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN) && !s_ui_closing;
 }
 
 bool nodelio_skill_news_ui_active(void)

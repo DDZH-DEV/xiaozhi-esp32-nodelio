@@ -259,6 +259,35 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
         copy_str(out->preferred_surface, sizeof(out->preferred_surface), display, "preferred_surface");
         copy_str(out->density, sizeof(out->density), display, "density");
         copy_str(out->media_kind, sizeof(out->media_kind), display, "media_kind");
+        const cJSON* daily = cJSON_GetObjectItemCaseSensitive(display, "daily");
+        if (cJSON_IsObject(daily) && strcmp(out->card_type, "calendar_weather") == 0) {
+            copy_str(out->daily.city, sizeof(out->daily.city), daily, "city");
+            copy_str(out->daily.message, sizeof(out->daily.message), daily, "message");
+            copy_str(out->daily.updated, sizeof(out->daily.updated), daily, "updated");
+            copy_str(out->daily.temperature, sizeof(out->daily.temperature), daily, "temperature");
+            copy_str(out->daily.summary, sizeof(out->daily.summary), daily, "summary");
+            copy_str(out->daily.air, sizeof(out->daily.air), daily, "air");
+            copy_str(out->daily.air_updated, sizeof(out->daily.air_updated), daily, "air_updated");
+            const cJSON* days = cJSON_GetObjectItemCaseSensitive(daily, "days");
+            const cJSON* day;
+            if (cJSON_IsArray(days)) {
+                cJSON_ArrayForEach (day, days) {
+                    if (out->daily.day_n >= NL_ENV_DAILY_MAX)
+                        break;
+                    if (!cJSON_IsObject(day))
+                        continue;
+                    nl_env_daily_day_t* dst = &out->daily.days[out->daily.day_n];
+                    copy_str(dst->date, sizeof(dst->date), day, "date");
+                    if (strlen(dst->date) != 10 || dst->date[4] != '-' || dst->date[7] != '-')
+                        continue;
+                    copy_str(dst->condition, sizeof(dst->condition), day, "condition");
+                    copy_str(dst->high, sizeof(dst->high), day, "high");
+                    copy_str(dst->low, sizeof(dst->low), day, "low");
+                    copy_str(dst->rain, sizeof(dst->rain), day, "rain");
+                    out->daily.day_n++;
+                }
+            }
+        }
         const cJSON *ttl = cJSON_GetObjectItemCaseSensitive(display, "ttl_sec");
         if (cJSON_IsNumber(ttl)) {
             out->ttl_sec = ttl->valueint;

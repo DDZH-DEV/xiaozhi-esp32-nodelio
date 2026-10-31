@@ -28,7 +28,7 @@
 LV_FONT_DECLARE(font_material_symbols_20_4);
 
 #define TAG "nl_apps"
-#define APP_MAX 16
+#define APP_MAX 17 /* 16 cloud entries plus the built-in daily view. */
 /* 8 个样例应用带 inputSchema 时整包 >7KB；旧 4KB 截断后 cJSON 失败 →「暂无已安装」。 */
 #define APP_LIST_BUF 24576
 
@@ -53,6 +53,27 @@ static lv_obj_t *s_hint;
 static lv_obj_t *s_refresh;
 static nl_app_item s_items[APP_MAX];
 
+static void with_builtin_daily(nl_app_item* items, int& n) {
+    int keep = 0;
+    for (int i = 0; i < n; ++i) {
+        const char* bare = strstr(items[i].id, "::");
+        bare = bare ? bare + 2 : items[i].id;
+        if (strcmp(bare, "builtin.daily") == 0 || strcmp(bare, "weather.today") == 0 ||
+            strcmp(bare, "air.now") == 0)
+            continue;
+        items[keep++] = items[i];
+    }
+    if (keep >= APP_MAX)
+        keep = APP_MAX - 1;
+    memmove(items + 1, items, sizeof(*items) * (size_t)keep);
+    items[0] = {};
+    snprintf(items[0].id, sizeof(items[0].id), "builtin.daily");
+    snprintf(items[0].name, sizeof(items[0].name), "日历与天气");
+    snprintf(items[0].desc, sizeof(items[0].desc), "内置 · 月历 / 15 天天气 / 空气质量");
+    items[0].enabled = true;
+    n = keep + 1;
+}
+
 /** 仅供进度卡「允许/拒绝」按钮 invoke，不进应用列表 / 语音打开。 */
 static bool skill_is_button_only(const char *id)
 {
@@ -60,16 +81,15 @@ static bool skill_is_button_only(const char *id)
 }
 static int s_item_n;
 static bool s_loading;
+static bool s_daily_loading;
 static bool s_have_list;
 static bool s_split;
 static int s_focus_idx = -1;
 
 static constexpr int kAppsPagePadH = 16;
-/** 分栏左轨：单列横向行卡；略收窄给右侧曲库/电台多一点标题+简介宽 */
-static constexpr int kAppsRailW = 300;
 static constexpr int kAppsAnimMs = 240;
 static constexpr int kAppsBrowseTileH = 84;
-static constexpr int kAppsRailTileH = 68;
+static constexpr int kAppsRailTileH = 84;
 
 static bool apps_wide(void)
 {
@@ -86,7 +106,7 @@ static int apps_pane_target_w(bool split)
 {
     const int full = apps_body_w() - 2 * kAppsPagePadH;
     if (apps_wide() && split) {
-        return kAppsRailW;
+        return apps_body_w() - nodelio_display_profile()->result_width - kAppsPagePadH - 2 * UI_PAD;
     }
     return full > 120 ? full : 120;
 }
@@ -143,11 +163,14 @@ static bool apps_list_eq(const nl_app_item *items, int n)
 
 static void apps_split_failed(void)
 {
-    Application::GetInstance().Schedule([]() { nl_ov_apps_notify_skill_open(false); });
+    Application::GetInstance().Schedule([]() {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock)
+            nl_ov_apps_notify_skill_open(nodelio_skill_result_card_visible());
+    });
 }
 
-static void open_app_at(int idx)
-{
+static void open_app_at(int idx, bool reset_daily = true) {
     if (idx < 0 || idx >= s_item_n) {
         return;
     }
@@ -161,6 +184,14 @@ static void open_app_at(int idx)
         return;
     }
     s_focus_idx = idx;
+    const bool daily = strcmp(s_items[idx].id, "builtin.daily") == 0;
+    if (daily && s_daily_loading) {
+        nl_ov_toast("天气正在更新，请稍候");
+        return;
+    }
+    const uint32_t daily_generation = daily ? nodelio_skill_daily_open(reset_daily) : 0;
+    if (daily && !daily_generation)
+        return;
     if (apps_wide()) {
         if (s_split) {
             render_list();
@@ -168,31 +199,42 @@ static void open_app_at(int idx)
             apps_set_split(true, true);
         }
     }
+    if (daily && !nodelio_wifi_is_connected()) {
+        nl_ov_toast("当前离线，日历可用；联网后刷新天气");
+        return;
+    }
     auto *cfgp = static_cast<nodelio_nvs_config_t *>(malloc(sizeof(nodelio_nvs_config_t)));
     if (!cfgp) {
         nl_ov_toast("内存不足");
-        apps_set_split(false, true);
+        if (!daily)
+            apps_set_split(nodelio_skill_result_card_visible(), true);
         return;
     }
     if (!nl_ov_cfg_http_ready(cfgp, true)) {
         free(cfgp);
-        apps_set_split(false, true);
+        if (!daily)
+            apps_set_split(nodelio_skill_result_card_visible(), true);
         return;
     }
     struct invoke_arg {
         nodelio_nvs_config_t *cfg;
         char id[72];
+        uint32_t daily_generation;
     };
     auto *arg = static_cast<invoke_arg *>(malloc(sizeof(invoke_arg)));
     if (!arg) {
         free(cfgp);
         nl_ov_toast("内存不足");
-        apps_set_split(false, true);
+        if (!daily)
+            apps_set_split(nodelio_skill_result_card_visible(), true);
         return;
     }
     arg->cfg = cfgp;
+    arg->daily_generation = daily_generation;
     snprintf(arg->id, sizeof(arg->id), "%s", s_items[idx].id);
     nl_ov_toast("正在打开…");
+    if (daily)
+        s_daily_loading = true;
     constexpr uint32_t kStackWords = 16384 / sizeof(StackType_t);
     if (xTaskCreateWithCaps(
             [](void *p) {
@@ -206,7 +248,7 @@ static void open_app_at(int idx)
                             Application::GetInstance().EndVoiceSessionAfterLocalSkill();
                         }
                     });
-                } else if (nodelio_media_preempt_for_heavy_app()) {
+                } else if (!a->daily_generation && nodelio_media_preempt_for_heavy_app()) {
                     nodelio_panel_ui_toast_defer("已停止音乐以打开应用");
                 }
                 char base[160];
@@ -227,20 +269,40 @@ static void open_app_at(int idx)
                     resp[0] = '\0';
                     int status = 0;
                     esp_err_t err = nodelio_http_post_json_ms(
-                        url, a->cfg->device_key, "{\"keyword\":\"\"}", &status, resp, cap - 1, 10000);
+                        url, a->cfg->device_key, "{\"keyword\":\"\"}", &status, resp, cap - 1,
+                        a->daily_generation ? 16000 : 10000);
                     if (err == ESP_OK && resp[0] &&
                         (status == 200 || status == 201 ||
                          (status >= 400 && strstr(resp, "\"schema_version\"") != nullptr))) {
                         ESP_LOGI(TAG, "deliver id=%s music=%d status=%d", a->id, music_app ? 1 : 0,
                                  status);
-                        char spoken[NL_ENV_SPOKEN];
-                        spoken[0] = '\0';
-                        nodelio_skill_deliver_json(a->cfg, resp, false, spoken, sizeof(spoken));
-                        if (strstr(a->id, "dsh") != nullptr && spoken[0]) {
-                            const char *au = nodelio_skill_last_spoken_audio_url();
-                            nodelio_panel_ui_announce_spoken_ex(spoken, au);
+                        if (a->daily_generation) {
+                            auto* env = static_cast<nl_content_envelope_t*>(
+                                heap_caps_calloc(1, sizeof(nl_content_envelope_t),
+                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                            if (env && nodelio_envelope_parse(resp, env) &&
+                                strcmp(env->card_type, "calendar_weather") == 0) {
+                                const uint32_t generation = a->daily_generation;
+                                const auto cfg = *a->cfg;
+                                Application::GetInstance().Schedule([env, generation, cfg]() {
+                                    nodelio_skill_daily_update(&cfg, env, generation);
+                                });
+                                ok = true;
+                            } else {
+                                if (env)
+                                    free(env->detail_body);
+                                free(env);
+                            }
+                        } else {
+                            char spoken[NL_ENV_SPOKEN];
+                            spoken[0] = '\0';
+                            nodelio_skill_deliver_json(a->cfg, resp, false, spoken, sizeof(spoken));
+                            if (strstr(a->id, "dsh") != nullptr && spoken[0]) {
+                                const char* au = nodelio_skill_last_spoken_audio_url();
+                                nodelio_panel_ui_announce_spoken_ex(spoken, au);
+                            }
+                            ok = true;
                         }
-                        ok = true;
                     } else if (err != ESP_OK || status == 0 || !resp[0]) {
                         nl_ov_toast_invoke_unreachable(a->id);
                     } else {
@@ -248,8 +310,13 @@ static void open_app_at(int idx)
                     }
                     free(resp);
                 }
-                if (!ok) {
+                if (!ok && !a->daily_generation) {
                     apps_split_failed();
+                } else if (!ok) {
+                    nodelio_panel_ui_toast_defer("天气未更新，日历仍可使用");
+                }
+                if (a->daily_generation) {
+                    Application::GetInstance().Schedule([]() { s_daily_loading = false; });
                 }
                 free(a->cfg);
                 free(a);
@@ -259,8 +326,20 @@ static void open_app_at(int idx)
         pdPASS) {
         free(arg->cfg);
         free(arg);
+        if (daily)
+            s_daily_loading = false;
         nl_ov_toast("无法打开");
-        apps_set_split(false, true);
+        if (!daily)
+            apps_set_split(nodelio_skill_result_card_visible(), true);
+    }
+}
+
+void nl_ov_apps_refresh_daily(void) {
+    for (int i = 0; i < s_item_n; ++i) {
+        if (strcmp(s_items[i].id, "builtin.daily") == 0) {
+            open_app_at(i, false);
+            return;
+        }
     }
 }
 
@@ -285,15 +364,12 @@ static void render_list(void)
     if (s_item_n <= 0) {
         return;
     }
-    /* 浏览：横向大卡（图标|标题+描述）；分栏：左轨单列行卡。勿用竖向小方块。 */
+    /* 分栏仍保留两列及描述；右窗宽度来自当前板的 display_profile。 */
     const int list_w = apps_pane_target_w(s_split);
     const int gap = UI_GAP;
     int cols = 2;
     if (apps_wide() && !s_split) {
         cols = 3;
-    }
-    if (s_split) {
-        cols = 1;
     }
     int card_w = (list_w - gap * (cols - 1)) / cols;
     if (card_w < 160) {
@@ -368,7 +444,7 @@ static void render_list(void)
         const int32_t line_h = card_font ? lv_font_get_line_height(card_font) : 16;
         lv_obj_set_height(title, line_h);
 
-        if (!s_split) {
+        {
             lv_obj_t *sub = lv_label_create(txt);
             nl_ov_set_font(sub);
             if (!it->enabled) {
@@ -378,7 +454,7 @@ static void render_list(void)
             } else {
                 lv_label_set_text(sub, "点按打开");
             }
-            lv_obj_set_style_text_color(sub, it->enabled ? UI_TEXT_MUTED : UI_TEXT_MUTED, 0);
+            lv_obj_set_style_text_color(sub, it->enabled ? UI_TEXT_DIM : UI_TEXT_MUTED, 0);
             lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
             lv_obj_set_width(sub, lv_pct(100));
             lv_obj_set_height(sub, line_h);
@@ -434,20 +510,13 @@ static void apps_set_split(bool on, bool animate)
 
 int nl_ov_apps_split_rail_w(void)
 {
-    if (!s_split || !apps_wide() || !s_page || lv_obj_has_flag(s_page, LV_OBJ_FLAG_HIDDEN)) {
+    if (!s_split || !apps_wide()) {
         return 0;
     }
-    return kAppsRailW;
+    return apps_pane_target_w(true);
 }
 
-void nl_ov_apps_notify_skill_open(bool open)
-{
-    if (!s_page || lv_obj_has_flag(s_page, LV_OBJ_FLAG_HIDDEN)) {
-        if (!open) {
-            apps_set_split(false, false);
-        }
-        return;
-    }
+void nl_ov_apps_notify_skill_open(bool open) {
     /* 已分栏时技能卡静默刷新勿重摆列表 */
     if (open && s_split) {
         return;
@@ -483,6 +552,7 @@ static bool items_from_json(const char *json)
         n++;
     }
     cJSON_Delete(root);
+    with_builtin_daily(tmp, n);
     s_item_n = n;
     if (n > 0) {
         memcpy(s_items, tmp, sizeof(nl_app_item) * (size_t)n);
@@ -544,6 +614,7 @@ static void apply_snap(nl_app_snap *snap)
             if (lock) {
                 if (!s_have_list) {
                     s_item_n = 0;
+                    with_builtin_daily(s_items, s_item_n);
                     set_hint(snap->err);
                     render_list();
                 } else {
@@ -642,6 +713,7 @@ static void fill_snap_from_skills_root(const cJSON *root, nl_app_snap *snap)
             }
         }
     }
+    with_builtin_daily(snap->items, snap->n);
 }
 
 void nl_ov_apps_ingest_skills_root(const cJSON *root)
@@ -711,6 +783,7 @@ void nl_ov_apps_refresh(void)
     nl_ov_cfg_for_http(&http_cfg);
     if (!http_cfg.server_url[0] || !http_cfg.device_id[0]) {
         s_item_n = 0;
+        with_builtin_daily(s_items, s_item_n);
         set_hint(!http_cfg.server_url[0] ? "未绑定服务器" : "设备未注册");
         render_list();
         return;
@@ -823,7 +896,9 @@ void nl_ov_apps_layout_chrome(void)
     constexpr int kPagePadV = 8;
     constexpr int kFabSz = 52; /* 与 SKILL_MINI_SZ 一致 */
     constexpr int kStackGap = 10;
-    const int ox = kPagePadH - kEdge; /* +2 → 视觉右缘 14 */
+    const int reserved =
+        apps_wide() && s_split ? apps_pane_target_w(false) - apps_pane_target_w(true) : 0;
+    const int ox = kPagePadH - kEdge - reserved;
     const int oy_base = -(kEdge - kPagePadV); /* -6 → 视觉底边距 14 */
     if (nodelio_skill_mini_fab_visible()) {
         lv_obj_align(s_refresh, LV_ALIGN_BOTTOM_RIGHT, ox,
@@ -846,7 +921,12 @@ void nl_ov_apps_set_visible(bool on)
         }
     } else {
         lv_obj_add_flag(s_page, LV_OBJ_FLAG_HIDDEN);
-        apps_set_split(false, false);
+    }
+}
+
+void nl_ov_apps_reserve_bottom(int bottom) {
+    if (s_page && apps_wide()) {
+        lv_obj_set_height(s_page, nodelio_display_profile()->height - NL_UI_STATUS_H - bottom);
     }
 }
 
@@ -978,14 +1058,15 @@ bool nl_ov_apps_open_by_query(const char *query)
     } else if (strstr(query, "RSS订阅") || strstr(query, "rss订阅") || strstr(query, "RSS 订阅") ||
                strstr(query, "新闻") || strstr(query, "news")) {
         alias_id = "news.latest";
-    } else if (strstr(query, "天气") || strstr(query, "weather")) {
-        alias_id = "weather.today";
+    } else if (strstr(query, "天气") || strstr(query, "weather") || strstr(query, "日历") ||
+               strstr(query, "calendar")) {
+        alias_id = "builtin.daily";
     } else if (strstr(query, "电台") || strstr(query, "radio")) {
         alias_id = "radio.stations";
     } else if (strstr(query, "播客") || strstr(query, "podcast")) {
         alias_id = "podcast.latest";
     } else if (strstr(query, "空气") || strstr(query, "air")) {
-        alias_id = "air.now";
+        alias_id = "builtin.daily";
     } else if (strstr(query, "一篇") || strstr(query, "美文") || strstr(query, "article") ||
                strstr(query, "每日一文")) {
         alias_id = "article.daily";
@@ -1039,6 +1120,14 @@ bool nl_ov_apps_open_by_query(const char *query)
         return false;
     }
     ESP_LOGI(TAG, "open_by_query invoke sid=%s", sid);
+    if (strcmp(sid, "builtin.daily") == 0) {
+        for (int i = 0; i < s_item_n; ++i) {
+            if (strcmp(s_items[i].id, sid) == 0) {
+                open_app_at(i);
+                return true;
+            }
+        }
+    }
     nl_ov_invoke_skill_async(sid, "{}");
     return true;
 }
@@ -1060,6 +1149,7 @@ void nl_ov_build_apps(void)
     lv_obj_clear_flag(s_page, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_page, LV_OBJ_FLAG_HIDDEN);
     load_disk_cache();
+    with_builtin_daily(s_items, s_item_n);
 
     s_list_pane = lv_obj_create(s_page);
     lv_obj_remove_style_all(s_list_pane);
@@ -1087,6 +1177,7 @@ void nl_ov_build_apps(void)
     lv_obj_add_flag(s_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_OFF);
+    render_list();
 
     /* 右下角浮动刷新（有音乐球时叠在上方） */
     s_refresh = lv_obj_create(s_page);

@@ -15,6 +15,27 @@ extern "C" {
 #define NL_ENV_SPOKEN 320
 #define NL_ENV_TRACK_MAX 24
 #define NL_ENV_NEWS_MAX 8
+#define NL_ENV_DAILY_MAX 15
+
+typedef struct {
+    char date[11];
+    char condition[40];
+    char high[16];
+    char low[16];
+    char rain[16];
+} nl_env_daily_day_t;
+
+typedef struct {
+    char city[64];
+    char message[128];
+    char updated[32];
+    char temperature[16];
+    char summary[128];
+    char air[160];
+    char air_updated[32];
+    int day_n;
+    nl_env_daily_day_t days[NL_ENV_DAILY_MAX];
+} nl_env_daily_t;
 #define NL_ENV_NEWS_TITLE 128
 #define NL_ENV_SUMMARY 384
 #define NL_ENV_IMG 192
@@ -84,6 +105,7 @@ typedef struct {
     nl_env_track_t tracks[NL_ENV_TRACK_MAX];
     int news_n;
     nl_env_news_t news[NL_ENV_NEWS_MAX];
+    nl_env_daily_t daily;
     int filter_n;
     nl_env_filter_t filters[NL_ENV_FILTER_MAX];
     bool truncated;

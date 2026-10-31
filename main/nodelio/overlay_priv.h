@@ -256,6 +256,10 @@ void nl_ov_apps_set_visible(bool on);
 void nl_ov_apps_notify_skill_open(bool open);
 /** 应用页分栏左轨宽度；未分栏或方屏返回 0（技能卡用来算右侧可用宽）。 */
 int nl_ov_apps_split_rail_w(void);
+/** Shared wide-screen viewport: reserve the right application and bottom player lanes. */
+void nl_ov_workspace_reserve(int right, int bottom);
+void nl_ov_apps_reserve_bottom(int bottom);
+void nl_ov_apps_refresh_daily(void);
 /** 应用列表刷新 FAB 落位（左下；与右下音乐球错开）。 */
 void nl_ov_apps_layout_chrome(void);
 /** 有本地缓存则只画列表；无缓存才拉网。 */
