@@ -6,6 +6,7 @@
 #include "button.h"
 #include "config.h"
 #include "display/lcd_display.h"
+#include "ppa_fill.h"
 #include "wifi_board.h"
 #if CONFIG_NODELIO_PANEL
 #include "board_info.h"
@@ -29,6 +30,18 @@
 
 namespace {
 constexpr const char* kTag = "SilaP4C5";
+#if CONFIG_NODELIO_P4_FULL_DRAW_BUFFERS
+constexpr uint32_t kDrawBufferPixels = DISPLAY_PHYSICAL_WIDTH * DISPLAY_PHYSICAL_HEIGHT;
+#else
+constexpr uint32_t kDrawBufferPixels = DISPLAY_PHYSICAL_WIDTH * DISPLAY_PHYSICAL_HEIGHT / 4;
+#endif
+#if CONFIG_LVGL_PORT_ENABLE_PPA
+constexpr const char* kRotationBackend = "PPA";
+#else
+constexpr const char* kRotationBackend = "CPU";
+#endif
+// esp_lvgl_port 2.9's rotation path describes packed RGB888 rows to PPA.
+static_assert(LV_DRAW_BUF_STRIDE_ALIGN == 1, "P4 rotation requires packed pixel rows");
 
 void LogMemory(const char* stage) {
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
@@ -50,10 +63,15 @@ public:
         lvgl_port_cfg_t port_config = ESP_LVGL_PORT_INIT_CONFIG();
         port_config.task_stack = 16384;
         ESP_ERROR_CHECK(lvgl_port_init(&port_config));
+        bool fill_acceleration = false;
+        if (lvgl_port_lock(0)) {
+            fill_acceleration = SilaPpaFillInit();
+            lvgl_port_unlock();
+        }
         lvgl_port_display_cfg_t config = {};
         config.io_handle = io;
         config.panel_handle = panel;  // Actual IDF DPI handle, never a vendor wrapper.
-        config.buffer_size = DISPLAY_PHYSICAL_WIDTH * DISPLAY_PHYSICAL_HEIGHT / 4;
+        config.buffer_size = kDrawBufferPixels;
         config.double_buffer = true;
         config.hres = DISPLAY_PHYSICAL_WIDTH;
         config.vres = DISPLAY_PHYSICAL_HEIGHT;
@@ -66,8 +84,21 @@ public:
         ESP_ERROR_CHECK(display_ ? ESP_OK : ESP_ERR_NO_MEM);
         if (lvgl_port_lock(0)) {
             lv_display_set_rotation(display_, LV_DISPLAY_ROTATION_90);
+#if CONFIG_NODELIO_P4_RENDER_STATS
+            stats_report_at_ = esp_timer_get_time();
+            lv_display_add_event_cb(display_, OnRefreshEvent, LV_EVENT_REFR_START, this);
+            lv_display_add_event_cb(display_, OnRefreshEvent, LV_EVENT_RENDER_START, this);
+            lv_display_add_event_cb(display_, OnRefreshEvent, LV_EVENT_REFR_READY, this);
+#endif
             lvgl_port_unlock();
         }
+        ESP_LOGI(kTag,
+                 "LVGL %d.%d.%d: RGB888 partial, draw=%lu pixels x2, rotate=%s, "
+                 "board_fill_PPA=%d vendor_PPA=%d image_PPA=%d align=%d stride_align=%d",
+                 LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH,
+                 static_cast<unsigned long>(kDrawBufferPixels), kRotationBackend, fill_acceleration,
+                 LV_USE_PPA, LV_USE_PPA_IMG, LV_DRAW_BUF_ALIGN, LV_DRAW_BUF_STRIDE_ALIGN);
+        LogMemory("display buffers");
     }
 
     void SetupUI() override {
@@ -92,6 +123,57 @@ public:
     }
 
 private:
+#if CONFIG_NODELIO_P4_RENDER_STATS
+    // All fields are owned by the LVGL task/display lock. No sampling task or
+    // forced invalidations: a static or sleeping screen stays quiet.
+    int64_t stats_report_at_ = 0;
+    int64_t refresh_started_at_ = 0;
+    int64_t refresh_total_us_ = 0;
+    int64_t refresh_max_us_ = 0;
+    uint32_t refresh_count_ = 0;
+    bool refresh_drew_ = false;
+
+    static void OnRefreshEvent(lv_event_t* event) {
+        auto* self = static_cast<SilaP4Display*>(lv_event_get_user_data(event));
+        switch (lv_event_get_code(event)) {
+            case LV_EVENT_REFR_START:
+                self->refresh_started_at_ = esp_timer_get_time();
+                self->refresh_drew_ = false;
+                break;
+            case LV_EVENT_RENDER_START:
+                self->refresh_drew_ = true;
+                break;
+            case LV_EVENT_REFR_READY: {
+                if (!self->refresh_drew_) {
+                    break;
+                }
+                const int64_t now = esp_timer_get_time();
+                const int64_t elapsed = now - self->refresh_started_at_;
+                self->refresh_total_us_ += elapsed;
+                self->refresh_max_us_ = std::max(self->refresh_max_us_, elapsed);
+                ++self->refresh_count_;
+                if (now - self->stats_report_at_ >= 5000000) {
+                    ESP_LOGI(kTag, "refresh samples=%lu wall_us avg=%lld max=%lld",
+                             static_cast<unsigned long>(self->refresh_count_),
+                             static_cast<long long>(self->refresh_total_us_ / self->refresh_count_),
+                             static_cast<long long>(self->refresh_max_us_));
+                    LogMemory("refresh window");
+                    const auto fills = SilaPpaFillGetStats();
+                    ESP_LOGI(kTag, "PPA fill total=%lu fallback=%lu",
+                             static_cast<unsigned long>(fills.completed),
+                             static_cast<unsigned long>(fills.fallback));
+                    self->stats_report_at_ = now;
+                    self->refresh_total_us_ = 0;
+                    self->refresh_max_us_ = 0;
+                    self->refresh_count_ = 0;
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+#endif
     Backlight& backlight_;
 };
 }  // namespace
