@@ -8,7 +8,7 @@ S3 专用的硬件 AES、DRAM 占位、断网休眠及音频规避没有整体�
 ## 基线与证据
 
 - 固件基线：`origin/nodelio-sila86`，`e3a9e0fc9ae64948e6545843d180282ced88dcc6`。
-- 开发分支：`codex/sila-p4c5-62`。
+- 产品代码已并入 `nodelio-sila86`（`eaa0c094`），后续按用户指定的产品主分支维护。
 - 用户 COM8 探测：P4 silicon v3.2、40MHz 晶振、USB Serial/JTAG；Secure Boot 和 Flash Encryption 均未启用。
 - 卖家描述：ESP32-P4NRW32X、ESP32-C5-MINI、ES8389、AXP2101；用户有两块板，其中一块升级到 32MB Flash。
 - 用户提供的 `SCH_P4X_2026-10-13.pdf`（11 页）：第 1 页总连接，第 2 页 MCU/外置 Flash，第 8 页音频。
@@ -39,13 +39,14 @@ S3 专用的硬件 AES、DRAM 占位、断网休眠及音频规避没有整体�
 | SD Slot0 | CLK43、CMD44、D0..3=39..42，PWRn51、CD52 | 首期不初始化、不占用/卸载 SDMMC host |
 
 C5 模组图上 D0=IO8、D1=IO7、D2=IO14、D3=IO13、CLK=IO9、CMD=IO10、BOOT=IO28。
-U14 引出其 UART/EN/BOOT。**COM8 探测的是 P4，不证明 C5 已有 Hosted 从机固件。**
+U14 引出其 UART/EN/BOOT。**COM8 的 ROM 探测仅识别 P4；本次应用日志已确认 C5 运行 Hosted 2.12.0。**
 首烧/恢复应使用匹配版本的 C5 从机工程和实际 U14 接线，不把 P4 合并镜像写给 C5，
 也不自动更改 C5 的 strap/eFuse。P4 bring-up 固件不会自动烧写 C5。
 
 本目录 `nodelio-flash-c5.bat`：从 `managed_components/espressif__esp_hosted/slave`
 编 **esp32c5** Hosted 从机到独立目录 `build-c5-hosted-slave/`，经 **U14 UART** 烧录。
-Host 已是 2.13.x 时必须把 C5 升到同代，否则会出现 Version mismatch + SDIO RX 分配失败重启。
+它用于 UART 首刷/恢复；当前有可运行的 C5 固件，不需要为了本次 RX 内存错误先做 UART 首刷。
+主从版本差异需要单独验证/升级，但不能把版本警告直接等同于 DMA 内存分配失败。
 
 ```bat
 nodelio-flash-c5.bat COM9
@@ -53,6 +54,67 @@ nodelio-flash-c5.bat COM9 --monitor
 ```
 
 C5 SDIO 固定脚：CLK9、CMD10、D0=8、D1=7、D2=14、D3=13（与模组图一致）。
+
+### 本次启动重启：Hosted 接收缓冲区
+
+用户日志：`Identified slave [esp32c5]`、`STREAMING MODE`、C5 `2.12.0`，随后
+`failed to allocate buffer for slot 1 in double_buf`，最后在
+`bus_sdio_set_rx_buffer_size()` 的 `ESP_ERROR_CHECK` 处 abort。这证明 SDIO 已建立，
+直接崩溃点是 **P4 接收缓冲区内存分配失败**。I²S 双工切换提示不是这次 abort 的来源。
+
+网络启动前 INTERNAL free=100263、largest=55296；这不是 DMA 能力过滤后的可分配数值。
+Hosted 默认从内部 DMA 堆分配传输池和 streaming RX 双缓冲，显示、音频已经占用了内部内存。
+如果 C5 TX 队列为20，两个 streaming 缓冲本身就需要 `2 × 20 × 1536 = 61440` 字节，
+另有传输池、任务栈等；日志中的 Host Rx/Tx=20 不能代替 C5 TX 队列的实测值。
+普通 PSRAM 空闲24MB也不会自动被默认的内部 DMA 分配器使用。
+
+本板五个变体统一设置：
+
+```text
+CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=n
+CONFIG_CACHE_L2_CACHE_LINE_64B=y
+CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE=y
+CONFIG_ESP_HOSTED_SDIO_RX_DOUBLE_BUFFERING=y
+```
+
+使用官方 DMA PSRAM 分配路径；保留 streaming 双缓冲和40MHz总线。64字节缓存行与本板
+LVGL/PPA的64字节对齐一致。未改第三方驱动、未移除 assert/WDT，也未缩小从机发包上限。
+板级编译检查会拒绝缺少上述 PSRAM/缓存行设置的旧 sdkconfig。
+启动日志增加 DMA internal/PSRAM 的 free/largest，以及实际 Hosted 版本。
+
+仅本板固定 `esp_hosted ==2.13.1`（官方预分配实现）；其他板保持原有版本范围。
+日志虽自报Host 2.13.0，其调用栈已含官方2.13.1才发布的预分配函数；无法仅凭日志确认
+编译电脑是否混用了组件、补丁或缓存。请重新用板级 build.py 构建，核对 `dependencies.lock`
+中的 Hosted 版本和构建日志，不要用 `--nofresh` 重烧旧镜像，也不要手改 managed_components。
+
+验收先看启动能到 `TRANSPORT_TX_ACTIVE` / `RPC_WRAP: Coprocessor Boot-up`，确认配网、DHCP、
+TLS及断线重连，再测试 UI、双麦、播放并发。C5仍为2.12.0时版本警告会保留，不能宣称主从已匹配。
+若仍分配失败，保留从启动开始的完整日志，尤其新加的 DMA 堆数值；不要靠屏蔽错误继续收包。
+GPIO30的LEDC占用提示、MAC读取错误也需后续验证，当前未据此更换引脚。
+
+### 原作者所说的 SDIO 烧录
+
+本地参考仓 `origin/main@4cf7932` 的 README / `main.c` / `main/c5_sdio_flasher.c` 区分两条路径：
+
+- **ROM 首刷**：`esp-serial-flasher`，需要控制BOOT/EN并进入C5下载模式；参考工程默认关闭。
+  作者文档记录其样板 GPIO25/MTDI strap 导致 ROM SDIO 下载不通，这是参考板的实测记录，
+  不能仅凭 PCB 名称就判定用户这块 v3.2 也有相同硬件问题。
+- **已有 Hosted 的从机 OTA**：P4 经现有 SDIO RPC 给 C5 写入新应用，适用于当前已能响应的C5；
+  不需要六孔UART、不进入ROM。原作者示例的 main 默认只释放BOOT并启动Wi-Fi/SD卡，
+  没有自动执行这条OTA。产品固件同样不会开机自动更新C5。
+
+后续需要对齐 C5 时，使用与本板Host相同的2.13.1源码构建 `slave/` 的 **esp32c5** 应用，
+确认从机当前分区存在足够大的OTA槽，再使用官方 `examples/host_performs_slave_ota` 的
+`begin → write → end → activate` 流程。OTA输入是 `network_adapter.bin`，不是P4镜像，
+也不是包含bootloader/分区表的合并镜像；OTA不会迁移已有C5分区表。
+维护Host需配置本页的Slot1引脚和BOOT53释放，并保留本板P4 v3.x配置；不要直接烧默认C6示例。
+示例中Partition/LittleFS方案可离线传输，不依赖C5已连路由器。
+这一步先于长期主从兼容验收，但不是修复当前内部DMA分配失败的替代方案。
+
+来源：[Hosted 2.13.1分配器](https://github.com/espressif/esp-hosted-mcu/blob/v2.13.1/host/port/esp/freertos/src/port_esp_hosted_host_os.c)、
+[SDIO接收实现](https://github.com/espressif/esp-hosted-mcu/blob/v2.13.1/host/drivers/transport/sdio/sdio_drv.c)、
+[官方从机OTA示例](https://github.com/espressif/esp-hosted-mcu/tree/v2.13.1/examples/host_performs_slave_ota)。
 
 AXP2101 总线只做地址 ACK 探测，不将 ACK 当作芯片 ID 验证，也不虚报电量。
 图中 DCDC1=3.3V，ALDO2/3/4 为摄像头相关 C1V8/C1V5/C3V3；电池容量、充电限制与

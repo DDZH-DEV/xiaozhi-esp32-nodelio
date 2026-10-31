@@ -17,6 +17,7 @@
 #include <esp_chip_info.h>
 #include <esp_flash.h>
 #include <esp_heap_caps.h>
+#include <esp_hosted_host_fw_ver.h>
 #include <esp_lcd_mipi_dsi.h>
 #include <esp_ldo_regulator.h>
 #include <esp_log.h>
@@ -27,6 +28,13 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+
+// Hosted streaming RX needs contiguous DMA buffers after display/audio startup.
+// Reject stale sdkconfig files instead of reaching an allocation abort at boot.
+#if !CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM || !CONFIG_CACHE_L2_CACHE_LINE_64B
+#error \
+    "SILA P4C5 requires Hosted DMA PSRAM and 64-byte L2 cache lines; rebuild with scripts/build.py"
+#endif
 
 namespace {
 constexpr const char* kTag = "SilaP4C5";
@@ -53,6 +61,13 @@ void LogMemory(const char* stage) {
              unsigned(heap_caps_get_free_size(external)),
              unsigned(heap_caps_get_minimum_free_size(external)),
              unsigned(heap_caps_get_largest_free_block(external)));
+    const uint32_t dma_internal = internal | MALLOC_CAP_DMA;
+    const uint32_t dma_external = external | MALLOC_CAP_DMA;
+    ESP_LOGI(kTag, "%s: DMA internal free/largest=%u/%u, DMA PSRAM free/largest=%u/%u", stage,
+             unsigned(heap_caps_get_free_size(dma_internal)),
+             unsigned(heap_caps_get_largest_free_block(dma_internal)),
+             unsigned(heap_caps_get_free_size(dma_external)),
+             unsigned(heap_caps_get_largest_free_block(dma_external)));
 }
 
 // The generic MipiLcdDisplay uses RGB565. This panel needs RGB888 throughout.
@@ -382,7 +397,11 @@ public:
             idle_timer_started_ = true;
         }
         LogMemory("before Hosted/Wi-Fi");
+        ESP_LOGI(kTag, "Hosted %d.%d.%d: transport DMA PSRAM preferred, L2 cache line=64",
+                 ESP_HOSTED_VERSION_MAJOR_1, ESP_HOSTED_VERSION_MINOR_1,
+                 ESP_HOSTED_VERSION_PATCH_1);
         WifiBoard::StartNetwork();
+        LogMemory("after Hosted/Wi-Fi init");
     }
 
     void NoteUserActivity() override {
