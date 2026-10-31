@@ -7,6 +7,7 @@
 #include "fonts/font_puhui_14_1.h"
 #include "layout_cache.h"
 #include "mqtt_panel.h"
+#include "media_player.h"
 #include "nvs_config.h"
 #include "offline_cmd.h"
 #include "panel_layout.h"
@@ -88,6 +89,7 @@ static lv_obj_t *s_wifi_slp_lbl;
 static lv_obj_t *s_bye_slp_lbl;
 static lv_obj_t *s_listen_idle_lbl;
 static lv_obj_t *s_media_pause_lbl;
+static lv_obj_t *s_media_duck_lbl;
 
 static void pref_err(char *err, size_t err_len, const char *msg)
 {
@@ -480,6 +482,18 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         nl_ov_toast("暂停关闭时间已保存");
         return ESP_OK;
     }
+    if (strcasecmp(key, "media_wake_duck_pct") == 0) {
+        int v = 0;
+        if (!parse_int_range(value, NODELIO_MEDIA_WAKE_DUCK_MIN, NODELIO_MEDIA_WAKE_DUCK_MAX, &v,
+                             err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.media_wake_duck_pct = (uint8_t)v;
+        persist_cfg_async();
+        nodelio_media_wake_duck_refresh();
+        nl_ov_toast("唤醒时音量已保存");
+        return ESP_OK;
+    }
     /* 动作键：value 可空，只触发 */
     if (strcasecmp(key, "layout_sync") == 0) {
         nl_ov_toast("正在刷新布局…");
@@ -561,6 +575,12 @@ extern "C" esp_err_t nodelio_panel_ui_get_pref(const char *key, char *buf, size_
     if (strcasecmp(key, "media_pause_s") == 0) {
         std::snprintf(buf, len, "%d",
                       (int)(s_cfg.media_pause_s ? s_cfg.media_pause_s : NODELIO_MEDIA_PAUSE_DEFAULT));
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "media_wake_duck_pct") == 0) {
+        std::snprintf(buf, len, "%d",
+                      (int)(s_cfg.media_wake_duck_pct ? s_cfg.media_wake_duck_pct
+                                                      : NODELIO_MEDIA_WAKE_DUCK_DEFAULT));
         return ESP_OK;
     }
     return ESP_ERR_NOT_FOUND;
@@ -807,6 +827,7 @@ void nl_ov_close_settings_detail(void)
     s_bye_slp_lbl = nullptr;
     s_listen_idle_lbl = nullptr;
     s_media_pause_lbl = nullptr;
+    s_media_duck_lbl = nullptr;
     if (s_tabbar && s_visible) {
         lv_obj_clear_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
     }
@@ -1228,6 +1249,44 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_obj_set_style_text_color(pause_hint, UI_TEXT_TIP, 0);
         lv_label_set_long_mode(pause_hint, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(pause_hint, lv_pct(100));
+
+        if (!s_cfg.media_wake_duck_pct) {
+            s_cfg.media_wake_duck_pct = NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
+        }
+        char duck[16];
+        std::snprintf(duck, sizeof(duck), "%d%%", (int)s_cfg.media_wake_duck_pct);
+        lv_obj_t *duck_band = audio_ctrl_band(body, "唤醒时音量", duck, &s_media_duck_lbl);
+        lv_obj_t *duck_sl = lv_slider_create(duck_band);
+        ui_style_slider(duck_sl);
+        lv_slider_set_range(duck_sl, NODELIO_MEDIA_WAKE_DUCK_MIN, NODELIO_MEDIA_WAKE_DUCK_MAX);
+        lv_slider_set_value(duck_sl, s_cfg.media_wake_duck_pct, LV_ANIM_OFF);
+        lv_obj_add_event_cb(
+            duck_sl,
+            [](lv_event_t *e) {
+                lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
+                int v = (int)lv_slider_get_value(sl);
+                if (s_media_duck_lbl) {
+                    char buf[16];
+                    std::snprintf(buf, sizeof(buf), "%d%%", v);
+                    lv_label_set_text(s_media_duck_lbl, buf);
+                }
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_add_event_cb(
+            duck_sl,
+            [](lv_event_t *e) {
+                char num[12];
+                std::snprintf(num, sizeof(num), "%d",
+                              (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e)));
+                (void)nodelio_panel_ui_set_pref("media_wake_duck_pct", num, nullptr, 0);
+            },
+            LV_EVENT_RELEASED, nullptr);
+        lv_obj_t *duck_hint = lv_label_create(duck_band);
+        lv_label_set_text(duck_hint, "电台/播客开着听唤醒词时保留的音量；100% 不压低，唤醒可能变差");
+        nl_ov_set_font(duck_hint);
+        lv_obj_set_style_text_color(duck_hint, UI_TEXT_TIP, 0);
+        lv_label_set_long_mode(duck_hint, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(duck_hint, lv_pct(100));
     } else if (page == SET_PAGE_VOICE) {
         lv_obj_set_style_pad_row(body, 12, 0);
 
@@ -1372,9 +1431,9 @@ void nl_ov_fill_settings(void)
     }
     {
         char media_sub[48];
-        std::snprintf(media_sub, sizeof(media_sub), "%s · 暂停 %ds",
+        std::snprintf(media_sub, sizeof(media_sub), "%s · 唤醒 %d%%",
                       nodelio_media_sleep_enabled() ? "播放可息屏" : "播放常亮",
-                      (int)nodelio_media_pause_seconds());
+                      (int)nodelio_media_wake_duck_pct());
         settings_tile(s_settings, "播", "播放器", media_sub, UI_C_INFO, nullptr,
                       [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_MEDIA); });
     }

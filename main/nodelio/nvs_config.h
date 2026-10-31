@@ -36,6 +36,7 @@ typedef struct {
     uint16_t goodbye_sleep_s; /* 退下后延迟息屏秒数，默认 15，范围 5–60 */
     uint16_t listen_idle_s; /* 唤醒后无对话自动退下秒数，默认 15，范围 10–30 */
     uint16_t media_pause_s; /* 暂停后关闭播放器秒数，默认 20，范围 10–120 */
+    uint8_t media_wake_duck_pct; /* 播中武装唤醒时保留音量%，默认 70，范围 40–100 */
 } nodelio_nvs_config_t;
 
 #define NODELIO_IDLE_SLEEP_DEFAULT 60
@@ -53,6 +54,9 @@ typedef struct {
 #define NODELIO_LISTEN_IDLE_MAX 30
 #define NODELIO_MEDIA_PAUSE_MIN 10
 #define NODELIO_MEDIA_PAUSE_MAX 120
+#define NODELIO_MEDIA_WAKE_DUCK_DEFAULT 70
+#define NODELIO_MEDIA_WAKE_DUCK_MIN 40
+#define NODELIO_MEDIA_WAKE_DUCK_MAX 100
 
 esp_err_t nodelio_nvs_init(void);
 /** Flash 读写：禁止在 PSRAM 栈任务调用（LVGL / mcp_http / nl_* invoke）。用 cache_get。 */
@@ -105,6 +109,8 @@ uint16_t nodelio_listen_idle_seconds(void);
 bool nodelio_media_sleep_enabled(void);
 /** 暂停后关闭播放器秒数。 */
 uint16_t nodelio_media_pause_seconds(void);
+/** 播中武装唤醒时保留的音量百分比（相对用户音量）。 */
+uint8_t nodelio_media_wake_duck_pct(void);
 /** 写入并钳位；某项为 0 则保持原值。含 flash，勿在 LVGL 任务调用。 */
 esp_err_t nodelio_set_sleep_seconds(uint16_t idle_s, uint16_t goodbye_s);
 esp_err_t nodelio_set_idle_wifi_seconds(uint16_t wifi_s);

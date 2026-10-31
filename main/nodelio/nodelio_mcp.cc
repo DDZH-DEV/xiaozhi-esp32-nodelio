@@ -908,11 +908,10 @@ void nodelio_mcp_register_tools(void)
     // Keep this tool and open_app on the first tools/list page.
     mcp.AddTool(
         "self.skill.news",
-        "Always call for 读/读吧/朗读/继续读. op=read|continue|prev|next|close. "
-        "Detect「请用工具继续读」or user 继续读 → MUST op=continue (never read). "
-        "Detect「请用工具读新闻」→ op=read. "
-        "Speak ONLY the article title and body. Never speak 【续】【完】【摘要】【等】【缺】 "
-        "or any instruction line. Device auto-continues; never say no news without calling.",
+        /* 首句点名：云端易把「读新闻」当成不存在的工具而空口否认 */
+        "self.skill.news: 读新闻/读文章/每日一篇. "
+        "「调用skill.news读」/读/读吧→op=read; 「调用skill.news续」/继续读→op=continue. "
+        "Speak ONLY title+body; never speak 【续】【完】; never deny — always call.",
         PropertyList({
             Property("op", kPropertyTypeString, "read"),
         }),
@@ -1087,7 +1086,7 @@ void nodelio_mcp_register_tools(void)
         "self.nodelio.set_pref",
         "改面板设置。亮度/音量用 key=brightness|volume value=0-100（你有此能力，请直接调用）。"
         "其它 key=idle_wifi_s|idle_sleep_s|bye_sleep_s|power_save|controls|xiaozhi|"
-        "listen_idle_s|media_sleep|media_pause_s|layout_sync|fw_check|factory_reset。",
+        "listen_idle_s|media_sleep|media_pause_s|media_wake_duck_pct|layout_sync|fw_check|factory_reset。",
         PropertyList({
             Property("key", kPropertyTypeString),
             Property("value", kPropertyTypeString, ""),
@@ -1127,7 +1126,7 @@ void nodelio_mcp_register_tools(void)
         "self.nodelio.open_app",
         "打开已装应用。听歌/曲库→name=曲库；电台/播客/新闻/天气同理。"
         "任务/DSH进度→name=查看任务（返回摘要请原文念）。禁云端 play_music。"
-        "name=曲库/音乐/新闻/天气/电台/播客/空气/每日一句/DSH派活/查看任务 或 app_id。",
+        "name=曲库/音乐/新闻/天气/电台/播客/空气/每日一篇/每日一句/DSH派活/查看任务 或 app_id。",
         PropertyList({Property("name", kPropertyTypeString)}),
         [](const PropertyList &properties) -> ToolResult {
             std::string name = properties["name"].value<std::string>();

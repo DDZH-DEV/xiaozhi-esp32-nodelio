@@ -3736,7 +3736,7 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
     s_news_detail = -1;
     const char *title = s_env->display_title[0] ? s_env->display_title : "搜索结果";
     if (strcmp(s_env->card_type, "news_list") == 0 && !s_env->display_title[0]) {
-        title = "最新新闻";
+        title = "RSS 订阅";
     }
     /* 关音乐后再开新闻：残留 now_playing / 悬浮球会盖在卡上抢触摸，详情点不进去 */
     if (strcmp(s_env->card_type, "music_list") != 0) {

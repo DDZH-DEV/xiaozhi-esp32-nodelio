@@ -831,7 +831,8 @@ bool nl_ov_apps_open_by_query(const char *query)
                strstr(query, "趣库") || strstr(query, "音乐") || strstr(query, "music") ||
                strstr(query, "听歌") || strstr(query, "放歌") || strstr(query, "爱音乐")) {
         alias_id = "music.search";
-    } else if (strstr(query, "新闻") || strstr(query, "news")) {
+    } else if (strstr(query, "RSS订阅") || strstr(query, "rss订阅") || strstr(query, "RSS 订阅") ||
+               strstr(query, "新闻") || strstr(query, "news")) {
         alias_id = "news.latest";
     } else if (strstr(query, "天气") || strstr(query, "weather")) {
         alias_id = "weather.today";
@@ -841,6 +842,9 @@ bool nl_ov_apps_open_by_query(const char *query)
         alias_id = "podcast.latest";
     } else if (strstr(query, "空气") || strstr(query, "air")) {
         alias_id = "air.now";
+    } else if (strstr(query, "一篇") || strstr(query, "美文") || strstr(query, "article") ||
+               strstr(query, "每日一文")) {
+        alias_id = "article.daily";
     } else if (strstr(query, "一句") || strstr(query, "名言") || strstr(query, "quote")) {
         alias_id = "quote.daily";
     }

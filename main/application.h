@@ -163,8 +163,8 @@ public:
      */
     void QueueCloudSpeakPrompt(const char *text);
     /**
-     * 新闻朗读：本地开详情后短 detect「读这篇/继续读」，促云端调 self.skill.news，
-     * 由模型正常 TTS 念大段正文（勿再用 6 字 detect 分段）。
+     * 新闻朗读：本地开详情后短 detect「调用skill.news读/续」（≤16 字点名工具），
+     * 促云端 tools/call self.skill.news，由模型 TTS 念正文（禁止 detect 塞正文）。
      */
     void StartLocalNewsRead(const char *op /* read|continue */);
     /** 停当前段 TTS，不跳过未读原文；之后可点「继续」或说「继续读」。 */

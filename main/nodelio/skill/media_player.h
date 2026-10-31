@@ -53,6 +53,9 @@ void nodelio_media_on_playback_ended(bool success);
 /** 兼容旧调用：仅表示「正在播放」（息屏策略见 media_sleep_en）。 */
 bool nodelio_media_has_session(void);
 
+/** 已武装唤醒压音时按当前 NVS 百分比重算；未压音则忽略。 */
+void nodelio_media_wake_duck_refresh(void);
+
 #ifdef __cplusplus
 }
 #endif

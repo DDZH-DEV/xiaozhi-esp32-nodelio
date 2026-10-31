@@ -302,7 +302,7 @@ void nl_ov_skill_widget_prefetch(const char *skill_id, const char *body, int ref
         return;
     }
     const int64_t now = esp_timer_get_time() / 1000;
-    /* 失败只挡 20s。每日一句 refresh 为一天，失败若按成功缓存就会一直空白。 */
+    /* 失败只挡 20s。每日一篇 refresh 常较长，失败若按成功缓存就会一直空白。 */
     const int64_t hold_ms = (slot->preview.ready && slot->preview.ok) ? (int64_t)refresh_sec * 1000 : 20000;
     if (slot->preview.ready && slot->ms > 0 && (now - slot->ms) < hold_ms) {
         return;

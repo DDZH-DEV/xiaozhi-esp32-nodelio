@@ -49,6 +49,8 @@ extern "C" srmodel_list_t* nodelio_get_srmodels(void) {
 static bool tts_looks_like_app_deny(const char *text);
 /** 新闻 MCP 旧指令壳 / 【标】被模型念出时丢掉字幕；正文匹配不受影响。 */
 static bool tts_looks_like_news_instruction(const char *text);
+/** 云端空口否认「没有读新闻工具」——tools/list 漏工具或未点名 skill.news。 */
+static bool tts_looks_like_news_tool_deny(const char *text);
 #endif
 
 Application::Application() : notify_player_(audio_service_) {
@@ -980,6 +982,23 @@ void Application::InitializeProtocol() {
                     // Only tool dispatch releases the read gate; article words are irrelevant.
                     if (news_awaiting_mcp_ || IsCloudTtsSuppressed()) {
                         ESP_LOGI(TAG, "drop cloud tts sentence: %s", text->valuestring);
+                        if (news_awaiting_mcp_ &&
+                            tts_looks_like_news_tool_deny(text->valuestring)) {
+                            Schedule([this]() {
+                                if (!news_awaiting_mcp_) {
+                                    return;
+                                }
+                                if (news_mcp_detect_retries_ == 0) {
+                                    ESP_LOGW(TAG,
+                                             "news read: cloud denied tool → stronger detect");
+                                    news_mcp_detect_retries_ = 1;
+                                    SendNewsReadRequest(false);
+                                } else {
+                                    ESP_LOGW(TAG, "news read: cloud denied tool again → fail");
+                                    news_mcp_deadline_us_ = 0;
+                                }
+                            });
+                        }
                         return;
                     }
                     /* 指令壳勿上屏/跟读；音频若已编码仍可能出声，靠 MCP 回包去壳根治 */
@@ -2294,14 +2313,20 @@ void Application::SendNewsReadRequest(bool interrupt) {
     if (GetDeviceState() == kDeviceStateSpeaking) {
         SetDeviceState(kDeviceStateListening);
     }
-    news_detect_echo_ = news_read_continue_ ? "请用工具继续读" : "请用工具读新闻";
+    /* ≤16 字；须点名 skill.news，勿说「读新闻」(云端会当成不存在的工具名) */
+    if (news_mcp_detect_retries_ > 0) {
+        news_detect_echo_ = "必须调用skill.news";
+    } else {
+        news_detect_echo_ = news_read_continue_ ? "调用skill.news续" : "调用skill.news读";
+    }
     news_awaiting_mcp_ = true;
     news_mcp_deadline_us_ = esp_timer_get_time() + 12000000;
     aborted_ = false;
     suppress_cloud_tts_until_us_ = 0;
     nodelio_offline_cmd_yield_for_cloud_audio();
-    ESP_LOGI(TAG, "news read: request op=%s attempt=%d", news_read_continue_ ? "continue" : "read",
-             news_mcp_detect_retries_ + 1);
+    ESP_LOGI(TAG, "news read: request op=%s attempt=%d detect=%s",
+             news_read_continue_ ? "continue" : "read", news_mcp_detect_retries_ + 1,
+             news_detect_echo_.c_str());
     protocol_->SendWakeWordDetected(news_detect_echo_);
     // Do not follow detect with listen.start: it can interrupt the new tool/TTS turn.
 }
@@ -2532,6 +2557,20 @@ static bool tts_looks_like_app_deny(const char *text)
            strstr(text, "电台") != nullptr || strstr(text, "曲库") != nullptr ||
            strstr(text, "播客") != nullptr || strstr(text, "音乐") != nullptr ||
            strstr(text, "名言") != nullptr;
+}
+
+static bool tts_looks_like_news_tool_deny(const char *text)
+{
+    if (!text || !text[0]) {
+        return false;
+    }
+    const bool no_tool = strstr(text, "没有") != nullptr || strstr(text, "找不到") != nullptr ||
+                         strstr(text, "无法") != nullptr || strstr(text, "不能") != nullptr;
+    if (!no_tool) {
+        return false;
+    }
+    return strstr(text, "工具") != nullptr || strstr(text, "skill.news") != nullptr ||
+           strstr(text, "读新闻") != nullptr || strstr(text, "读文章") != nullptr;
 }
 
 static bool tts_looks_like_news_instruction(const char *text)

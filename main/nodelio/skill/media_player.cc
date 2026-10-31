@@ -57,9 +57,8 @@ static volatile bool s_resume_after_voice = false;
 /** 音频进入输出任务后再武装唤醒，避免与 HTTP/TLS 和解码暖机抢资源。 */
 static esp_timer_handle_t s_wake_arm_timer = nullptr;
 static constexpr int64_t kMediaWakeArmUs = 500000; /* 0.5s（原 1.5s） */
-/** 播中关 AEC 防 WDT，喇叭盖麦 → 武装唤醒时暂压音量提 SNR（不写 NVS）。 */
+/** 播中关 AEC 防 WDT，喇叭盖麦 → 武装唤醒时暂压音量提 SNR（百分比来自 NVS）。 */
 static int s_wake_duck_restore = -1;
-static constexpr int kWakeDuckPct = 55; /* 相对当前音量 */
 
 static void media_wake_duck_restore(void)
 {
@@ -81,21 +80,32 @@ static void media_wake_duck(void)
         return;
     }
     const int cur = codec->output_volume();
-    if (cur <= 0) {
+    if (cur <= 0 && s_wake_duck_restore < 0) {
         return;
     }
     if (s_wake_duck_restore < 0) {
         s_wake_duck_restore = cur;
     }
-    int ducked = (s_wake_duck_restore * kWakeDuckPct) / 100;
+    const int pct = (int)nodelio_media_wake_duck_pct();
+    int ducked = (s_wake_duck_restore * pct) / 100;
     if (ducked < 10) {
         ducked = 10;
     }
-    if (ducked >= s_wake_duck_restore) {
+    if (pct >= 100 || ducked >= s_wake_duck_restore) {
+        codec->SetOutputVolumeTransient(s_wake_duck_restore);
+        ESP_LOGI(TAG, "media wake duck skip pct=%d vol=%d", pct, s_wake_duck_restore);
         return;
     }
     codec->SetOutputVolumeTransient(ducked);
-    ESP_LOGI(TAG, "media wake duck vol %d → %d (test SNR)", s_wake_duck_restore, ducked);
+    ESP_LOGI(TAG, "media wake duck vol %d → %d pct=%d", s_wake_duck_restore, ducked, pct);
+}
+
+void nodelio_media_wake_duck_refresh(void)
+{
+    if (s_wake_duck_restore < 0) {
+        return;
+    }
+    media_wake_duck();
 }
 
 static void disarm_media_wake_interrupt(void)

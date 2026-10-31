@@ -68,6 +68,7 @@ void nodelio_nvs_cache_get(nodelio_nvs_config_t *out)
     out->goodbye_sleep_s = NODELIO_BYE_SLEEP_DEFAULT;
     out->listen_idle_s = NODELIO_LISTEN_IDLE_DEFAULT;
     out->media_pause_s = NODELIO_MEDIA_PAUSE_DEFAULT;
+    out->media_wake_duck_pct = NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
 }
 
 static esp_err_t get_str(nvs_handle_t h, const char *key, char *buf, size_t len)
@@ -84,6 +85,20 @@ static esp_err_t get_str(nvs_handle_t h, const char *key, char *buf, size_t len)
 }
 
 static uint16_t clamp_u16(uint16_t v, uint16_t lo, uint16_t hi, uint16_t def)
+{
+    if (v == 0) {
+        return def;
+    }
+    if (v < lo) {
+        return lo;
+    }
+    if (v > hi) {
+        return hi;
+    }
+    return v;
+}
+
+static uint8_t clamp_u8(uint8_t v, uint8_t lo, uint8_t hi, uint8_t def)
 {
     if (v == 0) {
         return def;
@@ -132,6 +147,9 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     out->media_pause_s =
         clamp_u16(out->media_pause_s, NODELIO_MEDIA_PAUSE_MIN, NODELIO_MEDIA_PAUSE_MAX,
                   NODELIO_MEDIA_PAUSE_DEFAULT);
+    out->media_wake_duck_pct =
+        clamp_u8(out->media_wake_duck_pct, NODELIO_MEDIA_WAKE_DUCK_MIN, NODELIO_MEDIA_WAKE_DUCK_MAX,
+                 NODELIO_MEDIA_WAKE_DUCK_DEFAULT);
 }
 
 /* 避免 save 路径把「关闭小智/省电」(0) 误当成未初始化 */
@@ -155,6 +173,9 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     out->media_pause_s =
         clamp_u16(out->media_pause_s, NODELIO_MEDIA_PAUSE_MIN, NODELIO_MEDIA_PAUSE_MAX,
                   NODELIO_MEDIA_PAUSE_DEFAULT);
+    out->media_wake_duck_pct =
+        clamp_u8(out->media_wake_duck_pct, NODELIO_MEDIA_WAKE_DUCK_MIN, NODELIO_MEDIA_WAKE_DUCK_MAX,
+                 NODELIO_MEDIA_WAKE_DUCK_DEFAULT);
     if (out->xiaozhi_en > 1) {
         out->xiaozhi_en = 1;
     }
@@ -198,6 +219,7 @@ esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out)
     out->goodbye_sleep_s = NODELIO_BYE_SLEEP_DEFAULT;
     out->listen_idle_s = NODELIO_LISTEN_IDLE_DEFAULT;
     out->media_pause_s = NODELIO_MEDIA_PAUSE_DEFAULT;
+    out->media_wake_duck_pct = NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NODELIO_NVS_NS, NVS_READONLY, &h);
@@ -276,6 +298,10 @@ esp_err_t nodelio_nvs_load(nodelio_nvs_config_t *out)
         if (nvs_get_u16(h, "md_pause", &u16) == ESP_OK) {
             out->media_pause_s = u16;
         }
+        v = 0;
+        if (nvs_get_u8(h, "md_duck", &v) == ESP_OK) {
+            out->media_wake_duck_pct = v;
+        }
     }
     nvs_close(h);
     apply_defaults(out);
@@ -331,6 +357,7 @@ esp_err_t nodelio_nvs_save(const nodelio_nvs_config_t *in)
     NL_ACCUM(nvs_set_u16(h, "bye_slp", tmp.goodbye_sleep_s));
     NL_ACCUM(nvs_set_u16(h, "lis_idle", tmp.listen_idle_s));
     NL_ACCUM(nvs_set_u16(h, "md_pause", tmp.media_pause_s));
+    NL_ACCUM(nvs_set_u8(h, "md_duck", tmp.media_wake_duck_pct));
 #undef NL_ACCUM
 
     err = nvs_commit(h);
@@ -492,6 +519,15 @@ uint16_t nodelio_media_pause_seconds(void)
         return NODELIO_MEDIA_PAUSE_DEFAULT;
     }
     return s_ram.media_pause_s ? s_ram.media_pause_s : NODELIO_MEDIA_PAUSE_DEFAULT;
+}
+
+uint8_t nodelio_media_wake_duck_pct(void)
+{
+    if (!s_ram_ok) {
+        return NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
+    }
+    return s_ram.media_wake_duck_pct ? s_ram.media_wake_duck_pct
+                                     : NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
 }
 
 esp_err_t nodelio_set_sleep_seconds(uint16_t idle_s, uint16_t goodbye_s)
