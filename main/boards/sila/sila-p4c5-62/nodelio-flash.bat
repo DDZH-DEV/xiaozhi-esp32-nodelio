@@ -10,7 +10,7 @@ rem   nodelio-flash.bat --32m           default (W25Q256 / 32MB board)
 rem   nodelio-flash.bat --nofresh       skip build, flash existing build/
 rem   nodelio-flash.bat COM15 --16m --nofresh
 rem
-rem Do NOT use root nodelio-build.bat (S3/SILA-86). Full flash via flash_args;
+rem Do NOT use sila-86 nodelio-build.bat. Full flash via flash_args;
 rem never treat a lone xiaozhi.bin as a first-flash package.
 
 set "PORT=COM8"

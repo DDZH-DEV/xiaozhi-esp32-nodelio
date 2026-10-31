@@ -462,7 +462,8 @@ static const char *kind_symbol(const nl_widget_t *w, tile_kind_t kind, bool on)
     }
     if (w && w->skin[0]) {
         if (strcmp(w->skin, "fan") == 0) {
-            return MATERIAL_SYMBOLS_MODE_FAN;
+            /* 当前字库无 MODE_FAN；用旋转感字形占位 */
+            return MATERIAL_SYMBOLS_REFRESH;
         }
         if (strcmp(w->skin, "dimmer") == 0) {
             return MATERIAL_SYMBOLS_BRIGHTNESS_6;
@@ -480,7 +481,8 @@ static const char *kind_symbol(const nl_widget_t *w, tile_kind_t kind, bool on)
             return MATERIAL_SYMBOLS_BRIGHTNESS_6;
         }
         if (strcmp(w->skin, "tank") == 0) {
-            return MATERIAL_SYMBOLS_WATER_DROP;
+            /* 当前字库无 WATER_DROP */
+            return MATERIAL_SYMBOLS_CLOUD_DOWNLOAD;
         }
     }
     switch (kind) {

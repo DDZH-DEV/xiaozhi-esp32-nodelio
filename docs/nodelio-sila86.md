@@ -17,11 +17,14 @@
 WiFi SoftAP stays with Xiaozhi. NodeLio does **not** own STA.
 
 ## Build / flash
+脚本在 `main/boards/sila/sila-86/`（仓库根不再放 `nodelio-*.bat`）。
 ```bat
-cd /d D:\xz25
+cd /d D:\xz25\main\boards\sila\sila-86
 nodelio-build.bat
 nodelio-flash.bat
+nodelio-monitor.bat
 ```
+
 
 ## AFE 启动后的 AES / MQTT 内存故障（2026-10-29）
 

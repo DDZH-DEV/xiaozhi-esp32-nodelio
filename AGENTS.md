@@ -99,7 +99,7 @@ Keep detailed or fast-changing information in those files, not here. Add a neste
 
 | board_id | 目录 | 要点 |
 |----------|------|------|
-| `sila_86` | `main/boards/sila/sila-86/` | S3；480×480；ES8311+ES7210；`nodelio-build.bat`；强制软件 AES |
+| `sila_86` | `main/boards/sila/sila-86/` | S3；480×480；ES8311+ES7210；板级 `nodelio-*.bat`；强制软件 AES |
 | `sila_p4c5_62` | `main/boards/sila/sila-p4c5-62/` | P4+C5 Hosted；逻辑 1280×452；**ES8389 必留**；grid 默认 10×3 |
 
 - **type_code**：`WALL_PANEL`；硬件用 `board_id`。**禁止**为换屏新开 type_code；**禁止**改 sila-86 引脚迁就 P4。
@@ -122,7 +122,7 @@ Keep detailed or fast-changing information in those files, not here. Add a neste
 ### 技能 / Flash / UI
 
 - 技能走云清单；勿每 API fork 页面；控家 = layout + `panel/command`。
-- 分区：`partitions/v2/16m.csv`。86：`nodelio-build.bat`。62：板级构建，**勿套用 86 裁掉 es8389**。
+- 分区：`partitions/v2/16m.csv`。86：`main/boards/sila/sila-86/nodelio-*.bat`。62：`main/boards/sila/sila-p4c5-62/nodelio-*.bat`，**勿套用 86 裁掉 es8389**。
 - 曜夜微晶 + Icon Pod；APP 与实机按 **display_profile** 1:1（480 方屏 vs 1280×452 侧轨）。
 
 ### 调度 / 口令 / 截图 / 播放 / 语音

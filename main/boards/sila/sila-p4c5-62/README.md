@@ -50,7 +50,17 @@ AXP2101 总线只做地址 ACK 探测，不将 ACK 当作芯片 ID 验证，也�
 ## 构建（在装有 IDF 的电脑执行）
 
 优先 ESP-IDF `release/v6.1`，最低 v6.0.1；记录实际 IDF SHA。
-本次按用户要求**未执行 IDF 编译、未烧录**。不要使用 S3 的 `nodelio-build.bat`。
+本次按用户要求**未执行 IDF 编译、未烧录**。不要使用 SILA-86 的 `nodelio-build.bat`。
+
+板级入口（本目录）：
+
+```bat
+nodelio-flash.bat              :: COM8 + 32m，build.py 后整片 flash+monitor
+nodelio-flash.bat --nofresh    :: 只烧现有 build/
+nodelio-monitor.bat            :: 仅串口（USB Serial/JTAG；重启后端口可能变）
+```
+
+或手动：
 
 ```sh
 idf.py --version

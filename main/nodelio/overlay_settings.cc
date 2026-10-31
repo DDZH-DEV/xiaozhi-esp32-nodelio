@@ -732,14 +732,19 @@ static void on_vol_release(lv_event_t *e)
 
 static void sys_label_set_if_changed(lv_obj_t *lbl, char *last, size_t last_sz, const char *neu)
 {
-    if (!lbl || !neu || !last) {
+    if (!lbl || !neu || !last || last_sz == 0) {
         return;
     }
-    if (strncmp(last, neu, last_sz) == 0) {
+    if (std::strcmp(last, neu) == 0) {
         return;
     }
-    strncpy(last, neu, last_sz - 1);
-    last[last_sz - 1] = '\0';
+    /* memcpy+显式 NUL，避免 strncpy/snprintf 对共享大 buf 内联出 truncation -Werror */
+    size_t n = std::strlen(neu);
+    if (n >= last_sz) {
+        n = last_sz - 1;
+    }
+    std::memcpy(last, neu, n);
+    last[n] = '\0';
     lv_label_set_text(lbl, neu);
 }
 
