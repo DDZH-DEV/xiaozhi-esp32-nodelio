@@ -14,8 +14,10 @@
 #define TAG "PowerSaveTimer"
 
 
-PowerSaveTimer::PowerSaveTimer(int cpu_max_freq, int seconds_to_sleep, int seconds_to_shutdown)
-    : cpu_max_freq_(cpu_max_freq), seconds_to_sleep_(seconds_to_sleep), seconds_to_shutdown_(seconds_to_shutdown) {
+PowerSaveTimer::PowerSaveTimer(int cpu_max_freq, int seconds_to_sleep, int seconds_to_shutdown,
+                             bool respect_wifi_sleep_setting)
+    : respect_wifi_sleep_setting_(respect_wifi_sleep_setting), cpu_max_freq_(cpu_max_freq),
+      seconds_to_sleep_(seconds_to_sleep), seconds_to_shutdown_(seconds_to_shutdown) {
     esp_timer_create_args_t timer_args = {
         .callback = [](void* arg) {
             auto self = static_cast<PowerSaveTimer*>(arg);
@@ -37,7 +39,7 @@ PowerSaveTimer::~PowerSaveTimer() {
 void PowerSaveTimer::SetEnabled(bool enabled) {
     if (enabled && !enabled_) {
         Settings settings("wifi", false);
-        if (!settings.GetBool("sleep_mode", true)) {
+        if (respect_wifi_sleep_setting_ && !settings.GetBool("sleep_mode", true)) {
             ESP_LOGI(TAG, "Power save timer is disabled by settings");
             return;
         }

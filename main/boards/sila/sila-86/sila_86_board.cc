@@ -75,6 +75,21 @@ private:
     esp_timer_handle_t touch_wake_timer_ = nullptr;
     uint8_t touch_wake_hits_ = 0; /* 息屏触摸去抖：连续命中次数 */
 
+#if CONFIG_NODELIO_PANEL
+    void SetPanelScreenState(bool on) {
+        DisplayLockGuard lock(display_);
+        if (!lock) {
+            return;
+        }
+        if (auto* display = lv_display_get_default()) {
+            lv_timer_set_period(lv_display_get_refr_timer(display),
+                                on ? CONFIG_NODELIO_UI_ACTIVE_REFRESH_MS
+                                   : CONFIG_NODELIO_UI_IDLE_REFRESH_MS);
+        }
+        nodelio_panel_ui_notify_screen(on);
+    }
+#endif
+
     void InitializePowerSaveTimer() {
         /* 空闲息屏（背光灭）与空闲断网时刻独立；秒数来自 NVS */
 #if CONFIG_NODELIO_PANEL
@@ -84,11 +99,17 @@ private:
         int idle_s = 60;
         int wifi_s = -1;
 #endif
+#if CONFIG_NODELIO_PANEL
+        // Panel screen timeout is independent of the legacy WiFi sleep preference.
+        power_save_timer_ = new PowerSaveTimer(-1, idle_s, -1, false);
+#else
         power_save_timer_ = new PowerSaveTimer(-1, idle_s, -1);
+#endif
         power_save_timer_->OnEnterSleepMode([this]() {
             /* 先拉灭背光，再停 LVGL。反过来会先看到横条，背光还亮着。 */
             GetBacklight()->SetBrightness(0);
 #if CONFIG_NODELIO_PANEL
+            SetPanelScreenState(false);
             /* 播歌时不要停 LVGL / 关面板：停掉后触摸只靠定时器读 I2C，
              * 和功放/Codec 抢总线会读不到点，屏和播放都关不掉。
              * 背光已灭；LVGL 仍在，点一下走 NoteActivity 亮回来。 */
@@ -112,9 +133,6 @@ private:
                 (void)esp_lcd_panel_disp_on_off(panel_handle_, false);
             }
             (void)lvgl_port_stop();
-#if CONFIG_NODELIO_PANEL
-            nodelio_panel_ui_notify_screen(false); /* 仅息屏；断网见 OnEnterNetSleep */
-#endif
             StartTouchWakePoll(); /* 息屏后 LVGL 不读触摸，单独轮询唤醒 */
         });
         power_save_timer_->OnExitSleepMode([this]() {
@@ -126,7 +144,7 @@ private:
             GetDisplay()->SetPowerSaveMode(false);
             GetBacklight()->RestoreBrightness();
 #if CONFIG_NODELIO_PANEL
-            nodelio_panel_ui_notify_screen(true);
+            SetPanelScreenState(true);
             nodelio_panel_ui_notice_flush_deferred();
 #endif
             /* 播报时 AudioService 会再 EnableOutput(true)；此处不强制开 */
@@ -336,7 +354,27 @@ private:
             .handle = touch_,
         };
         if (touch_cfg.disp) {
-            lvgl_port_add_touch(&touch_cfg);
+            auto* indev = lvgl_port_add_touch(&touch_cfg);
+#if CONFIG_NODELIO_PANEL
+            if (indev) {
+                lv_indev_add_event_cb(
+                    indev,
+                    [](lv_event_t* event) {
+                        auto* input = static_cast<lv_indev_t*>(lv_event_get_target(event));
+                        if (!nodelio_panel_ui_screen_on()) {
+                            // The first touch wakes the panel; don't activate a hidden control.
+                            lv_indev_wait_release(input);
+                            lv_indev_stop_processing(input);
+                        }
+                        Application::GetInstance().Schedule([]() {
+                            Board::GetInstance().NoteUserActivity();
+                        });
+                    },
+                    LV_EVENT_PRESSED, nullptr);
+            }
+#else
+            (void)indev;
+#endif
             ESP_LOGI(TAG, "FT5x06 touch ready (sensitive)");
         } else {
             ESP_LOGW(TAG, "LVGL display missing, touch not added");

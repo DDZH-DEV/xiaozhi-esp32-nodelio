@@ -1,6 +1,6 @@
 /*
  * ui_theme.h — NodeLio 墙板唯一 UI 令牌。
- * 「林夜控家」：略抬高的墨绿画布 + 开态亮色磁贴；关态统一中性石板。
+ * Apple-inspired light appearance: grouped surfaces, semantic color and quiet chrome.
  * 控件代码只读宏，禁止散落裸 hex。
  */
 #pragma once
@@ -8,61 +8,63 @@
 #include <lvgl.h>
 
 /* ---- raw (uint32_t) ----------------------------------------------------- */
-/* 画布：高级曜夜微晶深黑，告别暗绿沉闷，纯净深邃通透 */
-#define UI_C_BG              0x0c0f14
-#define UI_C_SURFACE         0x181e28
-#define UI_C_SURFACE_PRESSED 0x222a38
-#define UI_C_SURFACE_OFF     0x141822
-#define UI_C_PANEL           0x141820
-#define UI_C_BORDER          0x283242
-#define UI_C_FIELD           0x181e28
-#define UI_C_FIELD_FOCUS     0x222a38
-#define UI_C_TEXT            0xf8fafc
-#define UI_C_TEXT_SUB        0xcad5e2
-#define UI_C_TEXT_DIM        0x94a3b8
-#define UI_C_TEXT_MUTED      0x64748b
-#define UI_C_TEXT_TIP        0x475569
-#define UI_C_STATUS_CHROME   0x94a3b8
+/* Opaque surfaces avoid blur buffers and repeated alpha composition on S3/P4. */
+#define UI_C_BG              0xf2f2f7
+#define UI_C_SURFACE         0xffffff
+#define UI_C_SURFACE_PRESSED 0xe5e5ea
+#define UI_C_SURFACE_OFF     0xe5e5ea
+#define UI_C_PANEL           0xffffff
+#define UI_C_BORDER          0xd1d1d6
+#define UI_C_FIELD           0xf2f2f7
+#define UI_C_FIELD_FOCUS     0xe8f1ff
+#define UI_C_TEXT            0x1c1c1e
+#define UI_C_TEXT_SUB        0x48484a
+#define UI_C_TEXT_DIM        0x636366
+#define UI_C_TEXT_MUTED      0x636366
+#define UI_C_TEXT_TIP        0x636366
+#define UI_C_STATUS_CHROME   0x48484a
 #define UI_C_ON_TILE         0xffffff
-#define UI_C_TILE_TAG        0xe8fff0
-#define UI_C_TILE_TAG_PWM    0xe8f6ff
-#define UI_C_PWM_TRACK       0x183b54
-#define UI_C_ACCENT          0x34c759
-#define UI_C_ACCENT_SOFT     0x6ee08a
-#define UI_C_WARN            0xffb340
-#define UI_C_DANGER          0xff453a
-#define UI_C_INFO            0x38bdf8
-#define UI_C_PURPLE          0xc084fc
-#define UI_C_DANGER_BG       0x401818
-#define UI_C_DANGER_FG       0xfecaca
-#define UI_C_BACK_BTN        0x1e3a2b
-#define UI_C_OFFLINE         0x232932
-#define UI_C_DISABLED_FG     0x64748b
-#define UI_C_SLIDER_TRACK    0x1c2330
-/* 开态：大厂经典环境微发光表面（Luminous Glass），清澈通透，质感高级 */
-#define UI_C_TILE_SWITCH     0x0d3822
-#define UI_C_TILE_SCENE      0x2a1447
-#define UI_C_TILE_GPIO       0x3a250c
-#define UI_C_TILE_PWM        0x0c3452
-/* 关态：高级微晶深石板灰（Elevated Slate），极简纯粹，不再发绿 */
-#define UI_C_TILE_OFF        0x161b24
+#define UI_C_TILE_TAG        0x218539
+#define UI_C_TILE_TAG_PWM    0x0066cc
+#define UI_C_PWM_TRACK       0xd1d1d6
+#define UI_C_ACCENT          0x0066cc
+#define UI_C_ACCENT_SOFT     UI_C_ACCENT
+#define UI_C_ACCENT_PRESSED  0x004c99
+#define UI_C_SELECTION       0xe8f1ff
+#define UI_C_SUCCESS         0x218539
+#define UI_C_WARN            0x985600
+#define UI_C_DANGER          0xc9342a
+#define UI_C_INFO            UI_C_ACCENT
+#define UI_C_PURPLE          0x8944ab
+#define UI_C_DANGER_BG       0xffeceb
+#define UI_C_DANGER_FG       0xb42318
+#define UI_C_BACK_BTN        UI_C_SELECTION
+#define UI_C_OFFLINE         0xe5e5ea
+#define UI_C_DISABLED_FG     0x8e8e93
+#define UI_C_SLIDER_TRACK    0xd1d1d6
+/* Active device tint; titles retain dark text, badges carry the semantic color. */
+#define UI_C_TILE_SWITCH     0xeaf5ed
+#define UI_C_TILE_SCENE      0xf4ecf8
+#define UI_C_TILE_GPIO       0xfff3e5
+#define UI_C_TILE_PWM        UI_C_SELECTION
+#define UI_C_TILE_OFF        UI_C_SURFACE
 #define UI_C_TILE_SWITCH_OFF UI_C_TILE_OFF
 #define UI_C_TILE_SCENE_OFF  UI_C_TILE_OFF
 #define UI_C_TILE_GPIO_OFF   UI_C_TILE_OFF
 #define UI_C_TILE_PWM_OFF    UI_C_TILE_OFF
-#define UI_C_TILE_ON_BORDER  0x10b981
-#define UI_C_TILE_OFF_BORDER 0x232c3b
-#define UI_C_TILE_PWM_BORDER 0x0ea5e9
-#define UI_C_TILE_GPIO_BORDER 0xf59e0b
-#define UI_C_CAPSULE_OFF     0x222a38
-#define UI_C_CAPSULE_ON      0x10b981
-#define UI_C_CAPSULE_PWM     0x0ea5e9
-#define UI_C_CAPSULE_GPIO    0xf59e0b
-#define UI_C_CAPSULE_SCENE   0x8b5cf6
-#define UI_C_TILE_BADGE_ON   0x10b981
-#define UI_C_TILE_BADGE_OFF  0x202733
-#define UI_C_TILE_BADGE_OFFLINE 0x22262e
-#define UI_C_TAB_GLOW        0xffffff
+#define UI_C_TILE_ON_BORDER  UI_C_SUCCESS
+#define UI_C_TILE_OFF_BORDER UI_C_BORDER
+#define UI_C_TILE_PWM_BORDER UI_C_ACCENT
+#define UI_C_TILE_GPIO_BORDER UI_C_WARN
+#define UI_C_CAPSULE_OFF     0xe5e5ea
+#define UI_C_CAPSULE_ON      UI_C_SUCCESS
+#define UI_C_CAPSULE_PWM     UI_C_ACCENT
+#define UI_C_CAPSULE_GPIO    UI_C_WARN
+#define UI_C_CAPSULE_SCENE   UI_C_PURPLE
+#define UI_C_TILE_BADGE_ON   UI_C_SUCCESS
+#define UI_C_TILE_BADGE_OFF  0xe5e5ea
+#define UI_C_TILE_BADGE_OFFLINE 0xd1d1d6
+#define UI_C_TAB_GLOW        UI_C_SELECTION
 
 /* ---- lv_color ----------------------------------------------------------- */
 #define UI_BG               lv_color_hex(UI_C_BG)
@@ -84,6 +86,9 @@
 #define UI_TILE_TAG_PWM     lv_color_hex(UI_C_TILE_TAG_PWM)
 #define UI_PWM_TRACK        lv_color_hex(UI_C_PWM_TRACK)
 #define UI_ACCENT           lv_color_hex(UI_C_ACCENT)
+#define UI_ACCENT_PRESSED   lv_color_hex(UI_C_ACCENT_PRESSED)
+#define UI_SELECTION        lv_color_hex(UI_C_SELECTION)
+#define UI_SUCCESS          lv_color_hex(UI_C_SUCCESS)
 #define UI_ACCENT_SOFT      lv_color_hex(UI_C_ACCENT_SOFT)
 #define UI_WARN             lv_color_hex(UI_C_WARN)
 #define UI_DANGER           lv_color_hex(UI_C_DANGER)
@@ -119,9 +124,9 @@
 #define UI_TAB_GLOW         lv_color_hex(UI_C_TAB_GLOW)
 
 /* ---- geometry（8px 网格） ----------------------------------------------- */
-#define UI_RADIUS           14
-#define UI_RADIUS_MD        14
-#define UI_RADIUS_SM        10
+#define UI_RADIUS           20
+#define UI_RADIUS_MD        16
+#define UI_RADIUS_SM        12
 #define UI_RADIUS_XS        6
 #define UI_PAD              12
 #define UI_PAD_SM           8
@@ -129,8 +134,8 @@
 #define UI_GAP_LG           14
 #define UI_EXT_CLICK        20
 /* 首页磁贴动效（开/关色过渡、图标弹跳、pending 转圈） */
-#define UI_TILE_TRANS_MS       220
-#define UI_TILE_ICON_POP_MS    320
+#define UI_TILE_TRANS_MS       120
+#define UI_TILE_ICON_POP_MS    120
 #define UI_TILE_SPIN_MS        900
 #define UI_SETTINGS_TILE_H  72
 #define UI_NAV_H            40
@@ -146,7 +151,7 @@
 #define UI_AI_DRAWER_HDR_H     48  /* 头栏：对齐 44px 触控钮 */
 #define UI_AI_DRAWER_BTN_SZ    44  /* 最小化/关闭：≥44 防穿透下层卡 */
 #define UI_AI_DRAWER_BOTTOM    52
-#define UI_AI_DRAWER_BG_OPA    200 /* ~78%：背后设置项隐约可见 */
+#define UI_AI_DRAWER_BG_OPA    LV_OPA_COVER /* 保证正文对比度，避免反复透明混合 */
 #define UI_AI_MINI_SZ          52  /* 最小化圆钮（仅图标，无文字） */
 #define UI_AI_MINI_RIGHT       14
 /* 新闻阅读：0=14px 普惠；1/2=资源 20px 真字库（禁止 transform 放大点阵，会糊） */

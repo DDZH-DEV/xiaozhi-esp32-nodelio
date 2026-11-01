@@ -1244,10 +1244,13 @@ menu "NodeLio Panel"
             Dirty-region refresh interval, not a forced redraw or panel scan rate.
 
     config NODELIO_UI_IDLE_REFRESH_MS
-        int "P4 panel idle refresh interval (ms)"
-        depends on NODELIO_PANEL && BOARD_TYPE_SILA_P4C5_62
+        int "Panel idle refresh interval (ms)"
+        depends on NODELIO_PANEL
         range 100 1000
         default 200
+        help
+            P4 keeps Hosted/touch running. S3 uses this interval while media
+            plays with the backlight off; ordinary idle still suspends LVGL.
 
     config NODELIO_S3_LVGL_TICK_MS
         int "S3 LVGL clock tick (ms)"

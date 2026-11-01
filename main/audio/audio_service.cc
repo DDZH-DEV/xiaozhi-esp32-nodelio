@@ -947,6 +947,9 @@ std::unique_ptr<AudioStreamPacket> AudioService::PopWakeWordPacket() {
 }
 
 void AudioService::EnableWakeWordDetection(bool enable) {
+    if (enable && callbacks_.can_enable_wake_word && !callbacks_.can_enable_wake_word()) {
+        enable = false;
+    }
     ESP_LOGD(TAG, "%s wake word detection", enable ? "Enabling" : "Disabling");
     if (enable) {
         /* AFE 创建后 INTERNAL largest 常只剩 ~4KB。若此时才首次开麦，

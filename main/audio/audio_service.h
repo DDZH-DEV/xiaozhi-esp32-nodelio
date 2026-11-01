@@ -83,6 +83,8 @@
     }
 
 struct AudioServiceCallbacks {
+    // Optional application policy, checked before allocating or starting WakeNet.
+    std::function<bool(void)> can_enable_wake_word;
     std::function<void(void)> on_send_queue_available;
     std::function<void(const std::string&)> on_wake_word_detected;
     std::function<void(bool)> on_vad_change;

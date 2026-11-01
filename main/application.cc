@@ -114,6 +114,9 @@ void Application::Initialize() {
     SystemInfo::PrintHeapStats();
 
     AudioServiceCallbacks callbacks;
+#if CONFIG_NODELIO_PANEL
+    callbacks.can_enable_wake_word = []() { return nodelio_xiaozhi_enabled(); };
+#endif
     callbacks.on_send_queue_available = [this]() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_SEND_AUDIO);
     };
@@ -1553,6 +1556,13 @@ void Application::HandleStopListeningEvent() {
 }
 
 void Application::HandleWakeWordDetectedEvent() {
+#if CONFIG_NODELIO_PANEL
+    if (!nodelio_xiaozhi_enabled()) {
+        audio_service_.EnableWakeWordDetection(false);
+        audio_service_.DiscardWakeWordAudio();
+        return;
+    }
+#endif
     if (!protocol_) {
         return;
     }
@@ -1602,6 +1612,12 @@ void Application::HandleWakeWordDetectedEvent() {
 }
 
 void Application::BeginWakeWordInvoke(const std::string& wake_word) {
+#if CONFIG_NODELIO_PANEL
+    if (!nodelio_xiaozhi_enabled()) {
+        audio_service_.DiscardWakeWordAudio();
+        return;
+    }
+#endif
     // Must run in the main task with the device in idle state
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     /* 不编唤醒 Opus：33 包编码把内部最大块打到 ~5KB，随后 MQTT hello 的 esp-aes OOM 拆线。

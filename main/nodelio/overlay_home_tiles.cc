@@ -3009,7 +3009,8 @@ static void photo_advance(photo_rt_t *rt)
 static void on_photo_timer(lv_timer_t *t)
 {
     (void)t;
-    if (s_active_tab != NL_TAB_HOME || !s_home) {
+    if (!s_screen_on || s_active_tab != NL_TAB_HOME || !s_home ||
+        lv_obj_has_flag(s_home, LV_OBJ_FLAG_HIDDEN)) {
         return;
     }
     if (nodelio_wifi_is_asleep()) {

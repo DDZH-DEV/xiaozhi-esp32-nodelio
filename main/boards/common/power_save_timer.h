@@ -7,7 +7,8 @@
 
 class PowerSaveTimer {
 public:
-    PowerSaveTimer(int cpu_max_freq, int seconds_to_sleep = 20, int seconds_to_shutdown = -1);
+    PowerSaveTimer(int cpu_max_freq, int seconds_to_sleep = 20, int seconds_to_shutdown = -1,
+                   bool respect_wifi_sleep_setting = true);
     ~PowerSaveTimer();
 
     void SetEnabled(bool enabled);
@@ -42,6 +43,7 @@ private:
 
     esp_timer_handle_t power_save_timer_ = nullptr;
     bool enabled_ = false;
+    bool respect_wifi_sleep_setting_;
     bool net_sleep_enabled_ = true;
     bool in_sleep_mode_ = false;
     bool in_net_sleep_ = false;

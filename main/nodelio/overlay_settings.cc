@@ -1126,7 +1126,7 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         sys_kv_row(dev, "作者", "Dev-SL", nullptr);
         sys_kv_row(dev, "唤醒词", "你好小智", nullptr);
         sys_kv_row(dev, "小智云", s_cfg.xiaozhi_en ? "已启用" : "已关闭", nullptr);
-        if (s_cfg.power_save_en) {
+        if (nodelio_power_save_enabled()) {
             std::snprintf(line, sizeof(line), "屏%ds · 网%ds · 退%d", (int)s_cfg.idle_sleep_s,
                           (int)s_cfg.idle_wifi_s, (int)s_cfg.goodbye_sleep_s);
         } else {

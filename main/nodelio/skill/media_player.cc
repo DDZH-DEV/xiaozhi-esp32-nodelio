@@ -130,7 +130,7 @@ static void media_wake_arm_cb(void *arg)
 {
     (void)arg;
     Application::GetInstance().Schedule([]() {
-        if (!nodelio_media_is_playing()) {
+        if (!nodelio_xiaozhi_enabled() || !nodelio_media_is_playing()) {
             s_wake_arm_retries = 0;
             return;
         }
@@ -189,6 +189,9 @@ static void arm_media_wake_interrupt(void)
 {
     disarm_media_wake_interrupt();
     s_wake_arm_retries = 0;
+    if (!nodelio_xiaozhi_enabled()) {
+        return;
+    }
     if (!s_wake_arm_timer) {
         const esp_timer_create_args_t args = {
             .callback = &media_wake_arm_cb,
