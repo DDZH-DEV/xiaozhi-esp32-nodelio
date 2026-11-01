@@ -1,4 +1,6 @@
 #include "overlay_priv.h"
+#include "panel_jobs.h"
+#include "ui_work_stats.h"
 
 #include "application.h"
 #include "board.h"
@@ -52,6 +54,13 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #include <strings.h>
 
 #define TAG "nl_home"
+
+static bool s_home_structure_dirty;
+static bool s_home_skills_dirty;
+static bool s_home_state_dirty;
+static bool s_home_cacheable;
+static void build_home_view(void);
+static void refresh_skill_widget(lv_obj_t* tile, nl_widget_t* widget);
 
 static lv_timer_t *s_cd_timer;
 /** fill_home 世代：异步相册图回写时丢弃过期结果 */
@@ -230,8 +239,9 @@ static void countdown_tick_ui(void)
         nl_widget_t *w;
     } active[24];
     int n = 0;
+    const bool visible = !s_home_structure_dirty && !lv_obj_has_flag(s_home, LV_OBJ_FLAG_HIDDEN);
     const uint32_t cnt = lv_obj_get_child_count(s_home);
-    for (uint32_t i = 0; i < cnt && n < 24; i++) {
+    for (uint32_t i = 0; visible && i < cnt && n < 24; i++) {
         lv_obj_t *tile = lv_obj_get_child(s_home, i);
         auto *w = static_cast<nl_widget_t *>(lv_obj_get_user_data(tile));
         if (!w || nl_ov_widget_countdown(w) <= 0) {
@@ -241,10 +251,6 @@ static void countdown_tick_ui(void)
         active[n].w = w;
         n++;
     }
-    if (n == 0) {
-        return;
-    }
-
     for (int i = 0; i < s_dev_n; i++) {
         if (s_devs[i].countdown > 0) {
             s_devs[i].countdown--;
@@ -254,6 +260,10 @@ static void countdown_tick_ui(void)
                 s_devs[i].ch_cd[c]--;
             }
         }
+    }
+    if (!visible) {
+        s_home_state_dirty = true;
+        return;
     }
 
     for (int i = 0; i < n; i++) {
@@ -1061,6 +1071,49 @@ static void paint_dual_seg(lv_obj_t *seg, bool online, bool on, bool is_on_branc
     }
 }
 
+struct tile_visual_state_t {
+    bool online, unknown, on;
+    int duty, countdown;
+    const lv_font_t* font;
+    bool operator==(const tile_visual_state_t& rhs) const {
+        return online == rhs.online && unknown == rhs.unknown && on == rhs.on && duty == rhs.duty &&
+               countdown == rhs.countdown && font == rhs.font;
+    }
+};
+
+// At most two cached pages of 32 tiles. Overflow tiles still render normally.
+// Delete callbacks invalidate pointer keys before LVGL can reuse their addresses.
+static bool tile_visual_unchanged(lv_obj_t* tile, const tile_visual_state_t& state) {
+    struct entry {
+        lv_obj_t* object;
+        tile_visual_state_t state;
+    };
+    static entry entries[64]{};
+    entry* empty = nullptr;
+    for (auto& e : entries) {
+        if (e.object == tile) {
+            if (e.state == state)
+                return true;
+            e.state = state;
+            return false;
+        }
+        if (!e.object && !empty)
+            empty = &e;
+    }
+    if (empty) {
+        empty->object = tile;
+        empty->state = state;
+        lv_obj_add_event_cb(
+            tile,
+            [](lv_event_t* event) {
+                auto* e = static_cast<entry*>(lv_event_get_user_data(event));
+                e->object = nullptr;
+            },
+            LV_EVENT_DELETE, empty);
+    }
+    return false;
+}
+
 static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
 {
     if (!tile || !w) {
@@ -1078,6 +1131,10 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
     const bool unknown = widget_state_unknown(w, kind);
     /* 点按已乐观写缓存；失败/超时回滚。不转圈等真态 */
     bool on = !unknown && widget_is_on(w, kind);
+    const tile_visual_state_t state{
+        online, unknown, on, widget_pwm_duty(w), nl_ov_widget_countdown(w), nl_ov_ui_font()};
+    if (tile_visual_unchanged(tile, state))
+        return;
     const bool on_rising = tile_vis_on_rising(w->id, on && online);
     uint32_t fill = widget_fill_for_state(w, kind, online, on, unknown);
     tile_apply_trans(tile);
@@ -1316,6 +1373,11 @@ void nl_ov_refresh_home_tiles(void)
     if (!s_home) {
         return;
     }
+    if (s_home_structure_dirty || lv_obj_has_flag(s_home, LV_OBJ_FLAG_HIDDEN)) {
+        s_home_state_dirty = true;
+        return;
+    }
+    s_home_state_dirty = false;
     /* 批量刷态关掉色过渡，否则 bootstrap 一次改十几颗磁贴像整屏闪 */
     s_tile_bulk_refresh = true;
     uint32_t cnt = lv_obj_get_child_count(s_home);
@@ -1409,9 +1471,9 @@ static void capture_and_upload_screenshot(void)
     job->jpeg = jpeg;
     job->cfg = shot_cfg;
     nl_ov_toast("正在上传截图…");
-    constexpr uint32_t kStackWords = 12288 / sizeof(StackType_t);
-    if (xTaskCreateWithCaps(
-            [](void *p) {
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Background,
+            [](void* p) {
                 auto *job = static_cast<shot_job *>(p);
                 /* 把 JPEG 拷到 PSRAM，释放 string 可能占的内部堆，给 lwIP TCP 缓冲腾地方 */
                 const size_t n = job->jpeg->size();
@@ -1460,9 +1522,13 @@ static void capture_and_upload_screenshot(void)
                     delete job->jpeg;
                 }
                 heap_caps_free(job);
-                vTaskDeleteWithCaps(nullptr);
             },
-            "nl_shot", kStackWords, job, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+            job,
+            [](void* p) {
+                auto* a = static_cast<shot_job*>(p);
+                delete a->jpeg;
+                free(a);
+            })) {
         if (job->jpeg) {
             delete job->jpeg;
         }
@@ -1484,11 +1550,12 @@ void nl_ov_on_brand_click(lv_event_t *e)
 }
 
 /* —— 首页开关：点按乐观写缓存；HTTP 成败定生死；失败/超时回滚。不转圈等 snapshot —— */
-#define NL_CMD_PENDING_MAX 8
+#define NL_CMD_PENDING_MAX 10  // 8 queued + 1 running + 1 tentative submission
 #define NL_CMD_ROLLBACK_MS 8000
 
 struct cmd_pending_t {
     bool active;
+    uint32_t sequence;
     char widget_id[NL_LAYOUT_STR];
     char device_id[NL_LAYOUT_STR];
     int16_t channel;
@@ -1498,6 +1565,15 @@ struct cmd_pending_t {
 
 static cmd_pending_t s_cmd_pending[NL_CMD_PENDING_MAX];
 static lv_timer_t *s_pending_timer;
+static uint32_t s_cmd_sequence;
+
+static uint32_t cmd_pending_sequence(const char* widget_id) {
+    for (const auto& pending : s_cmd_pending) {
+        if (pending.active && strcmp(pending.widget_id, widget_id) == 0)
+            return pending.sequence;
+    }
+    return 0;
+}
 
 static bool widget_is_cmd_pending(const nl_widget_t *w)
 {
@@ -1587,8 +1663,7 @@ static void cmd_pending_rollback_widget(const char *widget_id)
     cmd_pending_timer_ensure(cmd_pending_any());
 }
 
-static void cmd_pending_begin(const nl_widget_t *w)
-{
+static void cmd_pending_begin(const nl_widget_t* w) {
     if (!w || !w->id[0]) {
         return;
     }
@@ -1613,12 +1688,15 @@ static void cmd_pending_begin(const nl_widget_t *w)
         }
         cmd_pending_rollback_widget(s_cmd_pending[slot].widget_id);
     }
-    cmd_pending_t *p = &s_cmd_pending[slot];
+    cmd_pending_t* p = &s_cmd_pending[slot];
     p->active = true;
+    if (++s_cmd_sequence == 0)
+        ++s_cmd_sequence;
+    p->sequence = s_cmd_sequence;
     std::snprintf(p->widget_id, sizeof(p->widget_id), "%s", w->id);
     std::snprintf(p->device_id, sizeof(p->device_id), "%s", w->bind.device_id);
     p->channel = (int16_t)bind_channel_index(w);
-    const char *cur = widget_cache_state(w);
+    const char* cur = widget_cache_state(w);
     if (cur && cur[0]) {
         std::snprintf(p->from, sizeof(p->from), "%s", cur);
     } else {
@@ -1677,113 +1755,69 @@ struct async_cmd_item_t {
     nl_bind_t bind;
     char value[16];
     bool rollback_on_fail; /* 首页开关：点按已乐观写态，失败回滚 */
+    uint32_t sequence;
 };
 
-static QueueHandle_t s_cmd_queue = nullptr;
-static TaskHandle_t s_cmd_task = nullptr;
-
-static void async_cmd_worker(void *arg)
-{
-    (void)arg;
-    async_cmd_item_t item;
-    for (;;) {
-        if (xQueueReceive(s_cmd_queue, &item, portMAX_DELAY) != pdTRUE) {
-            continue;
-        }
-        int http = 0;
-        nodelio_nvs_config_t cmd_cfg{};
-        nl_ov_cfg_for_http(&cmd_cfg);
-        /* 点按已写缓存；HTTP 成功不再二次乐观（DIOL 成功仍会落真态） */
-        esp_err_t err = nodelio_panel_command_ex(&cmd_cfg, item.widget_id, "set", &item.bind, item.value, &http,
-                                                 !item.rollback_on_fail);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "async cmd %s http=%d err=%s", item.widget_id, http, esp_err_to_name(err));
-            DisplayLockGuard lock(nl_ov_disp());
-            if (lock) {
-                const char *msg = "操作未响应";
-                if (http == 503) {
-                    msg = "设备未在线";
-                } else if (http == 401) {
-                    msg = "需口令";
-                }
-                nl_ov_toast(msg);
-                if (item.rollback_on_fail) {
-                    cmd_pending_rollback_widget(item.widget_id);
-                    nl_ov_refresh_home_tiles();
-                }
+static void async_cmd_worker(void* arg) {
+    const auto item = *static_cast<async_cmd_item_t*>(arg);
+    free(arg);
+    int http = 0;
+    nodelio_nvs_config_t cmd_cfg{};
+    nl_ov_cfg_for_http(&cmd_cfg);
+    /* 点按已写缓存；HTTP 成功不再二次乐观（DIOL 成功仍会落真态） */
+    esp_err_t err = nodelio_panel_command_ex(&cmd_cfg, item.widget_id, "set", &item.bind,
+                                             item.value, &http, !item.rollback_on_fail);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "async cmd %s http=%d err=%s", item.widget_id, http, esp_err_to_name(err));
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            const char* msg = "操作未响应";
+            if (http == 503) {
+                msg = "设备未在线";
+            } else if (http == 401) {
+                msg = "需口令";
             }
-        } else {
-            s_cloud_ok = true;
-            DisplayLockGuard lock(nl_ov_disp());
-            if (lock) {
-                if (s_cloud_lbl) {
-                    nl_ov_refresh_status_icons(s_wifi_ok, true, nullptr);
-                }
-                if (item.rollback_on_fail) {
-                    cmd_pending_clear_widget(item.widget_id);
-                }
-            }
-        }
-    }
-}
-
-#define ASYNC_CMD_STACK_BYTES 10240
-
-static StackType_t *s_async_cmd_stack = nullptr;
-static StaticTask_t s_async_cmd_tcb;
-
-static void ensure_cmd_worker(void)
-{
-    if (s_cmd_queue) {
-        return;
-    }
-    s_cmd_queue = xQueueCreate(8, sizeof(async_cmd_item_t));
-    if (!s_cmd_queue) {
-        ESP_LOGE(TAG, "Fail to create async cmd queue");
-        return;
-    }
-    if (!s_async_cmd_stack) {
-        s_async_cmd_stack = (StackType_t *)heap_caps_malloc(ASYNC_CMD_STACK_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_async_cmd_stack) {
-            s_async_cmd_stack = (StackType_t *)malloc(ASYNC_CMD_STACK_BYTES);
-        }
-    }
-    if (s_async_cmd_stack) {
-        s_cmd_task = xTaskCreateStatic(async_cmd_worker, "nl_cmd_async",
-                                       ASYNC_CMD_STACK_BYTES / sizeof(StackType_t), nullptr, 3,
-                                       s_async_cmd_stack, &s_async_cmd_tcb);
-    } else {
-        xTaskCreate(async_cmd_worker, "nl_cmd_async",
-                    ASYNC_CMD_STACK_BYTES / sizeof(StackType_t), nullptr, 3, &s_cmd_task);
-    }
-}
-
-static void dispatch_async_cmd(const nl_widget_t *w, const char *value, bool rollback_on_fail)
-{
-    ensure_cmd_worker();
-    if (!s_cmd_queue || !w) {
-        return;
-    }
-    async_cmd_item_t item;
-    std::memset(&item, 0, sizeof(item));
-    std::snprintf(item.widget_id, sizeof(item.widget_id), "%s", w->id);
-    item.bind = w->bind;
-    std::snprintf(item.value, sizeof(item.value), "%s", value ? value : "TOGGLE");
-    item.rollback_on_fail = rollback_on_fail;
-    if (xQueueSend(s_cmd_queue, &item, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "cmd queue full, discard oldest");
-        async_cmd_item_t dummy;
-        xQueueReceive(s_cmd_queue, &dummy, 0);
-        if (dummy.rollback_on_fail && dummy.widget_id[0]) {
-            DisplayLockGuard lock(nl_ov_disp());
-            if (lock) {
-                cmd_pending_rollback_widget(dummy.widget_id);
+            nl_ov_toast(msg);
+            if (item.rollback_on_fail && item.sequence == cmd_pending_sequence(item.widget_id)) {
+                cmd_pending_rollback_widget(item.widget_id);
                 nl_ov_refresh_home_tiles();
-                nl_ov_toast("操作太频繁");
             }
         }
-        xQueueSend(s_cmd_queue, &item, 0);
+    } else {
+        s_cloud_ok = true;
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            if (s_cloud_lbl) {
+                nl_ov_refresh_status_icons(s_wifi_ok, true, nullptr);
+            }
+            if (item.rollback_on_fail && item.sequence == cmd_pending_sequence(item.widget_id)) {
+                cmd_pending_clear_widget(item.widget_id);
+            }
+        }
     }
+}
+
+static void dispatch_async_cmd(const nl_widget_t* w, const char* value, bool rollback_on_fail) {
+    if (!w)
+        return;
+    auto* item = static_cast<async_cmd_item_t*>(calloc(1, sizeof(async_cmd_item_t)));
+    if (item) {
+        std::snprintf(item->widget_id, sizeof(item->widget_id), "%s", w->id);
+        item->bind = w->bind;
+        std::snprintf(item->value, sizeof(item->value), "%s", value ? value : "TOGGLE");
+        item->rollback_on_fail = rollback_on_fail;
+        item->sequence = cmd_pending_sequence(w->id);
+        if (nodelio::SubmitPanelJob(nodelio::PanelJobLane::Control, async_cmd_worker, item,
+                                    [](void* p) { free(p); }))
+            return;
+        free(item);
+    }
+    // Never evict an accepted control command to make room for a newer one.
+    if (rollback_on_fail) {
+        cmd_pending_rollback_widget(w->id);
+        nl_ov_refresh_home_tiles();
+    }
+    nl_ov_toast("操作繁忙，请稍后重试");
 }
 
 /** 首页开关：记 from → 乐观写缓存 → 下发；失败回滚。 */
@@ -2259,6 +2293,86 @@ static int s_home_user_n;
 static int s_home_user_idxs[NL_LAYOUT_MAX_USER_PAGES];
 static int s_home_user_cur;
 static constexpr int k_home_dots_h = 18;
+static void home_collect_user_pages(void);
+static void home_resolve_current(void);
+
+struct home_cached_view_t {
+    lv_obj_t* root = nullptr;
+    char page_id[NL_LAYOUT_STR]{};
+    int grid_x = 0, grid_y = 0;
+};
+static home_cached_view_t s_cached_home;
+
+static void drop_home_cache(void) {
+    if (s_cached_home.root) {
+        lv_obj_delete(s_cached_home.root);
+        s_cached_home = {};
+    }
+}
+
+void nl_ov_home_refresh_skill(const char* skill_id) {
+    if (!s_home) {
+        return;
+    }
+    if (s_home_structure_dirty || lv_obj_has_flag(s_home, LV_OBJ_FLAG_HIDDEN)) {
+        s_home_skills_dirty = true;
+        return;
+    }
+    NlUiWorkScope work("home.skill");
+    const uint32_t count = lv_obj_get_child_count(s_home);
+    for (uint32_t i = 0; i < count; ++i) {
+        lv_obj_t* tile = lv_obj_get_child(s_home, i);
+        auto* widget = static_cast<nl_widget_t*>(lv_obj_get_user_data(tile));
+        if (widget && widget->type == NL_WIDGET_SKILL_WIDGET &&
+            (!skill_id || strcmp(widget->skill_id, skill_id) == 0)) {
+            refresh_skill_widget(tile, widget);
+        }
+    }
+    if (!skill_id) {
+        s_home_skills_dirty = false;
+    }
+}
+
+void nl_ov_home_prepare(void) {
+    if (!s_home || lv_obj_has_flag(s_home, LV_OBJ_FLAG_HIDDEN)) {
+        return;
+    }
+    if (s_home_structure_dirty) {
+        build_home_view();
+        return;
+    }
+    if (s_home_state_dirty) {
+        nl_ov_refresh_home_tiles();
+    }
+    if (s_home_skills_dirty) {
+        nl_ov_home_refresh_skill(nullptr);
+    }
+    // Page entry may use a retained tree, so it must still check cache expiry.
+    // This does not add periodic fetching; completion only refreshes its widget.
+    const uint32_t count = lv_obj_get_child_count(s_home);
+    for (uint32_t i = 0; i < count; ++i) {
+        auto* widget = static_cast<nl_widget_t*>(lv_obj_get_user_data(lv_obj_get_child(s_home, i)));
+        if (widget && widget->type == NL_WIDGET_SKILL_WIDGET && widget->skill_id[0]) {
+            nl_ov_skill_widget_prefetch(widget->skill_id,
+                                        widget->default_invoke[0] ? widget->default_invoke : "{}",
+                                        widget->refresh_sec > 0 ? widget->refresh_sec : 600);
+        }
+    }
+}
+
+void nl_ov_fill_home(void) {
+    drop_home_cache();
+    // Navigation queries must see the new layout even if its object tree is hidden.
+    home_collect_user_pages();
+    home_resolve_current();
+    s_home_structure_dirty = true;
+    s_home_cacheable = false;
+    // Invalidates outstanding photo results even while the page stays hidden.
+    ++s_home_gen;
+    if (s_home && (!s_ready || !lv_obj_has_flag(s_home, LV_OBJ_FLAG_HIDDEN))) {
+        build_home_view();
+    }
+}
 
 static void home_collect_user_pages(void)
 {
@@ -2691,10 +2805,17 @@ static void photo_fetch_async(const nl_widget_t *w, uint8_t idx)
     arg->fit_contain = w->photo_fit_contain;
     arg->gen = s_home_gen;
 
-    constexpr uint32_t kStackWords = 12288 / sizeof(StackType_t);
-    if (xTaskCreateWithCaps(
-            [](void *p) {
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Background,
+            [](void* p) {
                 auto *a = static_cast<photo_arg *>(p);
+                {
+                    DisplayLockGuard lock(nl_ov_disp());
+                    if (!lock || a->gen != s_home_gen) {
+                        free(a);
+                        return;
+                    }
+                }
                 constexpr int kJpegCap = 90 * 1024;
                 uint8_t *jpeg = nullptr;
                 size_t jpeg_n = 0;
@@ -2825,9 +2946,8 @@ static void photo_fetch_async(const nl_widget_t *w, uint8_t idx)
                         photo_show_loading(wid.c_str(), tip.c_str());
                     }
                 });
-                vTaskDeleteWithCaps(nullptr);
             },
-            "nl_photo", kStackWords, arg, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+            arg, [](void* p) { free(p); }, 0, arg->widget_id)) {
         free(arg);
     }
 }
@@ -3135,7 +3255,6 @@ static void fill_skill_widget(nl_widget_t *w, int cell_w, int cell_h)
     if (!w || !w->skill_id[0]) {
         return;
     }
-    const char *fallback = w->title[0] ? w->title : w->skill_id;
     lv_obj_t *tile = make_tile_shell(w, TILE_SCENE, cell_w, cell_h);
     lv_obj_set_style_bg_color(tile, UI_TILE_OFF, 0);
     lv_obj_set_style_border_width(tile, 1, 0);
@@ -3143,11 +3262,17 @@ static void fill_skill_widget(nl_widget_t *w, int cell_w, int cell_h)
     lv_obj_set_style_border_opa(tile, LV_OPA_COVER, 0);
     lv_obj_add_event_cb(tile, on_skill_widget_click, LV_EVENT_CLICKED, w);
 
+    refresh_skill_widget(tile, w);
+    const char* invoke = w->default_invoke[0] ? w->default_invoke : "{}";
+    nl_ov_skill_widget_prefetch(w->skill_id, invoke, w->refresh_sec > 0 ? w->refresh_sec : 600);
+}
+
+static void refresh_skill_widget(lv_obj_t* tile, nl_widget_t* w) {
+    const char* fallback = w->title[0] ? w->title : w->skill_id;
+    lv_obj_clean(tile);
     nl_widget_preview pv{};
     const bool have = nl_ov_skill_widget_preview(w->skill_id, &pv);
     const bool one_row = w->gh <= 1;
-    const char *invoke = w->default_invoke[0] ? w->default_invoke : "{}";
-    nl_ov_skill_widget_prefetch(w->skill_id, invoke, w->refresh_sec > 0 ? w->refresh_sec : 600);
 
     const char *widget_glyph = MATERIAL_SYMBOLS_CHAT_BUBBLE;
     if (w->icon[0]) {
@@ -3340,9 +3465,60 @@ static void home_apply_delta(int delta)
     if (next < 0 || next >= s_home_user_n) {
         return;
     }
+    NlUiWorkScope work("home.switch");
+    const char* next_id = s_layout->pages[s_home_user_idxs[next]].id;
+    const bool hit = s_cached_home.root && strcmp(s_cached_home.page_id, next_id) == 0;
+    home_cached_view_t target;
+    if (hit) {
+        target = s_cached_home;
+        s_cached_home = {};
+    }
+    lv_obj_t* old = s_home;
+    const bool hidden = lv_obj_has_flag(old, LV_OBJ_FLAG_HIDDEN);
+    if (s_home_cacheable && !s_home_structure_dirty) {
+        drop_home_cache();
+        s_cached_home.root = old;
+        snprintf(s_cached_home.page_id, sizeof(s_cached_home.page_id), "%s", s_home_page_id);
+        s_cached_home.grid_x = s_grid_ox;
+        s_cached_home.grid_y = s_grid_oy;
+        if (!hit) {
+            target.root = lv_obj_create(s_body);
+            if (target.root) {
+                lv_obj_remove_style_all(target.root);
+                lv_obj_set_size(target.root, lv_obj_get_width(old), lv_obj_get_height(old));
+            } else {
+                // Allocation pressure: rebuild the existing page, retaining no spare.
+                s_cached_home = {};
+                target.root = old;
+            }
+        }
+        lv_obj_add_flag(old, LV_OBJ_FLAG_HIDDEN);
+    } else if (hit) {
+        lv_obj_delete(old);
+    } else {
+        target.root = old;
+    }
+    s_home = target.root;
     s_home_user_cur = next;
     home_remember_current_id();
-    nl_ov_fill_home();
+    ++s_home_gen;
+    s_photo_rt_n = 0;
+    if (!hidden) {
+        lv_obj_clear_flag(s_home, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_home, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (hit) {
+        s_grid_ox = target.grid_x;
+        s_grid_oy = target.grid_y;
+        s_home_cacheable = true;
+        s_home_state_dirty = true;
+        s_home_skills_dirty = true;
+        nl_ov_home_prepare();
+        ESP_LOGD(TAG, "home cache hit %s", next_id);
+    } else {
+        build_home_view();
+    }
 }
 
 static void home_switch_by(int delta)
@@ -3547,14 +3723,17 @@ static void fill_home_launcher(void)
     }
 }
 
-void nl_ov_fill_home(void)
-{
+static void build_home_view(void) {
     if (!s_home) {
         return;
     }
+    NlUiWorkScope work("home.build");
+    s_home_structure_dirty = false;
+    s_home_skills_dirty = false;
+    s_home_state_dirty = false;
+    s_home_cacheable = false;
     s_home_gen++;
     s_photo_rt_n = 0;
-    nl_ov_cmd_pending_clear_all();
     photo_cache_prune_layout();
     /* C3：钉选清单仅开机/invalidate 后拉一次，无定时轮询市场 */
     nl_ov_home_skills_ensure_fetched();
@@ -3838,7 +4017,7 @@ void nl_ov_fill_home(void)
             lv_obj_t *tile = make_tile_shell(w, kind, cell_w, cell_h);
             {
                 const bool dl = widget_is_dual_line(w);
-                ESP_LOGI(TAG, "draw switch '%s' skin='%s' dual=%d segs=%d vert=%d %dx%d", title,
+                ESP_LOGD(TAG, "draw switch '%s' skin='%s' dual=%d segs=%d vert=%d %dx%d", title,
                          w->skin[0] ? w->skin : "(empty)", dl ? 1 : 0,
                          dual_line_use_segments(w) ? 1 : 0, dual_line_vertical_segs(w) ? 1 : 0,
                          (int)w->gw, (int)w->gh);
@@ -3851,6 +4030,15 @@ void nl_ov_fill_home(void)
             }
             add_tile_labels(tile, w, kind, title);
             style_tile_visual(tile, w);
+        }
+    }
+
+    s_home_cacheable = count_home_content_tiles(home) <= 32;
+    for (int si = 0; si < home->section_count; ++si) {
+        for (int wi = 0; wi < home->sections[si].widget_count; ++wi) {
+            if (home->sections[si].widgets[wi].type == NL_WIDGET_PHOTO_FRAME) {
+                s_home_cacheable = false;
+            }
         }
     }
 
@@ -3877,7 +4065,7 @@ void nl_ov_fill_home(void)
     }
     append_home_page_dots(s_home, strip_h);
 
-    /* 多屏：内容区左右滑换屏（Tabbar 不跟滑）；非当前屏不建树 */
+    /* 多屏：内容区左右滑换屏（Tabbar 不跟滑）；最多保留一棵普通页面树 */
     if (s_home_user_n > 1) {
         lv_obj_add_event_cb(s_home, on_home_gesture, LV_EVENT_GESTURE, nullptr);
         lv_obj_add_flag(s_home, LV_OBJ_FLAG_CLICKABLE);
@@ -3890,3 +4078,20 @@ void nl_ov_fill_home(void)
 }
 
 /* —— connect overlay —— */
+
+// Caller holds the display lock. One pending callback regardless of network burst size.
+void nl_ov_request_home_state_refresh(void) {
+    static bool queued = false;
+    if (queued)
+        return;
+    queued = true;
+    if (lv_async_call(
+            [](void*) {
+                queued = false;
+                nl_ov_refresh_home_tiles();
+            },
+            nullptr) != LV_RESULT_OK) {
+        queued = false;
+        nl_ov_refresh_home_tiles();
+    }
+}

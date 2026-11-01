@@ -143,7 +143,13 @@ public:
         if (!lvgl_port_lock(100)) {
             return false;
         }
+#if CONFIG_NODELIO_PANEL
+        lv_timer_set_period(
+            lv_display_get_refr_timer(display_),
+            idle ? CONFIG_NODELIO_UI_IDLE_REFRESH_MS : CONFIG_NODELIO_UI_ACTIVE_REFRESH_MS);
+#else
         lv_timer_set_period(lv_display_get_refr_timer(display_), idle ? 200 : 30);
+#endif
         lvgl_port_unlock();
         return true;
     }

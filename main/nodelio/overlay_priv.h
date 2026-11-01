@@ -200,7 +200,11 @@ void nl_ov_close_forms(void);
 void nl_ov_ensure_devs_cache(void);
 
 /* —— home tiles —— */
+/** Structural invalidation; hidden pages rebuild on their next reveal. Display lock required. */
 void nl_ov_fill_home(void);
+void nl_ov_home_prepare(void);
+/** Refresh matching skill content only; nullptr refreshes all visible skill widgets. */
+void nl_ov_home_refresh_skill(const char* skill_id);
 void nl_ov_refresh_home_tiles(void);
 /** PLAN C：已钉 home_tile 缓存；invalidate 后下次 ensure 再拉（无定时轮询） */
 void nl_ov_home_skills_invalidate(void);
@@ -329,3 +333,5 @@ const lv_font_t *nl_ov_ui_font(void);
 /** 阅读用字库：主题/资源 20px（Noto common），失败回退普惠 14 */
 const lv_font_t *nl_ov_read_font(void);
 void nl_ov_do_factory_reset(void);
+
+void nl_ov_request_home_state_refresh(void);

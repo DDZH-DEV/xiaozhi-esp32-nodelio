@@ -1226,6 +1226,38 @@ menu "NodeLio Panel"
             Overlay NodeLio home-control on Xiaozhi. Bind server_url/owner in LVGL
             settings (FAB 家). WiFi SoftAP stays with Xiaozhi.
 
+    config NODELIO_NATIVE_SHELL
+        bool "Use the independent NodeLio panel shell"
+        depends on NODELIO_PANEL
+        default y
+        help
+            Skip Xiaozhi chat/status widget construction. Voice status, subtitles
+            and notifications are routed through the panel display adapter.
+            Disable for a legacy-shell comparison build.
+
+    config NODELIO_UI_ACTIVE_REFRESH_MS
+        int "Panel active refresh interval (ms)"
+        depends on NODELIO_PANEL
+        range 16 50
+        default 30
+        help
+            Dirty-region refresh interval, not a forced redraw or panel scan rate.
+
+    config NODELIO_UI_IDLE_REFRESH_MS
+        int "P4 panel idle refresh interval (ms)"
+        depends on NODELIO_PANEL && BOARD_TYPE_SILA_P4C5_62
+        range 100 1000
+        default 200
+
+    config NODELIO_S3_LVGL_TICK_MS
+        int "S3 LVGL clock tick (ms)"
+        depends on NODELIO_PANEL && BOARD_TYPE_SILA_86
+        range 2 50
+        default 5
+        help
+            Use a finer clock for touch/animation timing. The old RGB port used
+            50 ms; choose 50 for comparison. S3 still suspends LVGL in sleep.
+
     config NODELIO_TYPE_CODE
         string "type_code at register"
         depends on NODELIO_PANEL

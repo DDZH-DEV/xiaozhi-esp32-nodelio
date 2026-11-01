@@ -957,6 +957,8 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/nl_url_util.c"
         "nodelio/nl_time.cc"
         "nodelio/nodelio_overlay.cc"
+        "nodelio/panel_jobs.cc"
+        "nodelio/panel_shell.cc"
         "nodelio/overlay_home_tiles.cc"
         "nodelio/overlay_home_skills.cc"
         "nodelio/overlay_connect.cc"

@@ -1,4 +1,6 @@
 #include "overlay_priv.h"
+#include "panel_jobs.h"
+#include "ui_work_stats.h"
 
 #include "application.h"
 #include "board_info.h"
@@ -22,8 +24,9 @@
 #include <material_symbols.h>
 
 #include <cstdio>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
+#include <initializer_list>
 
 LV_FONT_DECLARE(font_material_symbols_20_4);
 LV_FONT_DECLARE(font_material_symbols_30_4);
@@ -183,9 +186,10 @@ static bool apps_list_eq(const nl_app_item *items, int n)
 
 static void apps_split_failed(void)
 {
-    Application::GetInstance().Schedule([]() {
+    const auto epoch = nodelio_panel_job_result_epoch();
+    Application::GetInstance().Schedule([epoch]() {
         DisplayLockGuard lock(nl_ov_disp());
-        if (lock)
+        if (lock && nodelio_panel_skill_view_current(epoch))
             nl_ov_apps_notify_skill_open(nodelio_skill_result_card_visible());
     });
 }
@@ -209,6 +213,7 @@ static void open_app_at(int idx, bool reset_daily = true) {
         nl_ov_toast("天气正在更新，请稍候");
         return;
     }
+    const uint32_t view_epoch = nodelio_panel_begin_skill_view();
     const uint32_t daily_generation = daily ? nodelio_skill_daily_open(reset_daily) : 0;
     if (daily && !daily_generation)
         return;
@@ -255,9 +260,9 @@ static void open_app_at(int idx, bool reset_daily = true) {
     nl_ov_toast("正在打开…");
     if (daily)
         s_daily_loading = true;
-    constexpr uint32_t kStackWords = 16384 / sizeof(StackType_t);
-    if (xTaskCreateWithCaps(
-            [](void *p) {
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Interactive,
+            [](void* p) {
                 auto *a = static_cast<invoke_arg *>(p);
                 const bool music_app = nodelio_skill_id_is_music(a->id);
                 if (music_app) {
@@ -340,10 +345,16 @@ static void open_app_at(int idx, bool reset_daily = true) {
                 }
                 free(a->cfg);
                 free(a);
-                vTaskDeleteWithCaps(nullptr);
             },
-            "nl_app_open", kStackWords, arg, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) !=
-        pdPASS) {
+            arg,
+            [](void* p) {
+                auto* a = static_cast<invoke_arg*>(p);
+                if (a->daily_generation)
+                    Application::GetInstance().Schedule([]() { s_daily_loading = false; });
+                free(a->cfg);
+                free(a);
+            },
+            view_epoch)) {
         free(arg->cfg);
         free(arg);
         if (daily)
@@ -374,121 +385,141 @@ static const char *apps_glyph_for(const char *id)
     return MATERIAL_SYMBOLS_EXPLORE;
 }
 
+struct app_view_t {
+    lv_obj_t *card = nullptr, *pod = nullptr, *icon = nullptr;
+    lv_obj_t *title = nullptr, *subtitle = nullptr;
+    nl_app_item item{};
+    int width = 0, height = 0, pod_size = 0, line = 0;
+    const lv_font_t* font = nullptr;
+    bool focused = false;
+};
+static app_view_t s_app_views[APP_MAX];
+static bool s_apps_dirty;
+
 static void render_list(void)
 {
     if (!s_list) {
         return;
     }
-    const lv_coord_t keep_y = lv_obj_get_scroll_y(s_list);
-    lv_obj_clean(s_list);
-    if (s_item_n <= 0) {
+    if (s_ready && s_page && lv_obj_has_flag(s_page, LV_OBJ_FLAG_HIDDEN)) {
+        s_apps_dirty = true;
         return;
     }
-    /* 浏览态宽屏三列、窄屏两列；右窗开了技能卡后左轨单列铺满，与右卡对齐。 */
+    NlUiWorkScope work("apps.update");
+    s_apps_dirty = false;
     const int list_w = apps_pane_target_w(s_split);
-    const int gap = UI_GAP;
-    int cols = 2;
-    if (apps_wide()) {
-        cols = s_split ? 1 : 3;
-    }
-    int card_w = (list_w - gap * (cols - 1)) / cols;
+    int cols = apps_wide() ? (s_split ? 1 : 3) : 2;
+    int card_w = (list_w - UI_GAP * (cols - 1)) / cols;
     if (card_w < 160) {
         card_w = list_w;
-        cols = 1;
     }
-    const int text_line = nl_ov_ui_line_box();
-    /* 标题 1 行 + 描述 2 行，与设置页同一套行框，大字不再被卡片裁切。 */
-    int card_h = 12 + text_line + 4 + text_line * 2 + 12;
+    const int line = nl_ov_ui_line_box();
+    int card_h = 12 + line + 4 + line * 2 + 12;
     const int floor_h = s_split ? kAppsRailTileH : kAppsBrowseTileH;
     if (card_h < floor_h) {
         card_h = floor_h;
     }
-    const int pod_sz = s_split ? 44 : 48;
-
-    for (int i = 0; i < s_item_n; i++) {
-        const nl_app_item *it = &s_items[i];
-        const bool focused = s_split && i == s_focus_idx;
-        lv_obj_t *card = lv_obj_create(s_list);
-        lv_obj_remove_style_all(card);
-        lv_obj_set_size(card, card_w, card_h);
-        lv_obj_set_style_bg_color(card, focused ? UI_TILE_SWITCH : UI_SURFACE, 0);
-        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
-        lv_obj_set_style_border_width(card, focused ? 2 : 1, 0);
-        lv_obj_set_style_border_color(card, focused ? UI_ACCENT : UI_TILE_OFF_BORDER, 0);
-        lv_obj_set_style_border_opa(card, focused ? LV_OPA_COVER : LV_OPA_80, 0);
-        lv_obj_set_style_pad_hor(card, 12, 0);
-        lv_obj_set_style_pad_column(card, 16, 0);
-        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-        if (it->enabled) {
-            lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_ext_click_area(card, 8);
-            lv_obj_set_style_bg_color(card, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
-            lv_obj_set_style_translate_y(card, 1, LV_STATE_PRESSED);
+    const int pod_size = s_split ? 44 : 48;
+    const lv_font_t* font = nl_ov_ui_font();
+    for (int i = 0; i < APP_MAX; ++i) {
+        auto& view = s_app_views[i];
+        if (i >= s_item_n) {
+            if (view.card) {
+                lv_obj_delete(view.card);
+                view = {};
+            }
+            continue;
+        }
+        const auto& item = s_items[i];
+        const bool created = !view.card;
+        if (created) {
+            view.card = lv_obj_create(s_list);
+            lv_obj_remove_style_all(view.card);
+            lv_obj_set_style_bg_opa(view.card, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(view.card, UI_RADIUS_MD, 0);
+            lv_obj_set_style_pad_hor(view.card, 12, 0);
+            lv_obj_set_style_pad_column(view.card, 16, 0);
+            lv_obj_set_flex_flow(view.card, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(view.card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                                  LV_FLEX_ALIGN_CENTER);
+            lv_obj_clear_flag(view.card, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_set_ext_click_area(view.card, 8);
+            lv_obj_set_style_bg_color(view.card, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+            lv_obj_set_style_translate_y(view.card, 1, LV_STATE_PRESSED);
+            // Slots keep their index when cloud items are reordered. The callback
+            // resolves the current item instead of retaining a stale item pointer.
             lv_obj_add_event_cb(
-                card,
-                [](lv_event_t *e) {
-                    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
-                        return;
-                    }
-                    open_app_at((int)(intptr_t)lv_event_get_user_data(e));
-                },
-                LV_EVENT_CLICKED, (void *)(intptr_t)i);
+                view.card,
+                [](lv_event_t* e) { open_app_at((int)(intptr_t)lv_event_get_user_data(e)); },
+                LV_EVENT_CLICKED, (void*)(intptr_t)i);
+            view.pod = lv_obj_create(view.card);
+            lv_obj_remove_style_all(view.pod);
+            lv_obj_set_style_radius(view.pod, 12, 0);
+            lv_obj_clear_flag(view.pod, LV_OBJ_FLAG_CLICKABLE);
+            view.icon = lv_label_create(view.pod);
+            lv_obj_set_style_text_font(view.icon, &font_material_symbols_30_4, 0);
+            lv_obj_center(view.icon);
+            lv_obj_t* text = lv_obj_create(view.card);
+            lv_obj_remove_style_all(text);
+            lv_obj_set_flex_grow(text, 1);
+            lv_obj_set_height(text, LV_SIZE_CONTENT);
+            lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(text, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START,
+                                  LV_FLEX_ALIGN_START);
+            lv_obj_set_style_pad_row(text, 2, 0);
+            lv_obj_clear_flag(text, LV_OBJ_FLAG_CLICKABLE);
+            view.title = lv_label_create(text);
+            view.subtitle = lv_label_create(text);
+            for (auto* label : {view.title, view.subtitle}) {
+                lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+                lv_obj_set_width(label, lv_pct(100));
+            }
         }
-
-        lv_obj_t *pod = lv_obj_create(card);
-        lv_obj_remove_style_all(pod);
-        lv_obj_set_size(pod, pod_sz, pod_sz);
-        lv_obj_set_style_radius(pod, 12, 0);
-        lv_obj_set_style_bg_color(pod, it->enabled ? UI_CAPSULE_ON : UI_CAPSULE_OFF, 0);
-        lv_obj_set_style_bg_opa(pod, it->enabled ? LV_OPA_40 : LV_OPA_COVER, 0);
-        lv_obj_clear_flag(pod, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_t *ic = lv_label_create(pod);
-        lv_obj_set_style_text_font(ic, &font_material_symbols_30_4, 0);
-        lv_label_set_text(ic, apps_glyph_for(it->id));
-        lv_obj_set_style_text_color(ic, it->enabled ? UI_ACCENT_SOFT : UI_TEXT_MUTED, 0);
-        lv_obj_center(ic);
-
-        lv_obj_t *txt = lv_obj_create(card);
-        lv_obj_remove_style_all(txt);
-        lv_obj_set_flex_grow(txt, 1);
-        lv_obj_set_height(txt, LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(txt, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-        lv_obj_set_style_pad_row(txt, 2, 0);
-        lv_obj_clear_flag(txt, LV_OBJ_FLAG_CLICKABLE);
-
-        const int text_w = card_w - 12 * 2 - 16 - pod_sz;
-        const char *desc = "点按打开";
-        if (!it->enabled) {
-            desc = "不可用";
-        } else if (it->desc[0]) {
-            desc = it->desc;
+        const bool focused = s_split && i == s_focus_idx;
+        if (created || view.focused != focused) {
+            lv_obj_set_style_bg_color(view.card, focused ? UI_TILE_SWITCH : UI_SURFACE, 0);
+            lv_obj_set_style_border_width(view.card, focused ? 2 : 1, 0);
+            lv_obj_set_style_border_color(view.card, focused ? UI_ACCENT : UI_TILE_OFF_BORDER, 0);
+            lv_obj_set_style_border_opa(view.card, focused ? LV_OPA_COVER : LV_OPA_80, 0);
+            view.focused = focused;
         }
-
-        lv_obj_t *title = lv_label_create(txt);
-        nl_ov_set_font(title);
-        lv_label_set_text(title, it->name[0] ? it->name : it->id);
-        lv_obj_set_style_text_color(title, it->enabled ? UI_TEXT : UI_TEXT_MUTED, 0);
-        lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(title, lv_pct(100));
-        lv_obj_set_height(title, nl_ov_ui_font_line_h());
-
-        {
-            lv_obj_t *sub = lv_label_create(txt);
-            nl_ov_set_font(sub);
-            lv_label_set_text(sub, desc);
-            lv_obj_set_style_text_color(sub, it->enabled ? UI_TEXT_DIM : UI_TEXT_MUTED, 0);
-            lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
-            lv_obj_set_width(sub, lv_pct(100));
-            lv_obj_set_height(sub, nl_ov_wrapped_text_h(desc, text_w));
+        const bool changed = created || strcmp(view.item.id, item.id) ||
+                             strcmp(view.item.name, item.name) ||
+                             strcmp(view.item.desc, item.desc) || view.item.enabled != item.enabled;
+        const char* desc = !item.enabled ? "不可用" : (item.desc[0] ? item.desc : "点按打开");
+        if (changed) {
+            if (item.enabled) {
+                lv_obj_add_flag(view.card, LV_OBJ_FLAG_CLICKABLE);
+            } else {
+                lv_obj_clear_flag(view.card, LV_OBJ_FLAG_CLICKABLE);
+            }
+            lv_obj_set_style_bg_color(view.pod, item.enabled ? UI_CAPSULE_ON : UI_CAPSULE_OFF, 0);
+            lv_obj_set_style_bg_opa(view.pod, item.enabled ? LV_OPA_40 : LV_OPA_COVER, 0);
+            lv_label_set_text(view.icon, apps_glyph_for(item.id));
+            lv_obj_set_style_text_color(view.icon, item.enabled ? UI_ACCENT_SOFT : UI_TEXT_MUTED,
+                                        0);
+            lv_label_set_text(view.title, item.name[0] ? item.name : item.id);
+            lv_label_set_text(view.subtitle, desc);
+            lv_obj_set_style_text_color(view.title, item.enabled ? UI_TEXT : UI_TEXT_MUTED, 0);
+            lv_obj_set_style_text_color(view.subtitle, item.enabled ? UI_TEXT_DIM : UI_TEXT_MUTED,
+                                        0);
+            view.item = item;
         }
-    }
-    if (keep_y > 0) {
-        lv_obj_update_layout(s_list);
-        lv_obj_scroll_to_y(s_list, keep_y, LV_ANIM_OFF);
+        if (created || changed || view.width != card_w || view.height != card_h ||
+            view.pod_size != pod_size || view.line != line || view.font != font) {
+            lv_obj_set_size(view.card, card_w, card_h);
+            lv_obj_set_size(view.pod, pod_size, pod_size);
+            nl_ov_set_font(view.title);
+            nl_ov_set_font(view.subtitle);
+            lv_obj_set_height(view.title, nl_ov_ui_font_line_h());
+            lv_obj_set_height(view.subtitle,
+                              nl_ov_wrapped_text_h(desc, card_w - 24 - 16 - pod_size));
+            view.width = card_w;
+            view.height = card_h;
+            view.pod_size = pod_size;
+            view.line = line;
+            view.font = font;
+        }
     }
 }
 
@@ -519,7 +550,7 @@ static void apps_set_split(bool on, bool animate)
     }
     const int to_w = apps_pane_target_w(on);
     lv_anim_delete(s_list_pane, apps_exec_pane_w);
-    if (!animate || !apps_wide()) {
+    if (!animate || !apps_wide() || !s_screen_on || lv_obj_has_flag(s_page, LV_OBJ_FLAG_HIDDEN)) {
         apps_apply_pane(to_w, on);
         render_list();
         nodelio_skill_result_layout();
@@ -849,17 +880,16 @@ void nl_ov_apps_refresh(void)
         return;
     }
     *cfgp = http_cfg;
-    /* 栈深按字；16KB 放 PSRAM。删除必须 WithCaps，勿事后 free TCB。 */
-    constexpr uint32_t kListStackWords = 16384 / sizeof(StackType_t);
-    if (xTaskCreateWithCaps(
-            [](void *p) {
+    /* Bounded background lane owns the worker stack. */
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Background,
+            [](void* p) {
                 auto *cfg = static_cast<nodelio_nvs_config_t *>(p);
                 auto *snap = static_cast<nl_app_snap *>(calloc(1, sizeof(nl_app_snap)));
                 if (!snap) {
                     nodelio_panel_ui_toast_defer("内存不足");
                     free(cfg);
                     Application::GetInstance().Schedule([]() { s_loading = false; });
-                    vTaskDeleteWithCaps(nullptr);
                     return;
                 }
                 char base[160];
@@ -874,7 +904,6 @@ void nl_ov_apps_refresh(void)
                     snprintf(snap->err, sizeof(snap->err), "内存不足");
                     apply_snap(snap);
                     free(cfg);
-                    vTaskDeleteWithCaps(nullptr);
                     return;
                 }
                 buf[0] = '\0';
@@ -914,9 +943,8 @@ void nl_ov_apps_refresh(void)
                 free(buf);
                 free(cfg);
                 apply_snap(snap);
-                vTaskDeleteWithCaps(nullptr);
             },
-            "nl_apps", kListStackWords, cfgp, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+            cfgp, [](void* p) { free(p); })) {
         free(cfgp);
         s_loading = false;
         set_hint("无法加载");
@@ -964,12 +992,19 @@ void nl_ov_apps_set_visible(bool on)
     }
     if (on) {
         lv_obj_clear_flag(s_page, LV_OBJ_FLAG_HIDDEN);
+        if (s_apps_dirty) {
+            render_list();
+        }
         nl_ov_apps_layout_chrome();
         if (s_refresh) {
             lv_obj_move_foreground(s_refresh);
         }
     } else {
         lv_obj_add_flag(s_page, LV_OBJ_FLAG_HIDDEN);
+        if (lv_anim_delete(s_list_pane, apps_exec_pane_w)) {
+            apps_apply_pane(apps_pane_target_w(s_split), s_split);
+            s_apps_dirty = true;
+        }
     }
 }
 

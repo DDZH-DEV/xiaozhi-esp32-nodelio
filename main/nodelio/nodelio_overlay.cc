@@ -1,5 +1,7 @@
 #include "nodelio_overlay.h"
 #include "overlay_priv.h"
+#include "panel_shell.h"
+#include "ui_work_stats.h"
 
 #include "application.h"
 #include "board_info.h"
@@ -469,7 +471,15 @@ static void sample_battery_cache(void)
     }
     s_batt_level = level;
     s_batt_charging = charging;
+#if CONFIG_NODELIO_NATIVE_SHELL
+    static bool low_battery_warned = false;
+    const bool low = discharging && level <= 10;
+    if (low && !low_battery_warned)
+        nl_ov_toast("电量低，请充电");
+    low_battery_warned = low;
+#else
     (void)discharging;
+#endif
 }
 
 static void refresh_battery_lbl(void)
@@ -569,85 +579,11 @@ static void start_status_poll(void)
 
 void nl_ov_toast(const char *msg)
 {
-    if (!nl_ov_disp()) {
+    if (!nl_ov_disp())
         return;
-    }
-    /* 小智状态栏在墙板底下，设置页看不见。提示挂在最上层。msg 空则只收起。 */
     DisplayLockGuard lock(nl_ov_disp());
-    if (!lock) {
-        return;
-    }
-    static lv_obj_t *toast;
-    static lv_obj_t *toast_lbl;
-    static lv_timer_t *hide_tmr;
-    if (!toast) {
-        if (!msg || !msg[0]) {
-            return;
-        }
-        toast = lv_obj_create(lv_layer_top());
-        lv_obj_remove_style_all(toast);
-        lv_obj_set_width(toast, LV_SIZE_CONTENT);
-        lv_obj_set_height(toast, LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_color(toast, UI_SURFACE, 0);
-        lv_obj_set_style_bg_opa(toast, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(toast, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_border_width(toast, 1, 0);
-        lv_obj_set_style_border_color(toast, UI_ACCENT, 0);
-        lv_obj_set_style_border_opa(toast, 160, 0);
-        lv_obj_set_style_pad_hor(toast, 18, 0);
-        lv_obj_set_style_pad_ver(toast, 10, 0);
-        lv_obj_align(toast, LV_ALIGN_BOTTOM_MID, 0, -(NL_UI_TAB_H + 16));
-        lv_obj_clear_flag(toast, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_clear_flag(toast, LV_OBJ_FLAG_SCROLLABLE);
-        toast_lbl = lv_label_create(toast);
-        lv_label_set_long_mode(toast_lbl, LV_LABEL_LONG_WRAP);
-        nl_ov_set_font(toast_lbl);
-        lv_obj_set_style_text_color(toast_lbl, UI_TEXT, 0);
-        lv_obj_set_style_text_align(toast_lbl, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_add_flag(toast, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (!msg || !msg[0]) {
-        lv_obj_add_flag(toast, LV_OBJ_FLAG_HIDDEN);
-        if (hide_tmr) {
-            lv_timer_del(hide_tmr);
-            hide_tmr = nullptr;
-        }
-        return;
-    }
-    lv_label_set_text(toast_lbl, msg);
-    /* 短句贴文字收窄；超长才在屏宽内换行 */
-    const lv_font_t *font = lv_obj_get_style_text_font(toast_lbl, LV_PART_MAIN);
-    const int32_t max_inner = LV_HOR_RES - 120;
-    lv_point_t sz;
-    lv_text_get_size(&sz, msg, font, 0, 0, max_inner, LV_TEXT_FLAG_NONE);
-    int32_t tw = sz.x + 2;
-    if (tw < 1) {
-        tw = 1;
-    }
-    if (tw > max_inner) {
-        tw = max_inner;
-    }
-    lv_obj_set_width(toast_lbl, tw);
-    lv_obj_set_width(toast, LV_SIZE_CONTENT);
-    lv_obj_align(toast, LV_ALIGN_BOTTOM_MID, 0, -(NL_UI_TAB_H + 16));
-    lv_obj_clear_flag(toast, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(toast);
-    if (hide_tmr) {
-        lv_timer_del(hide_tmr);
-        hide_tmr = nullptr;
-    }
-    hide_tmr = lv_timer_create(
-        [](lv_timer_t *t) {
-            (void)t;
-            if (toast) {
-                lv_obj_add_flag(toast, LV_OBJ_FLAG_HIDDEN);
-            }
-            hide_tmr = nullptr;
-        },
-        2500, nullptr);
-    if (hide_tmr) {
-        lv_timer_set_repeat_count(hide_tmr, 1);
-    }
+    if (lock)
+        nl_panel_shell_notify(msg, nl_ov_ui_font(), NL_UI_TAB_H + 16, 2500);
 }
 
 bool nl_ov_ai_session_active(void)
@@ -773,6 +709,7 @@ void nl_ov_voice_scroll_apply(int dir)
 
 void nl_ov_show_page(int tab)
 {
+    NlUiWorkScope work("navigation.switch");
     s_active_tab = tab;
     s_want_chat = false;
     if (tab != NL_TAB_SET) {
@@ -809,6 +746,9 @@ void nl_ov_show_page(int tab)
     /* 播放器/曲库与 s_root 同层：切页后抬回最前，避免点到应用卡 */
     nodelio_skill_result_layout();
     nodelio_skill_result_raise();
+    if (tab == NL_TAB_HOME) {
+        nl_ov_home_prepare();
+    }
 }
 
 void nl_ov_workspace_reserve(int right, int bottom) {
@@ -817,7 +757,8 @@ void nl_ov_workspace_reserve(int right, int bottom) {
         return;
     const int w = p->width - p->nav_width - right;
     const int h = p->height - NL_UI_STATUS_H - bottom;
-    bool home_changed = s_home && (lv_obj_get_width(s_home) != w || lv_obj_get_height(s_home) != h);
+    bool home_changed = s_home && (lv_obj_get_style_width(s_home, LV_PART_MAIN) != w ||
+                                   lv_obj_get_style_height(s_home, LV_PART_MAIN) != h);
     const bool settings_w_changed = s_settings && lv_obj_get_width(s_settings) != w;
     if (s_home)
         lv_obj_set_size(s_home, w, h);
@@ -829,7 +770,6 @@ void nl_ov_workspace_reserve(int right, int bottom) {
     }
     nl_ov_apps_reserve_bottom(bottom);
     if (home_changed && s_home && s_have_layout && !s_building) {
-        lv_obj_update_layout(s_home);
         nl_ov_fill_home();
     }
     if (settings_w_changed && s_settings && !s_building) {

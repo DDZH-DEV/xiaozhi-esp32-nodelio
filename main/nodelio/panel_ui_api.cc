@@ -1457,7 +1457,7 @@ extern "C" void nodelio_panel_ui_refresh_tiles(void)
     if (!lock) {
         return;
     }
-    nl_ov_refresh_home_tiles();
+    nl_ov_request_home_state_refresh();
 }
 
 extern "C" void nodelio_panel_ui_note_countdown(const char *device_id, int channel_index, int seconds)
@@ -1475,7 +1475,7 @@ extern "C" void nodelio_panel_ui_set_countdown(const char *device_id, int channe
     if (!lock) {
         return;
     }
-    nl_ov_refresh_home_tiles();
+    nl_ov_request_home_state_refresh();
 }
 
 #define LAN_NVS_NS "nodelio"
@@ -1642,7 +1642,7 @@ extern "C" void nodelio_panel_ui_snapshot_end(void)
     if (!lock) {
         return;
     }
-    nl_ov_refresh_home_tiles();
+    nl_ov_request_home_state_refresh();
 }
 
 extern "C" void nodelio_panel_ui_apply_bind_state(const nl_bind_t *bind, const char *value)
@@ -1658,7 +1658,7 @@ extern "C" void nodelio_panel_ui_apply_bind_state(const nl_bind_t *bind, const c
     if (!lock) {
         return;
     }
-    nl_ov_refresh_home_tiles();
+    nl_ov_request_home_state_refresh();
 }
 
 extern "C" void nodelio_panel_ui_apply_reachability(const char *const *device_ids, const bool *online,

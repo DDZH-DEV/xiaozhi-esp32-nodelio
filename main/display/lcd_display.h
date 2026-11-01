@@ -53,6 +53,12 @@ public:
     virtual void ClearChatMessages() override;
     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image) override;
     virtual void SetupUI() override;
+#if CONFIG_NODELIO_NATIVE_SHELL
+    void SetStatus(const char* status) override;
+    void ShowNotification(const char* notification, int duration_ms = 3000) override;
+    void ShowNotification(const std::string& notification, int duration_ms = 3000) override;
+    void UpdateStatusBar(bool update_all = false) override;
+#endif
     // Add theme switching function
     virtual void SetTheme(Theme* theme) override;
 

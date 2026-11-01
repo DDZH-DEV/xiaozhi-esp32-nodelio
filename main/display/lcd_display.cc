@@ -20,6 +20,8 @@
 
 #if CONFIG_NODELIO_PANEL
 #include "nodelio_overlay.h"
+#include "panel_shell.h"
+#include "panel_ui.h"
 #include "ui_theme.h"
 #endif
 
@@ -244,7 +246,11 @@ RgbLcdDisplay::RgbLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
     ESP_LOGI(TAG, "Initialize LVGL port");
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     port_cfg.task_priority = 1;
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    port_cfg.timer_period_ms = CONFIG_NODELIO_S3_LVGL_TICK_MS;
+#else
     port_cfg.timer_period_ms = 50;
+#endif
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     /* 默认 7KB 不够面板壳+MCP 并发；栈放 PSRAM */
     port_cfg.task_stack = 12288;
@@ -462,6 +468,13 @@ void LcdDisplay::SetupUI() {
 
     Display::SetupUI();  // Mark SetupUI as called
     DisplayLockGuard lock(this);
+#if CONFIG_NODELIO_PANEL
+    lv_timer_set_period(lv_display_get_refr_timer(display_), CONFIG_NODELIO_UI_ACTIVE_REFRESH_MS);
+#endif
+#if CONFIG_NODELIO_NATIVE_SHELL
+    nl_panel_shell_setup(static_cast<LvglTheme*>(current_theme_)->text_font()->font());
+    return;
+#endif
 
     auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
     auto text_font = lvgl_theme->text_font()->font();
@@ -938,6 +951,13 @@ void LcdDisplay::SetupUI() {
 
     Display::SetupUI();  // Mark SetupUI as called
     DisplayLockGuard lock(this);
+#if CONFIG_NODELIO_PANEL
+    lv_timer_set_period(lv_display_get_refr_timer(display_), CONFIG_NODELIO_UI_ACTIVE_REFRESH_MS);
+#endif
+#if CONFIG_NODELIO_NATIVE_SHELL
+    nl_panel_shell_setup(static_cast<LvglTheme*>(current_theme_)->text_font()->font());
+    return;
+#endif
     LvglTheme* lvgl_theme = static_cast<LvglTheme*>(current_theme_);
     auto text_font = lvgl_theme->text_font()->font();
     auto icon_font = lvgl_theme->icon_font()->font();
@@ -1312,6 +1332,13 @@ void LcdDisplay::SetEmotion(const char* emotion) {
 
 void LcdDisplay::SetTheme(Theme* theme) {
     DisplayLockGuard lock(this);
+#if CONFIG_NODELIO_NATIVE_SHELL
+    if (!lock)
+        return;
+    Display::SetTheme(theme);
+    nl_panel_shell_setup(static_cast<LvglTheme*>(theme)->text_font()->font());
+    return;
+#endif
 
     auto lvgl_theme = static_cast<LvglTheme*>(theme);
 
@@ -1472,3 +1499,25 @@ void LcdDisplay::SetHideSubtitle(bool hide) {
         }
     }
 }
+
+#if CONFIG_NODELIO_NATIVE_SHELL
+void LcdDisplay::SetStatus(const char* status) {
+    DisplayLockGuard lock(this);
+    if (lock)
+        nodelio_overlay_on_status_locked(status ? status : "");
+}
+void LcdDisplay::ShowNotification(const char* notification, int duration_ms) {
+    DisplayLockGuard lock(this);
+    if (lock)
+        nl_panel_shell_notify(notification,
+                              static_cast<LvglTheme*>(current_theme_)->text_font()->font(),
+                              NL_UI_TAB_H + 16, duration_ms);
+}
+void LcdDisplay::ShowNotification(const std::string& notification, int duration_ms) {
+    ShowNotification(notification.c_str(), duration_ms);
+}
+void LcdDisplay::UpdateStatusBar(bool update_all) {
+    // NodeLio's existing status poll owns clock/network/battery. No second UI tree.
+    (void)update_all;
+}
+#endif

@@ -1,4 +1,5 @@
 #include "overlay_priv.h"
+#include "panel_jobs.h"
 
 #include "application.h"
 #include "device_caps.h"
@@ -150,11 +151,12 @@ bool nl_ov_invoke_skill_async(const char* skill_id, const char* body) {
     arg->cfg = http_cfg;
     snprintf(arg->id, sizeof(arg->id), "%s", skill_id);
     snprintf(arg->body, sizeof(arg->body), "%s", (body && body[0]) ? body : "{}");
+    const uint32_t view_epoch = nodelio_panel_begin_skill_view();
     nl_ov_toast("正在打开…");
 
-    constexpr uint32_t kStackWords = 16384 / sizeof(StackType_t);
-    if (xTaskCreateWithCaps(
-            [](void *p) {
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Interactive,
+            [](void* p) {
                 auto *a = static_cast<invoke_arg *>(p);
                 const bool music_app = nodelio_skill_id_is_music(a->id);
                 const bool dsh_app = strstr(a->id, "dsh") != nullptr;
@@ -217,9 +219,8 @@ bool nl_ov_invoke_skill_async(const char* skill_id, const char* body) {
                     free(resp);
                 }
                 free(a);
-                vTaskDeleteWithCaps(nullptr);
             },
-            "nl_home_sk", kStackWords, arg, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+            arg, [](void* p) { free(p); }, view_epoch, nullptr, true)) {
         free(arg);
         nl_ov_toast("无法打开");
         return false;
@@ -328,9 +329,9 @@ void nl_ov_skill_widget_prefetch(const char *skill_id, const char *body, int ref
     snprintf(arg->id, sizeof(arg->id), "%s", skill_id);
     snprintf(arg->body, sizeof(arg->body), "%s", (body && body[0]) ? body : "{}");
 
-    constexpr uint32_t kStackWords = 16384 / sizeof(StackType_t);
-    if (xTaskCreateWithCaps(
-            [](void *p) {
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Background,
+            [](void* p) {
                 auto *a = static_cast<invoke_arg *>(p);
                 nl_widget_preview pv{};
                 snprintf(pv.head, sizeof(pv.head), "加载失败");
@@ -439,14 +440,13 @@ void nl_ov_skill_widget_prefetch(const char *skill_id, const char *body, int ref
                         s->ms = esp_timer_get_time() / 1000;
                         s->fetching = false;
                     }
-                    if (lock && s_active_tab == NL_TAB_HOME && s_home) {
-                        nl_ov_fill_home();
+                    if (lock) {
+                        nl_ov_home_refresh_skill(id_s.c_str());
                     }
                 });
                 free(a);
-                vTaskDeleteWithCaps(nullptr);
             },
-            "nl_sk_wdg", kStackWords, arg, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+            arg, [](void* p) { free(p); })) {
         free(arg);
         slot->fetching = false;
     }
@@ -600,7 +600,7 @@ static void apply_pins_and_refill(nl_home_skill *items, int n)
             s_pin_n = 0;
         }
         free(items);
-        if (s_active_tab == NL_TAB_HOME && s_home) {
+        if (s_home) {
             nl_ov_fill_home();
         }
     });
@@ -666,15 +666,14 @@ void nl_ov_home_skills_ensure_fetched(void)
         return;
     }
     *cfgp = http_cfg;
-    constexpr uint32_t kStackWords = 16384 / sizeof(StackType_t);
-    if (xTaskCreateWithCaps(
-            [](void *p) {
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Background,
+            [](void* p) {
                 auto *cfg = static_cast<nodelio_nvs_config_t *>(p);
                 auto finish = [](bool clear_fetching) {
                     if (clear_fetching) {
                         Application::GetInstance().Schedule([]() { s_fetching = false; });
                     }
-                    vTaskDeleteWithCaps(nullptr);
                 };
                 auto *items = static_cast<nl_home_skill *>(calloc(HOME_SKILL_MAX, sizeof(nl_home_skill)));
                 int n = 0;
@@ -751,7 +750,7 @@ void nl_ov_home_skills_ensure_fetched(void)
                 apply_pins_and_refill(items, n);
                 finish(false);
             },
-            "nl_home_pins", kStackWords, cfgp, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+            cfgp, [](void* p) { free(p); })) {
         free(cfgp);
         s_fetching = false;
     }

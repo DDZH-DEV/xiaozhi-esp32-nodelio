@@ -1,5 +1,6 @@
 #include "skill_result_ui.h"
 #include "news_read_progress.h"
+#include "panel_jobs.h"
 
 #include "device_caps.h"
 #include "media_player.h"
@@ -29,9 +30,10 @@
 #include <lvgl.h>
 #include <material_symbols.h>
 
+#include <atomic>
 #include <cstdio>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 
 LV_FONT_DECLARE(font_material_symbols_20_4);
@@ -106,7 +108,7 @@ static lv_timer_t *s_ttl_tmr;
 static lv_timer_t *s_dsh_detail_poll;
 static char s_dsh_detail_ws[200];
 static char s_dsh_detail_sess[80];
-static bool s_dsh_detail_busy;
+static std::atomic<bool> s_dsh_detail_busy{false};
 static lv_anim_t s_now_border_anim;
 static bool s_now_border_anim_on;
 static bool s_mini_pulse_on;
@@ -171,9 +173,6 @@ struct news_job_t {
     char url[320];
     int nav; /* 0 拉正文；>0 下一篇并标已读；<0 上一篇并标已读 */
 };
-static QueueHandle_t s_reshuffle_q = nullptr;
-static StackType_t *s_reshuffle_stack = nullptr;
-static StaticTask_t s_reshuffle_tcb;
 static QueueHandle_t s_news_q = nullptr;
 static lv_obj_t *s_news_body_lbl = nullptr;
 /** 详情正文驻 PSRAM，供 lv_label_set_text_static，避免长文二次占 LVGL 池失败后仍显示摘要 */
@@ -1016,9 +1015,9 @@ static void dsh_refresh_list(void)
     arg->cfg = s_skill_cfg;
     snprintf(arg->ws, sizeof(arg->ws), "%s", ws);
     nl_ov_toast("刷新…");
-    constexpr uint32_t kStackWords = 12288 / sizeof(StackType_t);
-    if (xTaskCreateWithCaps(
-            [](void *p) {
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Interactive,
+            [](void* p) {
                 auto *a = static_cast<refresh_arg *>(p);
                 char base[160];
                 nl_url_strip_base(a->cfg.server_url, base, sizeof(base));
@@ -1054,9 +1053,8 @@ static void dsh_refresh_list(void)
                     free(resp);
                 }
                 free(a);
-                vTaskDeleteWithCaps(nullptr);
             },
-            "nl_dsh_rf", kStackWords, arg, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+            arg, [](void* p) { free(p); }, nodelio_panel_begin_skill_view())) {
         free(arg);
         nl_ov_toast("刷新失败");
     }
@@ -1260,86 +1258,62 @@ static void reopen_list(void)
     ensure_chrome_order();
 }
 
-static void reshuffle_worker(void *)
-{
-    uint8_t kick = 0;
-    for (;;) {
-        if (xQueueReceive(s_reshuffle_q, &kick, portMAX_DELAY) != pdTRUE) {
-            continue;
-        }
-        char base[160];
-        nl_url_strip_base(s_skill_cfg.server_url, base, sizeof(base));
-        const char *sid = s_env->app_id[0] ? s_env->app_id : "music.search";
-        if (strcmp(sid, "music_search") == 0) {
-            sid = "music.search";
-        }
-        char url[360];
-        snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/%s/invoke", base, s_skill_cfg.device_id,
-                 sid);
-        const int cap = nodelio_caps_max_content_bytes() + 512;
-        char *resp = (char *)heap_caps_malloc((size_t)cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!resp) {
-            resp = (char *)malloc((size_t)cap);
-        }
-        if (!resp) {
-            nodelio_panel_ui_toast_defer("内存不足");
-            continue;
-        }
-        resp[0] = '\0';
-        int status = 0;
-        esp_err_t err = nodelio_http_post_json(url, s_skill_cfg.device_key, "{\"keyword\":\"\",\"shuffle\":true}",
-                                               &status, resp, cap - 1);
-        if (err == ESP_OK && (status == 200 || status == 201) && resp[0] && strlen(resp) < (size_t)(cap - 2)) {
-            nodelio_skill_deliver_json(&s_skill_cfg, resp, false, nullptr, 0);
-        } else {
-            nodelio_panel_ui_toast_defer("换一批失败");
-        }
-        free(resp);
+struct reshuffle_job {
+    nodelio_nvs_config_t cfg;
+    char skill_id[NL_ENV_STR];
+};
+static void reshuffle_worker(void* arg) {
+    auto* job = static_cast<reshuffle_job*>(arg);
+    char base[160];
+    nl_url_strip_base(job->cfg.server_url, base, sizeof(base));
+    const char* sid = job->skill_id[0] ? job->skill_id : "music.search";
+    if (strcmp(sid, "music_search") == 0) {
+        sid = "music.search";
     }
+    char url[360];
+    snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/%s/invoke", base, job->cfg.device_id,
+             sid);
+    const int cap = nodelio_caps_max_content_bytes() + 512;
+    char* resp = (char*)heap_caps_malloc((size_t)cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!resp) {
+        resp = (char*)malloc((size_t)cap);
+    }
+    if (!resp) {
+        nodelio_panel_ui_toast_defer("内存不足");
+        free(job);
+        return;
+    }
+    resp[0] = '\0';
+    int status = 0;
+    esp_err_t err = nodelio_http_post_json(
+        url, job->cfg.device_key, "{\"keyword\":\"\",\"shuffle\":true}", &status, resp, cap - 1);
+    if (err == ESP_OK && (status == 200 || status == 201) && resp[0] &&
+        strlen(resp) < (size_t)(cap - 2)) {
+        nodelio_skill_deliver_json(&job->cfg, resp, false, nullptr, 0);
+    } else {
+        nodelio_panel_ui_toast_defer("换一批失败");
+    }
+    free(resp);
+    free(job);
 }
 
-static void ensure_reshuffle_worker(void)
-{
-    if (s_reshuffle_q) {
-        return;
-    }
-    s_reshuffle_q = xQueueCreate(1, sizeof(uint8_t));
-    if (!s_reshuffle_q) {
-        return;
-    }
-    const uint32_t bytes = 16384;
-    s_reshuffle_stack = (StackType_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_reshuffle_stack) {
-        s_reshuffle_stack = (StackType_t *)malloc(bytes);
-    }
-    if (!s_reshuffle_stack) {
-        vQueueDelete(s_reshuffle_q);
-        s_reshuffle_q = nullptr;
-        return;
-    }
-    if (xTaskCreateStatic(reshuffle_worker, "nl_reshuffle", bytes / sizeof(StackType_t), nullptr, 3,
-                          s_reshuffle_stack, &s_reshuffle_tcb) == nullptr) {
-        free(s_reshuffle_stack);
-        s_reshuffle_stack = nullptr;
-        vQueueDelete(s_reshuffle_q);
-        s_reshuffle_q = nullptr;
-    }
-}
-
-static void request_reshuffle(void)
-{
+static void request_reshuffle(void) {
     if (!s_skill_cfg.server_url[0] || !s_skill_cfg.device_id[0]) {
         nl_ov_toast("未配置服务器");
         return;
     }
-    ensure_reshuffle_worker();
-    if (!s_reshuffle_q) {
-        nl_ov_toast("换一批失败");
+    auto* job = static_cast<reshuffle_job*>(calloc(1, sizeof(reshuffle_job)));
+    if (!job) {
+        nl_ov_toast("内存不足");
         return;
     }
-    uint8_t kick = 1;
-    if (xQueueSend(s_reshuffle_q, &kick, 0) != pdTRUE) {
-        nl_ov_toast("正在换一批");
+    job->cfg = s_skill_cfg;
+    snprintf(job->skill_id, sizeof(job->skill_id), "%s", s_env ? s_env->app_id : "music.search");
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Interactive, reshuffle_worker, job, [](void* p) { free(p); },
+            nodelio_panel_begin_skill_view(), "reshuffle")) {
+        free(job);
+        nl_ov_toast("换一批失败");
         return;
     }
     nl_ov_toast("换一批…");
@@ -1530,9 +1504,9 @@ static void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
     if (!silent) {
         nl_ov_toast("加载回复…");
     }
-    constexpr uint32_t kStackWords = 12288 / sizeof(StackType_t);
-    if (xTaskCreateWithCaps(
-            [](void *p) {
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Interactive,
+            [](void* p) {
                 auto *a = static_cast<detail_arg *>(p);
                 char base[160];
                 nl_url_strip_base(a->cfg.server_url, base, sizeof(base));
@@ -1577,11 +1551,14 @@ static void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
                                                               cap - 1, DSH_HTTP_IO_MS);
                     if (err == ESP_OK && resp[0] && (status == 200 || status == 201)) {
                         /* 静默轮询：用户已回列表/收起则丢弃，避免把详情又顶回来 */
+                        DisplayLockGuard view_lock(nl_ov_disp());
                         const bool still =
-                            !a->silent ||
-                            (s_dsh_detail_sess[0] && strcmp(s_dsh_detail_sess, a->sess) == 0 &&
-                             !s_minimized && s_have_env && s_env && s_env->detail_body &&
-                             s_env->detail_body[0]);
+                            view_lock &&
+                            nodelio_panel_skill_view_current(nodelio_panel_job_result_epoch()) &&
+                            (!a->silent ||
+                             (s_dsh_detail_sess[0] && strcmp(s_dsh_detail_sess, a->sess) == 0 &&
+                              !s_minimized && s_have_env && s_env && s_env->detail_body &&
+                              s_env->detail_body[0]));
                         if (still) {
                             char spoken[NL_ENV_SPOKEN];
                             spoken[0] = '\0';
@@ -1620,7 +1597,13 @@ static void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
                                     ESP_LOGI(TAG, "detail TTS schedule n=%d spoken=%d armed=%d",
                                              pack->n, spoken[0] ? 1 : 0,
                                              nodelio_panel_ui_dsh_is_armed() ? 1 : 0);
-                                    Application::GetInstance().Schedule([sp, pack]() {
+                                    const auto reply_epoch = nodelio_panel_job_result_epoch();
+                                    Application::GetInstance().Schedule([sp, pack, reply_epoch]() {
+                                        if (!nodelio_panel_skill_view_current(reply_epoch)) {
+                                            free(sp);
+                                            free(pack);
+                                            return;
+                                        }
                                         if (pack->n > 0) {
                                             nodelio_offline_cmd_yield_for_cloud_audio();
                                             const size_t dram = heap_caps_get_largest_free_block(
@@ -1659,9 +1642,13 @@ static void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
                 }
                 s_dsh_detail_busy = false;
                 free(a);
-                vTaskDeleteWithCaps(nullptr);
             },
-            "nl_dsh_det", kStackWords, arg, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+            arg,
+            [](void* p) {
+                s_dsh_detail_busy = false;
+                free(p);
+            },
+            silent ? nodelio_panel_skill_view_epoch() : nodelio_panel_begin_skill_view())) {
         s_dsh_detail_busy = false;
         free(arg);
         if (!silent) {
@@ -1788,9 +1775,9 @@ static void run_invoke_action(const nl_env_invoke_action_t *ia)
     snprintf(arg->skill_id, sizeof(arg->skill_id), "%s", skill);
     snprintf(arg->body, sizeof(arg->body), "%s", ia->params_json[0] ? ia->params_json : "{}");
     nl_ov_toast(ia->title[0] ? ia->title : "执行中…");
-    constexpr uint32_t kStackWords = 12288 / sizeof(StackType_t);
-    if (xTaskCreateWithCaps(
-            [](void *p) {
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Interactive,
+            [](void* p) {
                 auto *a = static_cast<invoke_arg *>(p);
                 char base[160];
                 nl_url_strip_base(a->cfg.server_url, base, sizeof(base));
@@ -1833,9 +1820,8 @@ static void run_invoke_action(const nl_env_invoke_action_t *ia)
                     free(resp);
                 }
                 free(a);
-                vTaskDeleteWithCaps(nullptr);
             },
-            "nl_inv_act", kStackWords, arg, 3, nullptr, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+            arg, [](void* p) { free(p); }, nodelio_panel_begin_skill_view(), nullptr, true)) {
         free(arg);
         nl_ov_toast("无法执行");
     }
@@ -2509,6 +2495,7 @@ static bool slide_out_obj(lv_obj_t *obj, bool with_done)
 
 static void dismiss_library_and_player(void)
 {
+    nodelio_panel_begin_skill_view();
     s_close_gen += 1;
     s_ui_closing = true;
     free_skill_env();
@@ -3848,6 +3835,25 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
                                bool auto_play_first)
 {
     if (!env) {
+        return;
+    }
+    const uint32_t epoch = nodelio_panel_job_result_epoch();
+    if (epoch) {
+        const auto config = cfg ? *cfg : nodelio_nvs_config_t{};
+        const bool have_cfg = cfg != nullptr;
+        Application::GetInstance().Schedule([config, have_cfg, env, auto_play_first, epoch]() {
+            DisplayLockGuard lock(nl_ov_disp());
+            if (!lock || !nodelio_panel_skill_view_current(epoch)) {
+                free_owned_env(env);
+                return;
+            }
+            nodelio_skill_result_show(have_cfg ? &config : nullptr, env, auto_play_first);
+        });
+        return;
+    }
+    DisplayLockGuard ownership_lock(nl_ov_disp());
+    if (!ownership_lock) {
+        free_owned_env(env);
         return;
     }
     /* 仅「新弹开」算用户活动。静默刷新若也 NoteActivity，详情 10s 轮询会永久挡息屏 */

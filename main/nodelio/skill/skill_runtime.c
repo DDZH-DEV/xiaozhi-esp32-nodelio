@@ -1,4 +1,5 @@
 #include "skill_runtime.h"
+#include "panel_jobs.h"
 
 #include "content_envelope.h"
 #include "device_caps.h"
@@ -33,6 +34,8 @@ void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *jso
     if (spoken_out && spoken_len) {
         spoken_out[0] = '\0';
     }
+    if (!nodelio_panel_skill_view_current(nodelio_panel_job_result_epoch()))
+        return;
     if (!json || !json[0]) {
         if (spoken_out && spoken_len) {
             snprintf(spoken_out, spoken_len, "技能无响应");
