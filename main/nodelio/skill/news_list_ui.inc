@@ -1026,7 +1026,7 @@ static void news_sync_read_btn_locked(void)
     lv_obj_set_style_bg_color(s_news_read_btn, bg, 0);
     if (lbl) {
         lv_label_set_text(lbl, title);
-        lv_obj_set_style_text_color(lbl, UI_BG, 0);
+        lv_obj_set_style_text_color(lbl, UI_ON_TILE, 0);
         lv_obj_center(lbl);
     }
 }

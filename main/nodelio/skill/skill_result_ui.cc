@@ -2130,7 +2130,7 @@ static lv_obj_t *make_text_action_btn(lv_obj_t *parent, const char *title, lv_ev
     lv_obj_set_style_radius(btn, 10, 0);
     lv_obj_set_style_bg_color(btn, UI_ACCENT, 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(btn, UI_ACCENT_PRESSED, LV_STATE_PRESSED);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(btn, 10);
     if (cb) {
@@ -2139,7 +2139,7 @@ static lv_obj_t *make_text_action_btn(lv_obj_t *parent, const char *title, lv_ev
     lv_obj_t *lbl = lv_label_create(btn);
     nl_ov_set_font(lbl);
     lv_label_set_text(lbl, title && title[0] ? title : "执行");
-    lv_obj_set_style_text_color(lbl, UI_BG, 0);
+    lv_obj_set_style_text_color(lbl, UI_ON_TILE, 0);
     lv_obj_center(lbl);
     return btn;
 }
@@ -2995,6 +2995,7 @@ static void ensure_card(void)
                                  nullptr);
         if (cancel_btn) {
             lv_obj_set_style_bg_color(cancel_btn, UI_CAPSULE_OFF, 0);
+            lv_obj_set_style_bg_color(cancel_btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
             lv_obj_t *cl = lv_obj_get_child(cancel_btn, 0);
             if (cl) {
                 lv_obj_set_style_text_color(cl, UI_TEXT_SUB, 0);
@@ -3128,7 +3129,7 @@ static void ensure_card(void)
     lv_obj_set_style_border_width(s_mini_fab, 2, 0);
     lv_obj_set_style_border_color(s_mini_fab, UI_ACCENT, 0);
     lv_obj_set_style_border_opa(s_mini_fab, SKILL_BORDER_OPA, 0);
-    lv_obj_set_style_shadow_width(s_mini_fab, 14, 0);
+    lv_obj_set_style_shadow_width(s_mini_fab, 0, 0);
     lv_obj_set_style_shadow_opa(s_mini_fab, LV_OPA_40, 0);
     lv_obj_set_style_shadow_color(s_mini_fab, UI_ACCENT, 0);
     lv_obj_add_flag(s_mini_fab, LV_OBJ_FLAG_CLICKABLE);

@@ -428,7 +428,7 @@ static void render_list(void)
             view.card = lv_obj_create(s_list);
             lv_obj_remove_style_all(view.card);
             lv_obj_set_style_bg_opa(view.card, LV_OPA_COVER, 0);
-            lv_obj_set_style_radius(view.card, UI_RADIUS_SM, 0);
+            lv_obj_set_style_radius(view.card, UI_RADIUS_MD, 0);
             lv_obj_set_style_pad_left(view.card, 10, 0);
             lv_obj_set_style_pad_right(view.card, 8, 0);
             lv_obj_set_style_pad_column(view.card, 16, 0);
@@ -470,8 +470,8 @@ static void render_list(void)
         }
         const bool focused = s_split && i == s_focus_idx;
         if (created || view.focused != focused) {
-            lv_obj_set_style_bg_color(view.card, focused ? UI_TILE_SWITCH : UI_SURFACE, 0);
-            lv_obj_set_style_border_width(view.card, focused ? 2 : 1, 0);
+            lv_obj_set_style_bg_color(view.card, focused ? UI_SELECTION : UI_SURFACE, 0);
+            lv_obj_set_style_border_width(view.card, focused ? 1 : 0, 0);
             lv_obj_set_style_border_color(view.card, focused ? UI_ACCENT : UI_TILE_OFF_BORDER, 0);
             lv_obj_set_style_border_opa(view.card, focused ? LV_OPA_COVER : LV_OPA_80, 0);
             view.focused = focused;
@@ -486,11 +486,10 @@ static void render_list(void)
             } else {
                 lv_obj_clear_flag(view.card, LV_OBJ_FLAG_CLICKABLE);
             }
-            lv_obj_set_style_bg_color(view.pod, item.enabled ? UI_CAPSULE_ON : UI_CAPSULE_OFF, 0);
-            lv_obj_set_style_bg_opa(view.pod, item.enabled ? LV_OPA_40 : LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(view.pod, item.enabled ? UI_ACCENT : UI_CAPSULE_OFF, 0);
+            lv_obj_set_style_bg_opa(view.pod, LV_OPA_COVER, 0);
             lv_label_set_text(view.icon, apps_glyph_for(item.id));
-            lv_obj_set_style_text_color(view.icon, item.enabled ? UI_ACCENT_SOFT : UI_TEXT_MUTED,
-                                        0);
+            lv_obj_set_style_text_color(view.icon, item.enabled ? UI_ON_TILE : UI_TEXT_MUTED, 0);
             lv_label_set_text(view.title, item.name[0] ? item.name : item.id);
             lv_label_set_text(view.subtitle, desc);
             lv_obj_set_style_text_color(view.title, item.enabled ? UI_TEXT : UI_TEXT_MUTED, 0);
@@ -1270,7 +1269,7 @@ void nl_ov_build_apps(void)
     lv_obj_set_style_border_width(s_refresh, 2, 0);
     lv_obj_set_style_border_color(s_refresh, UI_ACCENT, 0);
     lv_obj_set_style_border_opa(s_refresh, 200, 0);
-    lv_obj_set_style_shadow_width(s_refresh, 14, 0);
+    lv_obj_set_style_shadow_width(s_refresh, 0, 0);
     lv_obj_set_style_shadow_opa(s_refresh, LV_OPA_40, 0);
     lv_obj_set_style_shadow_color(s_refresh, UI_ACCENT, 0);
     lv_obj_set_style_bg_color(s_refresh, UI_SURFACE_PRESSED, LV_STATE_PRESSED);

@@ -72,19 +72,35 @@ private:
     esp_lcd_panel_handle_t panel_handle_ = nullptr;
     PowerSaveTimer* power_save_timer_ = nullptr;
     esp_lcd_touch_handle_t touch_ = nullptr;
+#if CONFIG_NODELIO_PANEL
+    lv_indev_t* touch_indev_ = nullptr;
+#endif
     esp_timer_handle_t touch_wake_timer_ = nullptr;
     uint8_t touch_wake_hits_ = 0; /* 息屏触摸去抖：连续命中次数 */
 
 #if CONFIG_NODELIO_PANEL
+    static void OnPanelTouchPressed(lv_event_t* event) {
+        auto* input = static_cast<lv_indev_t*>(lv_event_get_target(event));
+        if (!nodelio_panel_ui_screen_on()) {
+            // The first touch wakes the panel; don't activate a hidden control.
+            lv_indev_wait_release(input);
+            lv_indev_stop_processing(input);
+        }
+        Application::GetInstance().Schedule([]() { Board::GetInstance().NoteUserActivity(); });
+    }
+
     void SetPanelScreenState(bool on) {
+        if (!display_) {
+            return;
+        }
         DisplayLockGuard lock(display_);
         if (!lock) {
             return;
         }
         if (auto* display = lv_display_get_default()) {
-            lv_timer_set_period(lv_display_get_refr_timer(display),
-                                on ? CONFIG_NODELIO_UI_ACTIVE_REFRESH_MS
-                                   : CONFIG_NODELIO_UI_IDLE_REFRESH_MS);
+            lv_timer_set_period(
+                lv_display_get_refr_timer(display),
+                on ? CONFIG_NODELIO_UI_ACTIVE_REFRESH_MS : CONFIG_NODELIO_UI_IDLE_REFRESH_MS);
         }
         nodelio_panel_ui_notify_screen(on);
     }
@@ -137,6 +153,15 @@ private:
         });
         power_save_timer_->OnExitSleepMode([this]() {
             StopTouchWakePoll();
+#if CONFIG_NODELIO_PANEL
+            if (display_ && touch_indev_) {
+                DisplayLockGuard lock(display_);
+                if (lock) {
+                    // A touch sampled by the sleep poll must not become a click after resume.
+                    lv_indev_wait_release(touch_indev_);
+                }
+            }
+#endif
             (void)lvgl_port_resume();
             if (panel_handle_) {
                 (void)esp_lcd_panel_disp_on_off(panel_handle_, true);
@@ -356,21 +381,9 @@ private:
         if (touch_cfg.disp) {
             auto* indev = lvgl_port_add_touch(&touch_cfg);
 #if CONFIG_NODELIO_PANEL
+            touch_indev_ = indev;
             if (indev) {
-                lv_indev_add_event_cb(
-                    indev,
-                    [](lv_event_t* event) {
-                        auto* input = static_cast<lv_indev_t*>(lv_event_get_target(event));
-                        if (!nodelio_panel_ui_screen_on()) {
-                            // The first touch wakes the panel; don't activate a hidden control.
-                            lv_indev_wait_release(input);
-                            lv_indev_stop_processing(input);
-                        }
-                        Application::GetInstance().Schedule([]() {
-                            Board::GetInstance().NoteUserActivity();
-                        });
-                    },
-                    LV_EVENT_PRESSED, nullptr);
+                lv_indev_add_event_cb(indev, OnPanelTouchPressed, LV_EVENT_PRESSED, nullptr);
             }
 #else
             (void)indev;

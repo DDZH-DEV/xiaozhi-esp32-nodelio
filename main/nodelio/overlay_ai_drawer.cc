@@ -443,11 +443,11 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
     place_ai_drawer();
     lv_obj_set_style_bg_color(s_ai_drawer, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(s_ai_drawer, UI_AI_DRAWER_BG_OPA, 0);
-    lv_obj_set_style_radius(s_ai_drawer, 20, 0);
+    lv_obj_set_style_radius(s_ai_drawer, UI_RADIUS, 0);
     lv_obj_set_style_border_width(s_ai_drawer, 1, 0);
-    lv_obj_set_style_border_color(s_ai_drawer, UI_INFO, 0);
-    lv_obj_set_style_border_opa(s_ai_drawer, 72, 0);
-    lv_obj_set_style_shadow_width(s_ai_drawer, 24, 0);
+    lv_obj_set_style_border_color(s_ai_drawer, UI_BORDER, 0);
+    lv_obj_set_style_border_opa(s_ai_drawer, LV_OPA_COVER, 0);
+    lv_obj_set_style_shadow_width(s_ai_drawer, 0, 0);
     lv_obj_set_style_shadow_offset_y(s_ai_drawer, 8, 0);
     lv_obj_set_style_shadow_color(s_ai_drawer, UI_BG, 0);
     lv_obj_set_style_shadow_opa(s_ai_drawer, 100, 0);
@@ -579,7 +579,7 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
     lv_obj_set_style_border_width(s_ai_mini_fab, 2, 0);
     lv_obj_set_style_border_color(s_ai_mini_fab, UI_INFO, 0);
     lv_obj_set_style_border_opa(s_ai_mini_fab, 200, 0);
-    lv_obj_set_style_shadow_width(s_ai_mini_fab, 14, 0);
+    lv_obj_set_style_shadow_width(s_ai_mini_fab, 0, 0);
     lv_obj_set_style_shadow_opa(s_ai_mini_fab, LV_OPA_40, 0);
     lv_obj_set_style_shadow_color(s_ai_mini_fab, UI_INFO, 0);
     lv_obj_add_flag(s_ai_mini_fab, LV_OBJ_FLAG_CLICKABLE);

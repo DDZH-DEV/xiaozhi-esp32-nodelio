@@ -867,6 +867,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_set_style_bg_color(s_root, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, 0);
     lv_obj_set_style_text_font(s_root, nl_ov_ui_font(), 0);
+    lv_obj_set_style_text_color(s_root, UI_TEXT, 0);
     lv_obj_set_flex_flow(s_root, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(s_root, 0, 0);
     lv_obj_set_style_pad_row(s_root, 0, 0);
@@ -963,7 +964,8 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     s_tabbar = lv_obj_create(workspace);
     lv_obj_remove_style_all(s_tabbar);
     lv_obj_set_size(s_tabbar, lv_pct(100), NL_UI_TAB_H);
-    lv_obj_set_style_bg_opa(s_tabbar, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(s_tabbar, UI_PANEL, 0);
+    lv_obj_set_style_bg_opa(s_tabbar, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(s_tabbar, 4, 0);
     lv_obj_set_style_pad_column(s_tabbar, 4, 0);
     lv_obj_set_flex_flow(s_tabbar, LV_FLEX_FLOW_ROW);

@@ -999,21 +999,19 @@ static void tile_icon_pop(lv_obj_t *cap)
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_var(&a, cap);
-    lv_anim_set_values(&a, 210, LV_SCALE_NONE);
+    lv_anim_set_values(&a, 244, LV_SCALE_NONE);
     lv_anim_set_time(&a, UI_TILE_ICON_POP_MS);
-    lv_anim_set_path_cb(&a, lv_anim_path_overshoot);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
     lv_anim_set_exec_cb(&a, anim_obj_scale);
     lv_anim_start(&a);
 }
 
 static uint32_t color_ambient_bg(uint32_t c)
 {
-    uint32_t r = ((c >> 16) & 0xff) * 26 / 100;
-    uint32_t g = ((c >> 8) & 0xff) * 26 / 100;
-    uint32_t b = (c & 0xff) * 26 / 100;
-    r = r < 12 ? 12 : r;
-    g = g < 15 ? 15 : g;
-    b = b < 20 ? 20 : b;
+    // Custom layout colors become a light tint so titles retain their contrast.
+    uint32_t r = (((c >> 16) & 0xff) + ((UI_C_SURFACE >> 16) & 0xff) * 9) / 10;
+    uint32_t g = (((c >> 8) & 0xff) + ((UI_C_SURFACE >> 8) & 0xff) * 9) / 10;
+    uint32_t b = ((c & 0xff) + (UI_C_SURFACE & 0xff) * 9) / 10;
     return (r << 16) | (g << 8) | b;
 }
 
@@ -1030,7 +1028,7 @@ static uint32_t widget_fill_for_state(const nl_widget_t *w, tile_kind_t kind, bo
     if (!on) {
         return kind_fill_off(kind);
     }
-    /* 开态：优先 layout 自定义底色（环境微光深色），否则语义亮色微光 */
+    /* 开态：layout 自定义浅色底，否则使用语义浅色底。 */
     uint32_t custom = 0;
     if (w && parse_bg_hex(w->bg_color, &custom)) {
         return color_ambient_bg(custom);
@@ -1062,11 +1060,11 @@ static void paint_dual_seg(lv_obj_t *seg, bool online, bool on, bool is_on_branc
         intptr_t role = (intptr_t)lv_obj_get_user_data(ch);
         if (role == TILE_CHILD_DL_SUB) {
             lv_obj_set_style_text_color(
-                ch, active ? UI_ON_TILE : (online ? UI_TEXT_TIP : UI_DISABLED_FG), 0);
-            lv_obj_set_style_text_opa(ch, active ? LV_OPA_90 : LV_OPA_70, 0);
+                ch, active ? ui_color_on(active_c) : (online ? UI_TEXT_TIP : UI_DISABLED_FG), 0);
+            lv_obj_set_style_text_opa(ch, LV_OPA_COVER, 0);
         } else {
             lv_obj_set_style_text_color(
-                ch, active ? UI_ON_TILE : (online ? UI_TEXT_SUB : UI_DISABLED_FG), 0);
+                ch, active ? ui_color_on(active_c) : (online ? UI_TEXT_SUB : UI_DISABLED_FG), 0);
         }
     }
 }
@@ -1160,7 +1158,7 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
     }
 
     /* 开态图标使用高饱和品牌/语义亮色，关态暗白，离线灰暗 */
-    lv_color_t active_c = UI_ACCENT;
+    lv_color_t active_c = UI_SUCCESS;
     uint32_t custom_bg = 0;
     if (w && parse_bg_hex(w->bg_color, &custom_bg)) {
         active_c = lv_color_hex(custom_bg);
@@ -1176,8 +1174,8 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
     const bool dl = widget_is_dual_line(w);
     /* DualLine 整卡中性：标题/图标不跟 ON 变白 */
     lv_color_t icon_c = dim ? UI_DISABLED_FG : (dl ? UI_TEXT_DIM : (on ? active_c : UI_TEXT_DIM));
-    lv_color_t title_c = dim ? UI_DISABLED_FG : (dl ? UI_TEXT : (on ? UI_ON_TILE : UI_TEXT));
-    lv_color_t hint_c = dim ? UI_DISABLED_FG : (dl ? UI_TEXT_MUTED : (on ? UI_ON_TILE : UI_TEXT_MUTED));
+    lv_color_t title_c = dim ? UI_DISABLED_FG : UI_TEXT;
+    lv_color_t hint_c = dim ? UI_DISABLED_FG : UI_TEXT_MUTED;
     lv_color_t badge_bg =
         dim ? UI_TILE_BADGE_OFFLINE : (on ? UI_TILE_BADGE_ON : UI_TILE_BADGE_OFF);
     if (!dim && on && !dl) {
@@ -1220,15 +1218,17 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
             continue;
         }
         if (role == TILE_CHILD_CAPSULE) {
-            /* 彻底去除图标底座框框，保持 100% 透明无框 */
-            lv_obj_set_style_bg_opa(ch, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_bg_color(ch, on && online ? active_c : UI_CAPSULE_OFF, 0);
+            lv_obj_set_style_bg_opa(ch, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(ch, UI_RADIUS_SM, 0);
             lv_obj_set_style_border_width(ch, 0, 0);
             if (lv_obj_get_child_count(ch) > 0) {
                 lv_obj_t *icon_lbl = lv_obj_get_child(ch, 0);
                 tile_apply_trans(icon_lbl);
                 lv_label_set_text(icon_lbl, kind_symbol(w, kind, on && online));
                 lv_obj_set_style_text_font(icon_lbl, nl_ov_tile_icon_font(is_row), 0);
-                lv_obj_set_style_text_color(icon_lbl, icon_c, 0);
+                lv_obj_set_style_text_color(icon_lbl, on && online ? ui_color_on(active_c) : icon_c,
+                                            0);
                 lv_obj_set_style_text_opa(icon_lbl, (on && online) ? LV_OPA_COVER : LV_OPA_80, 0);
                 lv_obj_center(icon_lbl);
             }
@@ -1309,6 +1309,8 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                     nl_ov_set_font(ch);
                     style_hint_pill(ch, false);
                     lv_obj_set_style_text_color(ch, hint_c, 0);
+                    lv_obj_set_style_bg_color(ch, UI_FIELD, 0);
+                    lv_obj_set_style_bg_opa(ch, LV_OPA_COVER, 0);
                 } else if (kind == TILE_SCENE) {
                     lv_label_set_text(ch, "情景");
                     nl_ov_set_font(ch);
@@ -1320,26 +1322,28 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                     lv_label_set_text(ch, (!online) ? "离" : "点动");
                     nl_ov_set_font(ch);
                     style_hint_pill(ch, false);
-                    lv_obj_set_style_text_color(ch, hint_c, 0);
+                    lv_obj_set_style_text_color(ch, on && online ? ui_color_on(badge_bg) : hint_c,
+                                                0);
                     lv_obj_set_style_bg_color(ch, badge_bg, 0);
-                    lv_obj_set_style_bg_opa(ch, online ? LV_OPA_60 : LV_OPA_50, 0);
+                    lv_obj_set_style_bg_opa(ch, LV_OPA_COVER, 0);
                 } else if (widget_is_dual_line(w)) {
                     /* 双段卡通常藏角标；若露出则显示当前支路短名 */
                     const char *act = on ? dl_on : dl_off;
                     lv_label_set_text(ch, (!online) ? "离" : (act ? act : (on ? "NO" : "NC")));
                     nl_ov_set_font(ch);
                     style_hint_pill(ch, false);
-                    lv_obj_set_style_text_color(ch, online ? UI_ON_TILE : hint_c, 0);
+                    lv_obj_set_style_text_color(ch, online ? ui_color_on(badge_bg) : hint_c, 0);
                     lv_obj_set_style_bg_color(ch, badge_bg, 0);
-                    lv_obj_set_style_bg_opa(ch, online ? LV_OPA_70 : LV_OPA_50, 0);
+                    lv_obj_set_style_bg_opa(ch, LV_OPA_COVER, 0);
                 } else {
                     /* 开/关/离：右上角/右侧小角标，不占主列 */
                     lv_label_set_text(ch, (!online) ? "离" : (on ? "开" : "关"));
                     nl_ov_set_font(ch);
                     style_hint_pill(ch, false);
-                    lv_obj_set_style_text_color(ch, hint_c, 0);
+                    lv_obj_set_style_text_color(ch, on && online ? ui_color_on(badge_bg) : hint_c,
+                                                0);
                     lv_obj_set_style_bg_color(ch, badge_bg, 0);
-                    lv_obj_set_style_bg_opa(ch, on && online ? LV_OPA_70 : LV_OPA_50, 0);
+                    lv_obj_set_style_bg_opa(ch, LV_OPA_COVER, 0);
                 }
                 /* 右上角药丸统一定位：横条靠右中，其他规格靠右上角预留 4px 呼吸边距 */
                 lv_obj_align(ch, is_row ? LV_ALIGN_RIGHT_MID : LV_ALIGN_TOP_RIGHT, is_row ? -2 : -4, is_row ? 0 : 4);

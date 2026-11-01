@@ -66,9 +66,11 @@ worker 栈固定为 **16384 字节 PSRAM**。ESP-IDF 的创建接口使用字节
 ## 两块板的刷新策略
 
 - S3：`NODELIO_S3_LVGL_TICK_MS` 默认 5ms，替换 RGB port 原先的 50ms 时钟粒度；
-  可设回 50 做单变量对照。该参数不强制绘制，息屏仍停止 LVGL port。
+  可设回 50 做单变量对照。该参数不强制绘制，普通息屏仍停止 LVGL port；播放时只关背光、
+  降刷新并保留触摸读取。
 - 共用：`NODELIO_UI_ACTIVE_REFRESH_MS` 默认 30ms，范围 16–50ms，只影响脏区刷新周期。
-- P4：`NODELIO_UI_IDLE_REFRESH_MS` 默认 200ms，唤醒恢复共用活动周期。保留现有 RGB888、
+- 共用息屏：`NODELIO_UI_IDLE_REFRESH_MS` 默认 200ms，适用于 P4 和 S3 播放息屏，
+  唤醒恢复共用活动周期。P4 保留现有 RGB888、
   分块双缓冲与 PPA 输出旋转。PPA 填充/全屏缓冲沿用已有实验开关与板级变体，未强行开启。
 - 未改 LCD 时序、引脚、板型身份、AES 策略、ES8389、DMA 归属或语音服务。
 
@@ -119,7 +121,53 @@ python -m unittest discover -s scripts/tests -v
 替换释放、任务创建失败、过期结果与不可取消操作、200 轮队列回绕、worker 退出；并提取实际
 控家回执代码验证旧回执不影响新请求。该适配器不模拟 FreeRTOS 多核调度或真实 HTTP。
 
-新增 9 项主机测试通过；控家回执顺序保护追加后，作业测试再次通过。完整套件运行 121 项，
+2026-11-01：界面生命周期/触摸/对比度 10 项、省电策略 1 项、作业队列 1 项通过。
+完整套件运行 124 项，
 报告 13 个 error（含子用例）、1 项跳过，仍有本改动之外的 Windows 临时目录清理、Bash 缺失、
 通知流测试签名和 Ogg 日志桩问题。按项目交付规则，由用户使用 ESP-IDF 6.1 逐板编译/烧录；
 本次未执行目标构建、分区体积检查、烧录或实机流畅度验收。
+
+## 省电策略修正（2026-11-01）
+
+- S3 息屏计时不再受旧 `wifi/sleep_mode` 键覆盖；其他板使用 `PowerSaveTimer` 的默认行为不变。
+- S3 播放息屏同步 `screen_on=false`，刷新降至空闲周期，暂停状态/活动 UI 轮询。独立输入事件
+  调度用户活动，保留媒体、网络和 LVGL 触摸读取；第一下只唤醒。普通息屏恢复 LVGL 前也等待
+  触摸释放，避免睡眠触摸轮询采到的那一下穿透至首页控件。
+- 照片轮播在息屏或首页隐藏时不再推进、提交新下载。已经在途的一次加载允许完成，避免丢弃
+  单张相册的初始结果后永久停在加载占位。亮屏后下一次计时恢复轮播，不补发睡眠期间的帧。
+- 设备信息页按有效断网能力显示状态，P4 保持 Hosted 联网；设备信息实时计数息屏暂停更新。
+- 小智关闭时，音频服务通过应用提供的策略拒绝启动 WakeNet；迟到唤醒事件在进入 connecting、
+  编码或打断播放前退出。媒体不再重试开启唤醒。保留用户关闭小智的设置，重新开启仍走现有
+  保存并重启流程；音频自检、播放等独立能力不受此开关限制。
+- 心跳静态任务按 ESP-IDF 的字节单位传递 10240 字节 PSRAM 栈，修正错误的 `/ sizeof(StackType_t)`。
+
+`test_panel_power_policy.py` 编译实际照片计时、息屏开关、音频唤醒开关与应用唤醒函数，外部效果
+用计数器隔离。覆盖关闭小智不编码、不建链、不暂停播放，重开恢复，以及非面板默认策略。
+触摸测试使用真实 LVGL 输入设备和 S3 的实际输入回调。仍需实机确认 S3 触摸/I2C、P4 Hosted、
+播放中息屏/唤醒、语音重开、离线控制与亮屏/息屏电流；没有开启未经验证的 DFS 或 light sleep。
+
+## 浅色 Apple 风格
+
+用户选择浅色 iOS Settings/Home 方向。设计依据是 Apple HIG 的
+[颜色](https://developer.apple.com/design/human-interface-guidelines/color)、
+[按钮](https://developer.apple.com/design/human-interface-guidelines/buttons)、
+[材质](https://developer.apple.com/design/human-interface-guidelines/materials)与
+[可访问性](https://developer.apple.com/design/human-interface-guidelines/accessibility)。
+固件采用浅灰画布、白色分组卡片、蓝色操作重点、绿色开关和深色文字；使用现有字库与图标，
+不引入 Apple 字体资产、实时模糊或玻璃合成。颜色/圆角在 `ui_theme.h`，共用按钮/滑块/开关/
+导航在 `ui_widgets.*`；原有两种 `display_profile` 与网格坐标保持兼容。
+
+首页自定义颜色转为浅底，彩色图标与状态徽标按背景选择黑/白前景；应用与设置入口统一圆角卡片；
+连接页、技能操作、新闻朗读及小智浮层同步浅色主题。对话浮层不透明，浮动控件去除光晕阴影。
+规则已写入 `.agents/skills/lvgl-smart-panel-design/SKILL.md`，技能格式校验通过。
+
+以下是生产共用控件在真实 LVGL 中的演示数据样张，使用内置 14px 中文字库；不是整机截图，
+也不代表云布局中每一种首页卡片。目标设备仍需检查三档字号、弹窗、键盘、长标题、离线/未知态。
+
+![方屏共用控件样张](images/panel-apple-square.png)
+
+![宽屏共用控件样张](images/panel-apple-wide.png)
+
+可选地设置 `PANEL_UI_PREVIEW_DIR` 为已经存在的目录，再运行界面生命周期测试，即可输出两个
+RGB PPM 样张。测试覆盖常用文字色、主按钮按下态以及 216 种自定义背景的前景对比度；预览
+不开启环境变量时不会写入文件，也不需要 Python 图像依赖。

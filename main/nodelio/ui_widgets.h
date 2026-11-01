@@ -10,6 +10,8 @@ extern "C" {
 #endif
 
 void ui_styles_init(void);
+/** Contrast-safe foreground for user-defined solid layout colors. */
+lv_color_t ui_color_on(lv_color_t background);
 
 /** 与设置页同一套卡片宽。avail 为去掉页边距后的内容宽；force_single_col 时取整屏 1/5。
  *  columns_out 可空。 */
@@ -28,7 +30,7 @@ lv_obj_t *ui_make_tab(lv_obj_t *parent, const char *txt);
 void ui_tab_set_checked(lv_obj_t *btn, bool checked);
 
 /**
- * 内页顶栏（高度 h）：背景 UI_PANEL，左返回（直角）+ 标题。
+ * 内页顶栏（高度 h）：背景 UI_PANEL，左返回胶囊 + 标题。
  * 返回点击调用 on_back（可为 NULL）.
  */
 lv_obj_t *ui_make_nav_bar(lv_obj_t *parent, int h, const char *title, lv_event_cb_t on_back);
@@ -40,6 +42,7 @@ lv_obj_t *ui_make_text_btn(lv_obj_t *parent, const char *label, int kind, lv_eve
 lv_obj_t *ui_make_action_btn(lv_obj_t *parent, const char *label, int w, int h, lv_event_cb_t cb);
 
 void ui_style_slider(lv_obj_t *sl);
+void ui_style_switch(lv_obj_t* sw);
 
 /** 驱动禁用态（灰显 + 不可点）. */
 void ui_set_enabled(lv_obj_t *obj, bool enabled);

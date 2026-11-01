@@ -881,7 +881,7 @@ static lv_obj_t *sys_kv_row(lv_obj_t *parent, const char *key, const char *val_i
 static void sys_timer_cb(lv_timer_t *t)
 {
     (void)t;
-    if (!s_sys_up_lbl) {
+    if (!s_screen_on || !s_sys_up_lbl) {
         return;
     }
     refresh_sys_live_fields();
@@ -935,7 +935,7 @@ static lv_obj_t *settings_card(lv_obj_t *parent, const char *title)
     lv_obj_set_height(card, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(card, UI_PANEL, 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(card, 10, 0);
+    lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
     lv_obj_set_style_pad_all(card, 14, 0);
     lv_obj_set_style_pad_row(card, 6, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
@@ -1194,11 +1194,7 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_obj_set_style_text_color(ps_lab, UI_TEXT, 0);
 
         lv_obj_t *ps_sw = lv_switch_create(ps_row);
-        lv_obj_set_size(ps_sw, 52, 30);
-        lv_obj_set_style_bg_color(ps_sw, lv_color_hex(UI_C_SLIDER_TRACK), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(ps_sw, UI_ACCENT,
-                                  (lv_style_selector_t)((uint32_t)LV_PART_INDICATOR |
-                                                       (uint32_t)LV_STATE_CHECKED));
+        ui_style_switch(ps_sw);
         if (s_cfg.power_save_en) {
             lv_obj_add_state(ps_sw, LV_STATE_CHECKED);
         } else {
@@ -1289,11 +1285,7 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_obj_set_style_text_color(lab, UI_TEXT, 0);
 
         lv_obj_t *sw = lv_switch_create(row);
-        lv_obj_set_size(sw, 52, 30);
-        lv_obj_set_style_bg_color(sw, lv_color_hex(UI_C_SLIDER_TRACK), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(sw, UI_ACCENT,
-                                  (lv_style_selector_t)((uint32_t)LV_PART_INDICATOR |
-                                                       (uint32_t)LV_STATE_CHECKED));
+        ui_style_switch(sw);
         if (nodelio_controls_enabled()) {
             lv_obj_add_state(sw, LV_STATE_CHECKED);
         }
@@ -1333,11 +1325,7 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_obj_set_style_text_color(ms_lab, UI_TEXT, 0);
 
         lv_obj_t *ms_sw = lv_switch_create(ms_row);
-        lv_obj_set_size(ms_sw, 52, 30);
-        lv_obj_set_style_bg_color(ms_sw, lv_color_hex(UI_C_SLIDER_TRACK), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(ms_sw, UI_ACCENT,
-                                  (lv_style_selector_t)((uint32_t)LV_PART_INDICATOR |
-                                                       (uint32_t)LV_STATE_CHECKED));
+        ui_style_switch(ms_sw);
         if (s_cfg.media_sleep_en) {
             lv_obj_add_state(ms_sw, LV_STATE_CHECKED);
         } else {
@@ -1454,11 +1442,7 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_obj_set_style_text_color(lab, UI_TEXT, 0);
 
         lv_obj_t *sw = lv_switch_create(row);
-        lv_obj_set_size(sw, 52, 30);
-        lv_obj_set_style_bg_color(sw, lv_color_hex(UI_C_SLIDER_TRACK), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(sw, UI_ACCENT,
-                                  (lv_style_selector_t)((uint32_t)LV_PART_INDICATOR |
-                                                       (uint32_t)LV_STATE_CHECKED));
+        ui_style_switch(sw);
         if (s_cfg.xiaozhi_en) {
             lv_obj_add_state(sw, LV_STATE_CHECKED);
         } else {
@@ -1533,8 +1517,11 @@ static void settings_tile(lv_obj_t *parent, const char *glyph, const char *title
     /* 宽屏右侧被技能卡占住时，左侧入口改单列铺满；窄屏技能卡是全屏模态，不走此分支。 */
     const bool force_single_col =
         nodelio_display_profile()->nav_width != 0 && nodelio_skill_result_card_visible();
-    (void)ui_make_settings_tile(parent, glyph, title, sub, accent, right_icon, cb,
-                                force_single_col);
+    const char* symbol = material_symbols_get_utf8(glyph);
+    auto* tile = ui_make_settings_tile(parent, symbol ? symbol : MATERIAL_SYMBOLS_EXPLORE, title,
+                                       sub, accent, right_icon, cb, force_single_col);
+    auto* icon = lv_obj_get_child(lv_obj_get_child(tile, 0), 0);
+    lv_obj_set_style_text_font(icon, &font_material_symbols_20_4, 0);
 }
 
 static int s_hub_host_w = -1;
@@ -1566,10 +1553,11 @@ static void fill_settings_hub(void)
     std::snprintf(bri_sub, sizeof(bri_sub), "亮度 %d%% · 音量 %d%% · %s", s_brightness, s_volume,
                   text_scale_name(nodelio_text_scale()));
 
-    settings_tile(s_settings, "显", "显示与声音", bri_sub, UI_C_ACCENT, nullptr,
-                  [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_DISP); });
-    settings_tile(s_settings, "家", "控家", nodelio_controls_enabled() ? "已开启" : "已关闭 · 启动台",
-                  UI_C_ACCENT, nullptr, [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_CTRL); });
+    settings_tile(s_settings, "brightness_6", "显示与声音", bri_sub, UI_C_ACCENT, nullptr,
+                  [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_DISP); });
+    settings_tile(s_settings, "home", "控家",
+                  nodelio_controls_enabled() ? "已开启" : "已关闭 · 启动台", UI_C_ACCENT, nullptr,
+                  [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_CTRL); });
     {
         char pwr_sub[48];
         if (nodelio_power_save_enabled()) {
@@ -1579,33 +1567,33 @@ static void fill_settings_hub(void)
             std::snprintf(pwr_sub, sizeof(pwr_sub), "屏 %ds · 不断网",
                           (int)nodelio_idle_sleep_seconds());
         }
-        settings_tile(s_settings, "电", "省电", pwr_sub, UI_C_WARN, nullptr,
-                      [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_POWER); });
+        settings_tile(s_settings, "power_settings_new", "省电", pwr_sub, UI_C_WARN, nullptr,
+                      [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_POWER); });
     }
     {
         char media_sub[48];
         std::snprintf(media_sub, sizeof(media_sub), "%s · 唤醒 %d%%",
                       nodelio_media_sleep_enabled() ? "播放可息屏" : "播放常亮",
                       (int)nodelio_media_wake_duck_pct());
-        settings_tile(s_settings, "播", "播放器", media_sub, UI_C_INFO, nullptr,
-                      [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_MEDIA); });
+        settings_tile(s_settings, "music_note", "播放器", media_sub, UI_C_INFO, nullptr,
+                      [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_MEDIA); });
     }
-    settings_tile(s_settings, "连", "网络与连接", "扫描 WiFi / 服务器 / 绑定", UI_C_WARN, nullptr,
-                  [](lv_event_t *) { nl_ov_open_connect(); });
-    settings_tile(s_settings, "刷", "刷新布局", "重新拉取首页控件", UI_C_INFO, nullptr, [](lv_event_t *) {
-        (void)nodelio_panel_ui_set_pref("layout_sync", "", nullptr, 0);
-    });
+    settings_tile(s_settings, "wifi", "网络与连接", "扫描 WiFi / 服务器 / 绑定", UI_C_WARN, nullptr,
+                  [](lv_event_t*) { nl_ov_open_connect(); });
+    settings_tile(
+        s_settings, "refresh", "刷新布局", "重新拉取首页控件", UI_C_INFO, nullptr,
+        [](lv_event_t*) { (void)nodelio_panel_ui_set_pref("layout_sync", "", nullptr, 0); });
     {
         char voice_sub[64];
         std::snprintf(voice_sub, sizeof(voice_sub), "%s · 无对话 %ds",
                       nodelio_xiaozhi_enabled() ? "小智" : "无云",
                       (int)nodelio_listen_idle_seconds());
-        settings_tile(s_settings, "智", "语音助手", voice_sub, UI_C_ACCENT, nullptr,
-                      [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_VOICE); });
+        settings_tile(s_settings, "mic", "语音助手", voice_sub, UI_C_ACCENT, nullptr,
+                      [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_VOICE); });
     }
 #if CONFIG_FIRMWARE_OTA_ENABLED
-    settings_tile(s_settings, "更", "检查固件更新", "手工查小智云版本，有新版再升级", UI_C_INFO, nullptr,
-                  [](lv_event_t *) {
+    settings_tile(s_settings, "cloud_download", "检查固件更新", "手工查小智云版本，有新版再升级",
+                  UI_C_INFO, nullptr, [](lv_event_t*) {
                       char err[64];
                       if (nodelio_panel_ui_set_pref("fw_check", "", err, sizeof(err)) != ESP_OK &&
                           err[0]) {
@@ -1613,12 +1601,12 @@ static void fill_settings_hub(void)
                       }
                   });
 #endif
-    settings_tile(s_settings, "机", "设备信息", "唤醒词「你好小智」· 状态", UI_C_PURPLE, nullptr,
-                  [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_SYS); });
-    settings_tile(s_settings, "测", "硬件自检", "触摸坐标 / 麦克风录音回放", UI_C_INFO, nullptr,
+    settings_tile(s_settings, "info", "设备信息", "唤醒词「你好小智」· 状态", UI_C_PURPLE, nullptr,
+                  [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_SYS); });
+    settings_tile(s_settings, "build", "硬件自检", "触摸坐标 / 麦克风录音回放", UI_C_INFO, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_DIAGNOSTICS); });
-    settings_tile(s_settings, "复", "恢复出厂", "清空凭证并重启", UI_C_DANGER, nullptr,
-                  [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_RESET); });
+    settings_tile(s_settings, "restart_alt", "恢复出厂", "清空凭证并重启", UI_C_DANGER, nullptr,
+                  [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_RESET); });
     s_hub_host_w = (int)lv_obj_get_width(s_settings);
     s_hub_single =
         (nodelio_display_profile()->nav_width != 0 && nodelio_skill_result_card_visible()) ? 1 : 0;

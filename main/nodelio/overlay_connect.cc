@@ -861,15 +861,15 @@ void nl_ov_build_connect(void)
     lv_obj_set_flex_grow(save, 1);
     lv_obj_set_height(save, UI_BTN_H_SM);
     lv_obj_set_ext_click_area(save, UI_EXT_CLICK);
-    lv_obj_set_style_bg_color(save, UI_BACK_BTN, 0);
-    lv_obj_set_style_bg_color(save, UI_ACCENT, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(save, UI_ACCENT, 0);
+    lv_obj_set_style_bg_color(save, UI_ACCENT_PRESSED, LV_STATE_PRESSED);
     lv_obj_set_style_radius(save, UI_RADIUS_SM, 0);
     lv_obj_set_style_shadow_width(save, 0, 0);
     lv_obj_add_event_cb(save, on_save, LV_EVENT_CLICKED, nullptr);
     lv_obj_t *sl = lv_label_create(save);
     lv_label_set_text(sl, "保存并重启");
     nl_ov_set_font(sl);
-    lv_obj_set_style_text_color(sl, UI_TEXT, 0);
+    lv_obj_set_style_text_color(sl, UI_ON_TILE, 0);
     lv_obj_center(sl);
 
     lv_obj_t *tip = lv_label_create(s_connect_scroll);

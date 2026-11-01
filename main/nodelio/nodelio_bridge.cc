@@ -137,8 +137,7 @@ static void ensure_hb_task(void)
         ESP_LOGW(TAG, "hb stack alloc fail");
         return;
     }
-    if (!xTaskCreateStatic(hb_task, "nl_hb", kHbStackBytes, nullptr, 4, s_hb_stack,
-                           &s_hb_tcb)) {
+    if (!xTaskCreateStatic(hb_task, "nl_hb", kHbStackBytes, nullptr, 4, s_hb_stack, &s_hb_tcb)) {
         ESP_LOGW(TAG, "hb task create fail");
         return;
     }

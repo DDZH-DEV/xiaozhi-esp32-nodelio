@@ -64,6 +64,8 @@ class PanelUiLifecycleTests(unittest.TestCase):
         driver = r'''
 #include <lvgl.h>
 #include "ui_theme.h"
+#include "ui_widgets.h"
+#include "board_info.h"
 #include "panel_shell.h"
 #include "panel_layout.h"
 #include <cassert>
@@ -71,14 +73,19 @@ class PanelUiLifecycleTests(unittest.TestCase):
 #include <cstring>
 #include <initializer_list>
 #include <string>
+#include <cmath>
+#include <cstdlib>
+#include <vector>
+#include <functional>
+LV_FONT_DECLARE(font_puhui_14_1);
 #define ESP_LOGD(...)
 #define ESP_LOGW(...)
 struct NlUiWorkScope { explicit NlUiWorkScope(const char*) {} };
 #define APP_MAX 17
 #define font_material_symbols_30_4 lv_font_montserrat_14
 #define font_material_symbols_20_4 lv_font_montserrat_14
-struct profile_t { int width=1280, height=452, nav_width=96; } profile;
-const profile_t* nodelio_display_profile() { return &profile; }
+nodelio_display_profile_t profile{"test",1280,452,10,3,96};
+const nodelio_display_profile_t* nodelio_display_profile() { return &profile; }
 constexpr int kAppsPagePadH=16, kAppsBrowseTileH=84, kAppsRailTileH=84, kAppsAnimMs=280;
 constexpr int NL_UI_STATUS_H=30;
 struct nl_app_item { char id[72], name[40], desc[72]; bool enabled, outbound_bridge; };
@@ -90,7 +97,11 @@ int clicked=-1, chrome=0, layouts=0, prefetches=0;
 void open_app_at(int i) { if(i<s_item_n && s_items[i].enabled) clicked=i; }
 const char* apps_glyph_for(const char*) { return "A"; }
 int font_size=14;
-const lv_font_t* nl_ov_ui_font() { return font_size==14 ? &lv_font_montserrat_14 : &lv_font_montserrat_20; }
+bool preview_chinese=false;
+const lv_font_t* nl_ov_ui_font() {
+    if(preview_chinese) return &font_puhui_14_1;
+    return font_size==14 ? &lv_font_montserrat_14 : &lv_font_montserrat_20;
+}
 int nl_ov_ui_line_box() { return font_size+4; }
 int nl_ov_ui_font_line_h() { return font_size; }
 int nl_ov_wrapped_text_h(const char*, int) { return font_size*2; }
@@ -161,6 +172,133 @@ void refresh_skill_widget(lv_obj_t* tile,nl_widget_t* widget) {
             "void nl_ov_home_prepare(", "void nl_ov_fill_home(",
             "static void home_remember_current_id(", "static void home_apply_delta("))
         driver += r'''
+bool nodelio_panel_ui_screen_on(){return s_screen_on;}
+int activity=0;
+struct Board {
+ static Board& GetInstance(){static Board b; return b;}
+ void NoteUserActivity(){++activity; s_screen_on=true;}
+};
+struct Application {
+ static Application& GetInstance(){static Application app;return app;}
+ std::vector<std::function<void()>> pending;
+ void Schedule(std::function<void()> fn){pending.push_back(fn);}
+ void Drain(){auto work=std::move(pending); pending.clear(); for(auto& fn:work) fn();}
+};
+'''
+        board = (ROOT / "main/boards/sila/sila-86/sila_86_board.cc").read_text(encoding="utf-8")
+        driver += function(board, "OnPanelTouchPressed(")
+        driver += r'''
+float luminance(lv_color_t c) {
+    auto linear=[](int v){float s=v/255.0f;return s<=0.04045f?s/12.92f:std::pow((s+0.055f)/1.055f,2.4f);};
+    return 0.2126f*linear(c.red)+0.7152f*linear(c.green)+0.0722f*linear(c.blue);
+}
+void contrast(lv_color_t foreground,lv_color_t background) {
+    float a=luminance(foreground),b=luminance(background);
+    assert((std::max(a,b)+0.05f)/(std::min(a,b)+0.05f)>=4.5f);
+}
+void preview_controls() {
+    preview_chinese=std::getenv("PANEL_UI_PREVIEW_DIR")!=nullptr;
+    auto* screen=lv_screen_active(); lv_obj_clean(screen);
+    ui_styles_init(); nl_panel_shell_setup(nl_ov_ui_font());
+    const bool wide=profile.nav_width!=0;
+    auto* title=lv_label_create(screen); nl_ov_set_font(title);
+    lv_label_set_text(title,"NodeLio   ·   界面组件预览"); lv_obj_set_pos(title,16,10);
+    auto* nav=lv_obj_create(screen); lv_obj_remove_style_all(nav);
+    lv_obj_set_style_bg_color(nav,UI_PANEL,0); lv_obj_set_style_bg_opa(nav,LV_OPA_COVER,0);
+    lv_obj_set_style_pad_all(nav,4,0);
+    lv_obj_set_flex_flow(nav,wide?LV_FLEX_FLOW_COLUMN:LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_gap(nav,8,0);
+    lv_obj_set_flex_align(nav,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_pos(nav,0,wide?36:profile.height-52);
+    lv_obj_set_size(nav,wide?profile.nav_width:profile.width,wide?profile.height-36:52);
+    for(auto name:{"首页","应用","设置"}) {
+        auto* tab=ui_make_tab(nav,name);
+        if(wide){lv_obj_set_flex_grow(tab,0);lv_obj_set_size(tab,lv_pct(100),UI_BTN_H);}
+        ui_tab_set_checked(tab,std::string(name)=="设置");
+    }
+    auto* list=lv_obj_create(screen); lv_obj_remove_style_all(list);
+    lv_obj_set_pos(list,wide?profile.nav_width+16:16,46);
+    lv_obj_set_size(list,wide?560:profile.width-32,profile.height-110);
+    lv_obj_set_flex_flow(list,LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_gap(list,UI_GAP,0);
+    lv_obj_update_layout(list);
+    const char* names[]={"显示与声音","控家","省电","播放器","网络与连接","语音助手"};
+    const char* subtitles[]={"亮度 60% · 音量 40%","客厅与卧室设备","屏 60s · 保持联网","播放时允许息屏","WiFi 已连接","小智已开启"};
+    const char* icons[]={LV_SYMBOL_SETTINGS,LV_SYMBOL_HOME,LV_SYMBOL_POWER,LV_SYMBOL_AUDIO,LV_SYMBOL_WIFI,LV_SYMBOL_CALL};
+    uint32_t colors[]={UI_C_ACCENT,UI_C_SUCCESS,UI_C_WARN,UI_C_PURPLE,UI_C_ACCENT,UI_C_ACCENT};
+    for(int i=0;i<6;++i) {
+        auto* tile=ui_make_settings_tile(list,icons[i],names[i],subtitles[i],colors[i],nullptr,nullptr,false);
+        lv_obj_set_style_text_font(lv_obj_get_child(lv_obj_get_child(tile,0),0),LV_FONT_DEFAULT,0);
+        lv_obj_update_layout(tile);
+        auto* text=lv_obj_get_child(tile,1);
+        assert(lv_obj_get_width(text)>100 && lv_obj_get_height(tile)>=72);
+        contrast(UI_ON_TILE,lv_color_hex(colors[i]));
+        contrast(UI_TEXT_MUTED,UI_SURFACE);
+    }
+    if(wide) {
+        auto* detail=lv_obj_create(screen); lv_obj_remove_style_all(detail);
+        lv_obj_set_pos(detail,profile.nav_width+600,46);
+        lv_obj_set_size(detail,profile.width-profile.nav_width-620,profile.height-70);
+        lv_obj_set_style_bg_color(detail,UI_PANEL,0);lv_obj_set_style_bg_opa(detail,LV_OPA_COVER,0);
+        lv_obj_set_style_radius(detail,UI_RADIUS,0);lv_obj_set_style_pad_all(detail,20,0);
+        lv_obj_set_flex_flow(detail,LV_FLEX_FLOW_COLUMN);lv_obj_set_style_pad_row(detail,20,0);
+        auto* label=lv_label_create(detail);nl_ov_set_font(label);lv_label_set_text(label,"显示与声音");
+        auto* value=lv_label_create(detail);nl_ov_set_font(value);lv_label_set_text(value,"屏幕亮度   60%");
+        auto* slider=lv_slider_create(detail);ui_style_slider(slider);lv_slider_set_value(slider,60,LV_ANIM_OFF);
+        auto* row=lv_obj_create(detail);lv_obj_remove_style_all(row);lv_obj_set_size(row,lv_pct(100),48);
+        auto* caption=lv_label_create(row);nl_ov_set_font(caption);lv_label_set_text(caption,"播放时允许息屏");lv_obj_align(caption,LV_ALIGN_LEFT_MID,0,0);
+        auto* sw=lv_switch_create(row);ui_style_switch(sw);lv_obj_add_state(sw,LV_STATE_CHECKED);lv_obj_align(sw,LV_ALIGN_RIGHT_MID,0,0);
+        auto* button=ui_make_text_btn(detail,"完成",0,nullptr);
+        contrast(lv_obj_get_style_text_color(lv_obj_get_child(button,0),LV_PART_MAIN),lv_obj_get_style_bg_color(button,LV_PART_MAIN));
+        lv_obj_add_state(button,LV_STATE_PRESSED);
+        contrast(lv_obj_get_style_text_color(lv_obj_get_child(button,0),LV_PART_MAIN),lv_obj_get_style_bg_color(button,LV_PART_MAIN));
+        lv_obj_remove_state(button,LV_STATE_PRESSED);
+    }
+    for(int r=0;r<=255;r+=51) for(int g=0;g<=255;g+=51) for(int b=0;b<=255;b+=51) {
+        auto color=lv_color_make(r,g,b);contrast(ui_color_on(color),color);
+    }
+    if(auto* directory=std::getenv("PANEL_UI_PREVIEW_DIR")) {
+        auto* display=lv_display_get_default();
+        std::vector<uint8_t> pixels(profile.width*profile.height*3);
+        lv_display_set_color_format(display,LV_COLOR_FORMAT_RGB888);
+        lv_display_set_buffers(display,pixels.data(),nullptr,pixels.size(),LV_DISPLAY_RENDER_MODE_FULL);
+        lv_display_set_flush_cb(display,[](lv_display_t* d,const lv_area_t*,uint8_t*){lv_display_flush_ready(d);});
+        lv_refr_now(display);
+        std::string path=std::string(directory)+(wide?"/apple-wide.ppm":"/apple-square.ppm");
+        FILE* file=fopen(path.c_str(),"wb");assert(file);
+        fprintf(file,"P6\n%d %d\n255\n",profile.width,profile.height);
+        for(size_t i=0;i<pixels.size();i+=3){uint8_t rgb[]={pixels[i+2],pixels[i+1],pixels[i]};fwrite(rgb,1,3,file);}
+        fclose(file);
+    }
+}
+
+void test_touch_wake() {
+    lv_obj_clean(lv_screen_active());
+    auto* button=lv_button_create(lv_screen_active());lv_obj_set_pos(button,0,0);lv_obj_set_size(button,100,100);
+    int hits=0;lv_obj_add_event_cb(button,[](lv_event_t* e){++*static_cast<int*>(lv_event_get_user_data(e));},LV_EVENT_CLICKED,&hits);
+    lv_obj_update_layout(button);
+    bool pressed=false;
+    auto* input=lv_indev_create();lv_indev_set_type(input,LV_INDEV_TYPE_POINTER);
+    lv_indev_set_user_data(input,&pressed);
+    lv_indev_set_read_cb(input,[](lv_indev_t* i,lv_indev_data_t* data){
+        data->point={20,20};data->state=*static_cast<bool*>(lv_indev_get_user_data(i))?LV_INDEV_STATE_PRESSED:LV_INDEV_STATE_RELEASED;
+    });
+    lv_indev_add_event_cb(input,OnPanelTouchPressed,LV_EVENT_PRESSED,nullptr);
+    s_screen_on=false;pressed=true;lv_indev_read(input);
+    assert(!s_screen_on && !hits && !activity);
+    Application::GetInstance().Drain();assert(s_screen_on && activity==1);
+    pressed=false;lv_indev_read(input);assert(hits==0);
+    pressed=true;lv_indev_read(input);pressed=false;lv_indev_read(input);
+    Application::GetInstance().Drain();assert(hits==1 && activity==2);
+    // Ordinary sleep resumes after the separate touch poll already detected a press.
+    lv_indev_wait_release(input);
+    pressed=true;lv_indev_read(input);pressed=false;lv_indev_read(input);
+    Application::GetInstance().Drain();assert(hits==1 && activity==2);
+    pressed=true;lv_indev_read(input);pressed=false;lv_indev_read(input);
+    Application::GetInstance().Drain();assert(hits==2 && activity==3);
+    lv_indev_delete(input);
+}
+
 void build_home_view() {
     ++builds; ++s_home_gen;
     lv_obj_clean(s_home);
@@ -203,7 +341,7 @@ void init() {
 int main(int argc,char** argv) {
     assert(argc==2);
     const std::string mode=argv[1];
-    if(mode=="square") { profile={480,480,0}; }
+    if(mode=="square" || mode=="controls_square") { profile.width=480; profile.height=480; profile.nav_width=0; }
     init();
     if(mode=="apps" || mode=="square") {
         render_list();
@@ -366,6 +504,10 @@ int main(int argc,char** argv) {
         lv_timer_handler(); assert(state_updates==1);
         nl_ov_request_home_state_refresh(); lv_timer_handler();
         assert(state_updates==2);
+    } else if(mode=="controls" || mode=="controls_square") {
+        preview_controls();
+    } else if(mode=="touch_wake") {
+        test_touch_wake();
     } else { assert(false); }
     lv_deinit();
 }
@@ -376,7 +518,9 @@ int main(int argc,char** argv) {
                 "-DLV_FONT_MONTSERRAT_20=1", "-I" + str(lvgl), "-I" + str(work),
                 "-I" + str(ROOT / "main/nodelio"), "-x", "c"]
         args += [str(p) for p in sorted((lvgl / "src").rglob("*.c"))]
-        args += ["-x", "c++", str(work / "driver.cpp"), str(ROOT / "main/nodelio/panel_shell.cc"), "-o", str(cls.exe)]
+        args += [str(ROOT / "main/nodelio/fonts/font_puhui_14_1.c")]
+        args += ["-x", "c++", str(work / "driver.cpp"), str(ROOT / "main/nodelio/panel_shell.cc"),
+                 str(ROOT / "main/nodelio/ui_widgets.cc"), "-o", str(cls.exe)]
         # Clang/GCC response files avoid Windows command-length limits.
         (work / "args.rsp").write_text("\n".join('"' + a.replace('\\', '/') + '"' for a in args))
         result = subprocess.run(compiler + ["@" + str(work / "args.rsp")],
@@ -411,3 +555,10 @@ int main(int argc,char** argv) {
 
     def test_tile_state_cache_changes_and_deleted_object_reuse(self):
         self.run_case("visual_state")
+
+    def test_light_controls_contrast_and_geometry(self):
+        self.run_case("controls")
+        self.run_case("controls_square")
+
+    def test_first_touch_wakes_without_activating_hidden_control(self):
+        self.run_case("touch_wake")

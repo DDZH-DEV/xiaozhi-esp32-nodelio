@@ -1,77 +1,67 @@
 ---
 name: lvgl-smart-panel-design
 description: >-
-  Specialized LVGL UI/UX design system and C/C++ implementation guidelines for 86-type smart home touch control panels (480x480 resolution). Use this skill when designing, styling, or refactoring LVGL widgets, cards, tiles, themes, sliders, color palettes, typography, and touch micro-interactions.
+  Apple-inspired LVGL UI design and implementation for NodeLio smart home wall
+  panels: S3 480x480 and P4 1280x452. Use for panel themes, navigation, cards,
+  sliders, switches, dialogs and touch interactions. Preserve display_profile
+  geometry and embedded rendering budgets.
 ---
 
-# LVGL 86-Type Smart Panel Design System
+# NodeLio Apple-inspired panel design
 
-This skill defines the visual language, component patterns, and LVGL (v8/v9) C/C++ implementation standards for 86-type smart home control panels (480x480 resolution, e.g., SILA-86, Aqara/MixPad style).
+The user selected a light appearance resembling iOS Settings and Home. This
+replaces the previous dark green/slate visual direction for this project.
+The implementation is LVGL, with embedded constraints; it is not UIKit or an
+implementation of Apple's Liquid Glass renderer.
 
----
+## Visual decisions
 
-## 1. Visual Aesthetics & Design Philosophy
+- Read `main/nodelio/ui_theme.h` and `ui_widgets.*` before changing a component.
+  Colors and reusable geometry belong in these tokens, never raw widget literals.
+- Use a light grouped canvas, opaque white cards, dark primary text, readable gray
+  secondary text and blue navigation/action emphasis. Green means enabled device
+  or switch state; purple denotes scenes, amber a warning, red a destructive action.
+- Keep most content neutral. Reserve strong color for the main action and compact
+  icon containers. An active home tile uses a light semantic tint, dark title and
+  a labeled state badge. Preserve offline, unknown, pending and countdown feedback.
+- Use the existing Chinese font and bundled Material Symbols. Do not distribute
+  SF Pro or SF Symbols as firmware assets. Preserve all three text-size options;
+  use measured line heights and wrapping, never scale bitmap text with transforms.
+- Cards use the shared medium radius; sheets the larger radius; compact controls
+  and icon containers the small radius. Keep one clear text hierarchy and stable
+  alignment, rather than nesting several bordered panels.
+- Tabs use a quiet blue selection capsule. Secondary actions use a tinted surface
+  and blue label. Primary actions use blue fill and a contrasting label in both
+  normal and pressed states. Switches use green with a white thumb; sliders use a
+  thin track, visible thumb and at least 48 pixels of effective touch height.
+- Check foreground/background contrast after changing tokens. Use `ui_color_on`
+  for user-defined solid colors; derive a light tint for custom home backgrounds.
+  Essential text targets 4.5:1. State must also be communicated with text or shape.
 
-Smart home wall panels are viewed at 0.5m ~ 1.0m distance. They must avoid flat, raw solid colors (which look like engineering test boards) and instead adopt **"Modern Dark Surface with Subtle Luminescence" (深色微质感与呼吸微光)**:
+## Panel-specific invariants
 
-### 1.1 Color Tokens & Depth Palette
-- **Canvas Base**: Deep slate green-black (`#16201b` ~ `#1f2b26`), providing a calm, premium ambient backdrop.
-- **Card Surface (Off/Idle)**:
-  - Fill: Subtle elevated slate (`#25342d`).
-  - Border: 1px subtle top/inner light border (`#384c42` / `rgba(255,255,255,0.08)`).
-  - Text: Dim muted white (`#d0dfd6`), Secondary hint (`#869d90`).
-- **Card Surface (On/Active)**:
-  - Fill: Semantic active tint (`#2a5e42` base for switches, `#2b4e68` for PWM, `#5a4525` for GPIO).
-  - Accent Highlight: Brand green `#34c759`, PWM cyan `#38bdf8`, Scenario bright emerald `#30d158`.
-  - Border: 1.5px glowing accent border (`#6ee08a` / `#7dd3fc` with 60% opacity).
-  - Text: Pure white (`#ffffff`).
-- **Pressed Feedback**:
-  - `LV_STATE_PRESSED`: 120ms smooth ease-out transition, Y offset +1px, background luminance decreases by 15%, border glows.
+- Geometry comes from `nodelio_display_profile()`: S3 has bottom navigation and a
+  square grid; P4 has a side rail and a wider workspace. Do not stretch a square
+  modal to impersonate a wide layout or change cloud grid coordinates for style.
+- Keep device-specific semantics: PWM retains its value and slider, momentary
+  actions don't latch, and DualLine retains two named absolute-state branches.
+- Use opaque surfaces instead of live blur, glass sampling or large soft shadows.
+  Reuse objects and static transition descriptors. Short 120 ms transitions may
+  communicate a touch; avoid repeated bounces, idle animations and full-page fades.
+- Preserve retained pages and coalesced updates. LVGL callbacks dispatch network
+  work asynchronously. Screen-off must suppress visual work without stopping
+  media or breaking touch wake; the first sleep touch must not activate a tile.
+- Verify new geometry with actual LVGL for both profiles, including large text,
+  disabled and pressed states. Use `scripts/tests/test_panel_ui_lifecycle.py` and
+  inspect preview output when useful. Host previews do not prove device frame rate,
+  color calibration, current consumption or touch response.
 
----
+## Primary design references
 
-## 2. Card Anatomy & Widget Design Patterns
+Reviewed 2026-11-01. These guide hierarchy and interaction; exact token values
+are maintained by this firmware for its displays and contrast requirements.
 
-Every tile must follow a structured, balanced hierarchy rather than scattering naked symbols:
-
-### 2.1 The Icon Capsule Pattern (图标徽章底座)
-Never place a naked icon floating above raw text.
-- Wrap the icon in a **capsule/circle container** (`32x32px` or `28x28px`, radius 8~10px).
-- **Off state**: Capsule background is subtle `rgba(255,255,255,0.06)`, icon color is `#93a89a`.
-- **On state**: Capsule background is accent tint `rgba(52,199,89,0.22)`, icon is high-contrast `#ffffff`.
-
-### 2.2 Dual-Line Information Hierarchy (双行信息层级)
-- **Top Bar**: Icon Capsule (left) + State Badge (right-top floating pill, e.g. "开", "关", "NC", "点动").
-- **Bottom / Mid Content**:
-  - **Title**: 15px Puhui font, bold weight, max 8-10 chars with ellipsis.
-  - **Sub-hint**: 11-12px secondary status (e.g., "风扇 · 60%", "自锁继电器", "常闭通路").
-
-### 2.3 Semantic Skin Customization (特定设备类型的定制呈现)
-1. **PWM / 调光 / 风扇 (Fill Slider Tile)**:
-   - Width: 3 columns (full card) or 2 columns (half width).
-   - Display: Dedicated icon (`fan` -> `LV_SYMBOL_REFRESH`, `dimmer` -> `LV_SYMBOL_EYE_OPEN`, `heater` -> `LV_SYMBOL_CHARGE`).
-   - Track: Sleek 8px height track or fill-level background with smooth knob (`18x18` circular pill).
-   - Value: Explicit percentage readout (`风 60%`, `光 80%`).
-2. **GPIO 点动 (Momentary Pulse Tile)**:
-   - Icon: `LV_SYMBOL_BELL` or trigger pulse glyph.
-   - Badge: "点动" (Muted pill).
-   - Touch Behavior: Down triggers visual press ripple; release dispatches action without sticking local state to "ON".
-3. **DualLine 互斥双路 (Changeover Tile)**:
-   - **两路终端卡**（禁止做成开/关按钮）。整卡中性底；每路主名（厨房/热水器）+ 副标 NC·常闭 / NO·常开；通道路高亮描边，断道路暗底。
-   - 高≥2：上下两路（贴近 APP）；扁横条：左右两路。`labels.off`/`labels.on` 来自详情 `stateLabels`；点支路绝对 OFF/ON。勿抄接线摇臂动画。
-
----
-
-## 3. LVGL Implementation Standards (Performance & Stability)
-
-1. **Token Centralization**:
-   - All colors and radii MUST be declared in `ui_theme.h`. Absolutely NO raw hex literals in widget rendering files.
-2. **Transitions & Animations**:
-   - Use `lv_style_transition_dsc_init` for `LV_STYLE_BG_COLOR` and `LV_STYLE_BORDER_COLOR` (120ms~150ms).
-   - Prevent allocation churn: Keep transition descriptors static.
-3. **Touch Targets**:
-   - Minimum interactive area: 48x48 physical pixels.
-   - Use `lv_obj_set_ext_click_area(tile, 10)` to absorb slight finger offsets.
-4. **Layout Grid Alignment**:
-   - For 480x480 resolution: Standard inner canvas height is ~380px (after 30px status bar and 44px tab bar).
-   - Optimal grid: 6x6 columns with 4px gap, or 2x2 / 3x2 / 2x3 cards.
+- [Apple HIG: Color](https://developer.apple.com/design/human-interface-guidelines/color)
+- [Apple HIG: Buttons](https://developer.apple.com/design/human-interface-guidelines/buttons)
+- [Apple HIG: Materials](https://developer.apple.com/design/human-interface-guidelines/materials)
+- [Apple HIG: Accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility)
