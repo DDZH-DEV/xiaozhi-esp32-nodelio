@@ -953,6 +953,7 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/wifi_power.cc"
         "nodelio/wake_dram.cc"
         "nodelio/softap_portal.cc"
+        "nodelio/ui_theme.cc"
         "nodelio/ui_widgets.cc"
         "nodelio/nl_url_util.c"
         "nodelio/nl_time.cc"

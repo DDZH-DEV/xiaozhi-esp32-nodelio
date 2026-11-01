@@ -30,19 +30,35 @@ static void apply_font(lv_obj_t *obj)
     nl_ov_set_font(obj);
 }
 
+static void styles_bind_colors(void)
+{
+    if (auto* display = lv_display_get_default()) {
+        lv_display_set_theme(display, lv_theme_default_init(display, UI_ACCENT, UI_SUCCESS,
+                                                            ui_palette_is_dark() != 0, LV_FONT_DEFAULT));
+    }
+    lv_style_set_bg_color(&st_btn_base, UI_SURFACE);
+    lv_style_set_bg_color(&st_btn_pressed, UI_SURFACE_PRESSED);
+    lv_style_set_bg_color(&st_btn_off, UI_SURFACE_OFF);
+    lv_style_set_border_color(&st_btn_on, UI_ACCENT);
+    lv_style_set_text_color(&st_tab_base, UI_TEXT_MUTED);
+    lv_style_set_bg_color(&st_tab_checked, UI_TAB_GLOW);
+    lv_style_set_text_color(&st_tab_checked, UI_ACCENT);
+    lv_obj_report_style_change(&st_btn_base);
+    lv_obj_report_style_change(&st_btn_pressed);
+    lv_obj_report_style_change(&st_btn_off);
+    lv_obj_report_style_change(&st_btn_on);
+    lv_obj_report_style_change(&st_tab_base);
+    lv_obj_report_style_change(&st_tab_checked);
+}
+
 void ui_styles_init(void)
 {
     if (s_inited) {
         return;
     }
     s_inited = true;
-    if (auto* display = lv_display_get_default()) {
-        lv_display_set_theme(
-            display, lv_theme_default_init(display, UI_ACCENT, UI_SUCCESS, false, LV_FONT_DEFAULT));
-    }
 
     lv_style_init(&st_btn_base);
-    lv_style_set_bg_color(&st_btn_base, UI_SURFACE);
     lv_style_set_bg_opa(&st_btn_base, LV_OPA_COVER);
     lv_style_set_radius(&st_btn_base, UI_RADIUS_SM);
     lv_style_set_border_width(&st_btn_base, 0);
@@ -51,16 +67,13 @@ void ui_styles_init(void)
     lv_style_set_pad_row(&st_btn_base, 4);
 
     lv_style_init(&st_btn_pressed);
-    lv_style_set_bg_color(&st_btn_pressed, UI_SURFACE_PRESSED);
     lv_style_set_translate_y(&st_btn_pressed, 1);
 
     lv_style_init(&st_btn_off);
-    lv_style_set_bg_color(&st_btn_off, UI_SURFACE_OFF);
     lv_style_set_opa(&st_btn_off, LV_OPA_50);
 
     lv_style_init(&st_btn_on);
     lv_style_set_border_width(&st_btn_on, 1);
-    lv_style_set_border_color(&st_btn_on, UI_ACCENT);
 
     lv_style_init(&st_tab_base);
     lv_style_set_bg_opa(&st_tab_base, LV_OPA_TRANSP);
@@ -68,12 +81,19 @@ void ui_styles_init(void)
     lv_style_set_border_width(&st_tab_base, 0);
     lv_style_set_shadow_width(&st_tab_base, 0);
     lv_style_set_pad_ver(&st_tab_base, 6);
-    lv_style_set_text_color(&st_tab_base, UI_TEXT_MUTED);
 
     lv_style_init(&st_tab_checked);
     lv_style_set_bg_opa(&st_tab_checked, LV_OPA_COVER);
-    lv_style_set_bg_color(&st_tab_checked, UI_TAB_GLOW);
-    lv_style_set_text_color(&st_tab_checked, UI_ACCENT);
+    styles_bind_colors();
+}
+
+void ui_styles_apply(void)
+{
+    if (!s_inited) {
+        ui_styles_init();
+        return;
+    }
+    styles_bind_colors();
 }
 
 int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out)
@@ -388,7 +408,9 @@ void ui_style_switch(lv_obj_t* sw) {
     lv_obj_set_size(sw, 52, 32);
     lv_obj_set_ext_click_area(sw, 8);
     lv_obj_set_style_bg_color(sw, UI_SLIDER_TRACK, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(sw, UI_SUCCESS, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(sw, UI_SUCCESS,
+                              static_cast<lv_style_selector_t>(LV_PART_INDICATOR) |
+                                  static_cast<lv_style_selector_t>(LV_STATE_CHECKED));
     lv_obj_set_style_bg_color(sw, UI_ON_TILE, LV_PART_KNOB);
     lv_obj_set_style_shadow_width(sw, 0, LV_PART_KNOB);
 }

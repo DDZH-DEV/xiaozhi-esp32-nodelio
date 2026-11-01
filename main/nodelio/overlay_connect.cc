@@ -1011,6 +1011,99 @@ static void on_wifi_scan_btn(lv_event_t *e)
     }
 }
 
+static void paint_connect_action(lv_obj_t *lbl)
+{
+    if (!lbl) {
+        return;
+    }
+    lv_obj_t *btn = lv_obj_get_parent(lbl);
+    if (!btn) {
+        return;
+    }
+    lv_obj_set_style_bg_color(btn, UI_BACK_BTN, 0);
+    lv_obj_set_style_text_color(lbl, UI_ACCENT, 0);
+}
+
+void nl_ov_connect_reapply_appearance(void)
+{
+    if (s_connect) {
+        lv_obj_set_style_bg_color(s_connect, UI_BG, 0);
+        if (lv_obj_get_child_count(s_connect) > 0) {
+            lv_obj_t *nav = lv_obj_get_child(s_connect, 0);
+            lv_obj_set_style_bg_color(nav, UI_PANEL, 0);
+            if (lv_obj_get_child_count(nav) > 0) {
+                lv_obj_t *back = lv_obj_get_child(nav, 0);
+                lv_obj_set_style_bg_color(back, UI_BACK_BTN, 0);
+                if (lv_obj_t *bl = lv_obj_get_child(back, 0)) {
+                    lv_obj_set_style_text_color(bl, UI_ACCENT, 0);
+                }
+            }
+            if (lv_obj_get_child_count(nav) > 1) {
+                lv_obj_set_style_text_color(lv_obj_get_child(nav, 1), UI_TEXT, 0);
+            }
+        }
+        for (lv_obj_t *ta : {s_ta_ssid, s_ta_pass, s_ta_host, s_ta_port, s_ta_owner}) {
+            if (ta) {
+                style_ta(ta);
+            }
+        }
+        if (s_wifi_list) {
+            lv_obj_set_style_bg_color(s_wifi_list, UI_PANEL, 0);
+            lv_obj_set_style_border_color(s_wifi_list, UI_BORDER, 0);
+        }
+        if (s_hist_hint) {
+            lv_obj_set_style_text_color(s_hist_hint, UI_TEXT_DIM, 0);
+        }
+        if (s_connect_scroll) {
+            const uint32_t n = lv_obj_get_child_count(s_connect_scroll);
+            for (uint32_t i = 0; i < n; i++) {
+                lv_obj_t *ch = lv_obj_get_child(s_connect_scroll, i);
+                if (ch != s_hist_hint && lv_obj_check_type(ch, &lv_label_class)) {
+                    lv_obj_set_style_text_color(ch, UI_TEXT_DIM, 0);
+                }
+            }
+            if (n > 0) {
+                lv_obj_t *row = lv_obj_get_child(s_connect_scroll, n - 1);
+                if (row && lv_obj_get_child_count(row) >= 2) {
+                    lv_obj_t *cancel = lv_obj_get_child(row, 0);
+                    lv_obj_t *save = lv_obj_get_child(row, 1);
+                    lv_obj_set_style_bg_color(cancel, UI_OFFLINE, 0);
+                    if (lv_obj_t *cl = lv_obj_get_child(cancel, 0)) {
+                        lv_obj_set_style_text_color(cl, UI_TEXT_SUB, 0);
+                    }
+                    lv_obj_set_style_bg_color(save, UI_ACCENT, 0);
+                    lv_obj_set_style_bg_color(save, UI_ACCENT_PRESSED, LV_STATE_PRESSED);
+                    if (lv_obj_t *sl = lv_obj_get_child(save, 0)) {
+                        lv_obj_set_style_text_color(sl, UI_ON_TILE, 0);
+                    }
+                }
+            }
+        }
+        paint_connect_action(s_scan_btn_lbl);
+        paint_connect_action(s_proto_lbl);
+        rebuild_server_hist_chips();
+    }
+    if (!s_kb) {
+        return;
+    }
+    lv_obj_t *ta = lv_keyboard_get_textarea(s_kb);
+    const bool vis = !lv_obj_has_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
+    const lv_keyboard_mode_t mode = lv_keyboard_get_mode(s_kb);
+    lv_obj_delete(s_kb);
+    s_kb = nullptr;
+    ensure_kb();
+    if (!s_kb) {
+        return;
+    }
+    lv_keyboard_set_mode(s_kb, mode);
+    if (ta) {
+        lv_keyboard_set_textarea(s_kb, ta);
+    }
+    if (vis) {
+        nl_ov_kb_set_visible(true);
+    }
+}
+
 void nl_ov_do_factory_reset(void)
 {
     nodelio_nvs_config_t cfg{};

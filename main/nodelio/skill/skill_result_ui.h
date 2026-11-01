@@ -42,6 +42,8 @@ void nodelio_skill_result_layout(void);
 
 /** 全局显示文字档变更后重刷当前技能卡字体/列表。 */
 void nodelio_skill_result_reapply_text_scale(void);
+/** 只改技能卡和播放条颜色，不拆播放状态。 */
+void nodelio_skill_result_reapply_appearance(void);
 
 /** 音乐折叠后的右下悬浮球是否可见（应用页刷新钮要给它让位）。 */
 bool nodelio_skill_mini_fab_visible(void);

@@ -38,6 +38,7 @@ typedef struct {
     uint16_t media_pause_s; /* 暂停后关闭播放器秒数，默认 20，范围 10–120 */
     uint8_t media_wake_duck_pct; /* 播中武装唤醒时保留音量%，默认 70，范围 40–100 */
     uint8_t text_scale; /* 显示文字：0=标准 1=较大 2=更大；默认 1（墙板远读） */
+    uint8_t ui_mode;    /* 0=浅色（缺键默认） 1=曜夜深色 */
     uint8_t ai_pos_set; /* 1=小智弹窗用 ai_x/ai_y；0=默认贴底 */
     int16_t ai_x;       /* 弹窗左上角，相对屏幕 */
     int16_t ai_y;
@@ -130,6 +131,8 @@ uint8_t nodelio_media_wake_duck_pct(void);
 /** 显示文字档 0–2；读 RAM 镜像。 */
 uint8_t nodelio_text_scale(void);
 esp_err_t nodelio_text_scale_set(uint8_t scale);
+/** 0=浅色 1=深色；读 RAM 镜像，缺省浅色。 */
+uint8_t nodelio_ui_mode(void);
 /** 写入并钳位；某项为 0 则保持原值。含 flash，勿在 LVGL 任务调用。 */
 esp_err_t nodelio_set_sleep_seconds(uint16_t idle_s, uint16_t goodbye_s);
 esp_err_t nodelio_set_idle_wifi_seconds(uint16_t wifi_s);

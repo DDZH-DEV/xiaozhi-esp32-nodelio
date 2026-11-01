@@ -114,6 +114,7 @@ void nodelio_nvs_cache_get(nodelio_nvs_config_t *out)
     out->media_pause_s = NODELIO_MEDIA_PAUSE_DEFAULT;
     out->media_wake_duck_pct = NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
     out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
+    out->ui_mode = 0;
 }
 
 static esp_err_t get_str(nvs_handle_t h, const char *key, char *buf, size_t len)
@@ -198,6 +199,9 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     if (out->text_scale > NODELIO_TEXT_SCALE_MAX) {
         out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
     }
+    if (out->ui_mode > 1) {
+        out->ui_mode = 0;
+    }
     if (out->ai_pos_set > 1) {
         out->ai_pos_set = 0;
     }
@@ -245,6 +249,9 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     if (out->text_scale > NODELIO_TEXT_SCALE_MAX) {
         out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
     }
+    if (out->ui_mode > 1) {
+        out->ui_mode = 0;
+    }
     if (out->ai_pos_set > 1) {
         out->ai_pos_set = 0;
     }
@@ -277,6 +284,7 @@ static esp_err_t load_config(nodelio_nvs_config_t* out) {
     out->media_pause_s = NODELIO_MEDIA_PAUSE_DEFAULT;
     out->media_wake_duck_pct = NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
     out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
+    out->ui_mode = 0;
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NODELIO_NVS_NS, NVS_READONLY, &h);
@@ -367,6 +375,12 @@ static esp_err_t load_config(nodelio_nvs_config_t* out) {
             out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
         }
         v = 0;
+        if (nvs_get_u8(h, "ui_mode", &v) == ESP_OK) {
+            out->ui_mode = v;
+        } else {
+            out->ui_mode = 0;
+        }
+        v = 0;
         if (nvs_get_u8(h, "ai_pos", &v) == ESP_OK && v == 1) {
             int16_t x = 0;
             int16_t y = 0;
@@ -436,6 +450,7 @@ static esp_err_t save_config(const nodelio_nvs_config_t* in, bool preferences_on
     NL_ACCUM(nvs_set_u16(h, "md_pause", tmp.media_pause_s));
     NL_ACCUM(nvs_set_u8(h, "md_duck", tmp.media_wake_duck_pct));
     NL_ACCUM(nvs_set_u8(h, "txt_scl", tmp.text_scale));
+    NL_ACCUM(nvs_set_u8(h, "ui_mode", tmp.ui_mode > 1 ? 0 : tmp.ui_mode));
     NL_ACCUM(nvs_set_u8(h, "ai_pos", tmp.ai_pos_set ? 1 : 0));
     NL_ACCUM(nvs_set_i16(h, "ai_x", tmp.ai_x));
     NL_ACCUM(nvs_set_i16(h, "ai_y", tmp.ai_y));
@@ -724,6 +739,14 @@ esp_err_t nodelio_text_scale_set(uint8_t scale)
     }
     cfg.text_scale = scale > NODELIO_TEXT_SCALE_MAX ? NODELIO_TEXT_SCALE_DEFAULT : scale;
     return nodelio_nvs_save_preferences(&cfg);
+}
+
+uint8_t nodelio_ui_mode(void)
+{
+    if (!s_ram_ok) {
+        return 0;
+    }
+    return s_ram.ui_mode == 1 ? 1 : 0;
 }
 
 esp_err_t nodelio_set_sleep_seconds(uint16_t idle_s, uint16_t goodbye_s)

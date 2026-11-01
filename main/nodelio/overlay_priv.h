@@ -180,6 +180,8 @@ const lv_font_t *nl_ov_read_font(void);
 const lv_font_t *nl_ov_tile_icon_font(bool is_row);
 /** 改显示文字档后刷新首页/应用/设置/技能卡。 */
 void nl_ov_apply_text_scale(void);
+/** 调色板已切换后重绘壳、首页、应用、设置、技能卡、配网和小智抽屉。 */
+void nl_ov_apply_appearance(void);
 void nl_ov_toast(const char *msg);
 
 static inline bool nl_ov_cfg_http_ready(nodelio_nvs_config_t *out, bool toast)
@@ -262,6 +264,7 @@ void nl_ov_on_brand_click(lv_event_t *e);
 
 /* —— connect —— */
 void nl_ov_build_connect(void);
+void nl_ov_connect_reapply_appearance(void);
 void nl_ov_open_connect(void);
 void nl_ov_close_connect(void);
 void nl_ov_kb_set_visible(bool on);
@@ -287,6 +290,8 @@ void nl_ov_apps_ensure(void);
 void nl_ov_apps_refresh(void);
 /** 仅按当前字号重排应用列表（不拉网）。 */
 void nl_ov_apps_relayout(void);
+/** 按当前调色板重刷应用页底色和已有卡片。 */
+void nl_ov_apps_reapply_appearance(void);
 /** 从 GET /skills 或 /bootstrap 的 JSON root 写入已装列表并落盘 */
 void nl_ov_apps_ingest_skills_root(const cJSON *root);
 /** 从同上 JSON 写入首页钉选 */
@@ -315,6 +320,7 @@ void nl_ov_toast_invoke_unreachable(const char *skill_id);
 
 /* —— ai drawer —— */
 void nl_ov_create_ai_drawer(lv_obj_t *parent);
+void nl_ov_ai_reapply_appearance(void);
 void nl_ov_hide_ai_drawer(void);
 void nl_ov_restore_ai_drawer_if_session(void);
 bool nl_ov_ai_session_active(void);

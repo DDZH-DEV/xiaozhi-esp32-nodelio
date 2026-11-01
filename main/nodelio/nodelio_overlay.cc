@@ -341,6 +341,53 @@ void nl_ov_apply_text_scale(void)
     nodelio_skill_result_reapply_text_scale();
 }
 
+void nl_ov_apply_appearance(void)
+{
+    ui_styles_apply();
+    nl_panel_shell_setup(nl_ov_ui_font());
+    nl_panel_shell_dismiss_toast();
+    if (s_root) {
+        lv_obj_set_style_bg_color(s_root, UI_BG, 0);
+        lv_obj_set_style_text_color(s_root, UI_TEXT, 0);
+    }
+    if (s_status_bar) {
+        lv_obj_set_style_bg_color(s_status_bar, UI_BG, 0);
+    }
+    if (s_brand_lbl) {
+        lv_obj_set_style_text_color(s_brand_lbl, UI_ACCENT, 0);
+    }
+    if (s_clock_lbl) {
+        lv_obj_set_style_text_color(s_clock_lbl, UI_TEXT_SUB, 0);
+    }
+    if (s_status_lbl) {
+        lv_obj_set_style_text_color(s_status_lbl, UI_STATUS_CHROME, 0);
+    }
+    if (s_tabbar) {
+        lv_obj_set_style_bg_color(s_tabbar, UI_PANEL, 0);
+    }
+    if (s_home) {
+        lv_obj_set_style_bg_color(s_home, UI_BG, 0);
+    }
+    if (s_settings) {
+        lv_obj_set_style_bg_color(s_settings, UI_BG, 0);
+    }
+    if (s_fab) {
+        lv_obj_set_style_bg_color(s_fab, UI_ACCENT, 0);
+        if (lv_obj_t *fl = lv_obj_get_child(s_fab, 0)) {
+            lv_obj_set_style_text_color(fl, UI_ON_TILE, 0);
+        }
+    }
+    nl_ov_refresh_status_icons(s_wifi_ok, s_cloud_ok, nullptr);
+    if (s_have_layout && s_home) {
+        nl_ov_fill_home();
+    }
+    nl_ov_apps_reapply_appearance();
+    nl_ov_settings_reapply_text_scale();
+    nodelio_skill_result_reapply_appearance();
+    nl_ov_connect_reapply_appearance();
+    nl_ov_ai_reapply_appearance();
+}
+
 void nl_ov_set_icon_font(lv_obj_t *obj)
 {
     if (obj) {
@@ -1077,6 +1124,7 @@ esp_err_t nodelio_overlay_init(void)
     }
     (void)nodelio_nvs_init();
     (void)nodelio_nvs_load(&s_cfg);
+    ui_palette_set(s_cfg.ui_mode == 1 ? 1 : 0);
     nodelio_conn_hist_t history{};
     (void)nodelio_conn_hist_load(&history);
     if (s_cfg.volume <= 100) {
@@ -1093,6 +1141,7 @@ esp_err_t nodelio_overlay_init(void)
     if (!lock) {
         return ESP_FAIL;
     }
+    nl_panel_shell_setup(nl_ov_ui_font());
     create_fab_locked();
     ESP_LOGI(TAG, "FAB ready");
     /* 建壳失败也不让背光一直灭 */

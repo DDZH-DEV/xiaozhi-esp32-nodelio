@@ -385,6 +385,89 @@ void nodelio_skill_result_reapply_text_scale(void)
     layout_skill_layers();
 }
 
+static void paint_round_btn(lv_obj_t *btn, lv_color_t bg, lv_color_t fg)
+{
+    if (!btn) {
+        return;
+    }
+    lv_obj_set_style_bg_color(btn, bg, 0);
+    if (lv_obj_t *ic = lv_obj_get_child(btn, 0)) {
+        lv_obj_set_style_text_color(ic, fg, 0);
+    }
+}
+
+void nodelio_skill_result_reapply_appearance(void)
+{
+    if (s_scrim) {
+        lv_obj_set_style_bg_color(s_scrim, UI_BG, 0);
+    }
+    style_skill_frame();
+    if (s_card_title) {
+        lv_obj_set_style_text_color(s_card_title, UI_TEXT, 0);
+    }
+    if (s_card_sub) {
+        lv_obj_set_style_text_color(s_card_sub, UI_TEXT_MUTED, 0);
+    }
+    if (s_hdr_btns) {
+        const uint32_t n = lv_obj_get_child_count(s_hdr_btns);
+        for (uint32_t i = 0; i < n; i++) {
+            paint_round_btn(lv_obj_get_child(s_hdr_btns, i), UI_CAPSULE_OFF,
+                            i == 0 ? UI_ACCENT_SOFT : UI_TEXT_SUB);
+        }
+    }
+    if (s_now_bar) {
+        style_now_bar(skill_player_docked());
+    }
+    if (s_now_eq_wrap) {
+        lv_obj_set_style_bg_color(s_now_eq_wrap, UI_TILE_SWITCH, 0);
+    }
+    for (int i = 0; i < SKILL_EQ_N; i++) {
+        if (s_now_eq[i]) {
+            lv_obj_set_style_bg_color(s_now_eq[i], UI_ACCENT_SOFT, 0);
+        }
+    }
+    if (s_now_sub) {
+        lv_obj_set_style_text_color(s_now_sub, UI_ACCENT_SOFT, 0);
+    }
+    if (s_now_lbl) {
+        lv_obj_set_style_text_color(s_now_lbl, UI_TEXT, 0);
+    }
+    if (s_now_btns) {
+        const uint32_t n = lv_obj_get_child_count(s_now_btns);
+        if (n > 0) {
+            paint_round_btn(lv_obj_get_child(s_now_btns, 0), UI_TILE_SWITCH, UI_ACCENT_SOFT);
+        }
+        if (n > 1) {
+            paint_round_btn(lv_obj_get_child(s_now_btns, 1), UI_SURFACE, UI_TEXT);
+        }
+        if (n > 2) {
+            paint_round_btn(lv_obj_get_child(s_now_btns, 2), UI_ACCENT, UI_ON_TILE);
+        }
+        if (n > 3) {
+            paint_round_btn(lv_obj_get_child(s_now_btns, 3), UI_SURFACE, UI_TEXT);
+        }
+        if (n > 4) {
+            paint_round_btn(lv_obj_get_child(s_now_btns, 4), UI_SURFACE, UI_TEXT);
+        }
+        if (n > 5) {
+            paint_round_btn(lv_obj_get_child(s_now_btns, 5), UI_CAPSULE_OFF, UI_TEXT_SUB);
+        }
+    }
+    if (s_mini_fab) {
+        lv_obj_set_style_bg_color(s_mini_fab, UI_TILE_SWITCH, 0);
+        lv_obj_set_style_bg_color(s_mini_fab, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(s_mini_fab, UI_ACCENT, 0);
+        lv_obj_set_style_shadow_color(s_mini_fab, UI_ACCENT, 0);
+        if (s_mini_ic) {
+            lv_obj_set_style_text_color(s_mini_ic, UI_ACCENT_SOFT, 0);
+        }
+    }
+    if (s_have_env && s_env && s_card_list) {
+        fill_list();
+        layout_skill_layers();
+    }
+}
+
 bool nodelio_skill_mini_fab_visible(void)
 {
     return s_mini_fab && !lv_obj_has_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN);
@@ -3109,12 +3192,12 @@ static void ensure_card(void)
         /* 麦克风：播中 DRAM 常开不起唤醒，点此暂停并进对话 */
         make_play_ctrl_btn(s_now_btns, UI_TILE_SWITCH, UI_ACCENT_SOFT, MATERIAL_SYMBOLS_MIC, on_voice_now);
         s_now_prev_btn =
-            make_play_ctrl_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_SKIP_PREVIOUS, on_prev_now);
+            make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_SKIP_PREVIOUS, on_prev_now);
         s_now_pause_btn =
-            make_play_ctrl_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_PAUSE, on_pause_now);
-        make_play_ctrl_btn(s_now_btns, UI_DANGER_BG, UI_DANGER_FG, MATERIAL_SYMBOLS_STOP, on_stop_now);
+            make_play_ctrl_btn(s_now_btns, UI_ACCENT, UI_ON_TILE, MATERIAL_SYMBOLS_PAUSE, on_pause_now);
+        make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_STOP, on_stop_now);
         s_now_next_btn =
-            make_play_ctrl_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT, MATERIAL_SYMBOLS_SKIP_NEXT, on_next_now);
+            make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_SKIP_NEXT, on_next_now);
         make_icon_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT_SUB, MATERIAL_SYMBOLS_KEYBOARD_ARROW_DOWN,
                       on_minimize);
     }

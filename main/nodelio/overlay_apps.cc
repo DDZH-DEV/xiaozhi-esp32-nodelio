@@ -395,6 +395,7 @@ struct app_view_t {
 };
 static app_view_t s_app_views[APP_MAX];
 static bool s_apps_dirty;
+static bool s_force_paint;
 
 static void render_list(void)
 {
@@ -469,14 +470,14 @@ static void render_list(void)
             }
         }
         const bool focused = s_split && i == s_focus_idx;
-        if (created || view.focused != focused) {
+        if (created || s_force_paint || view.focused != focused) {
             lv_obj_set_style_bg_color(view.card, focused ? UI_SELECTION : UI_SURFACE, 0);
             lv_obj_set_style_border_width(view.card, focused ? 1 : 0, 0);
             lv_obj_set_style_border_color(view.card, focused ? UI_ACCENT : UI_TILE_OFF_BORDER, 0);
             lv_obj_set_style_border_opa(view.card, focused ? LV_OPA_COVER : LV_OPA_80, 0);
             view.focused = focused;
         }
-        const bool changed = created || strcmp(view.item.id, item.id) ||
+        const bool changed = created || s_force_paint || strcmp(view.item.id, item.id) ||
                              strcmp(view.item.name, item.name) ||
                              strcmp(view.item.desc, item.desc) || view.item.enabled != item.enabled;
         const char* desc = !item.enabled ? "不可用" : (item.desc[0] ? item.desc : "点按打开");
@@ -513,6 +514,35 @@ static void render_list(void)
             view.font = font;
         }
     }
+    s_force_paint = false;
+}
+
+void nl_ov_apps_reapply_appearance(void)
+{
+    if (s_page) {
+        lv_obj_set_style_bg_color(s_page, UI_BG, 0);
+    }
+    if (s_hint) {
+        lv_obj_set_style_text_color(s_hint, UI_TEXT_MUTED, 0);
+    }
+    if (s_refresh) {
+        lv_obj_set_style_bg_color(s_refresh, UI_SURFACE, 0);
+        lv_obj_set_style_bg_color(s_refresh, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(s_refresh, UI_ACCENT, 0);
+        lv_obj_set_style_shadow_color(s_refresh, UI_ACCENT, 0);
+        if (lv_obj_t *ic = lv_obj_get_child(s_refresh, 0)) {
+            lv_obj_set_style_text_color(ic, UI_ACCENT_SOFT, 0);
+        }
+    }
+    if (!s_list) {
+        return;
+    }
+    s_force_paint = true;
+    if (s_ready && s_page && lv_obj_has_flag(s_page, LV_OBJ_FLAG_HIDDEN)) {
+        s_apps_dirty = true;
+        return;
+    }
+    render_list();
 }
 
 static void apps_split_anim_ready(lv_anim_t *a)

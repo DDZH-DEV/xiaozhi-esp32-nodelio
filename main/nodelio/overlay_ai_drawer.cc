@@ -128,6 +128,65 @@ static void paint_mini_fab_phase(chat_phase_t phase)
     }
 }
 
+void nl_ov_ai_reapply_appearance(void)
+{
+    if (!s_ai_drawer && !s_ai_mini_fab) {
+        return;
+    }
+    uint32_t border = UI_C_BORDER;
+    uint32_t status = UI_C_INFO;
+    if (s_chat_phase == CHAT_SPEAK) {
+        border = UI_C_TILE_ON_BORDER;
+        status = UI_C_ACCENT_SOFT;
+    } else if (s_chat_phase == CHAT_CONNECT) {
+        border = UI_C_WARN;
+        status = UI_C_WARN;
+    } else if (s_chat_phase == CHAT_LISTEN) {
+        border = UI_C_INFO;
+        status = UI_C_INFO;
+    }
+    if (s_ai_drawer) {
+        lv_obj_set_style_bg_color(s_ai_drawer, UI_SURFACE, 0);
+        lv_obj_set_style_border_color(s_ai_drawer, lv_color_hex(border), 0);
+        lv_obj_set_style_shadow_color(s_ai_drawer, UI_BG, 0);
+        if (lv_obj_get_child_count(s_ai_drawer) > 0) {
+            lv_obj_t *hdr = lv_obj_get_child(s_ai_drawer, 0);
+            lv_obj_set_style_bg_color(hdr, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+            const uint32_t hn = lv_obj_get_child_count(hdr);
+            if (hn > 0) {
+                lv_obj_t *btns = lv_obj_get_child(hdr, hn - 1);
+                const uint32_t bn = lv_obj_get_child_count(btns);
+                for (uint32_t i = 0; i < bn; i++) {
+                    lv_obj_t *btn = lv_obj_get_child(btns, i);
+                    lv_obj_set_style_bg_color(btn, UI_CAPSULE_OFF, 0);
+                    lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+                    if (lv_obj_t *ic = lv_obj_get_child(btn, 0)) {
+                        lv_obj_set_style_text_color(ic, UI_TEXT_SUB, 0);
+                    }
+                }
+            }
+        }
+        for (int i = 0; i < 3; i++) {
+            if (s_eq_bars[i]) {
+                lv_obj_set_style_bg_color(s_eq_bars[i],
+                                          s_chat_phase == CHAT_IDLE ? UI_TEXT_MUTED : UI_ACCENT, 0);
+            }
+        }
+        if (s_ai_drawer_status) {
+            lv_obj_set_style_text_color(s_ai_drawer_status, lv_color_hex(status), 0);
+        }
+        if (s_ai_drawer_text) {
+            lv_obj_set_style_text_color(s_ai_drawer_text, UI_TEXT, 0);
+        }
+    }
+    if (s_ai_mini_fab) {
+        lv_obj_set_style_bg_color(s_ai_mini_fab, UI_SURFACE, 0);
+        lv_obj_set_style_bg_color(s_ai_mini_fab, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_color(s_ai_mini_fab, lv_color_hex(status), 0);
+        paint_mini_fab_phase(s_chat_phase);
+    }
+}
+
 static void show_ai_mini_fab(chat_phase_t phase)
 {
     if (!s_ai_mini_fab) {

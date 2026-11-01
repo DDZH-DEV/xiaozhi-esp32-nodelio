@@ -520,7 +520,8 @@ int main(int argc,char** argv) {
         args += [str(p) for p in sorted((lvgl / "src").rglob("*.c"))]
         args += [str(ROOT / "main/nodelio/fonts/font_puhui_14_1.c")]
         args += ["-x", "c++", str(work / "driver.cpp"), str(ROOT / "main/nodelio/panel_shell.cc"),
-                 str(ROOT / "main/nodelio/ui_widgets.cc"), "-o", str(cls.exe)]
+                 str(ROOT / "main/nodelio/ui_theme.cc"), str(ROOT / "main/nodelio/ui_widgets.cc"),
+                 "-o", str(cls.exe)]
         # Clang/GCC response files avoid Windows command-length limits.
         (work / "args.rsp").write_text("\n".join('"' + a.replace('\\', '/') + '"' for a in args))
         result = subprocess.run(compiler + ["@" + str(work / "args.rsp")],

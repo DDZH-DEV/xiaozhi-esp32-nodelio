@@ -1,26 +1,36 @@
 ---
 name: lvgl-smart-panel-design
 description: >-
-  Apple-inspired LVGL UI design and implementation for NodeLio smart home wall
-  panels: S3 480x480 and P4 1280x452. Use for panel themes, navigation, cards,
-  sliders, switches, dialogs and touch interactions. Preserve display_profile
-  geometry and embedded rendering budgets.
+  LVGL UI design and implementation for NodeLio smart home wall panels:
+  S3 480x480 and P4 1280x452, with a warm light appearance and the previous
+  曜夜 dark appearance. Use for panel themes, navigation, cards, sliders,
+  switches, dialogs and touch interactions. Preserve display_profile geometry
+  and embedded rendering budgets.
 ---
 
-# NodeLio Apple-inspired panel design
+# NodeLio panel design
 
-The user selected a light appearance resembling iOS Settings and Home. This
-replaces the previous dark green/slate visual direction for this project.
-The implementation is LVGL, with embedded constraints; it is not UIKit or an
-implementation of Apple's Liquid Glass renderer.
+The panel has two appearances, switched in 显示与声音 and stored as NVS `ui_mode`.
+Light is the default. Dark restores the 曜夜 palette from before commit `1053184`.
+Both read the same tokens in `ui_theme.cc`. The implementation is LVGL, with
+embedded constraints; it is not UIKit or a live-blur renderer.
 
 ## Visual decisions
 
 - Read `main/nodelio/ui_theme.h` and `ui_widgets.*` before changing a component.
   Colors and reusable geometry belong in these tokens, never raw widget literals.
-- Use a light grouped canvas, opaque white cards, dark primary text, readable gray
-  secondary text and blue navigation/action emphasis. Green means enabled device
-  or switch state; purple denotes scenes, amber a warning, red a destructive action.
+  Do not add a third palette or put hex values back into widgets.
+- Light: warm canvas `#f3efe6`, opaque white cards, little or no border. Text is
+  `#1c1c1e` / `#3c3834` / `#6b6560`. Primary fill is `#1b7a40` so white labels
+  clear 4.5:1. Pressed fill is `#176f39`, selection tint `#e5f6eb`. PWM and info
+  stay blue `#0077c8`. On-tiles use switch `#d7f3e3`, scene `#f3e8fb`, gpio
+  `#ffe8cc`, pwm `#e5f1ff`; off-tiles stay white.
+- Dark: canvas `#0c0f14`, surface `#181e28`, brand green `#34c759`, luminous
+  on-tiles and slate off-tiles. Do not restyle this set when adjusting light.
+- Green means the primary action or an enabled device. Purple denotes scenes,
+  amber a warning, red a destructive action. The playback control is a filled
+  primary circle of at least 48px; previous, next and stop use the card surface
+  with dark glyphs.
 - Keep most content neutral. Reserve strong color for the main action and compact
   icon containers. An active home tile uses a light semantic tint, dark title and
   a labeled state badge. Preserve offline, unknown, pending and countdown feedback.
@@ -30,10 +40,11 @@ implementation of Apple's Liquid Glass renderer.
 - Cards use the shared medium radius; sheets the larger radius; compact controls
   and icon containers the small radius. Keep one clear text hierarchy and stable
   alignment, rather than nesting several bordered panels.
-- Tabs use a quiet blue selection capsule. Secondary actions use a tinted surface
-  and blue label. Primary actions use blue fill and a contrasting label in both
-  normal and pressed states. Switches use green with a white thumb; sliders use a
-  thin track, visible thumb and at least 48 pixels of effective touch height.
+- Tabs use a quiet selection capsule in the current palette. Secondary actions
+  use a tinted surface and the accent label. Primary actions use the accent fill
+  and a contrasting label in both normal and pressed states. Switches use green
+  with a white thumb; sliders use a thin track, visible thumb and at least 48
+  pixels of effective touch height.
 - Check foreground/background contrast after changing tokens. Use `ui_color_on`
   for user-defined solid colors; derive a light tint for custom home backgrounds.
   Essential text targets 4.5:1. State must also be communicated with text or shape.

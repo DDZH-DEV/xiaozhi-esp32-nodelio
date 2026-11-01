@@ -278,6 +278,53 @@ static bool parse_text_scale(const char *value, uint8_t *out, char *err, size_t 
     return false;
 }
 
+static const char *ui_mode_name(uint8_t mode)
+{
+    return mode == 1 ? "深色" : "浅色";
+}
+
+static bool parse_ui_mode(const char *value, uint8_t *out, char *err, size_t err_len)
+{
+    if (!value || !value[0] || !out) {
+        pref_err(err, err_len, "外观须为 0 浅色或 1 深色");
+        return false;
+    }
+    if (strcmp(value, "0") == 0 || strcmp(value, "浅色") == 0 || strcasecmp(value, "light") == 0) {
+        *out = 0;
+        return true;
+    }
+    if (strcmp(value, "1") == 0 || strcmp(value, "深色") == 0 || strcasecmp(value, "dark") == 0) {
+        *out = 1;
+        return true;
+    }
+    pref_err(err, err_len, "外观须为 0 浅色或 1 深色");
+    return false;
+}
+
+static void commit_ui_mode(uint8_t mode)
+{
+    mode = mode == 1 ? 1 : 0;
+    if (s_cfg.ui_mode == mode && (uint8_t)ui_palette_is_dark() == mode) {
+        return;
+    }
+    s_cfg.ui_mode = mode;
+    ui_palette_set(mode);
+    persist_cfg_async();
+    Application::GetInstance().Schedule([mode]() {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (!lock) {
+            return;
+        }
+        nl_ov_apply_appearance();
+        nl_ov_toast(mode == 1 ? "外观 深色" : "外观 浅色");
+    });
+}
+
+static void on_ui_mode_chip(lv_event_t *e)
+{
+    commit_ui_mode((uint8_t)(intptr_t)lv_event_get_user_data(e));
+}
+
 static void commit_text_scale(uint8_t scale)
 {
     if (scale > NODELIO_TEXT_SCALE_MAX) {
@@ -382,6 +429,10 @@ static const char *normalize_pref_key(const char *key)
     if (strcasecmp(key, "text_scale") == 0 || strcasecmp(key, "font_scale") == 0 ||
         strcasecmp(key, "txt_scl") == 0 || strcmp(key, "字号") == 0) {
         return "text_scale";
+    }
+    if (strcasecmp(key, "ui_mode") == 0 || strcasecmp(key, "appearance") == 0 ||
+        strcasecmp(key, "theme") == 0 || strcmp(key, "外观") == 0) {
+        return "ui_mode";
     }
     return key;
 }
@@ -578,6 +629,14 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         commit_text_scale(scale);
         return ESP_OK;
     }
+    if (strcasecmp(key, "ui_mode") == 0) {
+        uint8_t mode = 0;
+        if (!parse_ui_mode(value, &mode, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        commit_ui_mode(mode);
+        return ESP_OK;
+    }
     /* 动作键：value 可空，只触发 */
     if (strcasecmp(key, "layout_sync") == 0) {
         nl_ov_toast("正在刷新布局…");
@@ -600,7 +659,7 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
     }
 
     pref_err(err, err_len,
-             "未知 key。空闲断网=idle_wifi_s；息屏=idle_sleep_s；退下=bye_sleep_s；文字=text_scale");
+             "未知 key。空闲断网=idle_wifi_s；息屏=idle_sleep_s；退下=bye_sleep_s；文字=text_scale；外观=ui_mode");
     return ESP_ERR_NOT_SUPPORTED;
 }
 
@@ -669,6 +728,10 @@ extern "C" esp_err_t nodelio_panel_ui_get_pref(const char *key, char *buf, size_
     }
     if (strcasecmp(key, "text_scale") == 0) {
         std::snprintf(buf, len, "%d", (int)nodelio_text_scale());
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "ui_mode") == 0) {
+        std::snprintf(buf, len, "%d", (int)nodelio_ui_mode());
         return ESP_OK;
     }
     return ESP_ERR_NOT_FOUND;
@@ -1038,6 +1101,39 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_label_set_text(hint, "本机扬声器音量");
         nl_ov_set_font(hint);
         lv_obj_set_style_text_color(hint, UI_TEXT_TIP, 0);
+
+        const uint8_t mode_cur = s_cfg.ui_mode == 1 ? 1 : 0;
+        lv_obj_t *mode_band = audio_ctrl_band(body, "外观", ui_mode_name(mode_cur), nullptr);
+        lv_obj_t *mode_row = lv_obj_create(mode_band);
+        lv_obj_remove_style_all(mode_row);
+        lv_obj_set_width(mode_row, lv_pct(100));
+        lv_obj_set_height(mode_row, 44);
+        lv_obj_set_flex_flow(mode_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(mode_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(mode_row, 8, 0);
+        lv_obj_clear_flag(mode_row, LV_OBJ_FLAG_SCROLLABLE);
+        static const char *k_mode[] = {"浅色", "深色"};
+        for (int i = 0; i < 2; i++) {
+            const bool on = mode_cur == (uint8_t)i;
+            lv_obj_t *chip = lv_obj_create(mode_row);
+            lv_obj_remove_style_all(chip);
+            lv_obj_set_flex_grow(chip, 1);
+            lv_obj_set_height(chip, 44);
+            lv_obj_set_style_radius(chip, 12, 0);
+            lv_obj_set_style_bg_color(chip, on ? UI_ACCENT : UI_CAPSULE_OFF, 0);
+            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(chip, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+            lv_obj_set_style_translate_y(chip, 1, LV_STATE_PRESSED);
+            lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(chip, UI_EXT_CLICK);
+            lv_obj_add_event_cb(chip, on_ui_mode_chip, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            lv_obj_t *lab = lv_label_create(chip);
+            nl_ov_set_font(lab);
+            lv_label_set_text(lab, k_mode[i]);
+            lv_obj_set_style_text_color(lab, on ? UI_ON_TILE : UI_TEXT, 0);
+            lv_obj_center(lab);
+        }
 
         const uint8_t cur = nodelio_text_scale();
         lv_obj_t *txt_band = audio_ctrl_band(body, "文字大小", text_scale_name(cur), nullptr);
@@ -1549,9 +1645,9 @@ static void fill_settings_hub(void)
     lv_obj_set_scrollbar_mode(s_settings, LV_SCROLLBAR_MODE_OFF);
 
     load_audio_prefs();
-    char bri_sub[48];
-    std::snprintf(bri_sub, sizeof(bri_sub), "亮度 %d%% · 音量 %d%% · %s", s_brightness, s_volume,
-                  text_scale_name(nodelio_text_scale()));
+    char bri_sub[72];
+    std::snprintf(bri_sub, sizeof(bri_sub), "亮度 %d%% · 音量 %d%% · %s · %s", s_brightness, s_volume,
+                  text_scale_name(nodelio_text_scale()), ui_mode_name(s_cfg.ui_mode));
 
     settings_tile(s_settings, "brightness_6", "显示与声音", bri_sub, UI_C_ACCENT, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_DISP); });
