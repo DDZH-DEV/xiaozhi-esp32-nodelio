@@ -183,8 +183,9 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, UI_RADIUS_MD, 0);
     ui_style_card(btn);
-    lv_obj_set_style_border_width(btn, 0, 0);
+    lv_obj_set_style_border_width(btn, 1, 0);
     lv_obj_set_style_border_color(btn, UI_TILE_OFF_BORDER, 0);
+    lv_obj_set_style_border_opa(btn, LV_OPA_40, 0);
     lv_obj_set_style_pad_left(btn, 10, 0);
     lv_obj_set_style_pad_right(btn, 8, 0);
     lv_obj_set_style_pad_top(btn, 0, 0);
@@ -232,8 +233,6 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_clear_flag(text, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(text, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* 文字区宽 = 卡宽 - 左右内边距 - 列间距 - 图标底座 */
-    const int text_w = tile_w - 10 - 8 - col_gap - pod_sz;
     const int font_h = nl_ov_ui_font_line_h();
 
     lv_obj_t *t = lv_label_create(text);
@@ -250,7 +249,8 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_label_set_text(s, sub ? sub : "");
     lv_label_set_long_mode(s, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s, lv_pct(100));
-    lv_obj_set_height(s, nl_ov_wrapped_text_h(sub, text_w));
+    /* 副文只显示一行。按折行预留两行高时，字贴在标签上沿，整组会显得偏上。 */
+    lv_obj_set_height(s, font_h);
     apply_font(s);
     lv_obj_set_style_text_align(s, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_color(s, UI_TEXT_MUTED, 0);

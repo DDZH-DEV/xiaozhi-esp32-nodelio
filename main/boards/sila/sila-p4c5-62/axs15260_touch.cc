@@ -22,8 +22,6 @@ SilaAxs15260Touch::~SilaAxs15260Touch() {
         vTaskDelete(task_);
     }
     if (lvgl_port_lock(0)) {
-        lv_async_call_cancel(ReadIndevAsync, this);
-        read_pending_ = false;
         if (indev_) {
             lv_indev_delete(indev_);
             indev_ = nullptr;
@@ -44,7 +42,7 @@ esp_err_t SilaAxs15260Touch::Start(i2c_master_bus_handle_t bus, lv_display_t* di
     i2c_device_config_t device_config = {};
     device_config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
     device_config.device_address = TOUCH_I2C_ADDRESS;
-    device_config.scl_speed_hz = 100000;
+    device_config.scl_speed_hz = 400000;
     ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bus, &device_config, &device_), kTag,
                         "Add touch device");
 
@@ -66,7 +64,7 @@ esp_err_t SilaAxs15260Touch::Start(i2c_master_bus_handle_t bus, lv_display_t* di
         lv_indev_set_display(indev_, display);
         lv_indev_set_user_data(indev_, this);
         lv_indev_set_read_cb(indev_, ReadCache);
-        lv_indev_set_mode(indev_, LV_INDEV_MODE_EVENT);
+        lv_indev_set_mode(indev_, LV_INDEV_MODE_TIMER);
     }
     lvgl_port_unlock();
     ESP_RETURN_ON_FALSE(indev_, ESP_ERR_NO_MEM, kTag, "Create LVGL input");
@@ -89,31 +87,22 @@ void SilaAxs15260Touch::OnInterrupt(void* arg) {
 
 void SilaAxs15260Touch::ReadCache(lv_indev_t* indev, lv_indev_data_t* data) {
     auto* self = static_cast<SilaAxs15260Touch*>(lv_indev_get_user_data(indev));
+    portENTER_CRITICAL(&self->spinlock_);
     data->point = self->point_;
     data->state = self->state_;
-}
-
-void SilaAxs15260Touch::ReadIndevAsync(void* arg) {
-    auto* self = static_cast<SilaAxs15260Touch*>(arg);
-    self->read_pending_ = false;
-    if (self->indev_) {
-        lv_indev_read(self->indev_);
-    }
+    portEXIT_CRITICAL(&self->spinlock_);
 }
 
 void SilaAxs15260Touch::Publish(bool pressed, int x, int y) {
-    /* 只更新缓存。lv_indev_read 会派发点击回调，禁止在 4KB sila_touch 栈上跑。 */
-    if (lvgl_port_lock(0)) {
-        point_.x = x;
-        point_.y = y;
-        state_ = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-        if (indev_ && !read_pending_) {
-            read_pending_ = true;
-            if (lv_async_call(ReadIndevAsync, this) != LV_RESULT_OK) {
-                read_pending_ = false;
-            }
-        }
-        lvgl_port_unlock();
+    /* 线程安全更新缓存并直接唤醒 LVGL 任务，绝不丢点，绝不在 4KB sila_touch 栈上跑 UI 回调 */
+    portENTER_CRITICAL(&spinlock_);
+    point_.x = x;
+    point_.y = y;
+    state_ = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    portEXIT_CRITICAL(&spinlock_);
+
+    if (indev_) {
+        lvgl_port_task_wake(LVGL_PORT_EVENT_TOUCH, indev_);
     }
 }
 
@@ -175,7 +164,5 @@ void SilaAxs15260Touch::Run() {
                 was_pressed = false;
             }
         }
-        // Bound CPU use even with a noisy interrupt line.
-        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }

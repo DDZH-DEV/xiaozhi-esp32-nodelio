@@ -59,7 +59,12 @@ private:
     static constexpr EventBits_t kVoiceProcessingEnabled = 1 << 1;
     static constexpr EventBits_t kAfeActive = 1 << 2;
     static constexpr EventBits_t kLocalCommandEnabled = 1 << 3;
+    /* 单位是 StackType_t。P4 上 WakeNet 卷积栈更深。 */
+#if CONFIG_IDF_TARGET_ESP32P4
+    static constexpr size_t kProcessingTaskStackSize = 8192;
+#else
     static constexpr size_t kProcessingTaskStackSize = 4096;
+#endif
 
     AudioCodec* codec_ = nullptr;
     srmodel_list_t* models_ = nullptr;

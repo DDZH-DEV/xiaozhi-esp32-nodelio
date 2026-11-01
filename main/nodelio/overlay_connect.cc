@@ -50,6 +50,7 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 
 static lv_obj_t *s_hist_row;
 static lv_obj_t *s_hist_hint;
+static lv_obj_t *s_ta_screenshot = nullptr;
 
 static void on_wifi_scan_btn(lv_event_t *e);
 static void rebuild_server_hist_chips(void);
@@ -216,65 +217,87 @@ static bool kb_side_layout(void)
     return nodelio_display_profile()->nav_width != 0;
 }
 
-/** 1280 宽屏：右侧约一半（上限 640）给键盘，键帽更宽。 */
-static int kb_side_width(void)
+/** 与设置子页同一块：左轨右侧的内容区。未布局完时用屏宽减去左轨。 */
+static void connect_content_rect(int *x, int *y, int *w, int *h)
 {
-    const int w = (int)nodelio_display_profile()->width;
-    int kb_w = w / 2;
-    if (kb_w > 640) {
-        kb_w = 640;
-    }
-    if (kb_w < 360) {
-        kb_w = w / 2;
-    }
-    return kb_w;
-}
-
-/** 键盘弹出：宽屏左表单 / 右键盘；方屏贴底并给表单加底垫 */
-static void kb_apply_layout(bool kb_on)
-{
-    if (!s_kb) {
+    const auto *p = nodelio_display_profile();
+    if (p && p->nav_width) {
+        *x = (int)p->nav_width;
+        *y = 0;
+        *w = (int)p->width - (int)p->nav_width;
+        *h = (int)p->height;
         return;
     }
+    *x = 0;
+    *y = 0;
+    *w = LV_HOR_RES;
+    *h = LV_VER_RES;
+}
+
+/** 键盘弹出：宽屏左侧表单紧凑、右侧键盘铺满全部剩余宽度（约 724px）；方屏贴底并给表单加底垫。 */
+static void kb_apply_layout(bool kb_on)
+{
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
+    connect_content_rect(&x, &y, &w, &h);
     if (kb_side_layout()) {
-        const int kb_w = kb_side_width();
-        const int form_h = LV_VER_RES - NL_UI_STATUS_H;
-        /* 高度约宽的一半，贴底；避免 form 全高把 4 行键拉成细长条 */
-        int kb_h = kb_w / 2;
-        if (kb_h > form_h - 12) {
-            kb_h = form_h - 12;
-        }
-        if (kb_h < 240) {
-            kb_h = form_h - 12;
-        }
-        lv_obj_set_size(s_kb, kb_w, kb_h);
-        lv_obj_align(s_kb, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-        lv_obj_set_style_min_height(s_kb, 44, LV_PART_ITEMS);
-        lv_obj_set_style_pad_all(s_kb, 8, 0);
-        lv_obj_set_style_pad_row(s_kb, 5, 0);
-        lv_obj_set_style_pad_column(s_kb, 5, 0);
-        if (s_connect) {
-            lv_obj_set_size(s_connect, kb_on ? (LV_HOR_RES - kb_w) : LV_HOR_RES, form_h);
-            lv_obj_align(s_connect, LV_ALIGN_TOP_LEFT, 0, NL_UI_STATUS_H);
+        if (kb_on && s_kb) {
+            /* 宽屏键盘展开：左侧表单宽 460px 足够容纳，右侧键盘饱满占据剩余所有宽度 */
+            int form_w = 460;
+            if (form_w > w / 2) {
+                form_w = w / 2;
+            }
+            int kb_w = w - form_w;
+            if (s_connect) {
+                lv_obj_set_pos(s_connect, x, y);
+                lv_obj_set_size(s_connect, form_w, h);
+            }
+            lv_obj_set_pos(s_kb, x + form_w, y);
+            lv_obj_set_size(s_kb, kb_w, h);
+            lv_obj_set_style_min_height(s_kb, 48, LV_PART_ITEMS);
+            lv_obj_set_style_pad_all(s_kb, 8, 0);
+            lv_obj_set_style_pad_row(s_kb, 6, 0);
+            lv_obj_set_style_pad_column(s_kb, 6, 0);
+        } else {
+            if (s_connect) {
+                lv_obj_set_pos(s_connect, x, y);
+                lv_obj_set_size(s_connect, w, h);
+            }
+            if (s_kb) {
+                lv_obj_set_pos(s_kb, x + w, y);
+            }
         }
         if (s_connect_scroll) {
             lv_obj_set_style_pad_bottom(s_connect_scroll, NL_UI_SETTINGS_DETAIL_PAD, 0);
-            lv_obj_set_style_pad_right(s_connect_scroll, kb_on ? 12 : NL_UI_SETTINGS_DETAIL_PAD, 0);
+            lv_obj_set_style_pad_right(s_connect_scroll, NL_UI_SETTINGS_DETAIL_PAD, 0);
         }
         return;
     }
-    lv_obj_set_width(s_kb, lv_pct(100));
-    lv_obj_set_height(s_kb, lv_pct(42));
-    lv_obj_align(s_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_min_height(s_kb, 36, LV_PART_ITEMS);
     if (s_connect) {
-        lv_obj_set_size(s_connect, LV_HOR_RES, LV_VER_RES - NL_UI_STATUS_H);
-        lv_obj_align(s_connect, LV_ALIGN_TOP_LEFT, 0, NL_UI_STATUS_H);
+        lv_obj_set_pos(s_connect, x, y);
+        lv_obj_set_size(s_connect, w, h);
+    }
+    if (s_kb) {
+        lv_obj_set_width(s_kb, lv_pct(100));
+        lv_obj_set_height(s_kb, lv_pct(42));
+        lv_obj_align(s_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_set_style_min_height(s_kb, 36, LV_PART_ITEMS);
     }
     if (s_connect_scroll) {
         lv_obj_set_style_pad_bottom(s_connect_scroll, kb_on ? 220 : NL_UI_SETTINGS_DETAIL_PAD, 0);
         lv_obj_set_style_pad_right(s_connect_scroll, NL_UI_SETTINGS_DETAIL_PAD, 0);
     }
+}
+
+void nl_ov_connect_relayout(void)
+{
+    if (!s_connect) {
+        return;
+    }
+    const bool kb_on = s_kb && !lv_obj_has_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
+    kb_apply_layout(kb_on);
 }
 
 static void wifi_list_hide(void)
@@ -289,12 +312,14 @@ static void wifi_list_hide(void)
 void nl_ov_kb_set_visible(bool on)
 {
     if (!s_kb) {
+        kb_apply_layout(false);
         return;
     }
     kb_apply_layout(on);
     if (on) {
         lv_obj_clear_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
-        if (s_tabbar) {
+        /* 方屏底栏会被键盘挡住；宽屏左轨跟其他设置页一样留着。 */
+        if (s_tabbar && !nodelio_display_profile()->nav_width) {
             lv_obj_add_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
         }
         if (s_connect) {
@@ -452,6 +477,7 @@ typedef struct {
     char host[96];
     char port[8];
     char owner[64];
+    char screenshot_url[128];
     uint8_t https;
     uint8_t reboot;
 } nl_conn_save_job_t;
@@ -470,6 +496,7 @@ static void persist_connect_job(nl_conn_save_job_t *job)
         std::strcmp(cfg.server_url, new_url) != 0 || std::strcmp(cfg.owner, job->owner) != 0;
     std::snprintf(cfg.server_url, sizeof(cfg.server_url), "%s", new_url);
     std::snprintf(cfg.owner, sizeof(cfg.owner), "%s", job->owner);
+    std::snprintf(cfg.screenshot_url, sizeof(cfg.screenshot_url), "%s", job->screenshot_url);
     const bool wifi_changed =
         job->ssid[0] && (std::strcmp(job->ssid, cfg.wifi_ssid) != 0 || job->pass[0]);
     if (job->ssid[0]) {
@@ -575,6 +602,10 @@ static bool persist_connect_from_form(bool reboot)
     if (s_ta_owner) {
         std::snprintf(job->owner, sizeof(job->owner), "%s", lv_textarea_get_text(s_ta_owner));
     }
+    if (s_ta_screenshot) {
+        std::snprintf(job->screenshot_url, sizeof(job->screenshot_url), "%s", lv_textarea_get_text(s_ta_screenshot));
+    }
+    trim_cstr(job->screenshot_url);
     trim_cstr(job->ssid);
     trim_cstr(job->pass);
     trim_cstr(job->host);
@@ -648,6 +679,9 @@ void nl_ov_open_connect(void)
     if (s_ta_owner) {
         lv_textarea_set_text(s_ta_owner, s_cfg.owner);
     }
+    if (s_ta_screenshot) {
+        lv_textarea_set_text(s_ta_screenshot, s_cfg.screenshot_url);
+    }
     if (s_proto_lbl) {
         lv_label_set_text(s_proto_lbl, proto_btn_text());
     }
@@ -657,7 +691,7 @@ void nl_ov_open_connect(void)
     rebuild_server_hist_chips();
     nl_ov_kb_set_visible(false);
     lv_obj_clear_flag(s_connect, LV_OBJ_FLAG_HIDDEN);
-    if (s_tabbar) {
+    if (s_tabbar && !nodelio_display_profile()->nav_width) {
         lv_obj_add_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
     }
     nl_ov_raise_chrome();
@@ -668,8 +702,7 @@ void nl_ov_build_connect(void)
 {
     /* 挂在 lv_layer_top() 而非 s_root flex 容器，避免 move_foreground 打乱 flex 顺序导致状态栏移位 */
     s_connect = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(s_connect, LV_HOR_RES, LV_VER_RES - NL_UI_STATUS_H);
-    lv_obj_align(s_connect, LV_ALIGN_TOP_LEFT, 0, NL_UI_STATUS_H);
+    kb_apply_layout(false);
     lv_obj_set_style_bg_color(s_connect, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_connect, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_connect, 0, 0);
@@ -685,8 +718,8 @@ void nl_ov_build_connect(void)
     lv_obj_set_flex_grow(s_connect_scroll, 1);
     lv_obj_set_style_bg_opa(s_connect_scroll, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_connect_scroll, 0, 0);
-    lv_obj_set_style_pad_left(s_connect_scroll, NL_UI_CONNECT_PAD_H, 0);
-    lv_obj_set_style_pad_right(s_connect_scroll, NL_UI_CONNECT_PAD_H, 0);
+    lv_obj_set_style_pad_left(s_connect_scroll, NL_UI_SETTINGS_DETAIL_PAD, 0);
+    lv_obj_set_style_pad_right(s_connect_scroll, NL_UI_SETTINGS_DETAIL_PAD, 0);
     lv_obj_set_style_pad_top(s_connect_scroll, NL_UI_SETTINGS_DETAIL_PAD_TOP, 0);
     lv_obj_set_style_pad_bottom(s_connect_scroll, NL_UI_SETTINGS_DETAIL_PAD, 0);
     lv_obj_set_style_pad_row(s_connect_scroll, 6, 0);
@@ -832,6 +865,16 @@ void nl_ov_build_connect(void)
     lv_textarea_set_max_length(s_ta_owner, sizeof(s_cfg.owner) - 1);
     lv_textarea_set_text(s_ta_owner, s_cfg.owner);
     wire_ta_input(s_ta_owner);
+
+    add_field_label(s_connect_scroll, "截屏接收地址（留空同服务器）");
+    s_ta_screenshot = lv_textarea_create(s_connect_scroll);
+    style_ta(s_ta_screenshot);
+    lv_textarea_set_placeholder_text(s_ta_screenshot, "如 192.168.1.x 或完整 URL");
+    lv_textarea_set_one_line(s_ta_screenshot, true);
+    lv_obj_set_width(s_ta_screenshot, lv_pct(100));
+    lv_textarea_set_max_length(s_ta_screenshot, sizeof(s_cfg.screenshot_url) - 1);
+    lv_textarea_set_text(s_ta_screenshot, s_cfg.screenshot_url);
+    wire_ta_input(s_ta_screenshot);
 
     lv_obj_t *btn_row = lv_obj_create(s_connect_scroll);
     lv_obj_set_width(btn_row, lv_pct(100));
@@ -1042,7 +1085,7 @@ void nl_ov_connect_reapply_appearance(void)
                 lv_obj_set_style_text_color(lv_obj_get_child(nav, 1), UI_TEXT, 0);
             }
         }
-        for (lv_obj_t *ta : {s_ta_ssid, s_ta_pass, s_ta_host, s_ta_port, s_ta_owner}) {
+        for (lv_obj_t *ta : {s_ta_ssid, s_ta_pass, s_ta_host, s_ta_port, s_ta_owner, s_ta_screenshot}) {
             if (ta) {
                 style_ta(ta);
             }

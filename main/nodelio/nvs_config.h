@@ -24,6 +24,7 @@ typedef struct {
     char mqtt_user[64];
     char mqtt_pass[40];
     char topic_prefix[40];
+    char screenshot_url[128];
     uint8_t brightness; /* 1–100；0=未设置用板级默认 */
     uint8_t volume;     /* 0–100；助手音频启用后生效 */
     uint8_t xiaozhi_en; /* 1=启用小智云对话（默认）；0=关闭 */
@@ -42,6 +43,10 @@ typedef struct {
     uint8_t ai_pos_set; /* 1=小智弹窗用 ai_x/ai_y；0=默认贴底 */
     int16_t ai_x;       /* 弹窗左上角，相对屏幕 */
     int16_t ai_y;
+    uint16_t ai_w;      /* 对话框宽，0=默认 348 */
+    uint8_t ai_bd_w;    /* 边框粗细 0–4；255=默认 1 */
+    uint8_t ai_sh_w;    /* 阴影宽度 0–24；255=浅色 12 / 深色 0 */
+    uint8_t ai_bd_i;    /* 边框色 0=默认 1=暖灰 2=绿 */
 } nodelio_nvs_config_t;
 
 #define NODELIO_TEXT_SCALE_DEFAULT 1
@@ -65,6 +70,13 @@ typedef struct {
 #define NODELIO_MEDIA_WAKE_DUCK_DEFAULT 70
 #define NODELIO_MEDIA_WAKE_DUCK_MIN 40
 #define NODELIO_MEDIA_WAKE_DUCK_MAX 100
+#define NODELIO_AI_W_DEFAULT 348
+#define NODELIO_AI_W_MIN 280
+#define NODELIO_AI_BD_DEFAULT 1
+#define NODELIO_AI_BD_MAX 4
+#define NODELIO_AI_SH_DEFAULT 12
+#define NODELIO_AI_SH_MAX 24
+#define NODELIO_AI_UNSET 255
 
 esp_err_t nodelio_nvs_init(void);
 /** Flash 读写：禁止在 PSRAM 栈任务调用（LVGL / mcp_http / nl_* invoke）。用 cache_get。 */
@@ -137,6 +149,15 @@ uint8_t nodelio_ui_mode(void);
 esp_err_t nodelio_set_sleep_seconds(uint16_t idle_s, uint16_t goodbye_s);
 esp_err_t nodelio_set_idle_wifi_seconds(uint16_t wifi_s);
 esp_err_t nodelio_set_listen_idle_seconds(uint16_t listen_s);
+/** 小智对话框宽（已按本屏夹取）。 */
+uint16_t nodelio_ai_drawer_width(void);
+uint16_t nodelio_ai_drawer_width_max(void);
+/** 边框粗细 0–4。 */
+uint8_t nodelio_ai_border_width(void);
+/** 阴影宽度；未设置时浅色 12、深色 0。 */
+uint8_t nodelio_ai_shadow_width(void);
+/** 边框色档 0=默认 1=暖灰 2=绿。 */
+uint8_t nodelio_ai_border_preset(void);
 
 #ifdef __cplusplus
 }

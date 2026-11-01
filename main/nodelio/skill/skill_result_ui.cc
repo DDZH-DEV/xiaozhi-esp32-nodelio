@@ -43,11 +43,16 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #define TAG "nl_skill_ui"
 
 #define SKILL_CARD_W (nodelio_display_profile()->result_width)
-/* 480 屏：顶栏 32 + 间隙 + 卡；含 filter chip 时需约 424 才能露出 4 行完整行高。
+/* result_max_height 仍按「顶栏占位」算。顶栏现已透明且空闲隐藏，开面板时把这段高度加回去。
  * 有 now_playing 条时须再扣 SKILL_NOW_H+SKILL_GAP，否则卡底会画出屏外。 */
-#define SKILL_CARD_H_MAX (nodelio_display_profile()->result_max_height)
+#define SKILL_CARD_H_MAX (nodelio_display_profile()->result_max_height + NL_UI_STATUS_H)
 #define SKILL_NOW_H 64
 #define SKILL_GAP 12
+/** 顶栏不占位，面板从屏顶留白起排。 */
+static int skill_top_y(void)
+{
+    return SKILL_GAP;
+}
 #define SKILL_CARD_H_MIN 180
 #define SKILL_BORDER_OPA 200
 #define SKILL_SCRIM_OPA 170
@@ -205,16 +210,15 @@ static int skill_card_h_max(void)
 {
     const auto *p = nodelio_display_profile();
     if (skill_player_docked()) {
-        const int h = (int)p->height - NL_UI_STATUS_H - 2 * SKILL_GAP;
+        const int h = (int)p->height - skill_top_y() - SKILL_GAP;
         return h < SKILL_CARD_H_MIN ? SKILL_CARD_H_MIN : h;
     }
-    int h = (int)p->result_max_height;
+    int h = (int)p->result_max_height + NL_UI_STATUS_H;
     if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
         if (p->nav_width) {
-            /* 顶：status+gap；底：gap+now+gap，多留 1×gap 防末行贴条 */
-            const int top = NL_UI_STATUS_H + SKILL_GAP;
+            /* 底：gap+now+gap，多留 1×gap 防末行贴条 */
             const int bottom = SKILL_NOW_H + 3 * SKILL_GAP;
-            h = (int)p->height - top - bottom;
+            h = (int)p->height - skill_top_y() - bottom;
         } else {
             h -= SKILL_NOW_H + SKILL_GAP;
         }
@@ -301,7 +305,7 @@ static void layout_skill_layers(void)
     const int reserve_bottom = (!wide && bar_up) ? (SKILL_NOW_H + 2 * SKILL_GAP) : 0;
     nl_ov_workspace_reserve(card_up ? panel_w + (wide ? SKILL_GAP : 2 * SKILL_GAP) : 0,
                             reserve_bottom);
-    int y = NL_UI_STATUS_H + SKILL_GAP;
+    int y = skill_top_y();
     if (bar_up && !dock) {
         style_now_bar(false);
         if (wide) {
@@ -320,8 +324,8 @@ static void layout_skill_layers(void)
         /* 只挡右侧占用带。列表在时外框已含播放条，不必再给底栏挖空。 */
         const int scrim_bottom = (bar_up && !card_up) ? (SKILL_NOW_H + 2 * SKILL_GAP) : 0;
         lv_obj_set_size(s_scrim, card_up ? panel_w + SKILL_GAP : 0,
-                        nodelio_display_profile()->height - NL_UI_STATUS_H - scrim_bottom);
-        lv_obj_align(s_scrim, LV_ALIGN_TOP_RIGHT, 0, NL_UI_STATUS_H);
+                        nodelio_display_profile()->height - scrim_bottom);
+        lv_obj_align(s_scrim, LV_ALIGN_TOP_RIGHT, 0, 0);
     }
     if (card_up) {
         lv_obj_set_width(s_card, panel_w);
@@ -2897,11 +2901,11 @@ static void ensure_card(void)
 
     s_scrim = lv_obj_create(parent);
     lv_obj_remove_style_all(s_scrim);
-    lv_obj_set_size(s_scrim, LV_HOR_RES, LV_VER_RES - NL_UI_STATUS_H);
-    lv_obj_align(s_scrim, LV_ALIGN_TOP_LEFT, 0, NL_UI_STATUS_H);
+    lv_obj_set_size(s_scrim, LV_HOR_RES, LV_VER_RES);
+    lv_obj_align(s_scrim, LV_ALIGN_TOP_LEFT, 0, 0);
     if (nodelio_display_profile()->nav_width) {
         lv_obj_set_width(s_scrim, SKILL_CARD_W + 2 * SKILL_GAP);
-        lv_obj_align(s_scrim, LV_ALIGN_TOP_RIGHT, 0, NL_UI_STATUS_H);
+        lv_obj_align(s_scrim, LV_ALIGN_TOP_RIGHT, 0, 0);
     }
     lv_obj_set_style_bg_color(s_scrim, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_scrim, SKILL_SCRIM_OPA, 0);
@@ -2912,7 +2916,7 @@ static void ensure_card(void)
     s_card = lv_obj_create(parent);
     lv_obj_remove_style_all(s_card);
     lv_obj_set_size(s_card, SKILL_CARD_W, SKILL_CARD_H_MAX);
-    lv_obj_align(s_card, LV_ALIGN_TOP_MID, 0, NL_UI_STATUS_H + SKILL_GAP);
+    lv_obj_align(s_card, LV_ALIGN_TOP_MID, 0, skill_top_y());
     lv_obj_set_style_bg_color(s_card, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(s_card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_card, 20, 0);
@@ -3111,7 +3115,7 @@ static void ensure_card(void)
         s_now_bar = lv_obj_create(parent);
         lv_obj_remove_style_all(s_now_bar);
         lv_obj_set_size(s_now_bar, SKILL_CARD_W, SKILL_NOW_H);
-        lv_obj_align(s_now_bar, LV_ALIGN_TOP_MID, 0, NL_UI_STATUS_H + SKILL_GAP);
+        lv_obj_align(s_now_bar, LV_ALIGN_TOP_MID, 0, skill_top_y());
         lv_obj_set_style_bg_color(s_now_bar, UI_SURFACE, 0);
         lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(s_now_bar, 16, 0);

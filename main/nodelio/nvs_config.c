@@ -115,6 +115,8 @@ void nodelio_nvs_cache_get(nodelio_nvs_config_t *out)
     out->media_wake_duck_pct = NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
     out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
     out->ui_mode = 0;
+    out->ai_bd_w = NODELIO_AI_UNSET;
+    out->ai_sh_w = NODELIO_AI_UNSET;
 }
 
 static esp_err_t get_str(nvs_handle_t h, const char *key, char *buf, size_t len)
@@ -205,6 +207,15 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     if (out->ai_pos_set > 1) {
         out->ai_pos_set = 0;
     }
+    if (out->ai_bd_w != NODELIO_AI_UNSET && out->ai_bd_w > NODELIO_AI_BD_MAX) {
+        out->ai_bd_w = NODELIO_AI_UNSET;
+    }
+    if (out->ai_sh_w != NODELIO_AI_UNSET && out->ai_sh_w > NODELIO_AI_SH_MAX) {
+        out->ai_sh_w = NODELIO_AI_UNSET;
+    }
+    if (out->ai_bd_i > 2) {
+        out->ai_bd_i = 0;
+    }
 }
 
 /* 避免 save 路径把「关闭小智/省电」(0) 误当成未初始化 */
@@ -255,6 +266,15 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     if (out->ai_pos_set > 1) {
         out->ai_pos_set = 0;
     }
+    if (out->ai_bd_w != NODELIO_AI_UNSET && out->ai_bd_w > NODELIO_AI_BD_MAX) {
+        out->ai_bd_w = NODELIO_AI_UNSET;
+    }
+    if (out->ai_sh_w != NODELIO_AI_UNSET && out->ai_sh_w > NODELIO_AI_SH_MAX) {
+        out->ai_sh_w = NODELIO_AI_UNSET;
+    }
+    if (out->ai_bd_i > 2) {
+        out->ai_bd_i = 0;
+    }
 }
 
 esp_err_t nodelio_nvs_init(void)
@@ -285,6 +305,8 @@ static esp_err_t load_config(nodelio_nvs_config_t* out) {
     out->media_wake_duck_pct = NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
     out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
     out->ui_mode = 0;
+    out->ai_bd_w = NODELIO_AI_UNSET;
+    out->ai_sh_w = NODELIO_AI_UNSET;
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NODELIO_NVS_NS, NVS_READONLY, &h);
@@ -307,6 +329,7 @@ static esp_err_t load_config(nodelio_nvs_config_t* out) {
     get_str(h, "mqtt_user", out->mqtt_user, sizeof(out->mqtt_user));
     get_str(h, "mqtt_pass", out->mqtt_pass, sizeof(out->mqtt_pass));
     get_str(h, "topic_prefix", out->topic_prefix, sizeof(out->topic_prefix));
+    get_str(h, "shot_url", out->screenshot_url, sizeof(out->screenshot_url));
     {
         uint8_t v = 0;
         if (nvs_get_u8(h, "brightness", &v) == ESP_OK) {
@@ -390,6 +413,22 @@ static esp_err_t load_config(nodelio_nvs_config_t* out) {
                 out->ai_y = y;
             }
         }
+        u16 = 0;
+        if (nvs_get_u16(h, "ai_w", &u16) == ESP_OK) {
+            out->ai_w = u16;
+        }
+        v = NODELIO_AI_UNSET;
+        if (nvs_get_u8(h, "ai_bd_w", &v) == ESP_OK) {
+            out->ai_bd_w = v;
+        }
+        v = NODELIO_AI_UNSET;
+        if (nvs_get_u8(h, "ai_sh_w", &v) == ESP_OK) {
+            out->ai_sh_w = v;
+        }
+        v = 0;
+        if (nvs_get_u8(h, "ai_bd_i", &v) == ESP_OK) {
+            out->ai_bd_i = v;
+        }
     }
     nvs_close(h);
     apply_defaults(out);
@@ -435,6 +474,7 @@ static esp_err_t save_config(const nodelio_nvs_config_t* in, bool preferences_on
         NL_ACCUM(set_str_checked(h, "mqtt_user", tmp.mqtt_user));
         NL_ACCUM(set_str_checked(h, "mqtt_pass", tmp.mqtt_pass));
         NL_ACCUM(set_str_checked(h, "topic_prefix", tmp.topic_prefix));
+        NL_ACCUM(set_str_checked(h, "shot_url", tmp.screenshot_url));
     }
     NL_ACCUM(nvs_set_u8(h, "brightness", tmp.brightness));
     NL_ACCUM(nvs_set_u8(h, "volume", tmp.volume));
@@ -454,6 +494,10 @@ static esp_err_t save_config(const nodelio_nvs_config_t* in, bool preferences_on
     NL_ACCUM(nvs_set_u8(h, "ai_pos", tmp.ai_pos_set ? 1 : 0));
     NL_ACCUM(nvs_set_i16(h, "ai_x", tmp.ai_x));
     NL_ACCUM(nvs_set_i16(h, "ai_y", tmp.ai_y));
+    NL_ACCUM(nvs_set_u16(h, "ai_w", tmp.ai_w));
+    NL_ACCUM(nvs_set_u8(h, "ai_bd_w", tmp.ai_bd_w));
+    NL_ACCUM(nvs_set_u8(h, "ai_sh_w", tmp.ai_sh_w));
+    NL_ACCUM(nvs_set_u8(h, "ai_bd_i", tmp.ai_bd_i > 2 ? 0 : tmp.ai_bd_i));
 #undef NL_ACCUM
 
     err = nvs_commit(h);
@@ -747,6 +791,59 @@ uint8_t nodelio_ui_mode(void)
         return 0;
     }
     return s_ram.ui_mode == 1 ? 1 : 0;
+}
+
+uint16_t nodelio_ai_drawer_width_max(void)
+{
+    const nodelio_display_profile_t *p = nodelio_display_profile();
+    int maxw = 456;
+    if (p) {
+        maxw = (int)p->width - (int)p->nav_width - 24;
+    }
+    if (maxw > 900) {
+        maxw = 900;
+    }
+    if (maxw < NODELIO_AI_W_MIN) {
+        maxw = NODELIO_AI_W_MIN;
+    }
+    return (uint16_t)maxw;
+}
+
+uint16_t nodelio_ai_drawer_width(void)
+{
+    uint16_t w = s_ram_ok && s_ram.ai_w ? s_ram.ai_w : NODELIO_AI_W_DEFAULT;
+    const uint16_t maxw = nodelio_ai_drawer_width_max();
+    if (w < NODELIO_AI_W_MIN) {
+        w = NODELIO_AI_W_MIN;
+    }
+    if (w > maxw) {
+        w = maxw;
+    }
+    return w;
+}
+
+uint8_t nodelio_ai_border_width(void)
+{
+    if (!s_ram_ok || s_ram.ai_bd_w == NODELIO_AI_UNSET || s_ram.ai_bd_w > NODELIO_AI_BD_MAX) {
+        return NODELIO_AI_BD_DEFAULT;
+    }
+    return s_ram.ai_bd_w;
+}
+
+uint8_t nodelio_ai_shadow_width(void)
+{
+    if (!s_ram_ok || s_ram.ai_sh_w == NODELIO_AI_UNSET || s_ram.ai_sh_w > NODELIO_AI_SH_MAX) {
+        return s_ram_ok && s_ram.ui_mode == 1 ? 0 : NODELIO_AI_SH_DEFAULT;
+    }
+    return s_ram.ai_sh_w;
+}
+
+uint8_t nodelio_ai_border_preset(void)
+{
+    if (!s_ram_ok || s_ram.ai_bd_i > 2) {
+        return 0;
+    }
+    return s_ram.ai_bd_i;
 }
 
 esp_err_t nodelio_set_sleep_seconds(uint16_t idle_s, uint16_t goodbye_s)

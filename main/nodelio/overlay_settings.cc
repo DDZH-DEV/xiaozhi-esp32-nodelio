@@ -91,6 +91,9 @@ static lv_obj_t *s_bye_slp_lbl;
 static lv_obj_t *s_listen_idle_lbl;
 static lv_obj_t *s_media_pause_lbl;
 static lv_obj_t *s_media_duck_lbl;
+static lv_obj_t *s_ai_w_lbl;
+static lv_obj_t *s_ai_bd_lbl;
+static lv_obj_t *s_ai_sh_lbl;
 
 static void pref_err(char *err, size_t err_len, const char *msg)
 {
@@ -637,6 +640,51 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         commit_ui_mode(mode);
         return ESP_OK;
     }
+    if (strcasecmp(key, "ai_drawer_w") == 0) {
+        int v = 0;
+        if (!parse_int_range(value, NODELIO_AI_W_MIN, nodelio_ai_drawer_width_max(), &v, err,
+                             err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.ai_w = (uint16_t)v;
+        persist_cfg_async();
+        nl_ov_ai_apply_metrics();
+        nl_ov_toast("对话框宽度已保存");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "ai_border_w") == 0) {
+        int v = 0;
+        if (!parse_int_range(value, 0, NODELIO_AI_BD_MAX, &v, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.ai_bd_w = (uint8_t)v;
+        persist_cfg_async();
+        nl_ov_ai_apply_metrics();
+        nl_ov_toast("对话框边框已保存");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "ai_shadow_w") == 0) {
+        int v = 0;
+        if (!parse_int_range(value, 0, NODELIO_AI_SH_MAX, &v, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.ai_sh_w = (uint8_t)v;
+        persist_cfg_async();
+        nl_ov_ai_apply_metrics();
+        nl_ov_toast("对话框阴影已保存");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "ai_border_c") == 0) {
+        int v = 0;
+        if (!parse_int_range(value, 0, 2, &v, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.ai_bd_i = (uint8_t)v;
+        persist_cfg_async();
+        nl_ov_ai_apply_metrics();
+        nl_ov_toast("对话框边框色已保存");
+        return ESP_OK;
+    }
     /* 动作键：value 可空，只触发 */
     if (strcasecmp(key, "layout_sync") == 0) {
         nl_ov_toast("正在刷新布局…");
@@ -732,6 +780,22 @@ extern "C" esp_err_t nodelio_panel_ui_get_pref(const char *key, char *buf, size_
     }
     if (strcasecmp(key, "ui_mode") == 0) {
         std::snprintf(buf, len, "%d", (int)nodelio_ui_mode());
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "ai_drawer_w") == 0) {
+        std::snprintf(buf, len, "%d", (int)nodelio_ai_drawer_width());
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "ai_border_w") == 0) {
+        std::snprintf(buf, len, "%d", (int)nodelio_ai_border_width());
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "ai_shadow_w") == 0) {
+        std::snprintf(buf, len, "%d", (int)nodelio_ai_shadow_width());
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "ai_border_c") == 0) {
+        std::snprintf(buf, len, "%d", (int)nodelio_ai_border_preset());
         return ESP_OK;
     }
     return ESP_ERR_NOT_FOUND;
@@ -983,6 +1047,9 @@ void nl_ov_close_settings_detail(void)
     s_listen_idle_lbl = nullptr;
     s_media_pause_lbl = nullptr;
     s_media_duck_lbl = nullptr;
+    s_ai_w_lbl = nullptr;
+    s_ai_bd_lbl = nullptr;
+    s_ai_sh_lbl = nullptr;
     if (s_tabbar && s_visible) {
         lv_obj_clear_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
     }
@@ -1018,6 +1085,10 @@ static set_page_id_t s_open_set_page = SET_PAGE_DISP;
 
 void nl_ov_open_settings_detail(set_page_id_t page)
 {
+    /* 连接页盖住设置入口。未盖住时点穿会再叠一层子页。 */
+    if (s_connect && !lv_obj_has_flag(s_connect, LV_OBJ_FLAG_HIDDEN)) {
+        return;
+    }
     s_open_set_page = page;
     nl_ov_close_settings_detail();
     if (!s_root) {
@@ -1027,8 +1098,8 @@ void nl_ov_open_settings_detail(set_page_id_t page)
 
     /* 挂在 lv_layer_top() 防止状态栏被 move_foreground 推到底部 */
     s_settings_detail = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(s_settings_detail, LV_HOR_RES, LV_VER_RES - NL_UI_STATUS_H);
-    lv_obj_align(s_settings_detail, LV_ALIGN_TOP_LEFT, 0, NL_UI_STATUS_H);
+    lv_obj_set_size(s_settings_detail, LV_HOR_RES, LV_VER_RES);
+    lv_obj_align(s_settings_detail, LV_ALIGN_TOP_LEFT, 0, 0);
     nodelio_skill_result_layout();
     lv_obj_set_style_bg_color(s_settings_detail, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_settings_detail, LV_OPA_COVER, 0);
@@ -1578,6 +1649,150 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_obj_set_style_text_color(lis_hint, UI_TEXT_TIP, 0);
         lv_label_set_long_mode(lis_hint, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(lis_hint, lv_pct(100));
+
+        char ai_txt[16];
+        const int ai_w = (int)nodelio_ai_drawer_width();
+        std::snprintf(ai_txt, sizeof(ai_txt), "%d", ai_w);
+        lv_obj_t *ai_w_band = audio_ctrl_band(body, "对话框宽度", ai_txt, &s_ai_w_lbl);
+        lv_obj_t *ai_w_sl = lv_slider_create(ai_w_band);
+        ui_style_slider(ai_w_sl);
+        lv_slider_set_range(ai_w_sl, NODELIO_AI_W_MIN, nodelio_ai_drawer_width_max());
+        lv_slider_set_value(ai_w_sl, ai_w, LV_ANIM_OFF);
+        lv_obj_add_event_cb(
+            ai_w_sl,
+            [](lv_event_t *e) {
+                int v = (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e));
+                if (s_ai_w_lbl) {
+                    char buf[16];
+                    std::snprintf(buf, sizeof(buf), "%d", v);
+                    lv_label_set_text(s_ai_w_lbl, buf);
+                }
+                s_cfg.ai_w = (uint16_t)v;
+                nodelio_nvs_cache_put_preferences(&s_cfg);
+                nl_ov_ai_apply_metrics();
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_add_event_cb(
+            ai_w_sl,
+            [](lv_event_t *e) {
+                char num[12];
+                std::snprintf(num, sizeof(num), "%d",
+                              (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e)));
+                (void)nodelio_panel_ui_set_pref("ai_drawer_w", num, nullptr, 0);
+            },
+            LV_EVENT_RELEASED, nullptr);
+
+        const int ai_bd = (int)nodelio_ai_border_width();
+        std::snprintf(ai_txt, sizeof(ai_txt), "%d", ai_bd);
+        lv_obj_t *ai_bd_band = audio_ctrl_band(body, "边框粗细", ai_txt, &s_ai_bd_lbl);
+        lv_obj_t *ai_bd_sl = lv_slider_create(ai_bd_band);
+        ui_style_slider(ai_bd_sl);
+        lv_slider_set_range(ai_bd_sl, 0, NODELIO_AI_BD_MAX);
+        lv_slider_set_value(ai_bd_sl, ai_bd, LV_ANIM_OFF);
+        lv_obj_add_event_cb(
+            ai_bd_sl,
+            [](lv_event_t *e) {
+                int v = (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e));
+                if (s_ai_bd_lbl) {
+                    char buf[16];
+                    std::snprintf(buf, sizeof(buf), "%d", v);
+                    lv_label_set_text(s_ai_bd_lbl, buf);
+                }
+                s_cfg.ai_bd_w = (uint8_t)v;
+                nodelio_nvs_cache_put_preferences(&s_cfg);
+                nl_ov_ai_apply_metrics();
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_add_event_cb(
+            ai_bd_sl,
+            [](lv_event_t *e) {
+                char num[12];
+                std::snprintf(num, sizeof(num), "%d",
+                              (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e)));
+                (void)nodelio_panel_ui_set_pref("ai_border_w", num, nullptr, 0);
+            },
+            LV_EVENT_RELEASED, nullptr);
+
+        const int ai_sh = (int)nodelio_ai_shadow_width();
+        std::snprintf(ai_txt, sizeof(ai_txt), "%d", ai_sh);
+        lv_obj_t *ai_sh_band = audio_ctrl_band(body, "阴影", ai_txt, &s_ai_sh_lbl);
+        lv_obj_t *ai_sh_sl = lv_slider_create(ai_sh_band);
+        ui_style_slider(ai_sh_sl);
+        lv_slider_set_range(ai_sh_sl, 0, NODELIO_AI_SH_MAX);
+        lv_slider_set_value(ai_sh_sl, ai_sh, LV_ANIM_OFF);
+        lv_obj_add_event_cb(
+            ai_sh_sl,
+            [](lv_event_t *e) {
+                int v = (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e));
+                if (s_ai_sh_lbl) {
+                    char buf[16];
+                    std::snprintf(buf, sizeof(buf), "%d", v);
+                    lv_label_set_text(s_ai_sh_lbl, buf);
+                }
+                s_cfg.ai_sh_w = (uint8_t)v;
+                nodelio_nvs_cache_put_preferences(&s_cfg);
+                nl_ov_ai_apply_metrics();
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_add_event_cb(
+            ai_sh_sl,
+            [](lv_event_t *e) {
+                char num[12];
+                std::snprintf(num, sizeof(num), "%d",
+                              (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e)));
+                (void)nodelio_panel_ui_set_pref("ai_shadow_w", num, nullptr, 0);
+            },
+            LV_EVENT_RELEASED, nullptr);
+
+        const int preset = (int)nodelio_ai_border_preset();
+        lv_obj_t *color_band = audio_ctrl_band(body, "边框色", "", nullptr);
+        lv_obj_t *color_row = lv_obj_create(color_band);
+        lv_obj_remove_style_all(color_row);
+        lv_obj_set_width(color_row, lv_pct(100));
+        lv_obj_set_height(color_row, 44);
+        lv_obj_set_flex_flow(color_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(color_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(color_row, 8, 0);
+        lv_obj_clear_flag(color_row, LV_OBJ_FLAG_SCROLLABLE);
+        static const char *k_border[] = {"默认", "暖灰", "绿色"};
+        for (int i = 0; i < 3; i++) {
+            const bool on = preset == i;
+            lv_obj_t *chip = lv_obj_create(color_row);
+            lv_obj_remove_style_all(chip);
+            lv_obj_set_flex_grow(chip, 1);
+            lv_obj_set_height(chip, 44);
+            lv_obj_set_style_radius(chip, 12, 0);
+            lv_obj_set_style_bg_color(chip, on ? UI_ACCENT : UI_CAPSULE_OFF, 0);
+            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+            lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(chip, UI_EXT_CLICK);
+            lv_obj_add_event_cb(
+                chip,
+                [](lv_event_t *e) {
+                    int v = (int)(intptr_t)lv_event_get_user_data(e);
+                    char num[8];
+                    std::snprintf(num, sizeof(num), "%d", v);
+                    (void)nodelio_panel_ui_set_pref("ai_border_c", num, nullptr, 0);
+                    lv_obj_t *row = lv_obj_get_parent((lv_obj_t *)lv_event_get_target(e));
+                    const uint32_t n = lv_obj_get_child_count(row);
+                    for (uint32_t i = 0; i < n; i++) {
+                        lv_obj_t *c = lv_obj_get_child(row, (int32_t)i);
+                        const bool sel = (int)i == v;
+                        lv_obj_set_style_bg_color(c, sel ? UI_ACCENT : UI_CAPSULE_OFF, 0);
+                        lv_obj_t *lab = lv_obj_get_child(c, 0);
+                        if (lab) {
+                            lv_obj_set_style_text_color(lab, sel ? UI_ON_TILE : UI_TEXT, 0);
+                        }
+                    }
+                },
+                LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            lv_obj_t *lab = lv_label_create(chip);
+            nl_ov_set_font(lab);
+            lv_label_set_text(lab, k_border[i]);
+            lv_obj_set_style_text_color(lab, on ? UI_ON_TILE : UI_TEXT, 0);
+            lv_obj_center(lab);
+        }
     } else if (page == SET_PAGE_RESET) {
         lv_obj_t *card = settings_card(body, "恢复出厂");
         lv_obj_set_style_pad_all(card, 16, 0);

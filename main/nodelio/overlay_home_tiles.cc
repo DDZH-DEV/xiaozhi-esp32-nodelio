@@ -192,16 +192,17 @@ static void style_hint_pill(lv_obj_t *hint, bool countdown)
     if (!hint) {
         return;
     }
+    lv_obj_set_style_radius(hint, UI_RADIUS_XS, 0);
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_left(hint, countdown ? 6 : 5, 0);
-    lv_obj_set_style_pad_right(hint, countdown ? 6 : 5, 0);
-    lv_obj_set_style_pad_top(hint, 3, 0);
-    lv_obj_set_style_pad_bottom(hint, 3, 0);
+    lv_obj_set_style_pad_left(hint, countdown ? 6 : 6, 0);
+    lv_obj_set_style_pad_right(hint, countdown ? 6 : 6, 0);
+    lv_obj_set_style_pad_top(hint, 2, 0);
+    lv_obj_set_style_pad_bottom(hint, 2, 0);
     /* 数字倒计时略宽，避免「9:59」贴边显偏 */
     if (countdown) {
         lv_obj_set_style_min_width(hint, 36, 0);
     } else {
-        lv_obj_set_style_min_width(hint, 0, 0);
+        lv_obj_set_style_min_width(hint, 22, 0);
     }
 }
 
@@ -1138,8 +1139,16 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
     tile_apply_trans(tile);
     lv_obj_set_style_bg_color(tile, lv_color_hex(fill), 0);
     lv_obj_set_style_bg_color(tile, lv_color_hex(color_pressed(fill)), LV_STATE_PRESSED);
-    /* 首页磁贴无外边框，保持沉浸纯净 */
-    lv_obj_set_style_border_width(tile, 0, 0);
+    /* 首页磁贴微光边框：开态微光外描边，关态暗质感描边 */
+    if (on && online) {
+        lv_obj_set_style_border_width(tile, 1, 0);
+        lv_obj_set_style_border_color(tile, active_c, 0);
+        lv_obj_set_style_border_opa(tile, LV_OPA_70, 0);
+    } else {
+        lv_obj_set_style_border_width(tile, 1, 0);
+        lv_obj_set_style_border_color(tile, UI_TILE_OFF_BORDER, 0);
+        lv_obj_set_style_border_opa(tile, LV_OPA_40, 0);
+    }
     /* 双段卡整卡不可点，只由支路响应；勿用 ui_set_enabled 把 CLICKABLE 加回去 */
     if (dual_line_use_segments(w)) {
         lv_obj_clear_flag(tile, LV_OBJ_FLAG_CLICKABLE);
@@ -1491,10 +1500,30 @@ static void capture_and_upload_screenshot(void)
                 const void *body = ps ? static_cast<const void *>(ps) : job->jpeg->data();
                 const size_t body_n = ps ? n : job->jpeg->size();
 
-                char base[160];
-                nl_url_strip_base(job->cfg.server_url, base, sizeof(base));
                 char url[256];
-                std::snprintf(url, sizeof(url), "%s/api/devices/%s/panel/screenshot", base, job->cfg.device_id);
+                const char *custom = job->cfg.screenshot_url;
+                while (*custom == ' ' || *custom == '	') custom++;
+                if (*custom != '\0') {
+                    if (strstr(custom, "://")) {
+                        if (strchr(strstr(custom, "://") + 3, '/')) {
+                            std::snprintf(url, sizeof(url), "%s", custom);
+                        } else {
+                            std::snprintf(url, sizeof(url), "%s/api/devices/%s/panel/screenshot", custom, job->cfg.device_id);
+                        }
+                    } else {
+                        char host_port[128];
+                        if (strchr(custom, ':')) {
+                            std::snprintf(host_port, sizeof(host_port), "%s", custom);
+                        } else {
+                            std::snprintf(host_port, sizeof(host_port), "%s:8899", custom);
+                        }
+                        std::snprintf(url, sizeof(url), "http://%s/api/devices/%s/panel/screenshot", host_port, job->cfg.device_id);
+                    }
+                } else {
+                    char base[160];
+                    nl_url_strip_base(job->cfg.server_url, base, sizeof(base));
+                    std::snprintf(url, sizeof(url), "%s/api/devices/%s/panel/screenshot", base, job->cfg.device_id);
+                }
                 int http_status = 0;
                 esp_err_t err = nodelio_http_post_image(url, job->cfg.device_key, body, body_n, &http_status);
                 if (err == ESP_OK && http_status >= 200 && http_status < 300) {
@@ -1962,7 +1991,9 @@ static lv_obj_t *make_tile_shell(const nl_widget_t *w, tile_kind_t kind, int cel
     lv_obj_set_user_data(tile, (void *)w);
     lv_obj_set_style_bg_color(tile, lv_color_hex(fill), 0);
     lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(tile, 0, 0);
+    lv_obj_set_style_border_width(tile, 1, 0);
+    lv_obj_set_style_border_color(tile, UI_TILE_OFF_BORDER, 0);
+    lv_obj_set_style_border_opa(tile, LV_OPA_40, 0);
     lv_obj_set_style_radius(tile, UI_RADIUS_MD, 0);
     lv_obj_set_style_pad_all(tile, UI_PAD_SM, 0);
     ui_style_card(tile);
@@ -3621,12 +3652,21 @@ static bool launcher_is_side_column(void)
 }
 
 static lv_obj_t *make_launcher_card(lv_obj_t *parent, const char *icon, const char *title,
-                                    const char *subtitle, lv_event_cb_t on_click, bool side)
+                                    const char *subtitle, lv_event_cb_t on_click, bool side,
+                                    bool half)
 {
     lv_obj_t *card = lv_obj_create(parent);
     lv_obj_remove_style_all(card);
-    lv_obj_set_width(card, lv_pct(100));
-    lv_obj_set_height(card, side ? 72 : 88);
+    if (half) {
+        /* 基宽要小，剩下的宽度才由 flex 平分；按内容算会被长副标题撑满一行 */
+        lv_obj_set_width(card, 10);
+        lv_obj_set_flex_grow(card, 1);
+        lv_obj_set_style_min_width(card, 0, 0);
+        lv_obj_set_height(card, 88);
+    } else {
+        lv_obj_set_width(card, lv_pct(100));
+        lv_obj_set_height(card, side ? 72 : 88);
+    }
     lv_obj_set_style_bg_color(card, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
@@ -3720,7 +3760,8 @@ static void fill_home_launcher(void)
     lv_obj_t *title = lv_label_create(hdr);
     nl_ov_set_font(title);
     lv_label_set_text(title, "启动台");
-    lv_obj_set_style_text_color(title, UI_TEXT, 0);
+    /* 标题落在 36px 黑底顶栏里，浅色字才读得清 */
+    lv_obj_set_style_text_color(title, UI_ON_TILE, 0);
 
     lv_obj_t *hint = lv_label_create(hdr);
     nl_ov_set_font(hint);
@@ -3744,14 +3785,26 @@ static void fill_home_launcher(void)
     /* C3：已钉技能磁贴（技能通道，非 panel/command） */
     nl_ov_home_skills_append_launcher(s_home);
 
+    lv_obj_t *card_parent = s_home;
+    if (!side) {
+        card_parent = lv_obj_create(s_home);
+        lv_obj_remove_style_all(card_parent);
+        lv_obj_set_width(card_parent, lv_pct(100));
+        lv_obj_set_height(card_parent, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(card_parent, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(card_parent, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(card_parent, 12, 0);
+        lv_obj_clear_flag(card_parent, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    }
     make_launcher_card(
-        s_home, MATERIAL_SYMBOLS_EXPLORE, "全部应用",
+        card_parent, MATERIAL_SYMBOLS_EXPLORE, "全部应用",
         side ? "技能列表 · 可钉选" : "打开技能列表 · 手机可钉选或挂画布",
-        [](lv_event_t *) { nl_ov_show_page(NL_TAB_APPS); }, side);
+        [](lv_event_t *) { nl_ov_show_page(NL_TAB_APPS); }, side, !side);
 
-    make_launcher_card(s_home, MATERIAL_SYMBOLS_MIC, "进入对话",
+    make_launcher_card(card_parent, MATERIAL_SYMBOLS_MIC, "进入对话",
                        side ? "唤醒助手" : "唤醒助手 · 语音控家或提问",
-                       [](lv_event_t *) { nodelio_overlay_show_chat(); }, side);
+                       [](lv_event_t *) { nodelio_overlay_show_chat(); }, side, !side);
     if (s_have_layout && s_layout && s_layout->layout_version > 0) {
         nodelio_panel_ui_mark_home_filled(s_layout->layout_version);
     }

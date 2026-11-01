@@ -56,6 +56,18 @@ bool nodelio_media_has_session(void);
 /** 已武装唤醒压音时按当前 NVS 百分比重算；未压音则忽略。 */
 void nodelio_media_wake_duck_refresh(void);
 
+/**
+ * 点选开播后的短窗口，或手指刚按下时：忽略唤醒。
+ * 切流和敲屏都会让 WakeNet 误报，把对话窗顶出来。
+ */
+bool nodelio_media_wake_blocked(void);
+/** 手指按下：短时间挡住误唤醒。 */
+void nodelio_media_note_touch(void);
+/** 误唤醒被丢掉之后，等屏蔽窗结束再打开唤醒词。 */
+void nodelio_media_wake_rearm_later(void);
+/** 误唤醒被丢掉后，等屏蔽窗结束再把 WakeNet 打开。 */
+void nodelio_media_wake_defer_rearm(void);
+
 #ifdef __cplusplus
 }
 #endif

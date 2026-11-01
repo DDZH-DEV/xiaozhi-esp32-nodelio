@@ -209,6 +209,7 @@ extern "C" void nodelio_panel_ui_notify_screen(bool on)
         }
     }
     nl_ov_status_poll_set_period(on);
+    nl_ov_status_bar_on_screen(on);
     if (s_screen_cb) {
         s_screen_cb(on);
     }

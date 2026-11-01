@@ -10,6 +10,7 @@
 #include "wifi_board.h"
 #if CONFIG_NODELIO_PANEL
 #include "board_info.h"
+#include "media_player.h"
 #include "nvs_config.h"
 #include "panel_ui.h"
 #endif
@@ -236,6 +237,9 @@ private:
     std::atomic<bool> asleep_{false};
     std::atomic<bool> poll_pending_{false};
     std::atomic<int> idle_seconds_{60};
+    std::atomic<int> idle_wifi_seconds_{60};
+    std::atomic<bool> net_save_{true};
+    std::atomic<bool> net_asleep_{false};
     std::atomic<int64_t> goodbye_sleep_at_{0};
     bool idle_timer_started_ = false;
 
@@ -326,6 +330,19 @@ private:
                     }
 #endif
                 }
+#if CONFIG_NODELIO_PANEL
+                const bool playing = nodelio_media_is_playing();
+                const bool want_net = net_save_.load() && !playing &&
+                                      elapsed >= pdMS_TO_TICKS(idle_wifi_seconds_.load() * 1000) &&
+                                      Application::GetInstance().CanEnterSleepMode();
+                if (want_net) {
+                    if (!net_asleep_.exchange(true)) {
+                        nodelio_panel_ui_notify_net(false);
+                    }
+                } else if (net_asleep_.exchange(false)) {
+                    nodelio_panel_ui_notify_net(true);
+                }
+#endif
             });
         }
     }
@@ -426,7 +443,7 @@ public:
     void NoteUserActivity() override {
         goodbye_sleep_at_.store(0);
         last_activity_.store(xTaskGetTickCount());
-        if (asleep_.load()) {
+        if (asleep_.load() || net_asleep_.load()) {
             ScheduleIdlePoll();
         }
     }
@@ -550,6 +567,17 @@ public:
 
     void SetIdleSleepSeconds(int seconds) override {
         idle_seconds_.store(std::clamp(seconds, 1, 86400));
+    }
+
+    void SetIdleWifiSeconds(int seconds) override {
+        idle_wifi_seconds_.store(std::clamp(seconds, 15, 300));
+    }
+
+    void SetPowerSaveEnabled(bool enabled) override {
+        net_save_.store(enabled);
+        if (!enabled) {
+            ScheduleIdlePoll();
+        }
     }
 
     void RequestGoodbyeSleep() override {

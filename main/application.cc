@@ -1562,6 +1562,14 @@ void Application::HandleWakeWordDetectedEvent() {
         audio_service_.DiscardWakeWordAudio();
         return;
     }
+    /* 点电台/播客或敲到屏沿时，WakeNet 会把切流、台头人声、敲击当成唤醒。 */
+    if (nodelio_media_wake_blocked()) {
+        ESP_LOGI(TAG, "ignore wake during play/touch guard");
+        audio_service_.DiscardWakeWordAudio();
+        audio_service_.EnableWakeWordDetection(false);
+        nodelio_media_wake_rearm_later();
+        return;
+    }
 #endif
     if (!protocol_) {
         return;

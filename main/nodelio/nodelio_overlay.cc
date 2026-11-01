@@ -15,6 +15,7 @@
 #include "offline_cmd.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
+#include "media_player.h"
 #include "skill_result_ui.h"
 #include "ui_theme.h"
 #include "ui_widgets.h"
@@ -351,17 +352,17 @@ void nl_ov_apply_appearance(void)
         lv_obj_set_style_text_color(s_root, UI_TEXT, 0);
     }
     if (s_status_bar) {
-        lv_obj_set_style_bg_color(s_status_bar, UI_BG, 0);
-        lv_obj_set_style_bg_opa(s_status_bar, LV_OPA_80, 0);
+        lv_obj_set_style_bg_color(s_status_bar, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(s_status_bar, LV_OPA_50, 0);
     }
     if (s_brand_lbl) {
-        lv_obj_set_style_text_color(s_brand_lbl, UI_ACCENT, 0);
+        lv_obj_set_style_text_color(s_brand_lbl, lv_color_white(), 0);
     }
     if (s_clock_lbl) {
-        lv_obj_set_style_text_color(s_clock_lbl, UI_TEXT_SUB, 0);
+        lv_obj_set_style_text_color(s_clock_lbl, UI_ON_TILE, 0);
     }
     if (s_status_lbl) {
-        lv_obj_set_style_text_color(s_status_lbl, UI_STATUS_CHROME, 0);
+        lv_obj_set_style_text_color(s_status_lbl, UI_ON_TILE, 0);
     }
     if (s_tabbar) {
         lv_obj_set_style_bg_color(s_tabbar, UI_PANEL, 0);
@@ -406,6 +407,72 @@ const lv_font_t *nl_ov_tile_icon_font(bool is_row)
 #define NL_STATUS_Y 1
 #define NL_STATUS_LEFT_PAD 12
 #define NL_STATUS_RIGHT_PAD (-12)
+/* 松手后再留这么久，顶栏收回 */
+#define NL_STATUS_IDLE_HIDE_MS 3000
+
+static lv_timer_t *s_status_hide_tmr;
+
+static bool pointer_is_down(void)
+{
+    for (lv_indev_t *indev = lv_indev_get_next(nullptr); indev; indev = lv_indev_get_next(indev)) {
+        if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER &&
+            lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void status_bar_hide_now(void)
+{
+    if (s_status_hide_tmr) {
+        lv_timer_pause(s_status_hide_tmr);
+    }
+    if (s_status_bar) {
+        lv_obj_add_flag(s_status_bar, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void status_bar_hide_cb(lv_timer_t *t)
+{
+    if (pointer_is_down()) {
+        lv_timer_reset(t);
+        return;
+    }
+    status_bar_hide_now();
+}
+
+static void status_bar_reveal(void)
+{
+    if (!s_status_bar || !s_screen_on || !s_visible) {
+        return;
+    }
+    lv_obj_clear_flag(s_status_bar, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_status_bar);
+    if (!s_status_hide_tmr) {
+        s_status_hide_tmr = lv_timer_create(status_bar_hide_cb, NL_STATUS_IDLE_HIDE_MS, nullptr);
+    } else {
+        lv_timer_reset(s_status_hide_tmr);
+        lv_timer_resume(s_status_hide_tmr);
+    }
+}
+
+static void on_pointer_pressed(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+        nodelio_media_note_touch();
+        status_bar_reveal();
+    }
+}
+
+void nl_ov_status_bar_on_screen(bool on)
+{
+    if (on) {
+        status_bar_reveal();
+    } else {
+        status_bar_hide_now();
+    }
+}
 
 /** 顶栏左挂：与设置页「构建号」、OTA 同一套 NODELIO_BUILD_STAMP */
 static void fill_build_stamp(char *out, size_t out_len)
@@ -443,7 +510,7 @@ static void status_bar_relayout(void)
         anchor = s_wifi_lbl;
     }
     if (s_clock_lbl && anchor) {
-        lv_obj_align_to(s_clock_lbl, anchor, LV_ALIGN_OUT_LEFT_MID, -4, 0);
+        lv_obj_align_to(s_clock_lbl, anchor, LV_ALIGN_OUT_LEFT_MID, -14, 0);
     } else if (s_clock_lbl) {
         lv_obj_align(s_clock_lbl, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD - 40, NL_STATUS_Y);
     }
@@ -550,10 +617,8 @@ static void refresh_battery_lbl(void)
     const char *glyph = battery_status_glyph(s_batt_level, s_batt_charging);
     lv_obj_set_style_text_font(s_batt_lbl, &font_material_symbols_30_4, 0);
     lv_label_set_text(s_batt_lbl, glyph);
-    lv_color_t color = UI_TEXT_SUB;
-    if (s_batt_charging) {
-        color = UI_ACCENT;
-    } else if (s_batt_level <= 15) {
+    lv_color_t color = UI_ON_TILE;
+    if (!s_batt_charging && s_batt_level <= 15) {
         color = UI_WARN;
     }
     lv_obj_set_style_text_color(s_batt_lbl, color, 0);
@@ -567,13 +632,13 @@ void nl_ov_refresh_status_icons(bool wifi_ok, bool cloud_ok, const char *msg)
     if (s_wifi_lbl) {
         lv_obj_set_style_text_font(s_wifi_lbl, &font_material_symbols_20_4, 0);
         lv_label_set_text(s_wifi_lbl, wifi_status_glyph(wifi_ok));
-        lv_obj_set_style_text_color(s_wifi_lbl, wifi_ok ? UI_ACCENT : UI_TEXT_MUTED, 0);
+        lv_obj_set_style_text_color(s_wifi_lbl, UI_ON_TILE, 0);
     }
     if (s_cloud_lbl) {
         /* 无独立云符号：UPLOAD≈云同步 */
         lv_label_set_text(s_cloud_lbl, LV_SYMBOL_UPLOAD);
         nl_ov_set_icon_font(s_cloud_lbl);
-        lv_obj_set_style_text_color(s_cloud_lbl, cloud_ok ? UI_ACCENT : UI_TEXT_MUTED, 0);
+        lv_obj_set_style_text_color(s_cloud_lbl, UI_ON_TILE, 0);
     }
     /* msg 不再刷布局版本；左挂编译戳开机写死，避免断网变 v0 */
     (void)msg;
@@ -840,9 +905,10 @@ void nl_ov_workspace_reserve(int right, int bottom) {
     if (s_settings)
         lv_obj_set_size(s_settings, w, h);
     if (s_settings_detail) {
-        lv_obj_set_size(s_settings_detail, w, p->height - NL_UI_STATUS_H - bottom);
-        lv_obj_align(s_settings_detail, LV_ALIGN_TOP_LEFT, p->nav_width, NL_UI_STATUS_H);
+        lv_obj_set_size(s_settings_detail, w, p->height - bottom);
+        lv_obj_align(s_settings_detail, LV_ALIGN_TOP_LEFT, p->nav_width, 0);
     }
+    nl_ov_connect_relayout();
     nl_ov_apps_reserve_bottom(bottom);
     if (home_changed && s_home && s_have_layout && !s_building) {
         nl_ov_fill_home();
@@ -894,9 +960,7 @@ static void apply_visible_locked(void)
         }
     }
     lv_obj_clear_flag(s_root, LV_OBJ_FLAG_HIDDEN);
-    if (s_status_bar) {
-        lv_obj_clear_flag(s_status_bar, LV_OBJ_FLAG_HIDDEN);
-    }
+    status_bar_hide_now();
     if (s_fab) {
         lv_obj_add_flag(s_fab, LV_OBJ_FLAG_HIDDEN);
     }
@@ -952,17 +1016,18 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_clear_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_root, LV_OBJ_FLAG_HIDDEN);
 
-    /* 悬浮在 layer_top：不占弹性行，主页面铺到顶。半透明，自己吃掉顶上的点击。 */
+    /* 悬浮在 layer_top：不占弹性行。半透明底，空闲隐藏；点空白不吃点击，品牌字仍可点。 */
     s_status_bar = lv_obj_create(lv_layer_top());
     lv_obj_t *bar = s_status_bar;
     lv_obj_remove_style_all(bar);
     lv_obj_add_flag(bar, LV_OBJ_FLAG_FLOATING);
-    lv_obj_add_flag(bar, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(bar, LV_OBJ_FLAG_HIDDEN);
+    /* 默认对象可点。顶栏盖在 y=0 的技能卡上，空白必须透传，只留品牌字。 */
+    lv_obj_clear_flag(bar, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_size(bar, lv_pct(100), NL_UI_STATUS_H);
     lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_bg_color(bar, UI_BG, 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_80, 0);
+    lv_obj_set_style_bg_color(bar, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_50, 0);
     lv_obj_set_style_border_width(bar, 0, 0);
     lv_obj_set_style_pad_all(bar, 0, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
@@ -970,7 +1035,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     s_brand_lbl = lv_label_create(bar);
     lv_label_set_text(s_brand_lbl, "NodeLio");
     nl_ov_set_font(s_brand_lbl);
-    lv_obj_set_style_text_color(s_brand_lbl, UI_ACCENT, 0);
+    lv_obj_set_style_text_color(s_brand_lbl, lv_color_white(), 0);
     lv_obj_add_flag(s_brand_lbl, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(s_brand_lbl, 16);
     lv_obj_add_event_cb(s_brand_lbl, nl_ov_on_brand_click, LV_EVENT_CLICKED, nullptr);
@@ -979,7 +1044,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_label_set_text(s_clock_lbl, "--:--");
     s_clock_last[0] = '\0';
     nl_ov_set_font(s_clock_lbl);
-    lv_obj_set_style_text_color(s_clock_lbl, UI_TEXT_SUB, 0);
+    lv_obj_set_style_text_color(s_clock_lbl, UI_ON_TILE, 0);
 
     char build_stamp[40];
     fill_build_stamp(build_stamp, sizeof(build_stamp));
@@ -987,22 +1052,22 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_label_set_text(s_status_lbl, build_stamp);
     lv_label_set_long_mode(s_status_lbl, LV_LABEL_LONG_CLIP);
     nl_ov_set_font(s_status_lbl);
-    lv_obj_set_style_text_color(s_status_lbl, UI_STATUS_CHROME, 0);
+    lv_obj_set_style_text_color(s_status_lbl, UI_ON_TILE, 0);
 
     s_cloud_lbl = lv_label_create(bar);
     lv_label_set_text(s_cloud_lbl, LV_SYMBOL_UPLOAD);
     nl_ov_set_icon_font(s_cloud_lbl);
-    lv_obj_set_style_text_color(s_cloud_lbl, UI_TEXT_MUTED, 0);
+    lv_obj_set_style_text_color(s_cloud_lbl, UI_ON_TILE, 0);
 
     s_wifi_lbl = lv_label_create(bar);
     lv_obj_set_style_text_font(s_wifi_lbl, &font_material_symbols_20_4, 0);
     lv_label_set_text(s_wifi_lbl, MATERIAL_SYMBOLS_WIFI_OFF);
-    lv_obj_set_style_text_color(s_wifi_lbl, UI_TEXT_MUTED, 0);
+    lv_obj_set_style_text_color(s_wifi_lbl, UI_ON_TILE, 0);
 
     s_batt_lbl = lv_label_create(bar);
     lv_obj_set_style_text_font(s_batt_lbl, &font_material_symbols_30_4, 0);
     lv_label_set_text(s_batt_lbl, MATERIAL_SYMBOLS_BATTERY_ANDROID_FRAME_FULL);
-    lv_obj_set_style_text_color(s_batt_lbl, UI_TEXT_SUB, 0);
+    lv_obj_set_style_text_color(s_batt_lbl, UI_ON_TILE, 0);
     lv_obj_add_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN);
     status_bar_relayout();
 
@@ -1113,6 +1178,11 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     apply_visible_locked();
     reveal_boot_backlight_after_frame();
     start_status_poll();
+    for (lv_indev_t *indev = lv_indev_get_next(nullptr); indev; indev = lv_indev_get_next(indev)) {
+        if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
+            lv_indev_add_event_cb(indev, on_pointer_pressed, LV_EVENT_PRESSED, nullptr);
+        }
+    }
     if (!s_activity_tmr) {
         s_activity_tmr = lv_timer_create(
             [](lv_timer_t *) {

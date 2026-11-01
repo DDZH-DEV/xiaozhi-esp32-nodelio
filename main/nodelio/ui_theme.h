@@ -213,8 +213,14 @@ int ui_palette_is_dark(void);
 #define UI_NAV_BACK_W 64
 #define UI_BTN_H 48
 #define UI_BTN_H_SM 44
-/* 小智对话悬浮胶囊：收窄居中，正文保留最近 5 句；半透明以免挡设置项 */
+/* 小智对话框。宽度、边框色、边框粗细、阴影都在这里改。
+ * 边框不跟聆听/说话变色（原先聆听会刷成信息蓝）。 */
 #define UI_AI_DRAWER_W 348
+#define UI_AI_DRAWER_BORDER 0xe4ddd2
+#define UI_AI_DRAWER_BORDER_W 1
+#define UI_AI_DRAWER_SHADOW_W 12
+#define UI_AI_DRAWER_SHADOW_Y 3
+#define UI_AI_DRAWER_SHADOW_OPA LV_OPA_40
 #define UI_AI_DRAWER_H 208 /* 含 48px 头栏（关闭/最小化可点） */
 #define UI_AI_DRAWER_COMPACT_W 296 /* 唤醒建链条：贴文案宽度 */
 #define UI_AI_DRAWER_COMPACT_H 72  /* 唤醒建链条：头栏按钮 44px */

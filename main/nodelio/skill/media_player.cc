@@ -57,6 +57,11 @@ static volatile bool s_resume_after_voice = false;
 /** 音频进入输出任务后再武装唤醒，避免与 HTTP/TLS 和解码暖机抢资源。 */
 static esp_timer_handle_t s_wake_arm_timer = nullptr;
 static constexpr int64_t kMediaWakeArmUs = 500000; /* 0.5s（原 1.5s） */
+/** 点选开播后这段时间不武装、不接受唤醒，避开切流和台头人声。 */
+static constexpr int64_t kMediaWakeBlockUs = 2500000;
+/** 敲屏冲击麦，按下后短暂忽略唤醒。 */
+static constexpr int64_t kTouchWakeBlockUs = 800000;
+static int64_t s_wake_block_until_us = 0;
 /** 播中关 AEC 防 WDT，喇叭盖麦 → 武装唤醒时暂压音量提 SNR（百分比来自 NVS）。 */
 static int s_wake_duck_restore = -1;
 
@@ -126,10 +131,80 @@ static void reclaim_wake_dram_after_media(void)
 
 static int s_wake_arm_retries = 0;
 
+static void note_wake_block(int64_t hold_us)
+{
+    const int64_t until = esp_timer_get_time() + hold_us;
+    if (until > s_wake_block_until_us) {
+        s_wake_block_until_us = until;
+    }
+}
+
+bool nodelio_media_wake_blocked(void)
+{
+    return esp_timer_get_time() < s_wake_block_until_us;
+}
+
+void nodelio_media_note_touch(void)
+{
+    note_wake_block(kTouchWakeBlockUs);
+}
+
+static esp_timer_handle_t s_wake_rearm_timer = nullptr;
+
+static void wake_rearm_cb(void *arg)
+{
+    (void)arg;
+    Application::GetInstance().Schedule([]() {
+        if (nodelio_media_wake_blocked()) {
+            nodelio_media_wake_rearm_later();
+            return;
+        }
+        if (!nodelio_xiaozhi_enabled()) {
+            return;
+        }
+        const DeviceState st = Application::GetInstance().GetDeviceState();
+        if (st == kDeviceStateIdle || st == kDeviceStateNotifying) {
+            Application::GetInstance().GetAudioService().EnableWakeWordDetection(true);
+        }
+    });
+}
+
+void nodelio_media_wake_rearm_later(void)
+{
+    int64_t left = s_wake_block_until_us - esp_timer_get_time();
+    if (left < 200000) {
+        left = 200000;
+    }
+    if (!s_wake_rearm_timer) {
+        const esp_timer_create_args_t args = {
+            .callback = &wake_rearm_cb,
+            .arg = nullptr,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "nl_wrearm",
+            .skip_unhandled_events = true,
+        };
+        if (esp_timer_create(&args, &s_wake_rearm_timer) != ESP_OK) {
+            return;
+        }
+    }
+    esp_timer_stop(s_wake_rearm_timer);
+    esp_timer_start_once(s_wake_rearm_timer, (uint64_t)left);
+}
+
 static void media_wake_arm_cb(void *arg)
 {
     (void)arg;
     Application::GetInstance().Schedule([]() {
+        if (nodelio_media_wake_blocked()) {
+            int64_t left = s_wake_block_until_us - esp_timer_get_time();
+            if (left < 200000) {
+                left = 200000;
+            }
+            if (s_wake_arm_timer) {
+                esp_timer_start_once(s_wake_arm_timer, (uint64_t)left);
+            }
+            return;
+        }
         if (!nodelio_xiaozhi_enabled() || !nodelio_media_is_playing()) {
             s_wake_arm_retries = 0;
             return;
@@ -730,6 +805,18 @@ esp_err_t nodelio_media_play_track(const nodelio_nvs_config_t *cfg, const nl_env
         nodelio_panel_ui_media_now_playing(s_now_title, true);
         return ESP_OK;
     }
+
+    /* 先挡住唤醒，再入队。切流和台头人声容易被当成「你好小智」。 */
+    note_wake_block(kMediaWakeBlockUs);
+    Application::GetInstance().Schedule([]() {
+        if (!nodelio_media_wake_blocked()) {
+            return;
+        }
+        const DeviceState st = Application::GetInstance().GetDeviceState();
+        if (st == kDeviceStateIdle || st == kDeviceStateNotifying) {
+            Application::GetInstance().GetAudioService().EnableWakeWordDetection(false);
+        }
+    });
 
     /* 只入队 PLAY。worker 里先等上一首 HTTP 退出再开流，避免 STOP 与 PLAY 抢主循环把新曲掐掉。 */
     disarm_pause_close();

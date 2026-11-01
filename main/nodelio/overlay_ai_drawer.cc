@@ -128,27 +128,47 @@ static void paint_mini_fab_phase(chat_phase_t phase)
     }
 }
 
+static void paint_ai_drawer_frame(void)
+{
+    if (!s_ai_drawer) {
+        return;
+    }
+    const uint8_t border_w = nodelio_ai_border_width();
+    uint32_t border_c = UI_AI_DRAWER_BORDER;
+    if (nodelio_ai_border_preset() == 1) {
+        border_c = 0xE4DDD2;
+    } else if (nodelio_ai_border_preset() == 2) {
+        border_c = 0x34C759;
+    }
+    lv_obj_set_style_border_width(s_ai_drawer, border_w, 0);
+    lv_obj_set_style_border_color(s_ai_drawer, lv_color_hex(border_c), 0);
+    lv_obj_set_style_border_opa(s_ai_drawer, border_w ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_shadow_color(s_ai_drawer, lv_color_hex(UI_C_SHADOW), 0);
+    const uint8_t shadow_w = nodelio_ai_shadow_width();
+    lv_obj_set_style_shadow_width(s_ai_drawer, shadow_w, 0);
+    lv_obj_set_style_shadow_spread(s_ai_drawer, 0, 0);
+    lv_obj_set_style_shadow_ofs_x(s_ai_drawer, 0, 0);
+    lv_obj_set_style_shadow_ofs_y(s_ai_drawer, UI_AI_DRAWER_SHADOW_Y, 0);
+    lv_obj_set_style_shadow_opa(s_ai_drawer, shadow_w ? UI_AI_DRAWER_SHADOW_OPA : LV_OPA_TRANSP, 0);
+}
+
 void nl_ov_ai_reapply_appearance(void)
 {
     if (!s_ai_drawer && !s_ai_mini_fab) {
         return;
     }
-    uint32_t border = UI_C_BORDER;
     uint32_t status = UI_C_INFO;
     if (s_chat_phase == CHAT_SPEAK) {
-        border = UI_C_TILE_ON_BORDER;
         status = UI_C_ACCENT_SOFT;
     } else if (s_chat_phase == CHAT_CONNECT) {
-        border = UI_C_WARN;
         status = UI_C_WARN;
     } else if (s_chat_phase == CHAT_LISTEN) {
-        border = UI_C_INFO;
         status = UI_C_INFO;
     }
     if (s_ai_drawer) {
         lv_obj_set_style_bg_color(s_ai_drawer, UI_SURFACE, 0);
-        lv_obj_set_style_border_color(s_ai_drawer, lv_color_hex(border), 0);
         ui_style_card(s_ai_drawer);
+        paint_ai_drawer_frame();
         if (lv_obj_get_child_count(s_ai_drawer) > 0) {
             lv_obj_t *hdr = lv_obj_get_child(s_ai_drawer, 0);
             lv_obj_set_style_bg_color(hdr, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
@@ -256,7 +276,7 @@ static void clamp_drawer_xy(lv_coord_t *x, lv_coord_t *y)
     lv_coord_t w = lv_obj_get_width(s_ai_drawer);
     lv_coord_t h = lv_obj_get_height(s_ai_drawer);
     if (w < 40) {
-        w = UI_AI_DRAWER_W;
+        w = nodelio_ai_drawer_width();
     }
     if (h < 40) {
         h = UI_AI_DRAWER_H;
@@ -300,6 +320,19 @@ static void place_ai_drawer(void)
     clamp_drawer_xy(&x, &y);
     /* 绝对坐标。留着 BOTTOM_* 时 x/y 只是偏移，下次布局会弹回贴底。 */
     lv_obj_align(s_ai_drawer, LV_ALIGN_TOP_LEFT, x, y);
+}
+
+void nl_ov_ai_apply_metrics(void)
+{
+    if (!s_ai_drawer) {
+        return;
+    }
+    paint_ai_drawer_frame();
+    if (s_chat_phase == CHAT_CONNECT) {
+        return;
+    }
+    lv_obj_set_size(s_ai_drawer, nodelio_ai_drawer_width(), UI_AI_DRAWER_H);
+    place_ai_drawer();
 }
 
 static void persist_ai_pos(lv_coord_t x, lv_coord_t y)
@@ -372,7 +405,7 @@ static void apply_drawer_chrome(bool connect_compact)
             lv_obj_add_flag(s_ai_drawer_body, LV_OBJ_FLAG_HIDDEN);
         }
     } else {
-        lv_obj_set_size(s_ai_drawer, UI_AI_DRAWER_W, UI_AI_DRAWER_H);
+        lv_obj_set_size(s_ai_drawer, nodelio_ai_drawer_width(), UI_AI_DRAWER_H);
         lv_obj_set_style_pad_bottom(s_ai_drawer, 12, 0);
         if (s_ai_drawer_body) {
             lv_obj_clear_flag(s_ai_drawer_body, LV_OBJ_FLAG_HIDDEN);
@@ -499,15 +532,13 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
     lv_obj_remove_style_all(s_ai_drawer);
     lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_FLOATING);
     /* 收窄居中胶囊，两侧留白，避免贴边通栏 */
-    lv_obj_set_size(s_ai_drawer, UI_AI_DRAWER_W, UI_AI_DRAWER_H);
+    lv_obj_set_size(s_ai_drawer, nodelio_ai_drawer_width(), UI_AI_DRAWER_H);
     place_ai_drawer();
     lv_obj_set_style_bg_color(s_ai_drawer, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(s_ai_drawer, UI_AI_DRAWER_BG_OPA, 0);
     lv_obj_set_style_radius(s_ai_drawer, UI_RADIUS, 0);
-    lv_obj_set_style_border_width(s_ai_drawer, 1, 0);
-    lv_obj_set_style_border_color(s_ai_drawer, UI_BORDER, 0);
-    lv_obj_set_style_border_opa(s_ai_drawer, LV_OPA_COVER, 0);
     ui_style_card(s_ai_drawer);
+    paint_ai_drawer_frame();
     lv_obj_set_style_pad_left(s_ai_drawer, 14, 0);
     lv_obj_set_style_pad_right(s_ai_drawer, 10, 0);
     lv_obj_set_style_pad_top(s_ai_drawer, 8, 0);
@@ -746,15 +777,12 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
     }
 
     s_chat_phase = phase;
-    uint32_t border_color = UI_C_INFO;
     uint32_t status_color = UI_C_INFO;
     const char *st_def = "小智在听…";
     if (phase == CHAT_SPEAK) {
-        border_color = UI_C_TILE_ON_BORDER;
         status_color = UI_C_ACCENT_SOFT;
         st_def = "小智回复";
     } else if (phase == CHAT_CONNECT) {
-        border_color = UI_C_WARN;
         status_color = UI_C_WARN;
         st_def = "初始化中，请稍后...";
     }
@@ -772,7 +800,7 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
         if (s_ai_drawer_text && phase != CHAT_CONNECT && msg_text && msg_text[0]) {
             lv_label_set_text(s_ai_drawer_text, msg_text);
         }
-        lv_obj_set_style_border_color(s_ai_drawer, lv_color_hex(border_color), 0);
+        paint_ai_drawer_frame();
         lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
         show_ai_mini_fab(phase);
         nl_ov_raise_chrome();
@@ -809,8 +837,7 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
     hide_ai_mini_fab();
 
     apply_drawer_chrome(phase == CHAT_CONNECT);
-
-    lv_obj_set_style_border_color(s_ai_drawer, lv_color_hex(border_color), 0);
+    paint_ai_drawer_frame();
     if (s_ai_drawer_status) {
         /* CONNECT 固定省电唤醒文案，不跟入网/DHCP 文案乱跳 */
         const char *st = (phase == CHAT_CONNECT)

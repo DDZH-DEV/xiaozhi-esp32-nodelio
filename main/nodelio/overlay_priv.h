@@ -199,6 +199,8 @@ static inline bool nl_ov_cfg_http_ready(nodelio_nvs_config_t *out, bool toast)
 }
 void nl_ov_refresh_status_icons(bool wifi_ok, bool cloud_ok, const char *msg);
 void nl_ov_status_poll_set_period(bool awake);
+/** 亮屏时唤出顶栏；息屏时立刻收起。 */
+void nl_ov_status_bar_on_screen(bool on);
 void nl_ov_show_page(int tab);
 void nl_ov_close_forms(void);
 void nl_ov_ensure_devs_cache(void);
@@ -270,6 +272,8 @@ void nl_ov_connect_reapply_appearance(void);
 void nl_ov_open_connect(void);
 void nl_ov_close_connect(void);
 void nl_ov_kb_set_visible(bool on);
+/** 连接页与侧栏键盘跟设置子页同一块内容区，工作区变宽时重排。 */
+void nl_ov_connect_relayout(void);
 
 /* —— settings —— */
 void nl_ov_fill_settings(void);
@@ -323,6 +327,7 @@ void nl_ov_toast_invoke_unreachable(const char *skill_id);
 /* —— ai drawer —— */
 void nl_ov_create_ai_drawer(lv_obj_t *parent);
 void nl_ov_ai_reapply_appearance(void);
+void nl_ov_ai_apply_metrics(void);
 void nl_ov_hide_ai_drawer(void);
 void nl_ov_restore_ai_drawer_if_session(void);
 bool nl_ov_ai_session_active(void);

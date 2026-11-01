@@ -193,7 +193,12 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
         }
     }
     afe_config->agc_init = false;
+    /* P4 的 conv1d 汇编会在缓冲区前 16 字节预取。工作区全在 PSRAM 时会 Load access fault。 */
+#if CONFIG_IDF_TARGET_ESP32P4
+    afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_INTERNAL_PSRAM_BALANCE;
+#else
     afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
+#endif
 
     ESP_LOGI(TAG, "Before AFE create: free=%u min=%u largest=%u",
              heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -221,8 +226,9 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
     afe_iface_->print_pipeline(afe_data_);
 
     if (processing_task_stack_ == nullptr) {
-        processing_task_stack_ = static_cast<StackType_t*>(
-            heap_caps_malloc(kProcessingTaskStackSize, MALLOC_CAP_SPIRAM));
+        /* xTaskCreateStatic 的深度是 StackType_t 个数，不是字节。 */
+        processing_task_stack_ = static_cast<StackType_t*>(heap_caps_malloc(
+            kProcessingTaskStackSize * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     }
     if (processing_task_buffer_ == nullptr) {
         processing_task_buffer_ =

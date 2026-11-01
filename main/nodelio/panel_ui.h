@@ -134,7 +134,7 @@ void nodelio_panel_ui_stream_assistant(const char *delta_or_full, bool is_delta,
 /** 当前已应用 layout（无则 NULL）；供离线命令词映射. */
 const nodelio_panel_layout_t *nodelio_panel_ui_get_layout(void);
 
-/** 悬浮状态栏高度。主页面铺满其下；配网、设置详情、技能卡仍从这条下沿开始。 */
+/** 顶栏高度。背景透明且空闲自动隐藏；配网、设置详情、技能卡仍从这条下沿排版。 */
 #define NL_UI_STATUS_H 36
 #define NL_UI_TAB_H 44
 /** 首页网格：左右留白；顶距与设置页对齐（勿过大） */
@@ -145,8 +145,6 @@ const nodelio_panel_layout_t *nodelio_panel_ui_get_layout(void);
 /** 设置子页内容边距（顶略紧，避免导航栏下空一大块） */
 #define NL_UI_SETTINGS_DETAIL_PAD 12
 #define NL_UI_SETTINGS_DETAIL_PAD_TOP 8
-/** 连接页左右再宽一档 */
-#define NL_UI_CONNECT_PAD_H 36
 /** 临时量顶栏间隙：1=顶栏红框/内容青描边；默认关 */
 #ifndef NL_UI_CHROME_DEBUG
 #define NL_UI_CHROME_DEBUG 0

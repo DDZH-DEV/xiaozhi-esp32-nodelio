@@ -18,7 +18,6 @@ public:
 private:
     static void OnInterrupt(void* arg);
     static void ReadCache(lv_indev_t* indev, lv_indev_data_t* data);
-    static void ReadIndevAsync(void* arg);
     void Run();
     void Publish(bool pressed, int x, int y);
 
@@ -28,8 +27,7 @@ private:
     std::function<bool()> on_activity_;
     bool irq_attached_ = false;
     bool suppress_gesture_ = false;
-    bool read_pending_ = false;
-    // Accessed only while holding the LVGL port lock.
+    portMUX_TYPE spinlock_ = portMUX_INITIALIZER_UNLOCKED;
     lv_point_t point_ = {};
     lv_indev_state_t state_ = LV_INDEV_STATE_RELEASED;
 };

@@ -507,8 +507,7 @@ static void render_list(void)
             nl_ov_set_font(view.title);
             nl_ov_set_font(view.subtitle);
             lv_obj_set_height(view.title, nl_ov_ui_font_line_h());
-            lv_obj_set_height(view.subtitle,
-                              nl_ov_wrapped_text_h(desc, card_w - 10 - 8 - 16 - pod_size));
+            lv_obj_set_height(view.subtitle, nl_ov_ui_font_line_h());
             view.width = card_w;
             view.height = card_h;
             view.pod_size = pod_size;
