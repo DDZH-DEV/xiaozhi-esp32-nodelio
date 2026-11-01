@@ -181,6 +181,33 @@ static const lv_buttonmatrix_ctrl_t s_kb_ctrl_host[] = {
     LV_BUTTONMATRIX_CTRL_WIDTH_2, LV_BUTTONMATRIX_CTRL_WIDTH_2,
 };
 
+/* 字母盘按 1# 进入的数字符号页。默认图没有「.」，输 IP 只能回字母盘找。 */
+static const char *const s_kb_map_spec[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", ".", LV_SYMBOL_BACKSPACE, "\n",
+    "abc", "+", "&", "/", "*", "=", "%", "!", "?", "#", "<", ">", "\n",
+    "\\", "@", "$", "(", ")", "{", "}", "[", "]", ";", "\"", "'", "\n",
+    LV_SYMBOL_KEYBOARD, LV_SYMBOL_LEFT, " ", LV_SYMBOL_RIGHT, LV_SYMBOL_OK, "",
+};
+#define NL_KB(v) static_cast<lv_buttonmatrix_ctrl_t>(v)
+static const lv_buttonmatrix_ctrl_t s_kb_ctrl_spec[] = {
+    NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1),
+    NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1),
+    NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1),
+    NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_CHECKED | 2),
+    NL_KB(LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1),
+    NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1),
+    NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1),
+    NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1),
+    NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1),
+    NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1),
+    NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1),
+    NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1), NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1),
+    NL_KB(LV_BUTTONMATRIX_CTRL_POPOVER | 1),
+    NL_KB(LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2), NL_KB(LV_BUTTONMATRIX_CTRL_CHECKED | 2), NL_KB(6), NL_KB(LV_BUTTONMATRIX_CTRL_CHECKED | 2),
+    NL_KB(LV_KEYBOARD_CTRL_BUTTON_FLAGS | 2),
+};
+#undef NL_KB
+
 static const char *const s_kb_map_port[] = {
     "1", "2", "3", "\n",
     "4", "5", "6", "\n",
@@ -254,7 +281,8 @@ static void kb_apply_layout(bool kb_on)
                 lv_obj_set_pos(s_connect, x, y);
                 lv_obj_set_size(s_connect, form_w, h);
             }
-            lv_obj_set_pos(s_kb, x + form_w, y);
+            /* lv_keyboard 默认 BOTTOM_MID；set_pos 只是对齐偏移，会把键盘推出屏幕 */
+            lv_obj_align(s_kb, LV_ALIGN_DEFAULT, x + form_w, y);
             lv_obj_set_size(s_kb, kb_w, h);
             lv_obj_set_style_min_height(s_kb, 48, LV_PART_ITEMS);
             lv_obj_set_style_pad_all(s_kb, 8, 0);
@@ -266,7 +294,7 @@ static void kb_apply_layout(bool kb_on)
                 lv_obj_set_size(s_connect, w, h);
             }
             if (s_kb) {
-                lv_obj_set_pos(s_kb, x + w, y);
+                lv_obj_align(s_kb, LV_ALIGN_DEFAULT, x + w, y);
             }
         }
         if (s_connect_scroll) {
@@ -358,6 +386,7 @@ static void ensure_kb(void)
     kb_apply_layout(false);
     lv_keyboard_set_map(s_kb, LV_KEYBOARD_MODE_USER_1, s_kb_map_host, s_kb_ctrl_host);
     lv_keyboard_set_map(s_kb, LV_KEYBOARD_MODE_USER_2, s_kb_map_port, s_kb_ctrl_port);
+    lv_keyboard_set_map(s_kb, LV_KEYBOARD_MODE_SPECIAL, s_kb_map_spec, s_kb_ctrl_spec);
     lv_obj_add_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_event_cb(
         s_kb,

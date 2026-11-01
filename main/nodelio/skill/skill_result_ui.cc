@@ -70,7 +70,7 @@ static int skill_top_y(void)
 #define SKILL_LIST_COLS 1
 #define SKILL_LIST_ROWS 4
 #define SKILL_LIST_ROW_H 68
-/* 曲库/电台：主标题 + 两行简介；矮屏有 now_playing 时靠动态行数分页，勿裁末行 */
+/* 曲库：标题 + 艺人各一行；左右圆标同尺寸。矮屏有 now_playing 时靠动态行数分页 */
 #define SKILL_MUSIC_ROW_H 64
 #define SKILL_LIST_HDR_BUDGET 48
 #define SKILL_LIST_CHROME_PAD 32 /* card pad_all×2 + pad_row */
@@ -1253,18 +1253,74 @@ static int list_cols(void)
     return list_use_comfortable() ? SKILL_LIST_COLS : SKILL_PAGE_COLS;
 }
 
+/** 曲库左右端圆标：不小于播放钮，并随字号加大，避免大字档把序号裁进 22px 盒。 */
+static int music_end_sz(void)
+{
+    int sz = nl_ov_ui_font_line_h() + 16;
+    if (sz < SKILL_CTRL_SZ) {
+        sz = SKILL_CTRL_SZ;
+    }
+    if (sz > 56) {
+        sz = 56;
+    }
+    return sz;
+}
+
+static void paint_music_mark(lv_obj_t *lbl, bool playing, int index)
+{
+    if (!lbl) {
+        return;
+    }
+    lv_obj_t *pod = lv_obj_get_parent(lbl);
+    if (playing) {
+        lv_obj_set_style_text_font(lbl, &font_material_symbols_30_4, 0);
+        lv_label_set_text(lbl, MATERIAL_SYMBOLS_HEADPHONES);
+        lv_obj_set_style_text_color(lbl, UI_ON_TILE, 0);
+        if (pod) {
+            lv_obj_set_style_bg_color(pod, UI_ACCENT, 0);
+        }
+    } else {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", index + 1);
+        nl_ov_set_font(lbl);
+        lv_label_set_text(lbl, buf);
+        lv_obj_set_style_text_color(lbl, UI_TEXT_SUB, 0);
+        if (pod) {
+            lv_obj_set_style_bg_color(pod, UI_CAPSULE_OFF, 0);
+        }
+    }
+}
+
 static int list_row_h(void)
 {
     if (list_use_comfortable()) {
         return SKILL_LIST_ROW_H;
     }
-    /* 曲库：标题 1 行 + 简介 2 行。大字档行框变高，行高跟着长，避免叠到下一行。 */
     const int font_h = nl_ov_ui_font_line_h();
     int lsp = nl_ov_ui_line_box() - font_h;
     if (lsp < 0) {
         lsp = 0;
     }
-    int h = font_h + 4 + (font_h * 2 + lsp) + 8;
+    /* 非曲库紧凑行仍按标题 + 两行简介留高 */
+    if (!s_env || strcmp(s_env->card_type, "music_list") != 0) {
+        int h = font_h + 4 + (font_h * 2 + lsp) + 8;
+        if (h < SKILL_MUSIC_ROW_H) {
+            h = SKILL_MUSIC_ROW_H;
+        }
+        return h;
+    }
+    /* 曲库一行歌名 + 一行艺人。行高取文字块与圆标的较大者，大字档只增高不留空行。 */
+    int gap = lsp;
+    if (gap < 2) {
+        gap = 2;
+    }
+    if (gap > 6) {
+        gap = 6;
+    }
+    const int text_h = font_h + gap + font_h;
+    const int mark = music_end_sz();
+    int inner = text_h > mark ? text_h : mark;
+    int h = inner + 12;
     if (h < SKILL_MUSIC_ROW_H) {
         h = SKILL_MUSIC_ROW_H;
     }
@@ -1489,11 +1545,15 @@ static void clear_play_mark(void)
         return;
     }
     if (s_row_idx_labels[s_play_idx]) {
-        char idx_buf[16];
-        snprintf(idx_buf, sizeof(idx_buf), "%d", s_play_idx + 1);
-        nl_ov_set_font(s_row_idx_labels[s_play_idx]);
-        lv_label_set_text(s_row_idx_labels[s_play_idx], idx_buf);
-        lv_obj_set_style_text_color(s_row_idx_labels[s_play_idx], UI_ACCENT_SOFT, 0);
+        if (s_env && strcmp(s_env->card_type, "music_list") == 0) {
+            paint_music_mark(s_row_idx_labels[s_play_idx], false, s_play_idx);
+        } else {
+            char idx_buf[16];
+            snprintf(idx_buf, sizeof(idx_buf), "%d", s_play_idx + 1);
+            nl_ov_set_font(s_row_idx_labels[s_play_idx]);
+            lv_label_set_text(s_row_idx_labels[s_play_idx], idx_buf);
+            lv_obj_set_style_text_color(s_row_idx_labels[s_play_idx], UI_ACCENT_SOFT, 0);
+        }
     }
     if (s_row_btns[s_play_idx]) {
         lv_obj_t *lbl = lv_obj_get_child(s_row_btns[s_play_idx], 0);
@@ -1516,9 +1576,13 @@ static void update_row_icon(int idx)
     }
     /* 更新序号胶囊：当前播放显示耳机 */
     if (s_row_idx_labels[idx]) {
-        lv_obj_set_style_text_font(s_row_idx_labels[idx], &font_material_symbols_20_4, 0);
-        lv_label_set_text(s_row_idx_labels[idx], MATERIAL_SYMBOLS_HEADPHONES);
-        lv_obj_set_style_text_color(s_row_idx_labels[idx], UI_ACCENT, 0);
+        if (s_env && strcmp(s_env->card_type, "music_list") == 0) {
+            paint_music_mark(s_row_idx_labels[idx], true, idx);
+        } else {
+            lv_obj_set_style_text_font(s_row_idx_labels[idx], &font_material_symbols_20_4, 0);
+            lv_label_set_text(s_row_idx_labels[idx], MATERIAL_SYMBOLS_HEADPHONES);
+            lv_obj_set_style_text_color(s_row_idx_labels[idx], UI_ACCENT, 0);
+        }
     }
     /* 更新播放按钮：改为暂停图标 */
     if (s_row_btns[idx]) {
@@ -1543,11 +1607,15 @@ static void play_at(int idx)
         DisplayLockGuard lock(nl_ov_disp());
         if (lock) {
             if (s_row_idx_labels[s_play_idx]) {
-                char idx_buf[16];
-                snprintf(idx_buf, sizeof(idx_buf), "%d", s_play_idx + 1);
-                nl_ov_set_font(s_row_idx_labels[s_play_idx]);
-                lv_label_set_text(s_row_idx_labels[s_play_idx], idx_buf);
-                lv_obj_set_style_text_color(s_row_idx_labels[s_play_idx], UI_ACCENT_SOFT, 0);
+                if (strcmp(s_env->card_type, "music_list") == 0) {
+                    paint_music_mark(s_row_idx_labels[s_play_idx], false, s_play_idx);
+                } else {
+                    char idx_buf[16];
+                    snprintf(idx_buf, sizeof(idx_buf), "%d", s_play_idx + 1);
+                    nl_ov_set_font(s_row_idx_labels[s_play_idx]);
+                    lv_label_set_text(s_row_idx_labels[s_play_idx], idx_buf);
+                    lv_obj_set_style_text_color(s_row_idx_labels[s_play_idx], UI_ACCENT_SOFT, 0);
+                }
             }
             if (s_row_btns[s_play_idx]) {
                 lv_obj_t *lbl = lv_obj_get_child(s_row_btns[s_play_idx], 0);
@@ -3669,9 +3737,9 @@ static void fill_list(void)
             lv_obj_set_style_border_width(row, 1, 0);
             lv_obj_set_style_border_color(row, UI_TILE_OFF_BORDER, 0);
             lv_obj_set_style_border_opa(row, LV_OPA_60, 0);
-            lv_obj_set_style_pad_hor(row, comfortable ? 10 : 6, 0);
-            lv_obj_set_style_pad_ver(row, comfortable ? 8 : 0, 0);
-            lv_obj_set_style_pad_column(row, 6, 0);
+            lv_obj_set_style_pad_hor(row, (comfortable || music_card) ? 10 : 6, 0);
+            lv_obj_set_style_pad_ver(row, music_card ? 6 : (comfortable ? 8 : 0), 0);
+            lv_obj_set_style_pad_column(row, music_card ? 10 : 6, 0);
             lv_obj_set_style_clip_corner(row, true, 0);
             lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
             lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -3687,24 +3755,29 @@ static void fill_list(void)
                 lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
             }
 
+            const int mark = music_card ? music_end_sz() : (comfortable ? 26 : 22);
             lv_obj_t *idx_pod = lv_obj_create(row);
             lv_obj_remove_style_all(idx_pod);
-            lv_obj_set_size(idx_pod, comfortable ? 26 : 22, comfortable ? 26 : 22);
-            lv_obj_set_style_radius(idx_pod, 6, 0);
+            lv_obj_set_size(idx_pod, mark, mark);
+            lv_obj_set_style_radius(idx_pod, music_card ? mark / 2 : 6, 0);
             lv_obj_set_style_bg_color(idx_pod, UI_CAPSULE_OFF, 0);
             lv_obj_set_style_bg_opa(idx_pod, LV_OPA_COVER, 0);
             lv_obj_clear_flag(idx_pod, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_t *idx_l = lv_label_create(idx_pod);
-            nl_ov_set_font(idx_l);
-            if (i == s_play_idx) {
-                lv_obj_set_style_text_font(idx_l, &font_material_symbols_20_4, 0);
-                lv_label_set_text(idx_l, MATERIAL_SYMBOLS_HEADPHONES);
-                lv_obj_set_style_text_color(idx_l, UI_ACCENT, 0);
+            if (music_card) {
+                paint_music_mark(idx_l, i == s_play_idx, i);
             } else {
-                char idx_buf[16];
-                snprintf(idx_buf, sizeof(idx_buf), "%d", i + 1);
-                lv_label_set_text(idx_l, idx_buf);
-                lv_obj_set_style_text_color(idx_l, UI_ACCENT_SOFT, 0);
+                nl_ov_set_font(idx_l);
+                if (i == s_play_idx) {
+                    lv_obj_set_style_text_font(idx_l, &font_material_symbols_20_4, 0);
+                    lv_label_set_text(idx_l, MATERIAL_SYMBOLS_HEADPHONES);
+                    lv_obj_set_style_text_color(idx_l, UI_ACCENT, 0);
+                } else {
+                    char idx_buf[16];
+                    snprintf(idx_buf, sizeof(idx_buf), "%d", i + 1);
+                    lv_label_set_text(idx_l, idx_buf);
+                    lv_obj_set_style_text_color(idx_l, UI_ACCENT_SOFT, 0);
+                }
             }
             lv_obj_center(idx_l);
             if (i < 64) {
@@ -3719,7 +3792,7 @@ static void fill_list(void)
             lv_obj_set_style_min_width(txt, 0, 0);
             lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_flex_align(txt, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-            lv_obj_set_style_pad_row(txt, comfortable ? 3 : 1, 0);
+            lv_obj_set_style_pad_row(txt, music_card ? 2 : (comfortable ? 3 : 1), 0);
             lv_obj_set_style_clip_corner(txt, true, 0);
             lv_obj_clear_flag(txt, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_clear_flag(txt, LV_OBJ_FLAG_SCROLLABLE);
@@ -3751,16 +3824,16 @@ static void fill_list(void)
             /* 简介按真实行数定高。预留两行空盒会把字顶到播放钮上方。 */
             lv_label_set_long_mode(a, LV_LABEL_LONG_DOT);
             const bool sub_two_lines =
-                music_card ||
-                (comfortable && s_env->app_id[0] && strstr(s_env->app_id, "dsh") != nullptr);
+                comfortable && s_env->app_id[0] && strstr(s_env->app_id, "dsh") != nullptr;
             int cell_w = skill_panel_w();
             if (cols > 1) {
                 cell_w = (cell_w - 6 * (cols - 1)) / cols;
             }
-            const int side_pad = comfortable ? 10 : 6;
-            const int idx_w = comfortable ? 26 : 22;
+            const int side_pad = (comfortable || music_card) ? 10 : 6;
+            const int gap = music_card ? 10 : 6;
             const bool has_play = can_play && s_env->tracks[i].playback_url[0];
-            int text_w = cell_w - side_pad * 2 - 6 - idx_w - (has_play ? SKILL_CTRL_SZ + 6 : 0);
+            const int play_w = has_play ? (music_card ? mark : SKILL_CTRL_SZ) : 0;
+            int text_w = cell_w - side_pad * 2 - gap - mark - (has_play ? gap + play_w : 0);
             if (text_w < 48) {
                 text_w = 48;
             }
@@ -3775,6 +3848,10 @@ static void fill_list(void)
             if (can_play && s_env->tracks[i].playback_url[0]) {
                 const char *icon = (i == s_play_idx) ? MATERIAL_SYMBOLS_PAUSE : MATERIAL_SYMBOLS_PLAY_ARROW;
                 lv_obj_t *btn = make_icon_btn(row, UI_ACCENT, UI_BG, icon, nullptr);
+                if (music_card) {
+                    lv_obj_set_size(btn, mark, mark);
+                    lv_obj_set_style_radius(btn, mark / 2, 0);
+                }
                 lv_obj_add_event_cb(btn, on_play_row, LV_EVENT_CLICKED, (void *)(intptr_t)i);
                 if (i < 64) {
                     s_row_btns[i] = btn;

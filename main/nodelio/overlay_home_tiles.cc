@@ -1136,6 +1136,18 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
         return;
     const bool on_rising = tile_vis_on_rising(w->id, on && online);
     uint32_t fill = widget_fill_for_state(w, kind, online, on, unknown);
+    /* 开态图标使用高饱和品牌/语义亮色，关态暗白，离线灰暗 */
+    lv_color_t active_c = UI_SUCCESS;
+    uint32_t custom_bg = 0;
+    if (w && parse_bg_hex(w->bg_color, &custom_bg)) {
+        active_c = lv_color_hex(custom_bg);
+    } else if (kind == TILE_PWM) {
+        active_c = UI_TILE_PWM_BORDER;
+    } else if (kind == TILE_GPIO) {
+        active_c = UI_TILE_GPIO_BORDER;
+    } else if (kind == TILE_SCENE) {
+        active_c = UI_CAPSULE_SCENE;
+    }
     tile_apply_trans(tile);
     lv_obj_set_style_bg_color(tile, lv_color_hex(fill), 0);
     lv_obj_set_style_bg_color(tile, lv_color_hex(color_pressed(fill)), LV_STATE_PRESSED);
@@ -1164,19 +1176,6 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
         if (online) {
             lv_obj_set_style_opa(tile, LV_OPA_COVER, 0);
         }
-    }
-
-    /* 开态图标使用高饱和品牌/语义亮色，关态暗白，离线灰暗 */
-    lv_color_t active_c = UI_SUCCESS;
-    uint32_t custom_bg = 0;
-    if (w && parse_bg_hex(w->bg_color, &custom_bg)) {
-        active_c = lv_color_hex(custom_bg);
-    } else if (kind == TILE_PWM) {
-        active_c = UI_TILE_PWM_BORDER;
-    } else if (kind == TILE_GPIO) {
-        active_c = UI_TILE_GPIO_BORDER;
-    } else if (kind == TILE_SCENE) {
-        active_c = UI_CAPSULE_SCENE;
     }
 
     const bool dim = !online || unknown;
@@ -1502,7 +1501,7 @@ static void capture_and_upload_screenshot(void)
 
                 char url[256];
                 const char *custom = job->cfg.screenshot_url;
-                while (*custom == ' ' || *custom == '	') custom++;
+                while (*custom == ' ' || *custom == '\t') custom++;
                 if (*custom != '\0') {
                     if (strstr(custom, "://")) {
                         if (strchr(strstr(custom, "://") + 3, '/')) {
@@ -1511,7 +1510,7 @@ static void capture_and_upload_screenshot(void)
                             std::snprintf(url, sizeof(url), "%s/api/devices/%s/panel/screenshot", custom, job->cfg.device_id);
                         }
                     } else {
-                        char host_port[128];
+                        char host_port[sizeof(job->cfg.screenshot_url) + 8];
                         if (strchr(custom, ':')) {
                             std::snprintf(host_port, sizeof(host_port), "%s", custom);
                         } else {

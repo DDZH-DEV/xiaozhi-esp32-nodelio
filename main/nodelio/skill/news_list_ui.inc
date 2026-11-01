@@ -352,7 +352,14 @@ bool nodelio_skill_news_finish_chunk(uint32_t token, bool played_audio, bool* mo
     if (!lock || !news_read_is_current()) {
         return false;
     }
-    const bool finished = s_news_read_progress.Finish(token, played_audio, next);
+    bool finished = s_news_read_progress.Finish(token, played_audio, next);
+    /* 云端常在段中停 TTS。游标已落到最后一句末尾，接着请求未读尾巴，不把这段判失败取消。 */
+    const bool same = token && token == s_news_read_progress.token();
+    if (!finished && played_audio && same && s_news_read_progress.HasUnplayedTail()) {
+        s_news_read_progress.ReleaseWait();
+        next = true;
+        finished = true;
+    }
     ESP_LOGI(TAG, "news cursor: token=%u matched=%u end=%u resume=%u complete=%d more=%d",
              (unsigned)token, (unsigned)s_news_read_progress.MatchedOffset(),
              (unsigned)s_news_read_progress.EndOffset(),

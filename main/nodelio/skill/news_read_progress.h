@@ -27,6 +27,15 @@ public:
         complete_ = false;
     }
     void Cancel() { active_ = false; }
+    /** TTS 已停且本段还有未播正文：关掉等待，保留游标，让 continue 从断点重取。 */
+    void ReleaseWait() { active_ = false; }
+    bool HasUnplayedTail() const {
+        if (complete_ || !matched_end_ || chunk_.empty()) {
+            return false;
+        }
+        size_t i = matched_end_;
+        return Next(chunk_, i) != 0;
+    }
     uint32_t token() const { return active_ ? generation_ : 0; }
     bool waiting() const { return active_ && !complete_; }
     bool unfinished() const { return !chunk_.empty() && !complete_; }
