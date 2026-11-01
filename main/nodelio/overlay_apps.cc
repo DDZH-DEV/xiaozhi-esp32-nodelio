@@ -1,5 +1,6 @@
 #include "overlay_priv.h"
 #include "panel_jobs.h"
+#include "ui_widgets.h"
 #include "ui_work_stats.h"
 
 #include "application.h"
@@ -92,8 +93,6 @@ static int s_focus_idx = -1;
 
 static constexpr int kAppsPagePadH = 16;
 static constexpr int kAppsAnimMs = 280;
-static constexpr int kAppsBrowseTileH = 84;
-static constexpr int kAppsRailTileH = 84;
 
 static bool apps_wide(void)
 {
@@ -110,9 +109,8 @@ static int apps_pane_target_w(bool split)
 {
     const int full = apps_body_w() - 2 * kAppsPagePadH;
     if (apps_wide() && split) {
-        /* 打开应用后左卡只占整屏 1/5，其余留给右侧技能卡。 */
-        const int fifth = (int)nodelio_display_profile()->width / 5;
-        return fifth > 160 ? fifth : 160;
+        /* 与设置页单列同宽（整屏 1/5），左右再各留一页边距。 */
+        return ui_settings_tile_width(full, true, nullptr);
     }
     return full > 120 ? full : 120;
 }
@@ -122,7 +120,8 @@ static void apps_apply_pane(int w, bool split)
     if (!s_list_pane) {
         return;
     }
-    /* flex_grow 会把设好的宽度撑回整页，右卡盖住后看起来仍是两列。 */
+    /* 宽度不用 flex_grow，否则会被撑回整页；高度必须撑满，否则列表只剩一张半就被裁掉。 */
+    lv_obj_set_height(s_list_pane, lv_pct(100));
     if (apps_wide() && split) {
         lv_obj_set_flex_grow(s_list_pane, 0);
         lv_obj_set_width(s_list_pane, w > 80 ? w : 80);
@@ -136,6 +135,7 @@ static void apps_exec_pane_w(void *obj, int32_t v)
 {
     lv_obj_t *pane = static_cast<lv_obj_t *>(obj);
     lv_obj_set_flex_grow(pane, 0);
+    lv_obj_set_height(pane, lv_pct(100));
     lv_obj_set_width(pane, v);
 }
 
@@ -408,18 +408,10 @@ static void render_list(void)
     NlUiWorkScope work("apps.update");
     s_apps_dirty = false;
     const int list_w = apps_pane_target_w(s_split);
-    int cols = apps_wide() ? (s_split ? 1 : 3) : 2;
-    int card_w = (list_w - UI_GAP * (cols - 1)) / cols;
-    if (card_w < 160) {
-        card_w = list_w;
-    }
+    const int card_w = ui_settings_tile_width(list_w, s_split && apps_wide(), nullptr);
     const int line = nl_ov_ui_line_box();
-    int card_h = 12 + line + 4 + line * 2 + 12;
-    const int floor_h = s_split ? kAppsRailTileH : kAppsBrowseTileH;
-    if (card_h < floor_h) {
-        card_h = floor_h;
-    }
-    const int pod_size = s_split ? 44 : 48;
+    const int card_h = ui_settings_tile_height();
+    const int pod_size = 46;
     const lv_font_t* font = nl_ov_ui_font();
     for (int i = 0; i < APP_MAX; ++i) {
         auto& view = s_app_views[i];
@@ -436,8 +428,9 @@ static void render_list(void)
             view.card = lv_obj_create(s_list);
             lv_obj_remove_style_all(view.card);
             lv_obj_set_style_bg_opa(view.card, LV_OPA_COVER, 0);
-            lv_obj_set_style_radius(view.card, UI_RADIUS_MD, 0);
-            lv_obj_set_style_pad_hor(view.card, 12, 0);
+            lv_obj_set_style_radius(view.card, UI_RADIUS_SM, 0);
+            lv_obj_set_style_pad_left(view.card, 10, 0);
+            lv_obj_set_style_pad_right(view.card, 8, 0);
             lv_obj_set_style_pad_column(view.card, 16, 0);
             lv_obj_set_flex_flow(view.card, LV_FLEX_FLOW_ROW);
             lv_obj_set_flex_align(view.card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
@@ -513,7 +506,7 @@ static void render_list(void)
             nl_ov_set_font(view.subtitle);
             lv_obj_set_height(view.title, nl_ov_ui_font_line_h());
             lv_obj_set_height(view.subtitle,
-                              nl_ov_wrapped_text_h(desc, card_w - 24 - 16 - pod_size));
+                              nl_ov_wrapped_text_h(desc, card_w - 10 - 8 - 16 - pod_size));
             view.width = card_w;
             view.height = card_h;
             view.pod_size = pod_size;
@@ -1227,7 +1220,8 @@ void nl_ov_build_apps(void)
     lv_obj_set_style_bg_color(s_page, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_page, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(s_page, kAppsPagePadH, 0);
-    lv_obj_set_style_pad_ver(s_page, 8, 0);
+    lv_obj_set_style_pad_top(s_page, 16, 0);
+    lv_obj_set_style_pad_bottom(s_page, 8, 0);
     lv_obj_set_style_pad_row(s_page, 4, 0);
     lv_obj_set_flex_flow(s_page, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(s_page, LV_OBJ_FLAG_SCROLLABLE);

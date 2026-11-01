@@ -53,8 +53,8 @@ void nl_panel_shell_notify(const char* msg, const lv_font_t* font, int bottom_in
     lv_label_set_text(toast_lbl, msg);
     /* 短句贴文字收窄；超长才在屏宽内换行 */
     lv_obj_set_style_text_font(toast_lbl, font, 0);
-    const int32_t max_inner =
-        std::max(1, lv_display_get_horizontal_resolution(lv_display_get_default()) - 120);
+    const int32_t max_inner = std::max<int32_t>(
+        1, lv_display_get_horizontal_resolution(lv_display_get_default()) - 120);
     lv_point_t sz;
     lv_text_get_size(&sz, msg, font, 0, 0, max_inner, LV_TEXT_FLAG_NONE);
     int32_t tw = sz.x + 2;

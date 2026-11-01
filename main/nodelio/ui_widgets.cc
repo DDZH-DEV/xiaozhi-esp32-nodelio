@@ -61,6 +61,52 @@ void ui_styles_init(void)
     lv_style_set_text_color(&st_tab_checked, UI_TEXT_SUB);
 }
 
+int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out)
+{
+    const int gap = UI_GAP;
+    const auto *profile = nodelio_display_profile();
+    if (avail < 160) {
+        avail = (int)profile->width - (int)profile->nav_width - 16 * 2;
+    }
+    if (force_single_col) {
+        int tile_w = (int)profile->width / 5;
+        if (tile_w < 160) {
+            tile_w = 160;
+        }
+        if (tile_w > avail) {
+            tile_w = avail;
+        }
+        if (columns_out) {
+            *columns_out = 1;
+        }
+        return tile_w;
+    }
+    const int max_cols = profile->nav_width ? 4 : 2;
+    const int min_tile = 220;
+    int columns = max_cols;
+    while (columns > 1) {
+        const int tw = (avail - gap * (columns - 1)) / columns;
+        if (tw >= min_tile) {
+            break;
+        }
+        columns--;
+    }
+    if (columns_out) {
+        *columns_out = columns;
+    }
+    return (avail - gap * (columns - 1)) / columns;
+}
+
+int ui_settings_tile_height(void)
+{
+    const int line = nl_ov_ui_line_box();
+    int tile_h = 12 + line + 4 + line * 2 + 12;
+    if (tile_h < UI_SETTINGS_TILE_H) {
+        tile_h = UI_SETTINGS_TILE_H;
+    }
+    return tile_h;
+}
+
 lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char *title,
                                 const char *sub, uint32_t accent_c, const char *right_icon,
                                 lv_event_cb_t cb, bool force_single_col)
@@ -68,43 +114,13 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     ui_styles_init();
 
     /* 浏览态按容器宽度分列。技能卡打开时左卡固定为整屏 1/5，不把剩余区域拉满。 */
-    const int gap = UI_GAP;
-    const auto* profile = nodelio_display_profile();
     int avail = parent ? (int)lv_obj_get_content_width(parent) : 0;
-    if (avail < 160) {
-        avail = profile->width - profile->nav_width - 16 * 2;
-    }
-    int tile_w;
-    if (force_single_col) {
-        tile_w = (int)profile->width / 5;
-        if (tile_w < 160) {
-            tile_w = 160;
-        }
-        if (tile_w > avail) {
-            tile_w = avail;
-        }
-    } else {
-        const int max_cols = profile->nav_width ? 4 : 2;
-        const int min_tile = 220;
-        int columns = max_cols;
-        while (columns > 1) {
-            const int tw = (avail - gap * (columns - 1)) / columns;
-            if (tw >= min_tile) {
-                break;
-            }
-            columns--;
-        }
-        tile_w = (avail - gap * (columns - 1)) / columns;
-    }
+    const int tile_w = ui_settings_tile_width(avail, force_single_col, nullptr);
 
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);
     /* 标题 1 行 + 副文 2 行。大字档行框变高，卡片跟着长，避免副文被底边裁掉。 */
-    const int line = nl_ov_ui_line_box();
-    int tile_h = 12 + line + 4 + line * 2 + 12;
-    if (tile_h < UI_SETTINGS_TILE_H) {
-        tile_h = UI_SETTINGS_TILE_H;
-    }
+    const int tile_h = ui_settings_tile_height();
     lv_obj_set_size(btn, tile_w, tile_h);
     lv_obj_set_ext_click_area(btn, 6);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);

@@ -11,6 +11,12 @@ extern "C" {
 
 void ui_styles_init(void);
 
+/** 与设置页同一套卡片宽。avail 为去掉页边距后的内容宽；force_single_col 时取整屏 1/5。
+ *  columns_out 可空。 */
+int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out);
+/** 与设置页同一套卡片高（标题 1 行 + 副文 2 行，不低于 UI_SETTINGS_TILE_H）。 */
+int ui_settings_tile_height(void);
+
 /** 设置页入口：卡内左右（左 Icon Pod · 右标题/副文），列数按容器宽自适应。
  *  force_single_col：宽屏右窗被技能卡占用时传 true，左侧改单列铺满。 */
 lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char *title,

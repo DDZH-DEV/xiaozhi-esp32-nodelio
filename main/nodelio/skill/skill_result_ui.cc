@@ -190,10 +190,25 @@ static void ensure_chrome_order(void)
 
 static void apply_card_chrome(void);
 
-/** 列表卡可用高度：now_playing 可见时让位（宽屏底栏按屏几何扣，勿与条重叠） */
+/** 宽屏且列表、播放条同时可见：播放条嵌进列表框底，不再单独占一条。 */
+static bool skill_player_docked(void)
+{
+    if (!nodelio_display_profile()->nav_width) {
+        return false;
+    }
+    const bool card_up = s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN);
+    const bool bar_up = s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
+    return card_up && bar_up;
+}
+
+/** 列表卡可用高度。宽屏播放条嵌进框内时，外框铺满右列。 */
 static int skill_card_h_max(void)
 {
     const auto *p = nodelio_display_profile();
+    if (skill_player_docked()) {
+        const int h = (int)p->height - NL_UI_STATUS_H - 2 * SKILL_GAP;
+        return h < SKILL_CARD_H_MIN ? SKILL_CARD_H_MIN : h;
+    }
     int h = (int)p->result_max_height;
     if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
         if (p->nav_width) {
@@ -208,7 +223,7 @@ static int skill_card_h_max(void)
     return h < SKILL_CARD_H_MIN ? SKILL_CARD_H_MIN : h;
 }
 
-/** 宽屏：右侧应用宽度由 profile 与左侧工作区共同决定；播放器另占底栏。 */
+/** 宽屏：右侧应用宽度。首页给左栏留固定宽，避免启动台被应用列表轨挤扁。 */
 static int skill_panel_w(void)
 {
     const auto *p = nodelio_display_profile();
@@ -216,20 +231,63 @@ static int skill_panel_w(void)
     if (!p->nav_width) {
         return base;
     }
+    if (s_active_tab == NL_TAB_HOME) {
+        const int home_col = 520;
+        int w = (int)p->width - (int)p->nav_width - home_col - SKILL_GAP;
+        if (w < base) {
+            w = base;
+        }
+        return w;
+    }
     const int rail = nl_ov_apps_split_rail_w();
     if (rail <= 0) {
         return base;
     }
-    /* [nav][pad16][rail][gap][panel][gap] */
-    const int left = (int)p->nav_width + 16 + rail + SKILL_GAP;
+    /* 与设置页相同：左 16 + 卡片 + 右 16，窗口再留屏幕右缘。 */
+    const int left = (int)p->nav_width + 16 + rail + 16;
     int w = (int)p->width - left - SKILL_GAP;
     if (w < base) {
         w = base;
     }
-    if (w > 820) {
-        w = 820;
-    }
     return w;
+}
+
+/** 应用外框：石板细边，靠表面提亮，不用品牌绿描边。 */
+static void style_skill_frame(void)
+{
+    if (!s_card) {
+        return;
+    }
+    lv_obj_set_style_bg_color(s_card, UI_SURFACE, 0);
+    lv_obj_set_style_radius(s_card, 20, 0);
+    lv_obj_set_style_border_width(s_card, 1, 0);
+    lv_obj_set_style_border_color(s_card, UI_BORDER, 0);
+    lv_obj_set_style_border_opa(s_card, LV_OPA_70, 0);
+    lv_obj_set_style_shadow_width(s_card, 0, 0);
+}
+
+/** docked：框内凹槽。否则独立一条，同样不用绿框。 */
+static void style_now_bar(bool docked)
+{
+    if (!s_now_bar) {
+        return;
+    }
+    lv_obj_set_style_shadow_width(s_now_bar, 0, 0);
+    lv_obj_set_style_shadow_opa(s_now_bar, LV_OPA_TRANSP, 0);
+    if (docked) {
+        lv_obj_set_style_bg_color(s_now_bar, UI_PANEL, 0);
+        lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(s_now_bar, UI_RADIUS_SM, 0);
+        lv_obj_set_style_border_width(s_now_bar, 0, 0);
+        return;
+    }
+    lv_obj_set_style_bg_color(s_now_bar, UI_SURFACE, 0);
+    lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_now_bar, 16, 0);
+    lv_obj_set_style_border_width(s_now_bar, 1, 0);
+    lv_obj_set_style_border_side(s_now_bar, LV_BORDER_SIDE_FULL, 0);
+    lv_obj_set_style_border_color(s_now_bar, UI_BORDER, 0);
+    lv_obj_set_style_border_opa(s_now_bar, LV_OPA_80, 0);
 }
 
 static void layout_skill_layers(void)
@@ -238,11 +296,14 @@ static void layout_skill_layers(void)
     const bool card_up = s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN);
     const bool bar_up = s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
     const bool wide = nodelio_display_profile()->nav_width != 0;
+    const bool dock = wide && card_up && bar_up;
     /* 宽屏：播放条只占右侧技能列，勿再砍左轨应用列表一行高 */
     const int reserve_bottom = (!wide && bar_up) ? (SKILL_NOW_H + 2 * SKILL_GAP) : 0;
-    nl_ov_workspace_reserve(card_up ? panel_w + 2 * SKILL_GAP : 0, reserve_bottom);
+    nl_ov_workspace_reserve(card_up ? panel_w + (wide ? SKILL_GAP : 2 * SKILL_GAP) : 0,
+                            reserve_bottom);
     int y = NL_UI_STATUS_H + SKILL_GAP;
-    if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
+    if (bar_up && !dock) {
+        style_now_bar(false);
         if (wide) {
             const int bar_w = panel_w;
             lv_obj_set_width(s_now_bar, bar_w);
@@ -256,13 +317,13 @@ static void layout_skill_layers(void)
         }
     }
     if (s_scrim && !lv_obj_has_flag(s_scrim, LV_OBJ_FLAG_HIDDEN) && wide) {
-        // On wide screens only block the occupied lane, never the left workspace.
-        lv_obj_set_size(s_scrim, card_up ? panel_w + 2 * SKILL_GAP : 0,
-                        nodelio_display_profile()->height - NL_UI_STATUS_H -
-                            (bar_up ? SKILL_NOW_H + 2 * SKILL_GAP : 0));
+        /* 只挡右侧占用带。列表在时外框已含播放条，不必再给底栏挖空。 */
+        const int scrim_bottom = (bar_up && !card_up) ? (SKILL_NOW_H + 2 * SKILL_GAP) : 0;
+        lv_obj_set_size(s_scrim, card_up ? panel_w + SKILL_GAP : 0,
+                        nodelio_display_profile()->height - NL_UI_STATUS_H - scrim_bottom);
         lv_obj_align(s_scrim, LV_ALIGN_TOP_RIGHT, 0, NL_UI_STATUS_H);
     }
-    if (s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
+    if (card_up) {
         lv_obj_set_width(s_card, panel_w);
         /* 播放条显隐会改 y；同步缩/扩卡高，避免内容顶出屏底 */
         if (s_have_env && s_env) {
@@ -271,8 +332,21 @@ static void layout_skill_layers(void)
             const int h = skill_card_h_max();
             lv_obj_set_height(s_card, h);
             lv_obj_set_style_max_height(s_card, h, 0);
+            lv_obj_set_style_pad_bottom(s_card, dock ? (SKILL_NOW_H + 18) : 12, 0);
         }
+        style_skill_frame();
         lv_obj_align(s_card, wide ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_TOP_MID, wide ? -SKILL_GAP : 0, y);
+    }
+    if (dock) {
+        const int bar_w = panel_w - 20;
+        lv_obj_set_width(s_now_bar, bar_w);
+        if (s_now_lbl) {
+            lv_obj_set_width(s_now_lbl, bar_w - 240);
+        }
+        style_now_bar(true);
+        /* 贴在外框底边内侧，左右各留 10，和列表合成一块 */
+        lv_obj_align(s_now_bar, LV_ALIGN_BOTTOM_RIGHT, -(SKILL_GAP + 10), -(SKILL_GAP + 10));
+        lv_obj_move_foreground(s_now_bar);
     }
     if (s_mini_fab && !lv_obj_has_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_align(s_mini_fab, LV_ALIGN_BOTTOM_RIGHT, -14, -(NL_UI_TAB_H + 14));
@@ -1124,8 +1198,12 @@ static int list_page_rows(void)
     const int row_h = list_row_h();
     const int gap = 4;
     const int hdr_budget = nl_ov_ui_font_line_h() * 2 + 12;
+    int chrome = SKILL_LIST_CHROME_PAD;
+    if (skill_player_docked()) {
+        chrome += SKILL_NOW_H + 6;
+    }
     const int list_avail =
-        skill_card_h_max() - SKILL_LIST_CHROME_PAD -
+        skill_card_h_max() - chrome -
         (hdr_budget > SKILL_LIST_HDR_BUDGET ? hdr_budget : SKILL_LIST_HDR_BUDGET);
     int fit = SKILL_PAGE_ROWS;
     if (list_avail > 0 && row_h + gap > 0) {
@@ -2757,15 +2835,13 @@ static void ensure_card(void)
     lv_obj_remove_style_all(s_card);
     lv_obj_set_size(s_card, SKILL_CARD_W, SKILL_CARD_H_MAX);
     lv_obj_align(s_card, LV_ALIGN_TOP_MID, 0, NL_UI_STATUS_H + SKILL_GAP);
-    lv_obj_set_style_bg_color(s_card, UI_PANEL, 0);
+    lv_obj_set_style_bg_color(s_card, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(s_card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_card, 18, 0);
+    lv_obj_set_style_radius(s_card, 20, 0);
     lv_obj_set_style_border_width(s_card, 1, 0);
-    lv_obj_set_style_border_color(s_card, UI_ACCENT_SOFT, 0);
-    lv_obj_set_style_border_opa(s_card, SKILL_BORDER_OPA, 0);
-    lv_obj_set_style_shadow_width(s_card, 18, 0);
-    lv_obj_set_style_shadow_opa(s_card, LV_OPA_40, 0);
-    lv_obj_set_style_shadow_color(s_card, UI_BG, 0);
+    lv_obj_set_style_border_color(s_card, UI_BORDER, 0);
+    lv_obj_set_style_border_opa(s_card, LV_OPA_70, 0);
+    lv_obj_set_style_shadow_width(s_card, 0, 0);
     lv_obj_set_style_pad_all(s_card, 12, 0);
     lv_obj_set_style_pad_row(s_card, 8, 0);
     lv_obj_set_flex_flow(s_card, LV_FLEX_FLOW_COLUMN);
@@ -2960,12 +3036,10 @@ static void ensure_card(void)
         lv_obj_set_style_bg_color(s_now_bar, UI_SURFACE, 0);
         lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(s_now_bar, 16, 0);
-        lv_obj_set_style_border_width(s_now_bar, 2, 0);
-        lv_obj_set_style_border_color(s_now_bar, UI_ACCENT, 0);
-        lv_obj_set_style_border_opa(s_now_bar, SKILL_BORDER_OPA, 0);
-        lv_obj_set_style_shadow_width(s_now_bar, 16, 0);
-        lv_obj_set_style_shadow_opa(s_now_bar, LV_OPA_30, 0);
-        lv_obj_set_style_shadow_color(s_now_bar, UI_ACCENT, 0);
+        lv_obj_set_style_border_width(s_now_bar, 1, 0);
+        lv_obj_set_style_border_color(s_now_bar, UI_BORDER, 0);
+        lv_obj_set_style_border_opa(s_now_bar, LV_OPA_80, 0);
+        lv_obj_set_style_shadow_width(s_now_bar, 0, 0);
         lv_obj_set_style_pad_hor(s_now_bar, 10, 0);
         lv_obj_set_style_pad_column(s_now_bar, 8, 0);
         lv_obj_set_flex_flow(s_now_bar, LV_FLEX_FLOW_ROW);
@@ -3104,9 +3178,11 @@ static void apply_card_chrome(void)
         return;
     }
     const int hmax = skill_card_h_max();
-    if (compact) {
+    const bool dock = skill_player_docked();
+    if (compact && !dock) {
         lv_obj_set_height(s_card, LV_SIZE_CONTENT);
         lv_obj_set_style_max_height(s_card, hmax, 0);
+        lv_obj_set_style_pad_bottom(s_card, 12, 0);
         if (s_card_list) {
             lv_obj_set_flex_grow(s_card_list, 0);
             lv_obj_set_height(s_card_list, LV_SIZE_CONTENT);
@@ -3114,6 +3190,8 @@ static void apply_card_chrome(void)
     } else {
         lv_obj_set_height(s_card, hmax);
         lv_obj_set_style_max_height(s_card, hmax, 0);
+        /* 播放条叠在框底内侧，列表在这条垫高之上结束 */
+        lv_obj_set_style_pad_bottom(s_card, dock ? (SKILL_NOW_H + 18) : 12, 0);
         if (s_card_list) {
             lv_obj_set_flex_grow(s_card_list, 1);
         }

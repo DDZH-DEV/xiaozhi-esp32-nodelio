@@ -3603,13 +3603,25 @@ static void append_home_page_dots(lv_obj_t *parent, int strip_h)
     }
 }
 
+/** 宽屏打开应用后首页被收成左栏，启动台改成侧栏排版。 */
+static bool launcher_is_side_column(void)
+{
+    const auto *p = nodelio_display_profile();
+    if (!p || !p->nav_width || !s_home) {
+        return false;
+    }
+    const int full = (int)p->width - (int)p->nav_width;
+    const int w = (int)lv_obj_get_width(s_home);
+    return w > 0 && w < full - 40;
+}
+
 static lv_obj_t *make_launcher_card(lv_obj_t *parent, const char *icon, const char *title,
-                                    const char *subtitle, lv_event_cb_t on_click)
+                                    const char *subtitle, lv_event_cb_t on_click, bool side)
 {
     lv_obj_t *card = lv_obj_create(parent);
     lv_obj_remove_style_all(card);
     lv_obj_set_width(card, lv_pct(100));
-    lv_obj_set_height(card, 88);
+    lv_obj_set_height(card, side ? 72 : 88);
     lv_obj_set_style_bg_color(card, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
@@ -3631,7 +3643,7 @@ static lv_obj_t *make_launcher_card(lv_obj_t *parent, const char *icon, const ch
 
     lv_obj_t *pod = lv_obj_create(card);
     lv_obj_remove_style_all(pod);
-    lv_obj_set_size(pod, 48, 48);
+    lv_obj_set_size(pod, side ? 40 : 48, side ? 40 : 48);
     lv_obj_set_style_radius(pod, UI_RADIUS_SM, 0);
     lv_obj_set_style_bg_color(pod, lv_color_hex(UI_C_CAPSULE_ON), 0);
     lv_obj_set_style_bg_opa(pod, LV_OPA_COVER, 0);
@@ -3664,18 +3676,26 @@ static lv_obj_t *make_launcher_card(lv_obj_t *parent, const char *icon, const ch
     lv_obj_set_style_text_color(sub, UI_TEXT_MUTED, 0);
     lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
     lv_obj_set_width(sub, lv_pct(100));
+    if (side) {
+        lv_obj_set_height(sub, nl_ov_ui_font_line_h());
+    }
     return card;
 }
 
 /** 空控家启动台：已钉 home_tile + 全部应用入口 + 进入对话（不拉市场） */
 static void fill_home_launcher(void)
 {
+    const bool side = launcher_is_side_column();
+    const int pins = nl_ov_home_skill_pinned_count();
     lv_obj_set_layout(s_home, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(s_home, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(s_home, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_hor(s_home, 20, 0);
-    lv_obj_set_style_pad_ver(s_home, 12, 0);
-    lv_obj_set_style_pad_row(s_home, 10, 0);
+    /* 侧栏条目少时整组垂直居中，避免两张卡贴在顶上、下面一大块空 */
+    lv_obj_set_flex_align(s_home,
+                          (side && pins <= 2) ? LV_FLEX_ALIGN_CENTER : LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_hor(s_home, side ? 16 : 20, 0);
+    lv_obj_set_style_pad_ver(s_home, side ? 16 : 12, 0);
+    lv_obj_set_style_pad_row(s_home, side ? 12 : 10, 0);
     lv_obj_add_flag(s_home, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_home, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_home, LV_SCROLLBAR_MODE_OFF);
@@ -3685,8 +3705,10 @@ static void fill_home_launcher(void)
     lv_obj_set_width(hdr, lv_pct(100));
     lv_obj_set_height(hdr, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(hdr, 6, 0);
+    lv_obj_set_flex_align(hdr, side ? LV_FLEX_ALIGN_START : LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(hdr, side ? 4 : 6, 0);
+    lv_obj_set_style_pad_bottom(hdr, side ? 6 : 0, 0);
     lv_obj_clear_flag(hdr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
     lv_obj_t *title = lv_label_create(hdr);
@@ -3699,25 +3721,31 @@ static void fill_home_launcher(void)
     /* P3b：多屏全空引导去 APP；有钉选则提示底入口 */
     if (s_home_user_n > 1) {
         lv_label_set_text(hint, "多屏均未编排 · 请用手机 APP「编辑大屏布局」");
-    } else if (nl_ov_home_skill_pinned_count() > 0) {
-        lv_label_set_text(hint, "未配置控家 · 下方为已钉应用");
+    } else if (pins > 0) {
+        lv_label_set_text(hint, side ? "未配置控家 · 已钉应用" : "未配置控家 · 下方为已钉应用");
     } else {
-        lv_label_set_text(hint, "未配置控家 · 可先用应用与对话，或去 APP 编排");
+        lv_label_set_text(hint, side ? "未配置控家 · 先用应用或对话"
+                                     : "未配置控家 · 可先用应用与对话，或去 APP 编排");
     }
     lv_obj_set_style_text_color(hint, UI_TEXT_MUTED, 0);
-    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(hint, side ? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(hint, side ? LV_LABEL_LONG_DOT : LV_LABEL_LONG_WRAP);
     lv_obj_set_width(hint, lv_pct(100));
+    if (side) {
+        lv_obj_set_height(hint, nl_ov_ui_font_line_h());
+    }
 
     /* C3：已钉技能磁贴（技能通道，非 panel/command） */
     nl_ov_home_skills_append_launcher(s_home);
 
     make_launcher_card(
-        s_home, MATERIAL_SYMBOLS_EXPLORE, "全部应用", "打开技能列表 · 手机可钉选或挂画布",
-        [](lv_event_t *) { nl_ov_show_page(NL_TAB_APPS); });
+        s_home, MATERIAL_SYMBOLS_EXPLORE, "全部应用",
+        side ? "技能列表 · 可钉选" : "打开技能列表 · 手机可钉选或挂画布",
+        [](lv_event_t *) { nl_ov_show_page(NL_TAB_APPS); }, side);
 
-    make_launcher_card(s_home, MATERIAL_SYMBOLS_MIC, "进入对话", "唤醒助手 · 语音控家或提问",
-                       [](lv_event_t *) { nodelio_overlay_show_chat(); });
+    make_launcher_card(s_home, MATERIAL_SYMBOLS_MIC, "进入对话",
+                       side ? "唤醒助手" : "唤醒助手 · 语音控家或提问",
+                       [](lv_event_t *) { nodelio_overlay_show_chat(); }, side);
     if (s_have_layout && s_layout && s_layout->layout_version > 0) {
         nodelio_panel_ui_mark_home_filled(s_layout->layout_version);
     }
