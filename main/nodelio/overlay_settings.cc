@@ -1530,10 +1530,15 @@ void nl_ov_open_settings_detail(set_page_id_t page)
 static void settings_tile(lv_obj_t *parent, const char *glyph, const char *title, const char *sub,
                           uint32_t accent, const char *right_icon, lv_event_cb_t cb)
 {
-    (void)ui_make_settings_tile(parent, glyph, title, sub, accent, right_icon, cb);
+    /* 宽屏右侧被技能卡占住时，左侧入口改单列铺满；窄屏技能卡是全屏模态，不走此分支。 */
+    const bool force_single_col =
+        nodelio_display_profile()->nav_width != 0 && nodelio_skill_result_card_visible();
+    (void)ui_make_settings_tile(parent, glyph, title, sub, accent, right_icon, cb,
+                                force_single_col);
 }
 
 static int s_hub_host_w = -1;
+static int s_hub_single = -1;
 
 static void fill_settings_hub(void)
 {
@@ -1542,7 +1547,7 @@ static void fill_settings_hub(void)
     }
     const lv_coord_t keep_y = lv_obj_get_scroll_y(s_settings);
     lv_obj_clean(s_settings);
-    /* 一行两列；卡内左右布局 */
+    /* 浏览态按宽度折列；技能卡打开时 settings_tile 强制单列。 */
     lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(s_settings, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(s_settings, UI_GAP, 0);
@@ -1615,6 +1620,8 @@ static void fill_settings_hub(void)
     settings_tile(s_settings, "复", "恢复出厂", "清空凭证并重启", UI_C_DANGER, nullptr,
                   [](lv_event_t *) { nl_ov_open_settings_detail(SET_PAGE_RESET); });
     s_hub_host_w = (int)lv_obj_get_width(s_settings);
+    s_hub_single =
+        (nodelio_display_profile()->nav_width != 0 && nodelio_skill_result_card_visible()) ? 1 : 0;
     if (keep_y > 0) {
         lv_obj_update_layout(s_settings);
         lv_obj_scroll_to_y(s_settings, keep_y, LV_ANIM_OFF);
@@ -1628,6 +1635,7 @@ void nl_ov_fill_settings(void)
     }
     nl_ov_close_settings_detail();
     s_hub_host_w = -1;
+    s_hub_single = -1;
     fill_settings_hub();
 }
 
@@ -1637,7 +1645,13 @@ void nl_ov_settings_sync_columns(void)
         return;
     }
     const int host = (int)lv_obj_get_width(s_settings);
-    if (host > 0 && host == s_hub_host_w && lv_obj_get_child_count(s_settings) > 0) {
+    if (host <= 0) {
+        return;
+    }
+    const int single =
+        (nodelio_display_profile()->nav_width != 0 && nodelio_skill_result_card_visible()) ? 1 : 0;
+    if (host > 0 && host == s_hub_host_w && single == s_hub_single &&
+        lv_obj_get_child_count(s_settings) > 0) {
         return;
     }
     fill_settings_hub();

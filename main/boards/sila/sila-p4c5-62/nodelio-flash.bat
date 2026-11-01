@@ -8,7 +8,9 @@ rem   nodelio-flash.bat COM15
 rem   nodelio-flash.bat --16m           Flash>=16MiB board (capacity must be confirmed)
 rem   nodelio-flash.bat --32m           default (W25Q256 / 32MB board)
 rem   nodelio-flash.bat --nofresh       skip build, flash existing build/
+rem   nodelio-flash.bat --quick         incremental build, app-flash only + monitor
 rem   nodelio-flash.bat COM15 --16m --nofresh
+rem   nodelio-flash.bat --quick COM8
 rem
 rem Do NOT use sila-86 nodelio-build.bat. Full flash via flash_args;
 rem never treat a lone xiaozhi.bin as a first-flash package.
@@ -16,11 +18,13 @@ rem C5 slave: nodelio-flash-c5.bat COMx  (U14 UART; separate from this script)
 
 set "PORT=COM8"
 set "NOFRESH=0"
+set "QUICK=0"
 set "VARIANT=32m"
 rem NOTE: do not put SHIFT inside if (...); it does not affect %1 there -> infinite parse loop
 :parse
 if "%~1"=="" goto :parsed
 if /I "%~1"=="--nofresh" set "NOFRESH=1"& shift& goto :parse
+if /I "%~1"=="--quick" set "QUICK=1"& shift& goto :parse
 if /I "%~1"=="--16m" set "VARIANT=16m"& shift& goto :parse
 if /I "%~1"=="--32m" set "VARIANT=32m"& shift& goto :parse
 set "PORT=%~1"
@@ -43,12 +47,14 @@ if errorlevel 1 exit /b 1
 cd /d "!REPO!"
 
 if "!NOFRESH!"=="1" goto after_build
+if "!QUICK!"=="1" goto quick_build
 
 echo [p4c5-62] idf.py --version
 idf.py --version
 if errorlevel 1 exit /b 1
 
 echo [p4c5-62] build !BOARD_DIR! --name !BUILD_NAME! ...
+echo [p4c5-62] full path reconfigures sdkconfig; UI-only changes: nodelio-flash.bat --quick
 python scripts\build.py !BOARD_DIR! --name !BUILD_NAME!
 if errorlevel 1 exit /b 1
 
@@ -92,4 +98,25 @@ if /i "!VARIANT!"=="32m" (
 
 echo [p4c5-62] flash+monitor on !PORT! ^(P4 USB Serial/JTAG; variant=!VARIANT!; C5 NOT flashed^) ...
 idf.py -p !PORT! flash monitor
+exit /b %ERRORLEVEL%
+
+:quick_build
+if not exist sdkconfig (
+  echo [p4c5-62] no sdkconfig - run once without --quick
+  exit /b 1
+)
+findstr /b /c:"CONFIG_BOARD_TYPE_SILA_P4C5_62=y" sdkconfig >nul
+if errorlevel 1 (
+  echo [p4c5-62] sdkconfig is not this board - run once without --quick
+  exit /b 1
+)
+findstr /c:"nodelio-p4c5-!VARIANT!.csv" sdkconfig >nul
+if errorlevel 1 (
+  echo [p4c5-62] sdkconfig partition is not !VARIANT! - run without --quick
+  exit /b 1
+)
+echo [p4c5-62] incremental build + app-flash on !PORT! ^(!VARIANT!^) ...
+idf.py build
+if errorlevel 1 exit /b 1
+idf.py -p !PORT! app-flash monitor
 exit /b %ERRORLEVEL%

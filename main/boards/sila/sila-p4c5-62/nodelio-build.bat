@@ -3,20 +3,23 @@ setlocal EnableDelayedExpansion
 chcp 65001 >nul
 
 rem SILA P4C5 6.2" - P4 host build only (does NOT flash P4 or C5)
-rem   nodelio-build.bat          default 32m (W25Q256)
+rem   nodelio-build.bat          default 32m (W25Q256)，会重新配置
 rem   nodelio-build.bat --32m
 rem   nodelio-build.bat --16m    Flash>=16MiB board (capacity must be confirmed)
+rem   nodelio-build.bat --quick  本板已配过：只增量 idf.py build，不重新 cmake
 rem
 rem Do NOT use sila-86 nodelio-build.bat. This wraps:
 rem   python scripts/build.py sila/sila-p4c5-62 --name sila-p4c5-62-32m
 
 set "VARIANT=32m"
+set "QUICK=0"
 :parse
 if "%~1"=="" goto :parsed
 if /I "%~1"=="--16m" set "VARIANT=16m"& shift& goto :parse
 if /I "%~1"=="--32m" set "VARIANT=32m"& shift& goto :parse
+if /I "%~1"=="--quick" set "QUICK=1"& shift& goto :parse
 echo [p4c5-62] unknown arg: %~1
-echo [p4c5-62] usage: nodelio-build.bat [--32m^|--16m]
+echo [p4c5-62] usage: nodelio-build.bat [--32m^|--16m] [--quick]
 exit /b 1
 :parsed
 
@@ -37,6 +40,28 @@ echo [p4c5-62] idf.py --version
 idf.py --version
 if errorlevel 1 exit /b 1
 
+if "!QUICK!"=="1" goto quick_build
+
 echo [p4c5-62] build !BOARD_DIR! --name !BUILD_NAME! ...
+echo [p4c5-62] full path reconfigures sdkconfig; UI-only changes: nodelio-build.bat --quick
 python scripts\build.py !BOARD_DIR! --name !BUILD_NAME!
+exit /b %ERRORLEVEL%
+
+:quick_build
+if not exist sdkconfig (
+  echo [p4c5-62] no sdkconfig - run once without --quick
+  exit /b 1
+)
+findstr /b /c:"CONFIG_BOARD_TYPE_SILA_P4C5_62=y" sdkconfig >nul
+if errorlevel 1 (
+  echo [p4c5-62] sdkconfig is not this board - run once without --quick
+  exit /b 1
+)
+findstr /c:"nodelio-p4c5-!VARIANT!.csv" sdkconfig >nul
+if errorlevel 1 (
+  echo [p4c5-62] sdkconfig partition is not !VARIANT! - run without --quick
+  exit /b 1
+)
+echo [p4c5-62] incremental idf.py build ^(!VARIANT!^; no reconfigure^) ...
+idf.py build
 exit /b %ERRORLEVEL%

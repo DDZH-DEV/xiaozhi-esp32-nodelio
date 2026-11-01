@@ -88,7 +88,7 @@ static bool s_split;
 static int s_focus_idx = -1;
 
 static constexpr int kAppsPagePadH = 16;
-static constexpr int kAppsAnimMs = 180;
+static constexpr int kAppsAnimMs = 280;
 static constexpr int kAppsBrowseTileH = 84;
 static constexpr int kAppsRailTileH = 84;
 
@@ -107,14 +107,33 @@ static int apps_pane_target_w(bool split)
 {
     const int full = apps_body_w() - 2 * kAppsPagePadH;
     if (apps_wide() && split) {
-        return apps_body_w() - nodelio_display_profile()->result_width - kAppsPagePadH - 2 * UI_PAD;
+        /* 打开应用后左卡只占整屏 1/5，其余留给右侧技能卡。 */
+        const int fifth = (int)nodelio_display_profile()->width / 5;
+        return fifth > 160 ? fifth : 160;
     }
     return full > 120 ? full : 120;
 }
 
+static void apps_apply_pane(int w, bool split)
+{
+    if (!s_list_pane) {
+        return;
+    }
+    /* flex_grow 会把设好的宽度撑回整页，右卡盖住后看起来仍是两列。 */
+    if (apps_wide() && split) {
+        lv_obj_set_flex_grow(s_list_pane, 0);
+        lv_obj_set_width(s_list_pane, w > 80 ? w : 80);
+        return;
+    }
+    lv_obj_set_flex_grow(s_list_pane, 1);
+    lv_obj_set_width(s_list_pane, lv_pct(100));
+}
+
 static void apps_exec_pane_w(void *obj, int32_t v)
 {
-    lv_obj_set_width(static_cast<lv_obj_t *>(obj), v);
+    lv_obj_t *pane = static_cast<lv_obj_t *>(obj);
+    lv_obj_set_flex_grow(pane, 0);
+    lv_obj_set_width(pane, v);
 }
 
 static void apps_set_split(bool on, bool animate);
@@ -365,12 +384,12 @@ static void render_list(void)
     if (s_item_n <= 0) {
         return;
     }
-    /* 分栏仍保留两列及描述；右窗宽度来自当前板的 display_profile。 */
+    /* 浏览态宽屏三列、窄屏两列；右窗开了技能卡后左轨单列铺满，与右卡对齐。 */
     const int list_w = apps_pane_target_w(s_split);
     const int gap = UI_GAP;
     int cols = 2;
-    if (apps_wide() && !s_split) {
-        cols = 3;
+    if (apps_wide()) {
+        cols = s_split ? 1 : 3;
     }
     int card_w = (list_w - gap * (cols - 1)) / cols;
     if (card_w < 160) {
@@ -476,6 +495,7 @@ static void render_list(void)
 static void apps_split_anim_ready(lv_anim_t *a)
 {
     (void)a;
+    apps_apply_pane(apps_pane_target_w(s_split), s_split);
     render_list();
     nodelio_skill_result_layout();
     nl_ov_apps_layout_chrome();
@@ -499,18 +519,22 @@ static void apps_set_split(bool on, bool animate)
     }
     const int to_w = apps_pane_target_w(on);
     lv_anim_delete(s_list_pane, apps_exec_pane_w);
-    if (!animate) {
-        lv_obj_set_width(s_list_pane, to_w);
+    if (!animate || !apps_wide()) {
+        apps_apply_pane(to_w, on);
         render_list();
         nodelio_skill_result_layout();
         nl_ov_apps_layout_chrome();
         return;
     }
-    /* 先只滑轨宽（旧卡 flex 折行），完成后再 clean 重排——开卡瞬间勿双开重布局 */
+    /* 打开时先收成单列，再把左轨宽度滑到目标，避免整段动画都停在两列。 */
+    if (on) {
+        render_list();
+    }
     int from_w = (int)lv_obj_get_width(s_list_pane);
     if (from_w < 80) {
         from_w = apps_pane_target_w(!on);
     }
+    lv_obj_set_flex_grow(s_list_pane, 0);
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_var(&a, s_list_pane);
@@ -1202,6 +1226,9 @@ void nl_ov_build_apps(void)
     lv_obj_add_flag(s_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_OFF);
+    if (s_split) {
+        apps_apply_pane(apps_pane_target_w(true), true);
+    }
     render_list();
 
     /* 右下角浮动刷新（有音乐球时叠在上方） */

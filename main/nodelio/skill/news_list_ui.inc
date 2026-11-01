@@ -1303,12 +1303,16 @@ static void fill_news(void)
         nl_ov_set_font(t);
         lv_label_set_text(t, n->title);
         lv_obj_set_style_text_color(t, UI_TEXT, 0);
-        lv_label_set_long_mode(t, LV_LABEL_LONG_WRAP);
+        /* 标题最多两行；高度按实际行数自撑，单行标题不再顶在卡内上沿 */
+        lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
         lv_obj_set_width(t, lv_pct(100));
         {
             const lv_font_t *font = lv_obj_get_style_text_font(t, LV_PART_MAIN);
             const int lh = font ? (int)lv_font_get_line_height(font) : 16;
-            lv_obj_set_height(t, lh * 2);
+            const int lsp = nl_ov_ui_line_box() - lh;
+            lv_obj_set_height(t, LV_SIZE_CONTENT);
+            /* 上限含行距：恰好两行不再触发 DOT，三行起才省略 */
+            lv_obj_set_style_max_height(t, lh * 2 + (lsp > 0 ? lsp : 0), 0);
         }
 
         char when[24];

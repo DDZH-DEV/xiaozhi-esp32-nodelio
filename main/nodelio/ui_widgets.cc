@@ -63,28 +63,39 @@ void ui_styles_init(void)
 
 lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char *title,
                                 const char *sub, uint32_t accent_c, const char *right_icon,
-                                lv_event_cb_t cb)
+                                lv_event_cb_t cb, bool force_single_col)
 {
     ui_styles_init();
 
-    /* 按当前容器宽度分列。技能卡占住右侧时左区变窄，仍要铺满，避免一列旁边空出半张卡。 */
+    /* 浏览态按容器宽度分列。技能卡打开时左卡固定为整屏 1/5，不把剩余区域拉满。 */
     const int gap = UI_GAP;
     const auto* profile = nodelio_display_profile();
     int avail = parent ? (int)lv_obj_get_content_width(parent) : 0;
     if (avail < 160) {
         avail = profile->width - profile->nav_width - 16 * 2;
     }
-    const int max_cols = profile->nav_width ? 4 : 2;
-    const int min_tile = 220;
-    int columns = max_cols;
-    while (columns > 1) {
-        const int tw = (avail - gap * (columns - 1)) / columns;
-        if (tw >= min_tile) {
-            break;
+    int tile_w;
+    if (force_single_col) {
+        tile_w = (int)profile->width / 5;
+        if (tile_w < 160) {
+            tile_w = 160;
         }
-        columns--;
+        if (tile_w > avail) {
+            tile_w = avail;
+        }
+    } else {
+        const int max_cols = profile->nav_width ? 4 : 2;
+        const int min_tile = 220;
+        int columns = max_cols;
+        while (columns > 1) {
+            const int tw = (avail - gap * (columns - 1)) / columns;
+            if (tw >= min_tile) {
+                break;
+            }
+            columns--;
+        }
+        tile_w = (avail - gap * (columns - 1)) / columns;
     }
-    const int tile_w = (avail - gap * (columns - 1)) / columns;
 
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);

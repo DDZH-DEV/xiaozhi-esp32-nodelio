@@ -11,10 +11,11 @@ extern "C" {
 
 void ui_styles_init(void);
 
-/** 设置页入口：半宽卡片（一行两列），卡内左右（左 Icon Pod · 右标题/副文）. */
+/** 设置页入口：卡内左右（左 Icon Pod · 右标题/副文），列数按容器宽自适应。
+ *  force_single_col：宽屏右窗被技能卡占用时传 true，左侧改单列铺满。 */
 lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char *title,
                                 const char *sub, uint32_t accent_c, const char *right_icon,
-                                lv_event_cb_t cb);
+                                lv_event_cb_t cb, bool force_single_col);
 
 /** 底栏 Tab；checked 用 LV_STATE_CHECKED. */
 lv_obj_t *ui_make_tab(lv_obj_t *parent, const char *txt);

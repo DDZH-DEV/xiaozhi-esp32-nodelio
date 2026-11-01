@@ -52,8 +52,9 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #define SKILL_CTRL_SZ 44
 #define SKILL_PLAY_CTRL_SZ 48
 #define SKILL_MINI_SZ 52
-#define SKILL_ANIM_MS 240
-#define SKILL_ANIM_SLIDE 16
+#define SKILL_ANIM_MS 280
+#define SKILL_ANIM_SLIDE 28
+#define SKILL_ANIM_SLIDE_X 72
 #define SKILL_PAGE_COLS 2
 #define SKILL_PAGE_ROWS 5
 #define SKILL_PAGE_SIZE (SKILL_PAGE_COLS * SKILL_PAGE_ROWS)
@@ -278,6 +279,7 @@ static void layout_skill_layers(void)
         lv_obj_align(s_mini_fab, LV_ALIGN_BOTTOM_RIGHT, -14, -(NL_UI_TAB_H + 14));
     }
     nl_ov_apps_layout_chrome();
+    nl_ov_settings_sync_columns();
 }
 
 void nodelio_skill_result_layout(void) { layout_skill_layers(); }
@@ -2307,7 +2309,17 @@ static void anim_obj_ty(void *var, int32_t v)
     lv_obj_set_style_translate_y((lv_obj_t *)var, (lv_coord_t)v, 0);
 }
 
-/** from_below=true：自下方滑入（禁止负 translate 盖住顶栏）。 */
+static void anim_obj_tx(void *var, int32_t v)
+{
+    lv_obj_set_style_translate_x((lv_obj_t *)var, (lv_coord_t)v, 0);
+}
+
+static bool skill_slide_from_right(void)
+{
+    return nodelio_display_profile()->nav_width != 0;
+}
+
+/** from_below=true：宽屏自右侧滑入，方屏自下方滑入（禁止负 translate 盖住顶栏）。 */
 static void anim_show_obj(lv_obj_t *obj, bool from_below)
 {
     if (!obj) {
@@ -2315,11 +2327,15 @@ static void anim_show_obj(lv_obj_t *obj, bool from_below)
     }
     lv_anim_delete(obj, anim_obj_opa);
     lv_anim_delete(obj, anim_obj_ty);
+    lv_anim_delete(obj, anim_obj_tx);
     lv_obj_set_style_opa(obj, LV_OPA_TRANSP, 0);
-    if (from_below) {
+    lv_obj_set_style_translate_x(obj, 0, 0);
+    lv_obj_set_style_translate_y(obj, 0, 0);
+    const bool slide_x = from_below && skill_slide_from_right();
+    if (slide_x) {
+        lv_obj_set_style_translate_x(obj, SKILL_ANIM_SLIDE_X, 0);
+    } else if (from_below) {
         lv_obj_set_style_translate_y(obj, SKILL_ANIM_SLIDE, 0);
-    } else {
-        lv_obj_set_style_translate_y(obj, 0, 0);
     }
 
     lv_anim_t a;
@@ -2335,10 +2351,10 @@ static void anim_show_obj(lv_obj_t *obj, bool from_below)
         lv_anim_t b;
         lv_anim_init(&b);
         lv_anim_set_var(&b, obj);
-        lv_anim_set_values(&b, SKILL_ANIM_SLIDE, 0);
+        lv_anim_set_values(&b, slide_x ? SKILL_ANIM_SLIDE_X : SKILL_ANIM_SLIDE, 0);
         lv_anim_set_time(&b, SKILL_ANIM_MS);
         lv_anim_set_path_cb(&b, lv_anim_path_ease_out);
-        lv_anim_set_exec_cb(&b, anim_obj_ty);
+        lv_anim_set_exec_cb(&b, slide_x ? anim_obj_tx : anim_obj_ty);
         lv_anim_start(&b);
     }
 }
@@ -2464,6 +2480,7 @@ static bool slide_out_obj(lv_obj_t *obj, bool with_done)
     }
     lv_anim_delete(obj, anim_obj_opa);
     lv_anim_delete(obj, anim_obj_ty);
+    lv_anim_delete(obj, anim_obj_tx);
 
     lv_anim_t fade;
     lv_anim_init(&fade);
@@ -2474,13 +2491,14 @@ static bool slide_out_obj(lv_obj_t *obj, bool with_done)
     lv_anim_set_exec_cb(&fade, anim_obj_opa);
     lv_anim_start(&fade);
 
+    const bool slide_x = skill_slide_from_right();
     lv_anim_t slide;
     lv_anim_init(&slide);
     lv_anim_set_var(&slide, obj);
-    lv_anim_set_values(&slide, 0, 72);
+    lv_anim_set_values(&slide, 0, slide_x ? SKILL_ANIM_SLIDE_X : SKILL_ANIM_SLIDE);
     lv_anim_set_time(&slide, SKILL_ANIM_MS);
     lv_anim_set_path_cb(&slide, lv_anim_path_ease_in);
-    lv_anim_set_exec_cb(&slide, anim_obj_ty);
+    lv_anim_set_exec_cb(&slide, slide_x ? anim_obj_tx : anim_obj_ty);
     if (with_done) {
         lv_anim_set_completed_cb(&slide, on_dismiss_done);
         lv_anim_set_user_data(&slide, (void *)(uintptr_t)s_close_gen);
@@ -2529,7 +2547,9 @@ static void reset_obj_anim_style(lv_obj_t *obj)
     }
     lv_anim_delete(obj, anim_obj_opa);
     lv_anim_delete(obj, anim_obj_ty);
+    lv_anim_delete(obj, anim_obj_tx);
     lv_obj_set_style_opa(obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_translate_x(obj, 0, 0);
     lv_obj_set_style_translate_y(obj, 0, 0);
 }
 
@@ -3580,12 +3600,29 @@ static void fill_list(void)
             }
             lv_obj_set_style_text_color(a, UI_TEXT_MUTED, 0);
             lv_obj_set_width(a, lv_pct(100));
-            /* 曲库/电台/DSH：简介两行；天气等单行。勿用 WRAP——限高后会硬裁无省略号 */
+            /* 简介按真实行数定高。预留两行空盒会把字顶到播放钮上方。 */
             lv_label_set_long_mode(a, LV_LABEL_LONG_DOT);
             const bool sub_two_lines =
                 music_card ||
                 (comfortable && s_env->app_id[0] && strstr(s_env->app_id, "dsh") != nullptr);
-            lv_obj_set_height(a, sub_two_lines ? (font_h * 2 + lsp) : font_h);
+            int cell_w = skill_panel_w();
+            if (cols > 1) {
+                cell_w = (cell_w - 6 * (cols - 1)) / cols;
+            }
+            const int side_pad = comfortable ? 10 : 6;
+            const int idx_w = comfortable ? 26 : 22;
+            const bool has_play = can_play && s_env->tracks[i].playback_url[0];
+            int text_w = cell_w - side_pad * 2 - 6 - idx_w - (has_play ? SKILL_CTRL_SZ + 6 : 0);
+            if (text_w < 48) {
+                text_w = 48;
+            }
+            int sub_h = nl_ov_wrapped_text_h(lv_label_get_text(a), text_w);
+            const int sub_cap = sub_two_lines ? (font_h * 2 + lsp) : font_h;
+            if (sub_h > sub_cap) {
+                sub_h = sub_cap;
+            }
+            lv_obj_set_height(a, sub_h);
+            lv_obj_set_height(txt, LV_SIZE_CONTENT);
 
             if (can_play && s_env->tracks[i].playback_url[0]) {
                 const char *icon = (i == s_play_idx) ? MATERIAL_SYMBOLS_PAUSE : MATERIAL_SYMBOLS_PLAY_ARROW;
