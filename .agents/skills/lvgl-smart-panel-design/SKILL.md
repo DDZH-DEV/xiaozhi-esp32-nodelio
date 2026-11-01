@@ -20,7 +20,8 @@ embedded constraints; it is not UIKit or a live-blur renderer.
 - Read `main/nodelio/ui_theme.h` and `ui_widgets.*` before changing a component.
   Colors and reusable geometry belong in these tokens, never raw widget literals.
   Do not add a third palette or put hex values back into widgets.
-- Light: warm canvas `#f3efe6`, opaque white cards, little or no border. Text is
+- Light: warm canvas `#f3efe6`, opaque white cards, little or no border, and a
+  short warm drop shadow (`ui_style_card`, blur 6, offset 2). Text is
   `#1c1c1e` / `#3c3834` / `#6b6560`. Primary fill is `#1b7a40` so white labels
   clear 4.5:1. Pressed fill is `#176f39`, selection tint `#e5f6eb`. PWM and info
   stay blue `#0077c8`. On-tiles use switch `#d7f3e3`, scene `#f3e8fb`, gpio
@@ -56,7 +57,8 @@ embedded constraints; it is not UIKit or a live-blur renderer.
   modal to impersonate a wide layout or change cloud grid coordinates for style.
 - Keep device-specific semantics: PWM retains its value and slider, momentary
   actions don't latch, and DualLine retains two named absolute-state branches.
-- Use opaque surfaces instead of live blur, glass sampling or large soft shadows.
+- Use opaque surfaces instead of live blur or glass. Card lift is the short
+  shadow from `ui_style_card`; do not add wide blurs. Dark mode stays flat.
   Reuse objects and static transition descriptors. Short 120 ms transitions may
   communicate a touch; avoid repeated bounces, idle animations and full-page fades.
 - Preserve retained pages and coalesced updates. LVGL callbacks dispatch network

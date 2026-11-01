@@ -75,7 +75,7 @@ extern bool s_have_layout;
 extern bool s_fab_ready;
 extern bool s_ready;
 extern bool s_visible;
-/** 技能结果卡可见时抑制小智抽屉，避免盖住搜索结果 */
+/** 技能结果卡可见。小智抽屉不再因此隐藏，只用来判断技能层自己的显隐。 */
 extern bool s_skill_ui_active;
 extern bool s_building;
 extern bool s_want_settings;
@@ -183,6 +183,8 @@ void nl_ov_apply_text_scale(void);
 /** 调色板已切换后重绘壳、首页、应用、设置、技能卡、配网和小智抽屉。 */
 void nl_ov_apply_appearance(void);
 void nl_ov_toast(const char *msg);
+/** 技能卡、配网、设置详情抬完之后调用：状态栏压在这些弹窗上，小智和提示条再压在状态栏上。 */
+void nl_ov_raise_chrome(void);
 
 static inline bool nl_ov_cfg_http_ready(nodelio_nvs_config_t *out, bool toast)
 {

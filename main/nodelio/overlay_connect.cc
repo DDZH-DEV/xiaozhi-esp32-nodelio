@@ -301,6 +301,7 @@ void nl_ov_kb_set_visible(bool on)
             lv_obj_move_foreground(s_connect);
         }
         lv_obj_move_foreground(s_kb);
+        nl_ov_raise_chrome();
     } else {
         lv_obj_add_flag(s_kb, LV_OBJ_FLAG_HIDDEN);
         lv_keyboard_set_textarea(s_kb, nullptr);
@@ -659,8 +660,7 @@ void nl_ov_open_connect(void)
     if (s_tabbar) {
         lv_obj_add_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
     }
-    /* 与 s_root 同层；apply_visible_locked 会把 root 置顶，此处必须再抬到前面 */
-    lv_obj_move_foreground(s_connect);
+    nl_ov_raise_chrome();
 }
 
 

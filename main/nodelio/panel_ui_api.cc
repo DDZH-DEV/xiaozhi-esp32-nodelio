@@ -319,7 +319,7 @@ extern "C" void nodelio_panel_ui_announce_spoken_playlist(const char *text, cons
             DisplayLockGuard lock(nl_ov_disp());
             if (lock) {
                 nodelio_overlay_on_chat_locked("助手", copy);
-                if (nl_ov_ai_session_active() && !s_skill_ui_active) {
+                if (nl_ov_ai_session_active()) {
                     nodelio_overlay_show_chat();
                 }
             }

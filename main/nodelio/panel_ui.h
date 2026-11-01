@@ -134,8 +134,8 @@ void nodelio_panel_ui_stream_assistant(const char *delta_or_full, bool is_delta,
 /** 当前已应用 layout（无则 NULL）；供离线命令词映射. */
 const nodelio_panel_layout_t *nodelio_panel_ui_get_layout(void);
 
-/** 与壳布局一致（APP 画布 content = display − STATUS − TAB）. */
-#define NL_UI_STATUS_H 32
+/** 悬浮状态栏高度。主页面铺满其下；配网、设置详情、技能卡仍从这条下沿开始。 */
+#define NL_UI_STATUS_H 36
 #define NL_UI_TAB_H 44
 /** 首页网格：左右留白；顶距与设置页对齐（勿过大） */
 #define NL_UI_HOME_PAD_H 14

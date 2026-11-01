@@ -12,6 +12,8 @@ extern "C" {
 void ui_styles_init(void);
 /** 按当前调色板重写静态样式和默认主题。可重复调用。 */
 void ui_styles_apply(void);
+/** 浅色卡片短投影；深色保持无阴影。 */
+void ui_style_card(lv_obj_t *obj);
 /** Contrast-safe foreground for user-defined solid layout colors. */
 lv_color_t ui_color_on(lv_color_t background);
 

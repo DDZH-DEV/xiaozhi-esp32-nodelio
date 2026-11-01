@@ -11,6 +11,7 @@
 #include "panel_ui.h"
 #include "skill_runtime.h"
 #include "ui_theme.h"
+#include "ui_widgets.h"
 
 #include "application.h"
 #include "board.h"
@@ -180,12 +181,10 @@ static char *s_news_body_heap = nullptr;
 static StackType_t *s_news_stack = nullptr;
 static StaticTask_t s_news_tcb;
 
-/** 禁止 move_foreground(status_bar)：flex 列里会把它挤到屏幕最底 */
+/** 技能层抬完后把状态栏、小智和提示条按固定顺序压回去。 */
 static void ensure_chrome_order(void)
 {
-    if (s_status_bar && s_root) {
-        lv_obj_move_to_index(s_status_bar, 0);
-    }
+    nl_ov_raise_chrome();
 }
 
 static void apply_card_chrome(void);
@@ -260,10 +259,10 @@ static void style_skill_frame(void)
     }
     lv_obj_set_style_bg_color(s_card, UI_SURFACE, 0);
     lv_obj_set_style_radius(s_card, 20, 0);
-    lv_obj_set_style_border_width(s_card, 1, 0);
+    lv_obj_set_style_border_width(s_card, ui_palette_is_dark() ? 1 : 0, 0);
     lv_obj_set_style_border_color(s_card, UI_BORDER, 0);
     lv_obj_set_style_border_opa(s_card, LV_OPA_70, 0);
-    lv_obj_set_style_shadow_width(s_card, 0, 0);
+    ui_style_card(s_card);
 }
 
 /** docked：框内凹槽。否则独立一条，同样不用绿框。 */
@@ -272,9 +271,9 @@ static void style_now_bar(bool docked)
     if (!s_now_bar) {
         return;
     }
-    lv_obj_set_style_shadow_width(s_now_bar, 0, 0);
-    lv_obj_set_style_shadow_opa(s_now_bar, LV_OPA_TRANSP, 0);
     if (docked) {
+        lv_obj_set_style_shadow_width(s_now_bar, 0, 0);
+        lv_obj_set_style_shadow_opa(s_now_bar, LV_OPA_TRANSP, 0);
         lv_obj_set_style_bg_color(s_now_bar, UI_PANEL, 0);
         lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(s_now_bar, UI_RADIUS_SM, 0);
@@ -284,7 +283,8 @@ static void style_now_bar(bool docked)
     lv_obj_set_style_bg_color(s_now_bar, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_now_bar, 16, 0);
-    lv_obj_set_style_border_width(s_now_bar, 1, 0);
+    ui_style_card(s_now_bar);
+    lv_obj_set_style_border_width(s_now_bar, ui_palette_is_dark() ? 1 : 0, 0);
     lv_obj_set_style_border_side(s_now_bar, LV_BORDER_SIDE_FULL, 0);
     lv_obj_set_style_border_color(s_now_bar, UI_BORDER, 0);
     lv_obj_set_style_border_opa(s_now_bar, LV_OPA_80, 0);
@@ -518,12 +518,7 @@ static void set_drawer_for_skill(bool skill_on)
 {
     s_skill_ui_active = skill_on;
     if (skill_on) {
-        if (s_ai_drawer) {
-            lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
-        }
-        if (s_ai_mini_fab) {
-            lv_obj_add_flag(s_ai_mini_fab, LV_OBJ_FLAG_HIDDEN);
-        }
+        nl_ov_raise_chrome();
         return;
     }
     nl_ov_restore_ai_drawer_if_session();
@@ -2921,10 +2916,10 @@ static void ensure_card(void)
     lv_obj_set_style_bg_color(s_card, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(s_card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_card, 20, 0);
-    lv_obj_set_style_border_width(s_card, 1, 0);
+    lv_obj_set_style_border_width(s_card, ui_palette_is_dark() ? 1 : 0, 0);
     lv_obj_set_style_border_color(s_card, UI_BORDER, 0);
     lv_obj_set_style_border_opa(s_card, LV_OPA_70, 0);
-    lv_obj_set_style_shadow_width(s_card, 0, 0);
+    ui_style_card(s_card);
     lv_obj_set_style_pad_all(s_card, 12, 0);
     lv_obj_set_style_pad_row(s_card, 8, 0);
     lv_obj_set_flex_flow(s_card, LV_FLEX_FLOW_COLUMN);
@@ -3120,10 +3115,10 @@ static void ensure_card(void)
         lv_obj_set_style_bg_color(s_now_bar, UI_SURFACE, 0);
         lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(s_now_bar, 16, 0);
-        lv_obj_set_style_border_width(s_now_bar, 1, 0);
+        lv_obj_set_style_border_width(s_now_bar, ui_palette_is_dark() ? 1 : 0, 0);
         lv_obj_set_style_border_color(s_now_bar, UI_BORDER, 0);
         lv_obj_set_style_border_opa(s_now_bar, LV_OPA_80, 0);
-        lv_obj_set_style_shadow_width(s_now_bar, 0, 0);
+        ui_style_card(s_now_bar);
         lv_obj_set_style_pad_hor(s_now_bar, 10, 0);
         lv_obj_set_style_pad_column(s_now_bar, 8, 0);
         lv_obj_set_flex_flow(s_now_bar, LV_FLEX_FLOW_ROW);

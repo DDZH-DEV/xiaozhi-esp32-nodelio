@@ -999,6 +999,7 @@ static lv_obj_t *settings_card(lv_obj_t *parent, const char *title)
     lv_obj_set_style_bg_color(card, UI_PANEL, 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
+    ui_style_card(card);
     lv_obj_set_style_pad_all(card, 14, 0);
     lv_obj_set_style_pad_row(card, 6, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
@@ -1604,7 +1605,7 @@ void nl_ov_open_settings_detail(set_page_id_t page)
     if (s_tabbar && !nodelio_display_profile()->nav_width) {
         lv_obj_add_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
     }
-    /* s_settings_detail 已挂在 lv_layer_top()，无需 move_foreground */
+    nl_ov_raise_chrome();
 }
 
 static void settings_tile(lv_obj_t *parent, const char *glyph, const char *title, const char *sub,

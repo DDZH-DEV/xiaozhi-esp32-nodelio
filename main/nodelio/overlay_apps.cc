@@ -430,6 +430,7 @@ static void render_list(void)
             lv_obj_remove_style_all(view.card);
             lv_obj_set_style_bg_opa(view.card, LV_OPA_COVER, 0);
             lv_obj_set_style_radius(view.card, UI_RADIUS_MD, 0);
+            ui_style_card(view.card);
             lv_obj_set_style_pad_left(view.card, 10, 0);
             lv_obj_set_style_pad_right(view.card, 8, 0);
             lv_obj_set_style_pad_column(view.card, 16, 0);
@@ -471,6 +472,7 @@ static void render_list(void)
         }
         const bool focused = s_split && i == s_focus_idx;
         if (created || s_force_paint || view.focused != focused) {
+            ui_style_card(view.card);
             lv_obj_set_style_bg_color(view.card, focused ? UI_SELECTION : UI_SURFACE, 0);
             lv_obj_set_style_border_width(view.card, focused ? 1 : 0, 0);
             lv_obj_set_style_border_color(view.card, focused ? UI_ACCENT : UI_TILE_OFF_BORDER, 0);
@@ -1032,7 +1034,7 @@ void nl_ov_apps_set_visible(bool on)
 
 void nl_ov_apps_reserve_bottom(int bottom) {
     if (s_page && apps_wide()) {
-        lv_obj_set_height(s_page, nodelio_display_profile()->height - NL_UI_STATUS_H - bottom);
+        lv_obj_set_height(s_page, nodelio_display_profile()->height - bottom);
     }
 }
 

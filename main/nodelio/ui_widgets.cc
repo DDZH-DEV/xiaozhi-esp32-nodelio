@@ -96,6 +96,24 @@ void ui_styles_apply(void)
     styles_bind_colors();
 }
 
+void ui_style_card(lv_obj_t *obj)
+{
+    if (!obj) {
+        return;
+    }
+    if (ui_palette_is_dark()) {
+        lv_obj_set_style_shadow_width(obj, 0, 0);
+        return;
+    }
+    /* 模糊半径 6、下移 2，落在 8px 卡片间距里，避免大阴影缓存。 */
+    lv_obj_set_style_shadow_color(obj, lv_color_hex(UI_C_SHADOW), 0);
+    lv_obj_set_style_shadow_width(obj, 6, 0);
+    lv_obj_set_style_shadow_spread(obj, 0, 0);
+    lv_obj_set_style_shadow_ofs_x(obj, 0, 0);
+    lv_obj_set_style_shadow_ofs_y(obj, 2, 0);
+    lv_obj_set_style_shadow_opa(obj, LV_OPA_30, 0);
+}
+
 int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out)
 {
     const int gap = UI_GAP;
@@ -164,6 +182,7 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_set_style_bg_color(btn, UI_TILE_OFF, 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, UI_RADIUS_MD, 0);
+    ui_style_card(btn);
     lv_obj_set_style_border_width(btn, 0, 0);
     lv_obj_set_style_border_color(btn, UI_TILE_OFF_BORDER, 0);
     lv_obj_set_style_pad_left(btn, 10, 0);

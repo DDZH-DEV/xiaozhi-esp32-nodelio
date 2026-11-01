@@ -352,6 +352,7 @@ void nl_ov_apply_appearance(void)
     }
     if (s_status_bar) {
         lv_obj_set_style_bg_color(s_status_bar, UI_BG, 0);
+        lv_obj_set_style_bg_opa(s_status_bar, LV_OPA_80, 0);
     }
     if (s_brand_lbl) {
         lv_obj_set_style_text_color(s_brand_lbl, UI_ACCENT, 0);
@@ -423,20 +424,28 @@ static void status_bar_relayout(void)
     if (s_status_lbl && s_brand_lbl) {
         lv_obj_align_to(s_status_lbl, s_brand_lbl, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
     }
-    /* 右：电量 · 时钟 · WiFi · 云。无电池时电量隐藏，时钟贴回 WiFi。 */
+    /* 右起：电池、云、WiFi、时钟。无电池时云贴最右。 */
+    lv_obj_t *anchor = nullptr;
+    if (s_batt_lbl && !lv_obj_has_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_align(s_batt_lbl, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD, NL_STATUS_Y);
+        anchor = s_batt_lbl;
+    }
     if (s_cloud_lbl) {
-        lv_obj_align(s_cloud_lbl, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD, NL_STATUS_Y);
+        if (anchor) {
+            lv_obj_align_to(s_cloud_lbl, anchor, LV_ALIGN_OUT_LEFT_MID, -6, 0);
+        } else {
+            lv_obj_align(s_cloud_lbl, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD, NL_STATUS_Y);
+        }
+        anchor = s_cloud_lbl;
     }
-    if (s_wifi_lbl && s_cloud_lbl) {
-        lv_obj_align_to(s_wifi_lbl, s_cloud_lbl, LV_ALIGN_OUT_LEFT_MID, -6, 0);
+    if (s_wifi_lbl && anchor) {
+        lv_obj_align_to(s_wifi_lbl, anchor, LV_ALIGN_OUT_LEFT_MID, -6, 0);
+        anchor = s_wifi_lbl;
     }
-    if (s_clock_lbl && s_wifi_lbl) {
-        lv_obj_align_to(s_clock_lbl, s_wifi_lbl, LV_ALIGN_OUT_LEFT_MID, -4, 0);
+    if (s_clock_lbl && anchor) {
+        lv_obj_align_to(s_clock_lbl, anchor, LV_ALIGN_OUT_LEFT_MID, -4, 0);
     } else if (s_clock_lbl) {
         lv_obj_align(s_clock_lbl, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD - 40, NL_STATUS_Y);
-    }
-    if (s_batt_lbl && s_clock_lbl && !lv_obj_has_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_align_to(s_batt_lbl, s_clock_lbl, LV_ALIGN_OUT_LEFT_MID, -6, 0);
     }
 }
 
@@ -539,7 +548,7 @@ static void refresh_battery_lbl(void)
         return;
     }
     const char *glyph = battery_status_glyph(s_batt_level, s_batt_charging);
-    lv_obj_set_style_text_font(s_batt_lbl, &font_material_symbols_20_4, 0);
+    lv_obj_set_style_text_font(s_batt_lbl, &font_material_symbols_30_4, 0);
     lv_label_set_text(s_batt_lbl, glyph);
     lv_color_t color = UI_TEXT_SUB;
     if (s_batt_charging) {
@@ -624,6 +633,24 @@ static void start_status_poll(void)
     status_poll_cb(nullptr);
 }
 
+void nl_ov_raise_chrome(void)
+{
+    auto raise_shown = [](lv_obj_t *obj) {
+        if (obj && !lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_move_foreground(obj);
+        }
+    };
+    raise_shown(s_connect);
+    raise_shown(s_settings_detail);
+    raise_shown(s_kb);
+    if (s_status_bar && !lv_obj_has_flag(s_status_bar, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_move_foreground(s_status_bar);
+    }
+    raise_shown(s_ai_drawer);
+    raise_shown(s_ai_mini_fab);
+    nl_panel_shell_raise_toast();
+}
+
 void nl_ov_toast(const char *msg)
 {
     if (!nl_ov_disp())
@@ -642,7 +669,7 @@ bool nl_ov_ai_session_active(void)
 /** 会话进行中：抽屉保持可见并置顶（切 Tab / 关表单后仍找得到小智） */
 void nl_ov_restore_ai_drawer_if_session(void)
 {
-    if (!s_ai_drawer || s_skill_ui_active || !nl_ov_ai_session_active() ||
+    if (!s_ai_drawer || !nl_ov_ai_session_active() ||
         nl_ov_ai_farewell_closing() || nl_ov_ai_user_dismissed()) {
         return;
     }
@@ -652,10 +679,11 @@ void nl_ov_restore_ai_drawer_if_session(void)
     }
     if (nl_ov_ai_is_minimized()) {
         nl_ov_ai_raise_mini_fab();
+        nl_ov_raise_chrome();
         return;
     }
     lv_obj_clear_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(s_ai_drawer);
+    nl_ov_raise_chrome();
 }
 
 void nl_ov_close_forms(void)
@@ -803,7 +831,7 @@ void nl_ov_workspace_reserve(int right, int bottom) {
     if (!p->nav_width || !s_body)
         return;
     const int w = p->width - p->nav_width - right;
-    const int h = p->height - NL_UI_STATUS_H - bottom;
+    const int h = p->height - bottom;
     bool home_changed = s_home && (lv_obj_get_style_width(s_home, LV_PART_MAIN) != w ||
                                    lv_obj_get_style_height(s_home, LV_PART_MAIN) != h);
     const bool settings_w_changed = s_settings && lv_obj_get_width(s_settings) != w;
@@ -812,7 +840,7 @@ void nl_ov_workspace_reserve(int right, int bottom) {
     if (s_settings)
         lv_obj_set_size(s_settings, w, h);
     if (s_settings_detail) {
-        lv_obj_set_size(s_settings_detail, w, h);
+        lv_obj_set_size(s_settings_detail, w, p->height - NL_UI_STATUS_H - bottom);
         lv_obj_align(s_settings_detail, LV_ALIGN_TOP_LEFT, p->nav_width, NL_UI_STATUS_H);
     }
     nl_ov_apps_reserve_bottom(bottom);
@@ -866,6 +894,9 @@ static void apply_visible_locked(void)
         }
     }
     lv_obj_clear_flag(s_root, LV_OBJ_FLAG_HIDDEN);
+    if (s_status_bar) {
+        lv_obj_clear_flag(s_status_bar, LV_OBJ_FLAG_HIDDEN);
+    }
     if (s_fab) {
         lv_obj_add_flag(s_fab, LV_OBJ_FLAG_HIDDEN);
     }
@@ -921,13 +952,17 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_clear_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_root, LV_OBJ_FLAG_HIDDEN);
 
-    /* top chrome：左品牌+编译戳 · 右 电量/时钟/WiFi/云 */
-    s_status_bar = lv_obj_create(s_root);
+    /* 悬浮在 layer_top：不占弹性行，主页面铺到顶。半透明，自己吃掉顶上的点击。 */
+    s_status_bar = lv_obj_create(lv_layer_top());
     lv_obj_t *bar = s_status_bar;
     lv_obj_remove_style_all(bar);
+    lv_obj_add_flag(bar, LV_OBJ_FLAG_FLOATING);
+    lv_obj_add_flag(bar, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(bar, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_size(bar, lv_pct(100), NL_UI_STATUS_H);
+    lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_bg_color(bar, UI_BG, 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_80, 0);
     lv_obj_set_style_border_width(bar, 0, 0);
     lv_obj_set_style_pad_all(bar, 0, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
@@ -965,7 +1000,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_set_style_text_color(s_wifi_lbl, UI_TEXT_MUTED, 0);
 
     s_batt_lbl = lv_label_create(bar);
-    lv_obj_set_style_text_font(s_batt_lbl, &font_material_symbols_20_4, 0);
+    lv_obj_set_style_text_font(s_batt_lbl, &font_material_symbols_30_4, 0);
     lv_label_set_text(s_batt_lbl, MATERIAL_SYMBOLS_BATTERY_ANDROID_FRAME_FULL);
     lv_obj_set_style_text_color(s_batt_lbl, UI_TEXT_SUB, 0);
     lv_obj_add_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN);
@@ -1028,6 +1063,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
         lv_obj_set_size(s_tabbar, profile->nav_width, lv_pct(100));
         lv_obj_set_flex_flow(s_tabbar, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_row(s_tabbar, UI_GAP, 0);
+        lv_obj_set_style_pad_top(s_tabbar, NL_UI_STATUS_H, 0);
         for (auto* button : s_tab_btns) {
             lv_obj_set_flex_grow(button, 0);
             lv_obj_set_size(button, lv_pct(100), UI_BTN_H);

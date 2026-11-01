@@ -1965,7 +1965,7 @@ static lv_obj_t *make_tile_shell(const nl_widget_t *w, tile_kind_t kind, int cel
     lv_obj_set_style_border_width(tile, 0, 0);
     lv_obj_set_style_radius(tile, UI_RADIUS_MD, 0);
     lv_obj_set_style_pad_all(tile, UI_PAD_SM, 0);
-    lv_obj_set_style_shadow_width(tile, 0, 0);
+    ui_style_card(tile);
     lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
     place_grid_obj(tile, w, cell_w, cell_h);
     lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
@@ -3630,9 +3630,10 @@ static lv_obj_t *make_launcher_card(lv_obj_t *parent, const char *icon, const ch
     lv_obj_set_style_bg_color(card, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
-    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_width(card, ui_palette_is_dark() ? 1 : 0, 0);
     lv_obj_set_style_border_color(card, UI_TILE_OFF_BORDER, 0);
     lv_obj_set_style_border_opa(card, LV_OPA_80, 0);
+    ui_style_card(card);
     lv_obj_set_style_pad_hor(card, 14, 0);
     lv_obj_set_style_pad_column(card, 12, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
@@ -3790,6 +3791,7 @@ static void build_home_view(void) {
         lv_obj_set_style_bg_color(card, UI_SURFACE, 0);
         lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
+        ui_style_card(card);
         lv_obj_set_style_border_width(card, 1, 0);
         lv_obj_set_style_border_color(card, lv_color_hex(UI_C_TILE_ON_BORDER), 0);
         lv_obj_set_style_border_opa(card, 48, 0);
@@ -3905,7 +3907,7 @@ static void build_home_view(void) {
                  2 * NL_UI_HOME_PAD_H;
     }
     if (area_h < 40) {
-        area_h = nodelio_display_profile()->height - NL_UI_STATUS_H -
+        area_h = nodelio_display_profile()->height -
                  (nodelio_display_profile()->nav_width ? 0 : NL_UI_TAB_H) - 2 * NL_UI_HOME_PAD_V;
     }
     /* C4：为底部应用条预留高度，控家网格与 home_tile 同屏不互踩 */

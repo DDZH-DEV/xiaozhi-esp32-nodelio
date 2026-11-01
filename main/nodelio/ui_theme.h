@@ -65,6 +65,7 @@ typedef struct {
     uint32_t tile_badge_off;
     uint32_t tile_badge_offline;
     uint32_t tab_glow;
+    uint32_t shadow;
 } ui_palette_t;
 
 const ui_palette_t *ui_palette(void);
@@ -83,6 +84,7 @@ int ui_palette_is_dark(void);
 #define UI_C_SURFACE_OFF (ui_palette()->surface_off)
 #define UI_C_PANEL (ui_palette()->panel)
 #define UI_C_BORDER (ui_palette()->border)
+#define UI_C_SHADOW (ui_palette()->shadow)
 #define UI_C_FIELD (ui_palette()->field)
 #define UI_C_FIELD_FOCUS (ui_palette()->field_focus)
 #define UI_C_TEXT (ui_palette()->text)
@@ -140,6 +142,7 @@ int ui_palette_is_dark(void);
 #define UI_SURFACE_OFF lv_color_hex(UI_C_SURFACE_OFF)
 #define UI_PANEL lv_color_hex(UI_C_PANEL)
 #define UI_BORDER lv_color_hex(UI_C_BORDER)
+#define UI_SHADOW lv_color_hex(UI_C_SHADOW)
 #define UI_FIELD lv_color_hex(UI_C_FIELD)
 #define UI_FIELD_FOCUS lv_color_hex(UI_C_FIELD_FOCUS)
 #define UI_TEXT lv_color_hex(UI_C_TEXT)

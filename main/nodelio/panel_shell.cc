@@ -1,6 +1,7 @@
 #include "panel_shell.h"
 #include <algorithm>
 #include "ui_theme.h"
+#include "ui_widgets.h"
 
 void nl_panel_shell_setup(const lv_font_t* font) {
     auto* screen = lv_screen_active();
@@ -14,6 +15,12 @@ void nl_panel_shell_setup(const lv_font_t* font) {
 static lv_obj_t* s_toast;
 static lv_obj_t* s_toast_lbl;
 static lv_timer_t* s_toast_tmr;
+
+void nl_panel_shell_raise_toast(void) {
+    if (s_toast && !lv_obj_has_flag(s_toast, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_move_foreground(s_toast);
+    }
+}
 
 void nl_panel_shell_dismiss_toast(void) {
     if (s_toast_tmr) {
@@ -43,6 +50,7 @@ void nl_panel_shell_notify(const char* msg, const lv_font_t* font, int bottom_in
         lv_obj_set_style_border_width(s_toast, 1, 0);
         lv_obj_set_style_border_color(s_toast, UI_ACCENT, 0);
         lv_obj_set_style_border_opa(s_toast, 160, 0);
+        ui_style_card(s_toast);
         lv_obj_set_style_pad_hor(s_toast, 18, 0);
         lv_obj_set_style_pad_ver(s_toast, 10, 0);
         lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -bottom_inset);

@@ -148,7 +148,7 @@ void nl_ov_ai_reapply_appearance(void)
     if (s_ai_drawer) {
         lv_obj_set_style_bg_color(s_ai_drawer, UI_SURFACE, 0);
         lv_obj_set_style_border_color(s_ai_drawer, lv_color_hex(border), 0);
-        lv_obj_set_style_shadow_color(s_ai_drawer, UI_BG, 0);
+        ui_style_card(s_ai_drawer);
         if (lv_obj_get_child_count(s_ai_drawer) > 0) {
             lv_obj_t *hdr = lv_obj_get_child(s_ai_drawer, 0);
             lv_obj_set_style_bg_color(hdr, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
@@ -213,17 +213,18 @@ static void minimize_ai_drawer(void)
     s_ai_minimized = true;
     lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
     show_ai_mini_fab(s_chat_phase != CHAT_IDLE ? s_chat_phase : CHAT_LISTEN);
+    nl_ov_raise_chrome();
 }
 
 static void expand_ai_drawer(void)
 {
     s_ai_minimized = false;
     hide_ai_mini_fab();
-    if (!s_ai_drawer || s_skill_ui_active || !nl_ov_ai_session_active()) {
+    if (!s_ai_drawer || !nl_ov_ai_session_active()) {
         return;
     }
     lv_obj_clear_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(s_ai_drawer);
+    nl_ov_raise_chrome();
     apply_drawer_chrome(s_chat_phase == CHAT_CONNECT);
     start_eq_anims(s_chat_phase);
 }
@@ -506,10 +507,7 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
     lv_obj_set_style_border_width(s_ai_drawer, 1, 0);
     lv_obj_set_style_border_color(s_ai_drawer, UI_BORDER, 0);
     lv_obj_set_style_border_opa(s_ai_drawer, LV_OPA_COVER, 0);
-    lv_obj_set_style_shadow_width(s_ai_drawer, 0, 0);
-    lv_obj_set_style_shadow_offset_y(s_ai_drawer, 8, 0);
-    lv_obj_set_style_shadow_color(s_ai_drawer, UI_BG, 0);
-    lv_obj_set_style_shadow_opa(s_ai_drawer, 100, 0);
+    ui_style_card(s_ai_drawer);
     lv_obj_set_style_pad_left(s_ai_drawer, 14, 0);
     lv_obj_set_style_pad_right(s_ai_drawer, 10, 0);
     lv_obj_set_style_pad_top(s_ai_drawer, 8, 0);
@@ -712,27 +710,6 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
     if (!s_ai_drawer) {
         return;
     }
-    /* 技能结果卡优先：只更新文案，不弹抽屉，并保持结果卡在最前 */
-    if (s_skill_ui_active) {
-        if (phase == CHAT_IDLE) {
-            nodelio_skill_result_raise();
-            return;
-        }
-        if (msg_text && msg_text[0] && s_ai_drawer_text) {
-            nl_ov_utf8_copy(s_ai_show_text, sizeof(s_ai_show_text), msg_text);
-            lv_label_set_text(s_ai_drawer_text, s_ai_show_text);
-        }
-        if (status_text && status_text[0] && s_ai_drawer_status) {
-            lv_label_set_text(s_ai_drawer_status, status_text);
-        }
-        s_chat_phase = phase;
-        if (s_ai_drawer) {
-            lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
-        }
-        hide_ai_mini_fab(); /* 最小化态暂藏，关技能卡后 restore 再出 */
-        nodelio_skill_result_raise();
-        return;
-    }
     if (phase == CHAT_CONNECT) {
         s_ai_farewell_closing = false;
         s_ai_user_dismissed = false;
@@ -798,6 +775,7 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
         lv_obj_set_style_border_color(s_ai_drawer, lv_color_hex(border_color), 0);
         lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
         show_ai_mini_fab(phase);
+        nl_ov_raise_chrome();
         if (s_ai_hide_timer) {
             lv_timer_del(s_ai_hide_timer);
             s_ai_hide_timer = nullptr;
@@ -872,6 +850,7 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
     }
 
     start_eq_anims(phase);
+    nl_ov_raise_chrome();
 
     if (s_ai_hide_timer) {
         lv_timer_del(s_ai_hide_timer);
