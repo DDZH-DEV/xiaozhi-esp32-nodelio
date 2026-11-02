@@ -222,6 +222,9 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     if (out->screenshot_fab_en > 1) {
         out->screenshot_fab_en = 1;
     }
+    if (out->card_radius > 2) {
+        out->card_radius = 0;
+    }
 }
 
 /* 避免 save 路径把「关闭小智/省电」(0) 误当成未初始化 */
@@ -286,6 +289,9 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     }
     if (out->screenshot_fab_en > 1) {
         out->screenshot_fab_en = 1;
+    }
+    if (out->card_radius > 2) {
+        out->card_radius = 0;
     }
 }
 
@@ -453,6 +459,12 @@ static esp_err_t load_config(nodelio_nvs_config_t* out) {
         } else {
             out->screenshot_fab_en = 1;
         }
+        v = 0;
+        if (nvs_get_u8(h, "card_rad", &v) == ESP_OK) {
+            out->card_radius = (v <= 2) ? v : 0;
+        } else {
+            out->card_radius = 0;
+        }
     }
     nvs_close(h);
     apply_defaults(out);
@@ -524,6 +536,7 @@ static esp_err_t save_config(const nodelio_nvs_config_t* in, bool preferences_on
     NL_ACCUM(nvs_set_u8(h, "ai_bd_i", tmp.ai_bd_i > 2 ? 0 : tmp.ai_bd_i));
     NL_ACCUM(nvs_set_u8(h, "sb_mode", tmp.status_bar_mode > 2 ? 0 : tmp.status_bar_mode));
     NL_ACCUM(nvs_set_u8(h, "shot_fab", tmp.screenshot_fab_en ? 1 : 0));
+    NL_ACCUM(nvs_set_u8(h, "card_rad", tmp.card_radius > 2 ? 0 : tmp.card_radius));
 #undef NL_ACCUM
 
     err = nvs_commit(h);
@@ -1084,4 +1097,20 @@ void nodelio_conn_hist_push(nodelio_conn_hist_t *h, bool https, const char *host
     }
     h->e[0] = ent;
     h->n = n;
+}
+
+int nodelio_card_radius_px(void)
+{
+    uint8_t tier = 0;
+    if (s_ram_ok && s_ram.card_radius <= 2) {
+        tier = s_ram.card_radius;
+    }
+    switch (tier) {
+    case 1:
+        return 4;   /* 直角 */
+    case 2:
+        return 22;  /* 圆润 */
+    default:
+        return 16;  /* 标准 */
+    }
 }

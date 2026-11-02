@@ -167,6 +167,7 @@ Display *nl_ov_disp();
 void nl_ov_utf8_copy(char *dst, size_t dst_len, const char *src);
 void nl_ov_set_font(lv_obj_t *obj);
 void nl_ov_set_font_title(lv_obj_t *obj);
+void nl_ov_set_font_compact(lv_obj_t *obj);
 void nl_ov_set_icon_font(lv_obj_t *obj);
 const lv_font_t *nl_ov_ui_font(void);
 const lv_font_t *nl_ov_ui_font_compact(void);

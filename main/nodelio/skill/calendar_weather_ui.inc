@@ -507,138 +507,257 @@ static uint32_t daily_aqi_color(int aqi) {
     return UI_C_PURPLE;
 }
 
+static void format_time_clean(const char* in, char* out, size_t out_sz) {
+    if (!in || !in[0]) {
+        out[0] = '\0';
+        return;
+    }
+    const char* t = strchr(in, 'T');
+    if (t) {
+        snprintf(out, out_sz, "%s", t + 1);
+        char* colon = strrchr(out, ':');
+        if (colon && colon - out > 3) {
+            *colon = '\0';
+        }
+    } else {
+        snprintf(out, out_sz, "%s", in);
+    }
+}
+
 static void daily_weather(lv_obj_t* body) {
     const auto& daily = s_env->daily;
-
-    /* 主视觉：左侧自绘天气图标，右侧城市 / 大号温度 / 体感描述。
-     * 图标给了这一页第一个视觉锚点，温度用大字形成层级。 */
-    lv_obj_t* hero = daily_box(body, LV_FLEX_FLOW_ROW, true);
-    lv_obj_set_flex_align(hero, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(hero, UI_PAD, 0);
     const daily_icon_t today_icon = daily_icon_for(daily.summary);
-    daily_weather_icon(hero, today_icon, 72);
 
-    lv_obj_t* hero_txt = daily_box(hero, LV_FLEX_FLOW_COLUMN, false);
-    lv_obj_set_width(hero_txt, 0);
-    lv_obj_set_flex_grow(hero_txt, 1);
-    lv_obj_set_style_pad_row(hero_txt, 1, 0);
-    daily_label(hero_txt, daily.city[0] ? daily.city : "当地天气", UI_TEXT_DIM);
-    daily_label(hero_txt, daily.temperature[0] ? daily.temperature : "—", UI_TEXT, true);
-    daily_label(hero_txt, daily.summary[0] ? daily.summary : "等待天气数据", UI_TEXT_SUB);
-    if (daily.message[0])
-        daily_label(hero_txt, daily.message, UI_WARN);
+    /* 1. 主天气卡片 (Hero Card) */
+    lv_obj_t* hero = daily_box(body, LV_FLEX_FLOW_COLUMN, true);
+    lv_obj_set_style_pad_all(hero, 16, 0);
+    lv_obj_set_style_pad_row(hero, 10, 0);
 
-    /* 空气质量：一行三列 —— AQI 数字 + 等级、颗粒物、更新时间。
-     * 数字与等级并排，颗粒物与时间降到弱一级，避免整块散成三行。 */
+    /* 顶行：城市名称 + 天气状况胶囊 */
+    lv_obj_t* top_row = daily_box(hero, LV_FLEX_FLOW_ROW, false);
+    lv_obj_set_flex_align(top_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* city_lbl = lv_label_create(top_row);
+    nl_ov_set_font(city_lbl);
+    lv_label_set_text(city_lbl, daily.city[0] ? daily.city : "当地天气");
+    lv_obj_set_style_text_color(city_lbl, UI_TEXT, 0);
+    lv_obj_set_style_text_font(city_lbl, nl_ov_ui_font_title(), 0);
+
+    const char* cond_str = daily.summary[0] ? daily.summary : "多云";
+    lv_obj_t* cond_badge = lv_obj_create(top_row);
+    lv_obj_remove_style_all(cond_badge);
+    lv_obj_set_size(cond_badge, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_left(cond_badge, 10, 0);
+    lv_obj_set_style_pad_right(cond_badge, 10, 0);
+    lv_obj_set_style_pad_top(cond_badge, 4, 0);
+    lv_obj_set_style_pad_bottom(cond_badge, 4, 0);
+    lv_obj_set_style_radius(cond_badge, UI_RADIUS_SM, 0);
+    lv_obj_set_style_bg_color(cond_badge, UI_CAPSULE_OFF, 0);
+    lv_obj_set_style_bg_opa(cond_badge, LV_OPA_COVER, 0);
+    lv_obj_t* cbl = lv_label_create(cond_badge);
+    nl_ov_set_font(cbl);
+    lv_label_set_text(cbl, cond_str);
+    lv_obj_set_style_text_color(cbl, UI_ACCENT, 0);
+    lv_obj_center(cbl);
+
+    /* 中间行：超大温度 + 气温范围/描述 + 右侧天气大图标 */
+    lv_obj_t* main_row = daily_box(hero, LV_FLEX_FLOW_ROW, false);
+    lv_obj_set_flex_align(main_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* temp_col = daily_box(main_row, LV_FLEX_FLOW_COLUMN, false);
+    lv_obj_set_flex_grow(temp_col, 1);
+    lv_obj_set_style_pad_row(temp_col, 2, 0);
+
+    char temp_buf[32];
+    if (daily.temperature[0] && strcmp(daily.temperature, "—") != 0) {
+        if (strstr(daily.temperature, "°") || strstr(daily.temperature, "℃")) {
+            snprintf(temp_buf, sizeof(temp_buf), "%s", daily.temperature);
+        } else {
+            snprintf(temp_buf, sizeof(temp_buf), "%s°", daily.temperature);
+        }
+    } else {
+        snprintf(temp_buf, sizeof(temp_buf), "--°");
+    }
+    lv_obj_t* t_big = lv_label_create(temp_col);
+    lv_obj_set_style_text_font(t_big, nl_ov_read_font(), 0);
+    lv_label_set_text(t_big, temp_buf);
+    lv_obj_set_style_text_color(t_big, UI_TEXT, 0);
+
+    /* 最高 / 最低温或简要说明 */
+    char sub_temp[160];
+    if (daily.day_n > 0 && daily.days[0].high[0]) {
+        snprintf(sub_temp, sizeof(sub_temp), "最高 %s · 最低 %s", daily.days[0].high, daily.days[0].low);
+    } else {
+        snprintf(sub_temp, sizeof(sub_temp), "%s", daily.summary[0] ? daily.summary : "正在同步气象数据");
+    }
+    lv_obj_t* sub_l = lv_label_create(temp_col);
+    nl_ov_set_font(sub_l);
+    lv_label_set_text(sub_l, sub_temp);
+    lv_obj_set_style_text_color(sub_l, UI_TEXT_DIM, 0);
+
+    /* 右侧图标底座 */
+    lv_obj_t* icon_pod = lv_obj_create(main_row);
+    lv_obj_remove_style_all(icon_pod);
+    lv_obj_set_size(icon_pod, 60, 60);
+    lv_obj_set_style_radius(icon_pod, UI_RADIUS_MD, 0);
+    lv_obj_set_style_bg_color(icon_pod, UI_SURFACE_PRESSED, 0);
+    lv_obj_set_style_bg_opa(icon_pod, LV_OPA_COVER, 0);
+    lv_obj_t* wic = daily_weather_icon(icon_pod, today_icon, 48);
+    lv_obj_center(wic);
+
+    /* 底部提示小横条（如有告警/未联网刷新提示） */
+    if (daily.message[0]) {
+        lv_obj_t* tip_box = lv_obj_create(hero);
+        lv_obj_remove_style_all(tip_box);
+        lv_obj_set_width(tip_box, lv_pct(100));
+        lv_obj_set_style_pad_left(tip_box, 10, 0);
+        lv_obj_set_style_pad_right(tip_box, 10, 0);
+        lv_obj_set_style_pad_top(tip_box, 6, 0);
+        lv_obj_set_style_pad_bottom(tip_box, 6, 0);
+        lv_obj_set_style_radius(tip_box, UI_RADIUS_SM, 0);
+        lv_obj_set_style_bg_color(tip_box, UI_CAPSULE_OFF, 0);
+        lv_obj_set_style_bg_opa(tip_box, LV_OPA_COVER, 0);
+        lv_obj_t* tip_l = lv_label_create(tip_box);
+        nl_ov_set_font(tip_l);
+        lv_label_set_text(tip_l, daily.message);
+        lv_obj_set_style_text_color(tip_l, UI_WARN, 0);
+        lv_obj_center(tip_l);
+    }
+
+    /* 2. 空气质量卡片 (Air Quality) */
     lv_obj_t* air = daily_box(body, LV_FLEX_FLOW_COLUMN, true);
-    lv_obj_set_style_pad_row(air, 6, 0);
-    daily_label(air, "空气质量", UI_TEXT_DIM);
+    lv_obj_set_style_pad_all(air, 14, 0);
+    lv_obj_set_style_pad_row(air, 8, 0);
+
+    /* 标题 + 更新时间 */
+    lv_obj_t* air_top = daily_box(air, LV_FLEX_FLOW_ROW, false);
+    lv_obj_set_flex_align(air_top, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t* air_tit = lv_label_create(air_top);
+    nl_ov_set_font(air_tit);
+    lv_label_set_text(air_tit, "空气质量");
+    lv_obj_set_style_text_color(air_tit, UI_TEXT_DIM, 0);
+
+    if (daily.air_updated[0]) {
+        char time_clean[32];
+        format_time_clean(daily.air_updated, time_clean, sizeof(time_clean));
+        char up_str[48];
+        snprintf(up_str, sizeof(up_str), "%s 更新", time_clean);
+        lv_obj_t* up_l = lv_label_create(air_top);
+        nl_ov_set_font(up_l);
+        lv_label_set_text(up_l, up_str);
+        lv_obj_set_style_text_color(up_l, UI_TEXT_MUTED, 0);
+    }
 
     int aqi = -1;
     char level[24];
     const bool has_aqi = daily_split_aqi(daily.air, &aqi, level, sizeof(level));
     const uint32_t aqi_c = daily_aqi_color(aqi < 0 ? 0 : aqi);
 
-    lv_obj_t* air_row = daily_box(air, LV_FLEX_FLOW_ROW, false);
-    lv_obj_set_flex_align(air_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(air_row, 0, 0);
-    lv_obj_set_style_pad_column(air_row, UI_PAD_SM, 0);
+    lv_obj_t* air_content = daily_box(air, LV_FLEX_FLOW_ROW, false);
+    lv_obj_set_flex_align(air_content, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     if (has_aqi) {
-        /* 大号数字本身就是视觉主体，不再额外加圆点。 */
+        lv_obj_t* aqi_left = daily_box(air_content, LV_FLEX_FLOW_ROW, false);
+        lv_obj_set_flex_align(aqi_left, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(aqi_left, 10, 0);
+
         char num[16];
         snprintf(num, sizeof(num), "%d", aqi);
-        lv_obj_t* n = daily_label(air_row, num, UI_TEXT, true);
-        lv_obj_set_width(n, LV_SIZE_CONTENT);
+        lv_obj_t* n = lv_label_create(aqi_left);
+        nl_ov_set_font(n);
+        lv_obj_set_style_text_font(n, nl_ov_read_font(), 0);
+        lv_label_set_text(n, num);
         lv_obj_set_style_text_color(n, lv_color_hex(aqi_c), 0);
+
         if (level[0]) {
-            lv_obj_t* badge = lv_obj_create(air_row);
+            lv_obj_t* badge = lv_obj_create(aqi_left);
             lv_obj_remove_style_all(badge);
             lv_obj_set_size(badge, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_obj_set_style_pad_left(badge, 8, 0);
             lv_obj_set_style_pad_right(badge, 8, 0);
-            lv_obj_set_style_pad_top(badge, 2, 0);
-            lv_obj_set_style_pad_bottom(badge, 2, 0);
+            lv_obj_set_style_pad_top(badge, 3, 0);
+            lv_obj_set_style_pad_bottom(badge, 3, 0);
             lv_obj_set_style_radius(badge, UI_RADIUS_XS, 0);
             lv_obj_set_style_bg_color(badge, lv_color_hex(aqi_c), 0);
             lv_obj_set_style_bg_opa(badge, LV_OPA_20, 0);
-            lv_obj_clear_flag(badge,
-                              (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
-            lv_obj_t* bl = daily_label(badge, level, UI_TEXT);
-            lv_obj_set_width(bl, LV_SIZE_CONTENT);
+            lv_obj_t* bl = lv_label_create(badge);
+            nl_ov_set_font(bl);
+            lv_label_set_text(bl, level);
             lv_obj_set_style_text_color(bl, lv_color_hex(aqi_c), 0);
             lv_obj_center(bl);
         }
     } else {
-        daily_label(air_row, daily.air[0] ? daily.air : "暂不可用", UI_TEXT);
+        lv_obj_t* na_l = lv_label_create(air_content);
+        nl_ov_set_font(na_l);
+        lv_label_set_text(na_l, daily.air[0] ? daily.air : "等待更新");
+        lv_obj_set_style_text_color(na_l, UI_TEXT_MUTED, 0);
     }
 
-    /* 颗粒物明细与更新时间同行靠右，弱一级。 */
     const char* pm = daily_pm_detail(daily.air);
-    if (pm || daily.air_updated[0]) {
-        lv_obj_t* meta = daily_box(air, LV_FLEX_FLOW_ROW, false);
-        lv_obj_set_flex_align(meta, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_row(meta, 0, 0);
-        lv_obj_t* pm_lbl = daily_label(meta, pm ? pm : "", UI_TEXT_MUTED);
-        lv_obj_set_width(pm_lbl, 0);
-        lv_obj_set_flex_grow(pm_lbl, 1);
-        lv_label_set_long_mode(pm_lbl, LV_LABEL_LONG_DOT);
-        if (daily.air_updated[0]) {
-            char updated[80];
-            snprintf(updated, sizeof(updated), "更新 %s", daily.air_updated);
-            lv_obj_t* u = daily_label(meta, updated, UI_TEXT_MUTED);
-            lv_obj_set_width(u, LV_SIZE_CONTENT);
+    if (pm) {
+        lv_obj_t* pm_l = lv_label_create(air_content);
+        nl_ov_set_font(pm_l);
+        lv_label_set_text(pm_l, pm);
+        lv_obj_set_style_text_color(pm_l, UI_TEXT_MUTED, 0);
+        lv_obj_set_style_text_align(pm_l, LV_TEXT_ALIGN_RIGHT, 0);
+    }
+
+    /* 3. 未来预报列表 (Forecast List) */
+    if (daily.day_n > 0) {
+        lv_obj_t* fc_hdr = lv_label_create(body);
+        nl_ov_set_font(fc_hdr);
+        char f_title[32];
+        snprintf(f_title, sizeof(f_title), "未来 %d 天天气预报", daily.day_n);
+        lv_label_set_text(fc_hdr, f_title);
+        lv_obj_set_style_text_color(fc_hdr, UI_TEXT_DIM, 0);
+
+        lv_obj_t* forecast = daily_box(body, LV_FLEX_FLOW_COLUMN, true);
+        lv_obj_set_style_pad_all(forecast, 12, 0);
+        lv_obj_set_style_pad_row(forecast, 4, 0);
+
+        for (int i = 0; i < daily.day_n; ++i) {
+            const auto& day = daily.days[i];
+            const bool today_row = i == 0;
+            lv_obj_t* row = daily_box(forecast, LV_FLEX_FLOW_ROW, false);
+            lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_top(row, 6, 0);
+            lv_obj_set_style_pad_bottom(row, 6, 0);
+            lv_obj_set_style_pad_column(row, 8, 0);
+
+            daily_weather_icon(row, daily_icon_for(day.condition), 24);
+
+            char date_buf[32];
+            snprintf(date_buf, sizeof(date_buf), "%s%s", day.date + 5, today_row ? " (今天)" : "");
+            lv_obj_t* d = lv_label_create(row);
+            nl_ov_set_font(d);
+            lv_label_set_text(d, date_buf);
+            lv_obj_set_style_text_color(d, today_row ? UI_ACCENT : UI_TEXT_SUB, 0);
+            lv_obj_set_width(d, lv_pct(30));
+
+            lv_obj_t* c = lv_label_create(row);
+            nl_ov_set_font(c);
+            lv_label_set_text(c, day.condition[0] ? day.condition : "—");
+            lv_obj_set_style_text_color(c, UI_TEXT, 0);
+            lv_obj_set_flex_grow(c, 1);
+
+            char t_range[32];
+            snprintf(t_range, sizeof(t_range), "%s ~ %s", day.low[0] ? day.low : "—",
+                     day.high[0] ? day.high : "—");
+            lv_obj_t* tr = lv_label_create(row);
+            nl_ov_set_font(tr);
+            lv_label_set_text(tr, t_range);
+            lv_obj_set_style_text_color(tr, UI_TEXT, 0);
+            lv_obj_set_width(tr, LV_SIZE_CONTENT);
         }
     }
 
-    /* 预报：每行一枚小图标 + 日期 / 天气 / 温度 / 降水。 */
-    char forecast_title[80];
-    snprintf(forecast_title, sizeof(forecast_title), "未来 %d 天", daily.day_n);
-    daily_label(body, forecast_title, UI_TEXT);
-    lv_obj_t* forecast = daily_box(body, LV_FLEX_FLOW_COLUMN, true);
-    lv_obj_set_style_pad_row(forecast, 0, 0);
-    lv_obj_set_style_pad_top(forecast, 6, 0);
-    lv_obj_set_style_pad_bottom(forecast, 6, 0);
-    for (int i = 0; i < daily.day_n; ++i) {
-        const auto& day = daily.days[i];
-        const bool today_row = i == 0;
-        lv_obj_t* row = daily_box(forecast, LV_FLEX_FLOW_ROW, false);
-        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_row(row, 0, 0);
-        lv_obj_set_style_pad_column(row, UI_GAP, 0);
-        lv_obj_set_style_pad_top(row, 5, 0);
-        lv_obj_set_style_pad_bottom(row, 5, 0);
-        /* 不画分隔线：行距本身已经能区分，线条越少越干净。 */
-        daily_weather_icon(row, daily_icon_for(day.condition), 28);
-
-        char text[80];
-        snprintf(text, sizeof(text), "%s%s", day.date + 5, today_row ? " 今天" : "");
-        lv_obj_t* d = daily_label(row, text, today_row ? UI_ACCENT : UI_TEXT_SUB);
-        lv_obj_set_width(d, lv_pct(30));
-        lv_obj_t* c = daily_label(row, day.condition, UI_TEXT);
-        lv_obj_set_width(c, 0);
-        lv_obj_set_flex_grow(c, 1);
-        snprintf(text, sizeof(text), "%s / %s", day.low[0] ? day.low : "—",
-                 day.high[0] ? day.high : "—");
-        lv_obj_t* t = daily_label(row, text, UI_TEXT);
-        lv_obj_set_width(t, LV_SIZE_CONTENT);
-        snprintf(text, sizeof(text), "%s", day.rain[0] ? day.rain : "—");
-        lv_obj_t* r = daily_label(row, text, UI_INFO);
-        lv_obj_set_width(r, 52);
-        lv_obj_set_style_text_align(r, LV_TEXT_ALIGN_RIGHT, 0);
-    }
-    /* 数据来源压成一行，不再占两行。 */
-    if (daily.updated[0]) {
-        char foot[128];
-        snprintf(foot, sizeof(foot), "Open-Meteo · CAMS · 更新 %s", daily.updated);
-        daily_label(body, foot, UI_TEXT_MUTED);
-    } else {
-        daily_label(body, "天气 / 空气：Open-Meteo · CAMS", UI_TEXT_MUTED);
-    }
+    /* 4. 底部微弱数据来源 */
+    lv_obj_t* foot_l = lv_label_create(body);
+    nl_ov_set_font(foot_l);
+    lv_label_set_text(foot_l, "气象与空气数据源 · Open-Meteo · CAMS");
+    lv_obj_set_style_text_color(foot_l, UI_TEXT_MUTED, 0);
+    lv_obj_set_style_text_align(foot_l, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(foot_l, lv_pct(100));
 }
 
 /* ---- 页脚 -------------------------------------------------------------- */

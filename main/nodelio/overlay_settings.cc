@@ -392,6 +392,31 @@ static void on_screenshot_fab_chip(lv_event_t *e)
     commit_screenshot_fab((uint8_t)(intptr_t)lv_event_get_user_data(e));
 }
 
+static void commit_card_radius(uint8_t rad_mode)
+{
+    rad_mode = rad_mode > 2 ? 0 : rad_mode;
+    if (s_cfg.card_radius == rad_mode) {
+        return;
+    }
+    s_cfg.card_radius = rad_mode;
+    persist_cfg_async();
+    Application::GetInstance().Schedule([rad_mode]() {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (!lock) {
+            return;
+        }
+        nl_ov_apply_appearance();
+        static const char *k_rad_toast[] = {"圆角 标准 (16px)", "圆角 直角 (4px)", "圆角 圆润 (22px)"};
+        nl_ov_toast(k_rad_toast[rad_mode]);
+        nl_ov_open_settings_detail(SET_PAGE_DISP);
+    });
+}
+
+static void on_card_radius_chip(lv_event_t *e)
+{
+    commit_card_radius((uint8_t)(intptr_t)lv_event_get_user_data(e));
+}
+
 /** 小智 / 本地口令切换后内存占用不同，须重启才按新组合加载。
  * 两个开关常连着拨：合并成一次延迟重启，避免关一个重启、再开另一个又重启。 */
 static esp_timer_handle_t s_voice_reboot_tmr;
@@ -923,14 +948,18 @@ static lv_obj_t *audio_ctrl_band(lv_obj_t *parent, const char *title, const char
     lv_obj_t *band = lv_obj_create(parent);
     lv_obj_remove_style_all(band);
     lv_obj_set_width(band, lv_pct(100));
+    lv_obj_set_height(band, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(band, UI_PANEL, 0);
     lv_obj_set_style_bg_opa(band, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(band, UI_RADIUS, 0);
-    lv_obj_set_style_pad_left(band, 16, 0);
-    lv_obj_set_style_pad_right(band, 16, 0);
-    lv_obj_set_style_pad_top(band, 12, 0);
-    lv_obj_set_style_pad_bottom(band, 14, 0);
-    lv_obj_set_style_pad_row(band, 8, 0);
+    lv_obj_set_style_radius(band, UI_RADIUS_MD, 0);
+    lv_obj_set_style_border_width(band, 1, 0);
+    lv_obj_set_style_border_color(band, UI_TILE_OFF_BORDER, 0);
+    lv_obj_set_style_border_opa(band, LV_OPA_80, 0);
+    lv_obj_set_style_pad_left(band, 14, 0);
+    lv_obj_set_style_pad_right(band, 14, 0);
+    lv_obj_set_style_pad_top(band, 10, 0);
+    lv_obj_set_style_pad_bottom(band, 10, 0);
+    lv_obj_set_style_pad_row(band, 6, 0);
     lv_obj_set_flex_flow(band, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(band, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_clear_flag(band, LV_OBJ_FLAG_SCROLLABLE);
@@ -1214,6 +1243,10 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_slider_set_value(bri_sl, s_brightness, LV_ANIM_OFF);
         lv_obj_add_event_cb(bri_sl, on_bri_changed, LV_EVENT_VALUE_CHANGED, nullptr);
         lv_obj_add_event_cb(bri_sl, on_bri_release, LV_EVENT_RELEASED, nullptr);
+        lv_obj_t *bri_hint = lv_label_create(bri_band);
+        lv_label_set_text(bri_hint, "滑动调节屏幕背光亮度");
+        nl_ov_set_font(bri_hint);
+        lv_obj_set_style_text_color(bri_hint, UI_TEXT_TIP, 0);
 
         std::snprintf(pct, sizeof(pct), "%d%%", s_volume);
         lv_obj_t *vol_band = audio_ctrl_band(body, "音量", pct, &s_vol_val_lbl);
@@ -1372,6 +1405,43 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_label_set_text(fab_hint, "屏幕右侧浮动相机图标，可拖动位置，点按即截屏");
         nl_ov_set_font(fab_hint);
         lv_obj_set_style_text_color(fab_hint, UI_TEXT_TIP, 0);
+
+        const uint8_t rad_cur = s_cfg.card_radius > 2 ? 0 : s_cfg.card_radius;
+        static const char *k_rad_names[] = {"标准", "直角", "圆润"};
+        lv_obj_t *rad_band = audio_ctrl_band(body, "卡片圆角", k_rad_names[rad_cur], nullptr);
+        lv_obj_t *rad_row = lv_obj_create(rad_band);
+        lv_obj_remove_style_all(rad_row);
+        lv_obj_set_width(rad_row, lv_pct(100));
+        lv_obj_set_height(rad_row, 44);
+        lv_obj_set_flex_flow(rad_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(rad_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(rad_row, 8, 0);
+        lv_obj_clear_flag(rad_row, LV_OBJ_FLAG_SCROLLABLE);
+        for (int i = 0; i < 3; i++) {
+            const bool on = rad_cur == (uint8_t)i;
+            lv_obj_t *chip = lv_obj_create(rad_row);
+            lv_obj_remove_style_all(chip);
+            lv_obj_set_flex_grow(chip, 1);
+            lv_obj_set_height(chip, 44);
+            lv_obj_set_style_radius(chip, 12, 0);
+            lv_obj_set_style_bg_color(chip, on ? UI_ACCENT : UI_CAPSULE_OFF, 0);
+            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(chip, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+            lv_obj_set_style_translate_y(chip, 1, LV_STATE_PRESSED);
+            lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(chip, UI_EXT_CLICK);
+            lv_obj_add_event_cb(chip, on_card_radius_chip, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            lv_obj_t *lab = lv_label_create(chip);
+            nl_ov_set_font(lab);
+            lv_label_set_text(lab, k_rad_names[i]);
+            lv_obj_set_style_text_color(lab, on ? UI_ON_TILE : UI_TEXT, 0);
+            lv_obj_center(lab);
+        }
+        lv_obj_t *rad_hint = lv_label_create(rad_band);
+        lv_label_set_text(rad_hint, "自定义全屏卡片与磁贴圆角弧度");
+        nl_ov_set_font(rad_hint);
+        lv_obj_set_style_text_color(rad_hint, UI_TEXT_TIP, 0);
     } else if (page == SET_PAGE_SYS) {
         load_audio_prefs();
         const nodelio_board_t *b = nodelio_board_get();
@@ -1978,12 +2048,14 @@ static void fill_settings_hub(void)
     /* 浏览态按宽度折列；技能卡打开时 settings_tile 强制单列。 */
     lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(s_settings, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_row(s_settings, UI_GAP, 0);
-    lv_obj_set_style_pad_column(s_settings, UI_GAP, 0);
+    const int set_gap = nodelio_text_scale() == 1 ? 12 : UI_GAP;
+    lv_obj_set_style_pad_row(s_settings, set_gap, 0);
+    lv_obj_set_style_pad_column(s_settings, set_gap, 0);
+    const bool is_wide = nodelio_display_profile()->nav_width > 0;
     lv_obj_set_style_pad_left(s_settings, 16, 0);
     lv_obj_set_style_pad_right(s_settings, 16, 0);
-    lv_obj_set_style_pad_top(s_settings, 16, 0);
-    lv_obj_set_style_pad_bottom(s_settings, 20, 0);
+    lv_obj_set_style_pad_top(s_settings, is_wide ? 16 : 32, 0);
+    lv_obj_set_style_pad_bottom(s_settings, is_wide ? 20 : 54, 0);
     lv_obj_set_style_bg_color(s_settings, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_settings, LV_OPA_COVER, 0);
     lv_obj_set_scroll_dir(s_settings, LV_DIR_VER);

@@ -1,6 +1,7 @@
 #include "ui_widgets.h"
 #include <cmath>
 #include "board_info.h"
+#include "nvs_config.h"
 
 void nl_ov_set_font(lv_obj_t *obj);
 int nl_ov_ui_line_box(void);
@@ -124,7 +125,7 @@ void ui_style_card(lv_obj_t *obj)
 
 int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out)
 {
-    const int gap = UI_GAP;
+    const int gap = (nodelio_text_scale() == 1) ? 12 : UI_GAP;
     const auto *profile = nodelio_display_profile();
     if (avail < 160) {
         avail = (int)profile->width - (int)profile->nav_width - 16 * 2;
@@ -161,9 +162,10 @@ int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out)
 int ui_settings_tile_height(void)
 {
     const int line = nl_ov_ui_line_box();
-    int tile_h = 12 + line + 4 + line * 2 + 12;
-    if (tile_h < UI_SETTINGS_TILE_H) {
-        tile_h = UI_SETTINGS_TILE_H;
+    const bool large = nodelio_text_scale() == 1;
+    int tile_h = (large ? 14 : 10) + line + (large ? 6 : 4) + line * 2 + (large ? 14 : 10);
+    if (tile_h < (large ? 80 : UI_SETTINGS_TILE_H)) {
+        tile_h = (large ? 80 : UI_SETTINGS_TILE_H);
     }
     return tile_h;
 }
@@ -193,13 +195,14 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     ui_style_card(btn);
     lv_obj_set_style_border_width(btn, 1, 0);
     lv_obj_set_style_border_color(btn, UI_TILE_OFF_BORDER, 0);
-    lv_obj_set_style_border_opa(btn, LV_OPA_40, 0);
-    lv_obj_set_style_pad_left(btn, 10, 0);
-    lv_obj_set_style_pad_right(btn, 8, 0);
+    const bool large = nodelio_text_scale() == 1;
+    lv_obj_set_style_border_opa(btn, LV_OPA_80, 0);
+    lv_obj_set_style_pad_left(btn, large ? 12 : 10, 0);
+    lv_obj_set_style_pad_right(btn, large ? 10 : 8, 0);
     lv_obj_set_style_pad_top(btn, 0, 0);
     lv_obj_set_style_pad_bottom(btn, 0, 0);
     const int pod_sz = 46;
-    const int col_gap = 16;
+    const int col_gap = large ? 14 : 12;
     lv_obj_set_style_pad_column(btn, col_gap, 0);
 
     lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
@@ -268,14 +271,10 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_label_set_text(s, sub ? sub : "");
     /* 副文最多两行：折行 + 溢出打点。卡高由 ui_settings_tile_height() 按两行留，
      * 单行文案只占一行高，整组仍在卡内垂直居中。 */
-    lv_label_set_long_mode(s, LV_LABEL_LONG_DOT);
+    lv_label_set_long_mode(s, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(s, lv_pct(100));
-    int sub_h = nl_ov_wrapped_text_h(sub, sub_w);
     const int sub_cap = font_h * 2 + (nl_ov_ui_line_box() - font_h);
-    if (sub_h > sub_cap) {
-        sub_h = sub_cap;
-    }
-    lv_obj_set_height(s, sub_h);
+    lv_obj_set_height(s, sub_cap);
     apply_font(s);
     lv_obj_set_style_text_align(s, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_color(s, UI_TEXT_MUTED, 0);

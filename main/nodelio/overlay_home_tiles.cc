@@ -192,17 +192,18 @@ static void style_hint_pill(lv_obj_t *hint, bool countdown)
     if (!hint) {
         return;
     }
+    nl_ov_set_font_compact(hint);
     lv_obj_set_style_radius(hint, UI_RADIUS_XS, 0);
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_left(hint, countdown ? 6 : 6, 0);
-    lv_obj_set_style_pad_right(hint, countdown ? 6 : 6, 0);
-    lv_obj_set_style_pad_top(hint, 2, 0);
-    lv_obj_set_style_pad_bottom(hint, 2, 0);
+    lv_obj_set_style_pad_left(hint, countdown ? 5 : 4, 0);
+    lv_obj_set_style_pad_right(hint, countdown ? 5 : 4, 0);
+    lv_obj_set_style_pad_top(hint, 1, 0);
+    lv_obj_set_style_pad_bottom(hint, 1, 0);
     /* 数字倒计时略宽，避免「9:59」贴边显偏 */
     if (countdown) {
-        lv_obj_set_style_min_width(hint, 36, 0);
+        lv_obj_set_style_min_width(hint, 28, 0);
     } else {
-        lv_obj_set_style_min_width(hint, 22, 0);
+        lv_obj_set_style_min_width(hint, 18, 0);
     }
 }
 
@@ -1164,11 +1165,11 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
     if (on && online) {
         lv_obj_set_style_border_width(tile, 1, 0);
         lv_obj_set_style_border_color(tile, active_c, 0);
-        lv_obj_set_style_border_opa(tile, LV_OPA_70, 0);
+        lv_obj_set_style_border_opa(tile, LV_OPA_80, 0);
     } else {
         lv_obj_set_style_border_width(tile, 1, 0);
         lv_obj_set_style_border_color(tile, UI_TILE_OFF_BORDER, 0);
-        lv_obj_set_style_border_opa(tile, LV_OPA_40, 0);
+        lv_obj_set_style_border_opa(tile, LV_OPA_80, 0);
     }
     /* 双段卡整卡不可点，只由支路响应；勿用 ui_set_enabled 把 CLICKABLE 加回去 */
     if (dual_line_use_segments(w)) {
@@ -1270,7 +1271,7 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                         format_countdown(cd, hb, sizeof(hb));
                         lv_obj_clear_flag(ch, LV_OBJ_FLAG_HIDDEN);
                         lv_label_set_text(ch, hb);
-                        nl_ov_set_font(ch);
+                        nl_ov_set_font_compact(ch);
                         style_hint_pill(ch, true);
                         lv_obj_set_style_text_color(ch, UI_WARN, 0);
                         lv_obj_set_style_bg_color(ch, UI_SURFACE_PRESSED, 0);
@@ -1279,7 +1280,7 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                     } else if (!online) {
                         lv_obj_clear_flag(ch, LV_OBJ_FLAG_HIDDEN);
                         lv_label_set_text(ch, "离");
-                        nl_ov_set_font(ch);
+                        nl_ov_set_font_compact(ch);
                         style_hint_pill(ch, false);
                         lv_obj_set_style_text_color(ch, hint_c, 0);
                         lv_obj_set_style_bg_color(ch, badge_bg, 0);
@@ -1300,7 +1301,7 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                     char hb[12];
                     format_countdown(cd, hb, sizeof(hb));
                     lv_label_set_text(ch, hb);
-                    nl_ov_set_font(ch);
+                    nl_ov_set_font_compact(ch);
                     style_hint_pill(ch, true);
                     lv_obj_set_style_text_color(ch, UI_WARN, 0);
                     lv_obj_set_style_bg_color(ch, UI_SURFACE_PRESSED, 0);
@@ -1323,21 +1324,21 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                     }
                     std::snprintf(hb, sizeof(hb), "%s%d%%", prefix, widget_pwm_duty(w));
                     lv_label_set_text(ch, hb);
-                    nl_ov_set_font(ch);
+                    nl_ov_set_font_compact(ch);
                     style_hint_pill(ch, false);
                     lv_obj_set_style_text_color(ch, hint_c, 0);
                     lv_obj_set_style_bg_color(ch, UI_FIELD, 0);
                     lv_obj_set_style_bg_opa(ch, LV_OPA_COVER, 0);
                 } else if (kind == TILE_SCENE) {
                     lv_label_set_text(ch, "情景");
-                    nl_ov_set_font(ch);
+                    nl_ov_set_font_compact(ch);
                     style_hint_pill(ch, false);
                     lv_obj_set_style_text_color(ch, UI_TEXT_MUTED, 0);
                     lv_obj_set_style_bg_opa(ch, LV_OPA_TRANSP, 0);
                 } else if (w && strcmp(w->skin, "momentary") == 0) {
                     /* 点动角标 */
                     lv_label_set_text(ch, (!online) ? "离" : "点动");
-                    nl_ov_set_font(ch);
+                    nl_ov_set_font_compact(ch);
                     style_hint_pill(ch, false);
                     lv_obj_set_style_text_color(ch, on && online ? ui_color_on(badge_bg) : hint_c,
                                                 0);
@@ -1347,7 +1348,7 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                     /* 双段卡通常藏角标；若露出则显示当前支路短名 */
                     const char *act = on ? dl_on : dl_off;
                     lv_label_set_text(ch, (!online) ? "离" : (act ? act : (on ? "NO" : "NC")));
-                    nl_ov_set_font(ch);
+                    nl_ov_set_font_compact(ch);
                     style_hint_pill(ch, false);
                     lv_obj_set_style_text_color(ch, online ? ui_color_on(badge_bg) : hint_c, 0);
                     lv_obj_set_style_bg_color(ch, badge_bg, 0);
@@ -1355,7 +1356,7 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                 } else {
                     /* 开/关/离：右上角/右侧小角标，不占主列 */
                     lv_label_set_text(ch, (!online) ? "离" : (on ? "开" : "关"));
-                    nl_ov_set_font(ch);
+                    nl_ov_set_font_compact(ch);
                     style_hint_pill(ch, false);
                     lv_obj_set_style_text_color(ch, on && online ? ui_color_on(badge_bg) : hint_c,
                                                 0);
@@ -2019,7 +2020,7 @@ static lv_obj_t *make_tile_shell(const nl_widget_t *w, tile_kind_t kind, int cel
     lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(tile, 1, 0);
     lv_obj_set_style_border_color(tile, UI_TILE_OFF_BORDER, 0);
-    lv_obj_set_style_border_opa(tile, LV_OPA_40, 0);
+    lv_obj_set_style_border_opa(tile, LV_OPA_80, 0);
     lv_obj_set_style_radius(tile, UI_RADIUS_MD, 0);
     lv_obj_set_style_pad_all(tile, UI_PAD_SM, 0);
     ui_style_card(tile);
@@ -2523,6 +2524,13 @@ static void on_skill_tile_click(lv_event_t *e)
         nl_ov_toast("应用未配置");
         return;
     }
+    if (strcmp(w->skill_id, "builtin.daily") == 0 ||
+        strcmp(w->skill_id, "weather.today") == 0 ||
+        strstr(w->skill_id, "weather") != nullptr ||
+        strstr(w->title, "天气") != nullptr) {
+        (void)nl_ov_apps_open_by_query("日历与天气");
+        return;
+    }
     const char *body = w->default_invoke[0] ? w->default_invoke : "{}";
     nl_ov_invoke_skill_async(w->skill_id, body);
 }
@@ -2623,6 +2631,13 @@ static void on_skill_widget_click(lv_event_t *e)
     }
     nl_widget_t *w = static_cast<nl_widget_t *>(lv_event_get_user_data(e));
     if (!w || w->type != NL_WIDGET_SKILL_WIDGET || !w->skill_id[0]) {
+        return;
+    }
+    if (strcmp(w->skill_id, "builtin.daily") == 0 ||
+        strcmp(w->skill_id, "weather.today") == 0 ||
+        strstr(w->skill_id, "weather") != nullptr ||
+        strstr(w->title, "天气") != nullptr) {
+        (void)nl_ov_apps_open_by_query("日历与天气");
         return;
     }
     const char *body = w->default_invoke[0] ? w->default_invoke : "{}";
@@ -3340,137 +3355,50 @@ static void refresh_skill_widget(lv_obj_t* tile, nl_widget_t* w) {
     const bool have = nl_ov_skill_widget_preview(w->skill_id, &pv);
     const bool one_row = w->gh <= 1;
 
-    const char *widget_glyph = MATERIAL_SYMBOLS_CHAT_BUBBLE;
+    const char *widget_glyph = MATERIAL_SYMBOLS_BRIGHTNESS_6;
     if (w->icon[0]) {
         const char *named = material_symbols_get_utf8(w->icon);
         if (named != NULL) {
             widget_glyph = named;
         }
+    } else if (strstr(w->skill_id, "weather") != nullptr || strstr(fallback, "天气") != nullptr) {
+        widget_glyph = MATERIAL_SYMBOLS_BRIGHTNESS_6;
+    } else {
+        widget_glyph = MATERIAL_SYMBOLS_CHAT_BUBBLE;
     }
 
-    /* 一行高（每日一句）：正文必须占满格子，标题单独一行会被裁掉 */
-    if (one_row || !pv.list) {
-        lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_left(tile, 8, 0);
-        lv_obj_set_style_pad_right(tile, 8, 0);
-        lv_obj_set_style_pad_column(tile, 8, 0);
-        widget_icon_pod(tile, widget_glyph, UI_CAPSULE_SCENE, one_row ? 28 : 32);
-        lv_obj_t *body = lv_label_create(tile);
-        nl_ov_set_font(body);
-        const char *text = (have && pv.n > 0 && pv.title[0][0]) ? pv.title[0] : "加载中";
-        lv_label_set_text(body, text);
-        lv_obj_set_style_text_color(body, have && pv.ok ? UI_TEXT : UI_TEXT_MUTED, 0);
-        lv_obj_set_flex_grow(body, 1);
-        lv_obj_set_width(body, lv_pct(100));
-        lv_label_set_long_mode(body, LV_LABEL_LONG_DOT);
-        return;
-    }
-
-    /* 宽卡片：左上只留图标和标题，预报靠右，把空出来的右半边用上 */
     lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_left(tile, 10, 0);
+    lv_obj_set_style_pad_left(tile, 12, 0);
     lv_obj_set_style_pad_right(tile, 12, 0);
-    lv_obj_set_style_pad_top(tile, 8, 0);
-    lv_obj_set_style_pad_bottom(tile, 8, 0);
     lv_obj_set_style_pad_column(tile, 10, 0);
 
-    lv_obj_t *side = lv_obj_create(tile);
-    lv_obj_remove_style_all(side);
-    lv_obj_set_size(side, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(side, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(side, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(side, 6, 0);
-    lv_obj_clear_flag(side, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-    widget_icon_pod(side, widget_glyph, UI_CAPSULE_PWM, 28);
-    lv_obj_t *ht = lv_label_create(side);
-    nl_ov_set_font(ht);
-    lv_label_set_text(ht, pv.head[0] ? pv.head : fallback);
-    lv_obj_set_style_text_color(ht, UI_TEXT, 0);
-    lv_label_set_long_mode(ht, LV_LABEL_LONG_DOT);
-
-    /* 天气等 list 组件：首条 subtitle 常带「城市 · …」，提出地址显示在标题下 */
-    char loc[40] = {0};
-    if (have && pv.sub[0][0]) {
-        const char *sep = std::strstr(pv.sub[0], " · ");
-        if (sep && (size_t)(sep - pv.sub[0]) < sizeof(loc)) {
-            size_t n = (size_t)(sep - pv.sub[0]);
-            std::memcpy(loc, pv.sub[0], n);
-            loc[n] = '\0';
-        } else {
-            size_t n = std::strlen(pv.sub[0]);
-            if (n >= sizeof(loc)) {
-                n = sizeof(loc) - 1;
-            }
-            std::memcpy(loc, pv.sub[0], n);
-            loc[n] = '\0';
-        }
-    }
-    if (loc[0]) {
-        lv_obj_t *loc_lb = lv_label_create(side);
-        nl_ov_set_font(loc_lb);
-        lv_label_set_text(loc_lb, loc);
-        lv_obj_set_style_text_color(loc_lb, UI_TEXT_MUTED, 0);
-        lv_label_set_long_mode(loc_lb, LV_LABEL_LONG_DOT);
-    }
+    const int pod_sz = one_row ? 30 : 38;
+    widget_icon_pod(tile, widget_glyph, UI_ACCENT, pod_sz);
 
     lv_obj_t *col = lv_obj_create(tile);
     lv_obj_remove_style_all(col);
-    lv_obj_set_width(col, lv_pct(70));
-    lv_obj_set_height(col, lv_pct(100));
+    lv_obj_set_height(col, LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(col, 1);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(col, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_row(col, 4, 0);
+    lv_obj_set_flex_align(col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(col, 2, 0);
     lv_obj_clear_flag(col, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
-    int rows = pv.n > 3 ? 3 : pv.n;
-    if (rows <= 0) {
-        lv_obj_t *empty = lv_label_create(col);
-        nl_ov_set_font(empty);
-        lv_label_set_text(empty, "加载中");
-        lv_obj_set_style_text_color(empty, UI_TEXT_MUTED, 0);
-        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_RIGHT, 0);
-        return;
-    }
-    for (int i = 0; i < rows; i++) {
-        const char *src = pv.title[i][0] ? pv.title[i] : "—";
-        const char *sep = std::strstr(src, " · ");
-        char day[24];
-        const char *rest = src;
-        if (sep && (size_t)(sep - src) < sizeof(day)) {
-            size_t n = (size_t)(sep - src);
-            std::memcpy(day, src, n);
-            day[n] = '\0';
-            rest = sep + 3;
-        } else {
-            day[0] = '\0';
-        }
+    lv_obj_t *ht = lv_label_create(col);
+    nl_ov_set_font(ht);
+    lv_label_set_text(ht, fallback[0] ? fallback : (pv.head[0] ? pv.head : "日历与天气"));
+    lv_obj_set_style_text_color(ht, UI_TEXT, 0);
+    lv_label_set_long_mode(ht, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(ht, lv_pct(100));
 
-        lv_obj_t *row = lv_obj_create(col);
-        lv_obj_remove_style_all(row);
-        lv_obj_set_width(row, lv_pct(100));
-        lv_obj_set_height(row, LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_clear_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-
-        if (day[0]) {
-            lv_obj_t *dl = lv_label_create(row);
-            nl_ov_set_font(dl);
-            lv_label_set_text(dl, day);
-            lv_obj_set_style_text_color(dl, i == 0 ? UI_TEXT_SUB : UI_TEXT_MUTED, 0);
-        }
-        lv_obj_t *rr = lv_label_create(row);
-        nl_ov_set_font(rr);
-        lv_label_set_text(rr, rest);
-        lv_obj_set_style_text_color(rr, i == 0 ? UI_TEXT : UI_TEXT_DIM, 0);
-        lv_label_set_long_mode(rr, LV_LABEL_LONG_DOT);
-        lv_obj_set_flex_grow(rr, 1);
-        lv_obj_set_style_text_align(rr, LV_TEXT_ALIGN_RIGHT, 0);
-        lv_obj_set_width(rr, day[0] ? lv_pct(70) : lv_pct(100));
-    }
+    lv_obj_t *sub = lv_label_create(col);
+    nl_ov_set_font(sub);
+    const char *sub_txt = (have && pv.title[0][0]) ? pv.title[0] : "点按打开应用";
+    lv_label_set_text(sub, sub_txt);
+    lv_obj_set_style_text_color(sub, UI_TEXT_MUTED, 0);
+    lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(sub, lv_pct(100));
 }
 
 static void home_remember_current_id(void)
@@ -4012,8 +3940,7 @@ static void build_home_view(void) {
                  2 * NL_UI_HOME_PAD_H;
     }
     if (area_h < 40) {
-        area_h = nodelio_display_profile()->height -
-                 2 * NL_UI_HOME_PAD_V;
+        area_h = nodelio_display_profile()->height - 2 * NL_UI_HOME_PAD_V;
     }
     /* C4：为底部应用条预留高度，控家网格与 home_tile 同屏不互踩 */
     const int strip_h = nl_ov_home_skill_strip_h();

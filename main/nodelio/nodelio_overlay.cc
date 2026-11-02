@@ -263,6 +263,16 @@ void nl_ov_set_font_title(lv_obj_t *obj)
     lv_obj_set_style_text_letter_space(obj, 0, 0);
 }
 
+void nl_ov_set_font_compact(lv_obj_t *obj)
+{
+    if (!obj) {
+        return;
+    }
+    lv_obj_set_style_text_font(obj, nl_ov_ui_font_compact(), 0);
+    lv_obj_set_style_text_line_space(obj, 0, 0);
+    lv_obj_set_style_text_letter_space(obj, 0, 0);
+}
+
 static void status_bar_relayout(void);
 
 static void apply_font_if(lv_obj_t *obj)

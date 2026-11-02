@@ -72,6 +72,8 @@ const ui_palette_t *ui_palette(void);
 /** 0=浅色（默认） 1=曜夜。其它值按浅色。 */
 void ui_palette_set(int mode);
 int ui_palette_is_dark(void);
+/** 卡片圆角像素：4 / 16 / 22，实现在 nvs_config.c。 */
+int nodelio_card_radius_px(void);
 
 #ifdef __cplusplus
 }
@@ -196,7 +198,7 @@ int ui_palette_is_dark(void);
 
 /* ---- geometry（8px 网格） ----------------------------------------------- */
 #define UI_RADIUS 20
-#define UI_RADIUS_MD 16
+#define UI_RADIUS_MD nodelio_card_radius_px()
 #define UI_RADIUS_SM 12
 #define UI_RADIUS_XS 6
 #define UI_PAD 12

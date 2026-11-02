@@ -392,7 +392,7 @@ static void layout_skill_layers(void)
         lv_obj_move_foreground(s_now_bar);
     }
     if (s_mini_fab && !lv_obj_has_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_align(s_mini_fab, LV_ALIGN_BOTTOM_RIGHT, -14, -(NL_UI_TAB_H + 14));
+        lv_obj_align(s_mini_fab, LV_ALIGN_BOTTOM_RIGHT, -14, -(NL_UI_TAB_H + 32));
     }
     nl_ov_apps_layout_chrome();
     nl_ov_settings_sync_columns();
@@ -3325,7 +3325,7 @@ static void ensure_card(void)
             make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_SKIP_PREVIOUS, on_prev_now);
         s_now_pause_btn =
             make_play_ctrl_btn(s_now_btns, UI_ACCENT, UI_ON_TILE, MATERIAL_SYMBOLS_PAUSE, on_pause_now);
-        lv_obj_t *now_stop = make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_STOP, on_stop_now);
+        make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_STOP, on_stop_now);
         s_now_next_btn =
             make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_SKIP_NEXT, on_next_now);
         make_icon_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT_SUB, MATERIAL_SYMBOLS_KEYBOARD_ARROW_DOWN,
@@ -3338,7 +3338,7 @@ static void ensure_card(void)
     s_mini_fab = lv_obj_create(parent);
     lv_obj_remove_style_all(s_mini_fab);
     lv_obj_set_size(s_mini_fab, SKILL_MINI_SZ, SKILL_MINI_SZ);
-    lv_obj_align(s_mini_fab, LV_ALIGN_BOTTOM_RIGHT, -14, -(NL_UI_TAB_H + 14));
+    lv_obj_align(s_mini_fab, LV_ALIGN_BOTTOM_RIGHT, -14, -(NL_UI_TAB_H + 32));
     lv_obj_set_style_radius(s_mini_fab, SKILL_MINI_SZ / 2, 0);
     lv_obj_set_style_bg_color(s_mini_fab, UI_TILE_SWITCH, 0);
     lv_obj_set_style_bg_opa(s_mini_fab, LV_OPA_COVER, 0);
@@ -3407,11 +3407,12 @@ static void apply_card_chrome(void)
     }
     if (s_close_btn) {
         if (s_hdr_minimal) {
-            /* 脱离头部行，直接浮在结果卡上；尺寸 44 保证可点。 */
+            /* 脱离头部行，直接浮在结果卡右上角顶死，零边距；尺寸 44 保证可点。 */
             lv_obj_set_parent(s_close_btn, s_card);
             lv_obj_add_flag(s_close_btn, LV_OBJ_FLAG_FLOATING);
             lv_obj_set_size(s_close_btn, 44, 44);
-            lv_obj_align(s_close_btn, LV_ALIGN_TOP_RIGHT, -4, 4);
+            lv_obj_align(s_close_btn, LV_ALIGN_TOP_RIGHT, 12, -12);
+            lv_obj_set_style_radius(s_close_btn, 0, 0);
             /* 提到最前，避免被后建的列表盖住。 */
             lv_obj_move_to_index(s_close_btn, -1);
         } else if (s_hdr_btns && lv_obj_get_parent(s_close_btn) != s_hdr_btns) {

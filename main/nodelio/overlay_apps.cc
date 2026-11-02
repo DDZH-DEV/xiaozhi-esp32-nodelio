@@ -431,9 +431,10 @@ static void render_list(void)
             lv_obj_set_style_bg_opa(view.card, LV_OPA_COVER, 0);
             lv_obj_set_style_radius(view.card, UI_RADIUS_MD, 0);
             ui_style_card(view.card);
-            lv_obj_set_style_pad_left(view.card, 10, 0);
-            lv_obj_set_style_pad_right(view.card, 8, 0);
-            lv_obj_set_style_pad_column(view.card, 16, 0);
+            const bool large = nodelio_text_scale() == 1;
+            lv_obj_set_style_pad_left(view.card, large ? 12 : 10, 0);
+            lv_obj_set_style_pad_right(view.card, large ? 10 : 8, 0);
+            lv_obj_set_style_pad_column(view.card, large ? 14 : 12, 0);
             lv_obj_set_flex_flow(view.card, LV_FLEX_FLOW_ROW);
             lv_obj_set_flex_align(view.card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                                   LV_FLEX_ALIGN_CENTER);
@@ -465,10 +466,10 @@ static void render_list(void)
             lv_obj_clear_flag(text, LV_OBJ_FLAG_CLICKABLE);
             view.title = lv_label_create(text);
             view.subtitle = lv_label_create(text);
-            for (auto* label : {view.title, view.subtitle}) {
-                lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-                lv_obj_set_width(label, lv_pct(100));
-            }
+            lv_label_set_long_mode(view.title, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(view.title, lv_pct(100));
+            lv_label_set_long_mode(view.subtitle, LV_LABEL_LONG_WRAP);
+            lv_obj_set_width(view.subtitle, lv_pct(100));
         }
         const bool focused = s_split && i == s_focus_idx;
         if (created || s_force_paint || view.focused != focused) {
@@ -514,12 +515,8 @@ static void render_list(void)
             if (sub_w < 48) {
                 sub_w = 48;
             }
-            int sub_h = nl_ov_wrapped_text_h(lv_label_get_text(view.subtitle), sub_w);
             const int sub_cap = font_h * 2 + (line - font_h);
-            if (sub_h > sub_cap) {
-                sub_h = sub_cap;
-            }
-            lv_obj_set_height(view.subtitle, sub_h);
+            lv_obj_set_height(view.subtitle, sub_cap);
             view.width = card_w;
             view.height = card_h;
             view.pod_size = pod_size;
@@ -1262,8 +1259,9 @@ void nl_ov_build_apps(void)
     lv_obj_set_style_bg_color(s_page, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_page, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(s_page, kAppsPagePadH, 0);
-    lv_obj_set_style_pad_top(s_page, 16, 0);
-    lv_obj_set_style_pad_bottom(s_page, 8, 0);
+    const bool is_wide = apps_wide();
+    lv_obj_set_style_pad_top(s_page, is_wide ? 16 : 32, 0);
+    lv_obj_set_style_pad_bottom(s_page, is_wide ? 8 : 52, 0);
     lv_obj_set_style_pad_row(s_page, 4, 0);
     lv_obj_set_flex_flow(s_page, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(s_page, LV_OBJ_FLAG_SCROLLABLE);
@@ -1291,8 +1289,9 @@ void nl_ov_build_apps(void)
     lv_obj_set_flex_grow(s_list, 1);
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_row(s_list, UI_GAP, 0);
-    lv_obj_set_style_pad_column(s_list, UI_GAP, 0);
+    const int apps_gap = nodelio_text_scale() == 1 ? 12 : UI_GAP;
+    lv_obj_set_style_pad_row(s_list, apps_gap, 0);
+    lv_obj_set_style_pad_column(s_list, apps_gap, 0);
     lv_obj_set_style_pad_bottom(s_list, 120, 0); /* 避让右下刷新+音乐球叠放 */
     lv_obj_add_flag(s_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_list, LV_DIR_VER);
