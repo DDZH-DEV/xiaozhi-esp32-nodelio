@@ -459,7 +459,7 @@ void nl_ov_kb_set_visible(bool on)
         lv_keyboard_set_textarea(s_kb, nullptr);
         bool form_open = s_connect && !lv_obj_has_flag(s_connect, LV_OBJ_FLAG_HIDDEN);
         if (s_tabbar && s_visible && !form_open) {
-            lv_obj_clear_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
+            nl_ov_nav_chrome_sync();
         }
     }
 }

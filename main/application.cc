@@ -245,7 +245,9 @@ void Application::Initialize() {
         ESP_LOGI(TAG, "boot: assets apply %s %ld ms", applied ? "ok" : "fail",
                  (long)((esp_timer_get_time() - t0) / 1000));
         nodelio_log_heap("boot assets done");
-        (void)applied;
+        if (applied) {
+            nodelio_overlay_apply_text_scale();
+        }
     }
 #endif
 
@@ -632,6 +634,7 @@ void Application::CheckAssetsVersion() {
      * 刚下载完则只装模型/字库，仍不刷小智 chrome 主题。 */
     if (!download_url.empty()) {
         assets.Apply(false);
+        nodelio_overlay_apply_text_scale();
     }
     display->SetChatMessage("system", "");
 #else

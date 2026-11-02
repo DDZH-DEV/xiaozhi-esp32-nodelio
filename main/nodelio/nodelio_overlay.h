@@ -37,6 +37,9 @@ void nodelio_overlay_on_status_locked(const char *status);
  */
 void nodelio_overlay_retarget_font(const void *from_font, const void *to_font);
 
+/** 全局应用当前文字缩放（内部自带 DisplayLockGuard）。 */
+void nodelio_overlay_apply_text_scale(void);
+
 #ifdef __cplusplus
 }
 #endif

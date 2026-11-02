@@ -252,7 +252,7 @@ static void persist_cfg_async(void)
 
 static const char *text_scale_name(uint8_t scale)
 {
-    static const char *k_name[] = {"标准", "较大", "更大"};
+    static const char *k_name[] = {"标准", "较大"};
     if (scale > NODELIO_TEXT_SCALE_MAX) {
         scale = NODELIO_TEXT_SCALE_DEFAULT;
     }
@@ -269,15 +269,11 @@ static bool parse_text_scale(const char *value, uint8_t *out, char *err, size_t 
         *out = 0;
         return true;
     }
-    if (strcmp(value, "1") == 0 || strcmp(value, "较大") == 0) {
+    if (strcmp(value, "1") == 0 || strcmp(value, "较大") == 0 || strcmp(value, "2") == 0 || strcmp(value, "更大") == 0) {
         *out = 1;
         return true;
     }
-    if (strcmp(value, "2") == 0 || strcmp(value, "更大") == 0 || strcmp(value, "疏朗") == 0) {
-        *out = 2;
-        return true;
-    }
-    pref_err(err, err_len, "文字档须为 0–2（标准/较大/更大）");
+    pref_err(err, err_len, "文字档须为 0–1（标准/较大）");
     return false;
 }
 
@@ -353,6 +349,47 @@ static void commit_text_scale(uint8_t scale)
 static void on_text_scale_chip(lv_event_t *e)
 {
     commit_text_scale((uint8_t)(intptr_t)lv_event_get_user_data(e));
+}
+
+static void commit_status_bar_mode(uint8_t mode)
+{
+    if (mode > 2) {
+        mode = 0;
+    }
+    if (s_cfg.status_bar_mode == mode) {
+        return;
+    }
+    s_cfg.status_bar_mode = mode;
+    persist_cfg_async();
+    nl_ov_status_bar_apply_mode();
+    static const char *k_sb_names[] = {"自动隐藏", "常显", "常隐"};
+    char toast[32];
+    std::snprintf(toast, sizeof(toast), "状态栏 %s", k_sb_names[mode]);
+    nl_ov_toast(toast);
+    nl_ov_open_settings_detail(SET_PAGE_DISP);
+}
+
+static void on_status_bar_mode_chip(lv_event_t *e)
+{
+    commit_status_bar_mode((uint8_t)(intptr_t)lv_event_get_user_data(e));
+}
+
+static void commit_screenshot_fab(uint8_t en)
+{
+    en = en ? 1 : 0;
+    if (s_cfg.screenshot_fab_en == en) {
+        return;
+    }
+    s_cfg.screenshot_fab_en = en;
+    persist_cfg_async();
+    nl_ov_shot_fab_apply_state();
+    nl_ov_toast(en ? "已开启截图悬浮图标" : "已隐藏截图悬浮图标");
+    nl_ov_open_settings_detail(SET_PAGE_DISP);
+}
+
+static void on_screenshot_fab_chip(lv_event_t *e)
+{
+    commit_screenshot_fab((uint8_t)(intptr_t)lv_event_get_user_data(e));
 }
 
 /** 小智 / 本地口令切换后内存占用不同，须重启才按新组合加载。
@@ -638,6 +675,22 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
             return ESP_ERR_INVALID_ARG;
         }
         commit_ui_mode(mode);
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "status_bar_mode") == 0 || strcasecmp(key, "status_bar") == 0) {
+        int v = 0;
+        if (!parse_int_range(value, 0, 2, &v, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        commit_status_bar_mode((uint8_t)v);
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "screenshot_fab") == 0 || strcasecmp(key, "shot_fab") == 0) {
+        bool on = false;
+        if (!parse_on_off(value, &on, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        commit_screenshot_fab(on ? 1 : 0);
         return ESP_OK;
     }
     if (strcasecmp(key, "ai_drawer_w") == 0) {
@@ -1051,7 +1104,7 @@ void nl_ov_close_settings_detail(void)
     s_ai_bd_lbl = nullptr;
     s_ai_sh_lbl = nullptr;
     if (s_tabbar && s_visible) {
-        lv_obj_clear_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
+        nl_ov_nav_chrome_sync();
     }
     nl_ov_restore_ai_drawer_if_session();
 }
@@ -1219,8 +1272,8 @@ void nl_ov_open_settings_detail(set_page_id_t page)
                               LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(row, 8, 0);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        static const char *k_scale[] = {"标准", "较大", "更大"};
-        for (int i = 0; i < 3; i++) {
+        static const char *k_scale[] = {"标准", "较大"};
+        for (int i = 0; i < 2; i++) {
             const bool on = cur == (uint8_t)i;
             lv_obj_t *chip = lv_obj_create(row);
             lv_obj_remove_style_all(chip);
@@ -1244,6 +1297,81 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_label_set_text(txt_hint, "远距离阅读可调大");
         nl_ov_set_font(txt_hint);
         lv_obj_set_style_text_color(txt_hint, UI_TEXT_TIP, 0);
+
+        const uint8_t sb_cur = s_cfg.status_bar_mode > 2 ? 0 : s_cfg.status_bar_mode;
+        static const char *k_sb_names[] = {"自动隐藏", "常显", "常隐"};
+        lv_obj_t *sb_band = audio_ctrl_band(body, "顶部状态栏", k_sb_names[sb_cur], nullptr);
+        lv_obj_t *sb_row = lv_obj_create(sb_band);
+        lv_obj_remove_style_all(sb_row);
+        lv_obj_set_width(sb_row, lv_pct(100));
+        lv_obj_set_height(sb_row, 44);
+        lv_obj_set_flex_flow(sb_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(sb_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(sb_row, 8, 0);
+        lv_obj_clear_flag(sb_row, LV_OBJ_FLAG_SCROLLABLE);
+        for (int i = 0; i < 3; i++) {
+            const bool on = sb_cur == (uint8_t)i;
+            lv_obj_t *chip = lv_obj_create(sb_row);
+            lv_obj_remove_style_all(chip);
+            lv_obj_set_flex_grow(chip, 1);
+            lv_obj_set_height(chip, 44);
+            lv_obj_set_style_radius(chip, 12, 0);
+            lv_obj_set_style_bg_color(chip, on ? UI_ACCENT : UI_CAPSULE_OFF, 0);
+            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(chip, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+            lv_obj_set_style_translate_y(chip, 1, LV_STATE_PRESSED);
+            lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(chip, UI_EXT_CLICK);
+            lv_obj_add_event_cb(chip, on_status_bar_mode_chip, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            lv_obj_t *lab = lv_label_create(chip);
+            nl_ov_set_font(lab);
+            lv_label_set_text(lab, k_sb_names[i]);
+            lv_obj_set_style_text_color(lab, on ? UI_ON_TILE : UI_TEXT, 0);
+            lv_obj_center(lab);
+        }
+        lv_obj_t *sb_hint = lv_label_create(sb_band);
+        lv_label_set_text(sb_hint, "截图不想带顶栏时可设为常隐");
+        nl_ov_set_font(sb_hint);
+        lv_obj_set_style_text_color(sb_hint, UI_TEXT_TIP, 0);
+
+        const bool fab_cur = s_cfg.screenshot_fab_en != 0;
+        lv_obj_t *fab_band = audio_ctrl_band(body, "截图悬浮图标", fab_cur ? "显示" : "隐藏", nullptr);
+        lv_obj_t *fab_row = lv_obj_create(fab_band);
+        lv_obj_remove_style_all(fab_row);
+        lv_obj_set_width(fab_row, lv_pct(100));
+        lv_obj_set_height(fab_row, 44);
+        lv_obj_set_flex_flow(fab_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(fab_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(fab_row, 8, 0);
+        lv_obj_clear_flag(fab_row, LV_OBJ_FLAG_SCROLLABLE);
+        static const char *k_fab_opt[] = {"显示", "隐藏"};
+        for (int i = 0; i < 2; i++) {
+            const bool on = (i == 0 && fab_cur) || (i == 1 && !fab_cur);
+            lv_obj_t *chip = lv_obj_create(fab_row);
+            lv_obj_remove_style_all(chip);
+            lv_obj_set_flex_grow(chip, 1);
+            lv_obj_set_height(chip, 44);
+            lv_obj_set_style_radius(chip, 12, 0);
+            lv_obj_set_style_bg_color(chip, on ? UI_ACCENT : UI_CAPSULE_OFF, 0);
+            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(chip, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+            lv_obj_set_style_translate_y(chip, 1, LV_STATE_PRESSED);
+            lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(chip, UI_EXT_CLICK);
+            lv_obj_add_event_cb(chip, on_screenshot_fab_chip, LV_EVENT_CLICKED,
+                                (void *)(intptr_t)(i == 0 ? 1 : 0));
+            lv_obj_t *lab = lv_label_create(chip);
+            nl_ov_set_font(lab);
+            lv_label_set_text(lab, k_fab_opt[i]);
+            lv_obj_set_style_text_color(lab, on ? UI_ON_TILE : UI_TEXT, 0);
+            lv_obj_center(lab);
+        }
+        lv_obj_t *fab_hint = lv_label_create(fab_band);
+        lv_label_set_text(fab_hint, "屏幕右侧浮动相机图标，可拖动位置，点按即截屏");
+        nl_ov_set_font(fab_hint);
+        lv_obj_set_style_text_color(fab_hint, UI_TEXT_TIP, 0);
     } else if (page == SET_PAGE_SYS) {
         load_audio_prefs();
         const nodelio_board_t *b = nodelio_board_get();

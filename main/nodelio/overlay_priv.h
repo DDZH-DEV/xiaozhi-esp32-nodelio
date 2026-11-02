@@ -94,6 +94,7 @@ extern lv_obj_t *s_ai_drawer_status;
 extern lv_obj_t *s_ai_drawer_body;
 extern lv_obj_t *s_ai_drawer_text;
 extern lv_obj_t *s_ai_mini_fab; /* 最小化：右下角仅图标 */
+extern lv_obj_t *s_shot_fab;    /* 调试截图悬浮图标 */
 extern lv_timer_t *s_ai_hide_timer;
 extern char s_ai_show_text[NL_CHAT_SHOW_CAP];
 extern lv_obj_t *s_settings;
@@ -265,6 +266,11 @@ void nl_ov_set_countdown(const char *device_id, int channel_index, int seconds);
 /** 读绑定磁贴当前剩余秒（无则 0） */
 int nl_ov_widget_countdown(const nl_widget_t *w);
 void nl_ov_on_brand_click(lv_event_t *e);
+void nl_ov_trigger_screenshot(void);
+void nl_ov_status_bar_apply_mode(void);
+void nl_ov_shot_fab_apply_state(void);
+void nl_ov_nav_chrome_sync(void);
+void nl_ov_home_dots_set_visible(bool on);
 
 /* —— connect —— */
 void nl_ov_build_connect(void);

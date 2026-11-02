@@ -136,7 +136,7 @@ static void paint_ai_drawer_frame(void)
     const uint8_t border_w = nodelio_ai_border_width();
     uint32_t border_c = UI_AI_DRAWER_BORDER;
     if (nodelio_ai_border_preset() == 1) {
-        border_c = 0xE4DDD2;
+        border_c = 0xE3E8EE;
     } else if (nodelio_ai_border_preset() == 2) {
         border_c = 0x34C759;
     }

@@ -216,7 +216,7 @@ int ui_palette_is_dark(void);
 /* 小智对话框。宽度、边框色、边框粗细、阴影都在这里改。
  * 边框不跟聆听/说话变色（原先聆听会刷成信息蓝）。 */
 #define UI_AI_DRAWER_W 348
-#define UI_AI_DRAWER_BORDER 0xe4ddd2
+#define UI_AI_DRAWER_BORDER 0xe3e8ee
 #define UI_AI_DRAWER_BORDER_W 1
 #define UI_AI_DRAWER_SHADOW_W 12
 #define UI_AI_DRAWER_SHADOW_Y 3

@@ -218,15 +218,17 @@ static int skill_card_h_max(void)
         const int h = (int)p->height - skill_top_y() - SKILL_GAP;
         return h < SKILL_CARD_H_MIN ? SKILL_CARD_H_MIN : h;
     }
+    if (!p->nav_width) {
+        int h = (int)p->height;
+        if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
+            h -= SKILL_NOW_H;
+        }
+        return h < SKILL_CARD_H_MIN ? SKILL_CARD_H_MIN : h;
+    }
     int h = (int)p->result_max_height + NL_UI_STATUS_H;
     if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
-        if (p->nav_width) {
-            /* 底：gap+now+gap，多留 1×gap 防末行贴条 */
-            const int bottom = SKILL_NOW_H + 3 * SKILL_GAP;
-            h = (int)p->height - skill_top_y() - bottom;
-        } else {
-            h -= SKILL_NOW_H + SKILL_GAP;
-        }
+        const int bottom = SKILL_NOW_H + 3 * SKILL_GAP;
+        h = (int)p->height - skill_top_y() - bottom;
     }
     return h < SKILL_CARD_H_MIN ? SKILL_CARD_H_MIN : h;
 }
@@ -235,10 +237,10 @@ static int skill_card_h_max(void)
 static int skill_panel_w(void)
 {
     const auto *p = nodelio_display_profile();
-    const int base = (int)p->result_width;
     if (!p->nav_width) {
-        return base;
+        return (int)p->width;
     }
+    const int base = (int)p->result_width;
     if (s_active_tab == NL_TAB_HOME) {
         const int home_col = 520;
         int w = (int)p->width - (int)p->nav_width - home_col - SKILL_GAP;
@@ -266,6 +268,16 @@ static void style_skill_frame(void)
     if (!s_card) {
         return;
     }
+    const bool wide = nodelio_display_profile()->nav_width != 0;
+    if (!wide) {
+        lv_obj_set_style_bg_color(s_card, UI_BG, 0);
+        lv_obj_set_style_bg_opa(s_card, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(s_card, 0, 0);
+        lv_obj_set_style_border_width(s_card, 0, 0);
+        lv_obj_set_style_shadow_width(s_card, 0, 0);
+        lv_obj_set_style_pad_all(s_card, 12, 0);
+        return;
+    }
     lv_obj_set_style_bg_color(s_card, UI_SURFACE, 0);
     lv_obj_set_style_radius(s_card, 20, 0);
     lv_obj_set_style_border_width(s_card, ui_palette_is_dark() ? 1 : 0, 0);
@@ -278,6 +290,20 @@ static void style_skill_frame(void)
 static void style_now_bar(bool docked)
 {
     if (!s_now_bar) {
+        return;
+    }
+    const bool wide = nodelio_display_profile()->nav_width != 0;
+    if (!wide) {
+        lv_obj_set_style_shadow_width(s_now_bar, 0, 0);
+        lv_obj_set_style_shadow_opa(s_now_bar, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_color(s_now_bar, UI_SURFACE, 0);
+        lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(s_now_bar, 0, 0);
+        lv_obj_set_style_border_width(s_now_bar, 1, 0);
+        lv_obj_set_style_border_side(s_now_bar, LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_border_color(s_now_bar, UI_BORDER, 0);
+        lv_obj_set_style_border_opa(s_now_bar, LV_OPA_60, 0);
+        lv_obj_set_style_pad_hor(s_now_bar, 14, 0);
         return;
     }
     if (docked) {
@@ -307,10 +333,10 @@ static void layout_skill_layers(void)
     const bool wide = nodelio_display_profile()->nav_width != 0;
     const bool dock = wide && card_up && bar_up;
     /* 宽屏：播放条只占右侧技能列，勿再砍左轨应用列表一行高 */
-    const int reserve_bottom = (!wide && bar_up) ? (SKILL_NOW_H + 2 * SKILL_GAP) : 0;
-    nl_ov_workspace_reserve(card_up ? panel_w + (wide ? SKILL_GAP : 2 * SKILL_GAP) : 0,
+    const int reserve_bottom = (!wide && bar_up && !card_up) ? (SKILL_NOW_H + 2 * SKILL_GAP) : 0;
+    nl_ov_workspace_reserve(card_up ? (wide ? panel_w + SKILL_GAP : panel_w) : 0,
                             reserve_bottom);
-    int y = skill_top_y();
+    int y = wide ? skill_top_y() : 0;
     if (bar_up && !dock) {
         style_now_bar(false);
         if (wide) {
@@ -321,30 +347,38 @@ static void layout_skill_layers(void)
             }
             lv_obj_align(s_now_bar, LV_ALIGN_BOTTOM_RIGHT, -SKILL_GAP, -SKILL_GAP);
         } else {
-            lv_obj_align(s_now_bar, LV_ALIGN_TOP_MID, 0, y);
-            y += SKILL_NOW_H + SKILL_GAP;
+            lv_obj_set_size(s_now_bar, panel_w, SKILL_NOW_H);
+            if (s_now_lbl) {
+                lv_obj_set_width(s_now_lbl, panel_w - 330);
+            }
+            lv_obj_align(s_now_bar, LV_ALIGN_TOP_LEFT, 0, y);
+            y += SKILL_NOW_H;
         }
     }
-    if (s_scrim && !lv_obj_has_flag(s_scrim, LV_OBJ_FLAG_HIDDEN) && wide) {
-        /* 只挡右侧占用带。列表在时外框已含播放条，不必再给底栏挖空。 */
-        const int scrim_bottom = (bar_up && !card_up) ? (SKILL_NOW_H + 2 * SKILL_GAP) : 0;
-        lv_obj_set_size(s_scrim, card_up ? panel_w + SKILL_GAP : 0,
-                        nodelio_display_profile()->height - scrim_bottom);
-        lv_obj_align(s_scrim, LV_ALIGN_TOP_RIGHT, 0, 0);
+    if (s_scrim && !lv_obj_has_flag(s_scrim, LV_OBJ_FLAG_HIDDEN)) {
+        if (wide) {
+            const int scrim_bottom = (bar_up && !card_up) ? (SKILL_NOW_H + 2 * SKILL_GAP) : 0;
+            lv_obj_set_size(s_scrim, card_up ? panel_w + SKILL_GAP : 0,
+                            nodelio_display_profile()->height - scrim_bottom);
+            lv_obj_align(s_scrim, LV_ALIGN_TOP_RIGHT, 0, 0);
+        } else {
+            lv_obj_set_size(s_scrim, nodelio_display_profile()->width,
+                            nodelio_display_profile()->height);
+            lv_obj_align(s_scrim, LV_ALIGN_TOP_LEFT, 0, 0);
+        }
     }
     if (card_up) {
         lv_obj_set_width(s_card, panel_w);
-        /* 播放条显隐会改 y；同步缩/扩卡高，避免内容顶出屏底 */
         if (s_have_env && s_env) {
             apply_card_chrome();
         } else {
-            const int h = skill_card_h_max();
+            const int h = wide ? skill_card_h_max() : (nodelio_display_profile()->height - y);
             lv_obj_set_height(s_card, h);
             lv_obj_set_style_max_height(s_card, h, 0);
             lv_obj_set_style_pad_bottom(s_card, dock ? (SKILL_NOW_H + 18) : 12, 0);
         }
         style_skill_frame();
-        lv_obj_align(s_card, wide ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_TOP_MID, wide ? -SKILL_GAP : 0, y);
+        lv_obj_align(s_card, wide ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_TOP_LEFT, wide ? -SKILL_GAP : 0, y);
     }
     if (dock) {
         const int bar_w = panel_w - 20;
@@ -515,9 +549,10 @@ static void sync_player_block_scrim(void)
     }
     const bool card_up = s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN);
     const bool bar_up = s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
-    if (!s_minimized && (card_up || bar_up)) {
+    const bool wide = nodelio_display_profile()->nav_width != 0;
+    if (!s_minimized && (card_up || (bar_up && wide))) {
         lv_obj_clear_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_style_bg_opa(s_scrim, SKILL_SCRIM_OPA, 0);
+        lv_obj_set_style_bg_opa(s_scrim, wide ? SKILL_SCRIM_OPA : LV_OPA_COVER, 0);
     } else if (!card_up) {
         lv_obj_add_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
     }
@@ -2994,31 +3029,29 @@ static void ensure_card(void)
         return;
     }
 
+    const bool wide = nodelio_display_profile()->nav_width != 0;
     s_scrim = lv_obj_create(parent);
     lv_obj_remove_style_all(s_scrim);
     lv_obj_set_size(s_scrim, LV_HOR_RES, LV_VER_RES);
     lv_obj_align(s_scrim, LV_ALIGN_TOP_LEFT, 0, 0);
-    if (nodelio_display_profile()->nav_width) {
+    if (wide) {
         lv_obj_set_width(s_scrim, SKILL_CARD_W + 2 * SKILL_GAP);
         lv_obj_align(s_scrim, LV_ALIGN_TOP_RIGHT, 0, 0);
+        lv_obj_set_style_bg_opa(s_scrim, SKILL_SCRIM_OPA, 0);
+    } else {
+        lv_obj_set_style_bg_opa(s_scrim, LV_OPA_COVER, 0);
     }
     lv_obj_set_style_bg_color(s_scrim, UI_BG, 0);
-    lv_obj_set_style_bg_opa(s_scrim, SKILL_SCRIM_OPA, 0);
     lv_obj_add_flag(s_scrim, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_scrim, on_scrim_click, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
 
     s_card = lv_obj_create(parent);
     lv_obj_remove_style_all(s_card);
-    lv_obj_set_size(s_card, SKILL_CARD_W, SKILL_CARD_H_MAX);
-    lv_obj_align(s_card, LV_ALIGN_TOP_MID, 0, skill_top_y());
-    lv_obj_set_style_bg_color(s_card, UI_SURFACE, 0);
-    lv_obj_set_style_bg_opa(s_card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_card, 20, 0);
-    lv_obj_set_style_border_width(s_card, ui_palette_is_dark() ? 1 : 0, 0);
-    lv_obj_set_style_border_color(s_card, UI_BORDER, 0);
-    lv_obj_set_style_border_opa(s_card, LV_OPA_70, 0);
-    ui_style_card(s_card);
+    lv_obj_set_size(s_card, wide ? SKILL_CARD_W : nodelio_display_profile()->width,
+                    wide ? SKILL_CARD_H_MAX : nodelio_display_profile()->height);
+    lv_obj_align(s_card, wide ? LV_ALIGN_TOP_MID : LV_ALIGN_TOP_LEFT, 0, wide ? skill_top_y() : 0);
+    style_skill_frame();
     lv_obj_set_style_pad_all(s_card, 12, 0);
     lv_obj_set_style_pad_row(s_card, 8, 0);
     lv_obj_set_flex_flow(s_card, LV_FLEX_FLOW_COLUMN);
@@ -3074,7 +3107,7 @@ static void ensure_card(void)
     lv_obj_t *xbtn = lv_obj_create(s_hdr_btns);
     lv_obj_remove_style_all(xbtn);
     lv_obj_set_size(xbtn, 44, 44);
-    lv_obj_set_style_radius(xbtn, 22, 0);
+    lv_obj_set_style_radius(xbtn, wide ? 22 : 0, 0);
     lv_obj_set_style_bg_color(xbtn, UI_CAPSULE_OFF, 0);
     lv_obj_set_style_bg_opa(xbtn, LV_OPA_COVER, 0);
     lv_obj_add_flag(xbtn, LV_OBJ_FLAG_CLICKABLE);
@@ -3272,7 +3305,7 @@ static void ensure_card(void)
         s_now_lbl = lv_label_create(meta);
         nl_ov_set_font(s_now_lbl);
         lv_label_set_long_mode(s_now_lbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
-        lv_obj_set_width(s_now_lbl, SKILL_CARD_W - 200);
+        lv_obj_set_width(s_now_lbl, SKILL_CARD_W - (wide ? 200 : 330));
         lv_obj_set_style_text_color(s_now_lbl, UI_TEXT, 0);
         lv_obj_add_flag(s_now_lbl, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(s_now_lbl, on_reopen_list, LV_EVENT_CLICKED, nullptr);
@@ -3287,16 +3320,19 @@ static void ensure_card(void)
         lv_obj_clear_flag(s_now_btns, LV_OBJ_FLAG_CLICKABLE);
 
         /* 麦克风：播中 DRAM 常开不起唤醒，点此暂停并进对话 */
-        make_play_ctrl_btn(s_now_btns, UI_TILE_SWITCH, UI_ACCENT_SOFT, MATERIAL_SYMBOLS_MIC, on_voice_now);
+        lv_obj_t *now_mic = make_play_ctrl_btn(s_now_btns, UI_TILE_SWITCH, UI_ACCENT_SOFT, MATERIAL_SYMBOLS_MIC, on_voice_now);
         s_now_prev_btn =
             make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_SKIP_PREVIOUS, on_prev_now);
         s_now_pause_btn =
             make_play_ctrl_btn(s_now_btns, UI_ACCENT, UI_ON_TILE, MATERIAL_SYMBOLS_PAUSE, on_pause_now);
-        make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_STOP, on_stop_now);
+        lv_obj_t *now_stop = make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_STOP, on_stop_now);
         s_now_next_btn =
             make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_SKIP_NEXT, on_next_now);
         make_icon_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT_SUB, MATERIAL_SYMBOLS_KEYBOARD_ARROW_DOWN,
                       on_minimize);
+        if (!wide) {
+            lv_obj_add_flag(now_mic, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 
     s_mini_fab = lv_obj_create(parent);

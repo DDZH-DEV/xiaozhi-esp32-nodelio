@@ -139,7 +139,7 @@ const nodelio_panel_layout_t *nodelio_panel_ui_get_layout(void);
 #define NL_UI_TAB_H 44
 /** 首页网格：左右留白；顶距与设置页对齐（勿过大） */
 #define NL_UI_HOME_PAD_H 14
-#define NL_UI_HOME_PAD_V 2
+#define NL_UI_HOME_PAD_V 12
 /** 设置页卡片相对屏左右边距（比首页略宽，卡片不贴边） */
 #define NL_UI_SETTINGS_PAD_H 20
 /** 设置子页内容边距（顶略紧，避免导航栏下空一大块） */

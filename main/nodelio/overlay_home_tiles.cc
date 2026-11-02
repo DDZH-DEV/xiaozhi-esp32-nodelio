@@ -1578,16 +1578,34 @@ static void capture_and_upload_screenshot(void)
     }
 }
 
-void nl_ov_on_brand_click(lv_event_t *e)
+void nl_ov_trigger_screenshot(void)
 {
-    (void)e;
     static uint32_t last_click_ms = 0;
     uint32_t now = esp_timer_get_time() / 1000;
     if (now - last_click_ms < 1200) {
         return;
     }
     last_click_ms = now;
+
+    bool shot_fab_hidden_temp = false;
+    if (s_shot_fab && !lv_obj_has_flag(s_shot_fab, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_add_flag(s_shot_fab, LV_OBJ_FLAG_HIDDEN);
+        shot_fab_hidden_temp = true;
+        lv_refr_now(nullptr);
+    }
+
     capture_and_upload_screenshot();
+
+    if (shot_fab_hidden_temp && s_shot_fab && s_cfg.screenshot_fab_en) {
+        lv_obj_clear_flag(s_shot_fab, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_shot_fab);
+    }
+}
+
+void nl_ov_on_brand_click(lv_event_t *e)
+{
+    (void)e;
+    nl_ov_trigger_screenshot();
 }
 
 /* —— 首页开关：点按乐观写缓存；HTTP 成败定生死；失败/超时回滚。不转圈等 snapshot —— */
@@ -3624,20 +3642,41 @@ static void on_home_gesture(lv_event_t *e)
     }
 }
 
+static lv_obj_t *s_home_dots;
+
+void nl_ov_home_dots_set_visible(bool on)
+{
+    if (!s_home_dots) {
+        return;
+    }
+    if (on) {
+        lv_obj_clear_flag(s_home_dots, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_home_dots);
+    } else {
+        lv_obj_add_flag(s_home_dots, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 static void append_home_page_dots(lv_obj_t *parent, int strip_h)
 {
+    s_home_dots = nullptr;
     if (!parent || s_home_user_n <= 1) {
         return;
     }
     lv_obj_t *dots = lv_obj_create(parent);
+    s_home_dots = dots;
     lv_obj_remove_style_all(dots);
+    lv_obj_add_flag(dots, LV_OBJ_FLAG_FLOATING);
+    lv_obj_add_flag(dots, LV_OBJ_FLAG_IGNORE_LAYOUT);
     lv_obj_set_size(dots, lv_pct(100), k_home_dots_h);
     lv_obj_set_style_pad_column(dots, 7, 0);
     lv_obj_set_flex_flow(dots, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(dots, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(dots, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-    const int yoff = strip_h > 0 ? -(strip_h + 2) : -2;
+    /* 浮在分页底栏之上；随菜单一起自动隐藏 */
+    const int yoff = strip_h > 0 ? -(strip_h + 2) : -(NL_UI_TAB_H + 16);
     lv_obj_align(dots, LV_ALIGN_BOTTOM_MID, 0, yoff);
+    nl_ov_nav_chrome_sync();
 
     for (int i = 0; i < s_home_user_n; i++) {
         lv_obj_t *d = lv_obj_create(dots);
@@ -3974,7 +4013,7 @@ static void build_home_view(void) {
     }
     if (area_h < 40) {
         area_h = nodelio_display_profile()->height -
-                 (nodelio_display_profile()->nav_width ? 0 : NL_UI_TAB_H) - 2 * NL_UI_HOME_PAD_V;
+                 2 * NL_UI_HOME_PAD_V;
     }
     /* C4：为底部应用条预留高度，控家网格与 home_tile 同屏不互踩 */
     const int strip_h = nl_ov_home_skill_strip_h();
@@ -3982,9 +4021,6 @@ static void build_home_view(void) {
         area_h -= strip_h;
     }
     /* 多屏指示点 */
-    if (s_home_user_n > 1 && area_h > k_home_dots_h + 60) {
-        area_h -= k_home_dots_h;
-    }
     int cell_w = (area_w - GRID_GAP * (cols - 1)) / cols;
     int cell_h = (area_h - GRID_GAP * (rows - 1)) / rows;
     if (cell_w < 20) {

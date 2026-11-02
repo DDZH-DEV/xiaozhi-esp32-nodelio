@@ -216,6 +216,12 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     if (out->ai_bd_i > 2) {
         out->ai_bd_i = 0;
     }
+    if (out->status_bar_mode > 2) {
+        out->status_bar_mode = 0;
+    }
+    if (out->screenshot_fab_en > 1) {
+        out->screenshot_fab_en = 1;
+    }
 }
 
 /* 避免 save 路径把「关闭小智/省电」(0) 误当成未初始化 */
@@ -274,6 +280,12 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     }
     if (out->ai_bd_i > 2) {
         out->ai_bd_i = 0;
+    }
+    if (out->status_bar_mode > 2) {
+        out->status_bar_mode = 0;
+    }
+    if (out->screenshot_fab_en > 1) {
+        out->screenshot_fab_en = 1;
     }
 }
 
@@ -429,6 +441,18 @@ static esp_err_t load_config(nodelio_nvs_config_t* out) {
         if (nvs_get_u8(h, "ai_bd_i", &v) == ESP_OK) {
             out->ai_bd_i = v;
         }
+        v = 0;
+        if (nvs_get_u8(h, "sb_mode", &v) == ESP_OK) {
+            out->status_bar_mode = (v <= 2) ? v : 0;
+        } else {
+            out->status_bar_mode = 0;
+        }
+        v = 1;
+        if (nvs_get_u8(h, "shot_fab", &v) == ESP_OK) {
+            out->screenshot_fab_en = (v <= 1) ? v : 1;
+        } else {
+            out->screenshot_fab_en = 1;
+        }
     }
     nvs_close(h);
     apply_defaults(out);
@@ -498,6 +522,8 @@ static esp_err_t save_config(const nodelio_nvs_config_t* in, bool preferences_on
     NL_ACCUM(nvs_set_u8(h, "ai_bd_w", tmp.ai_bd_w));
     NL_ACCUM(nvs_set_u8(h, "ai_sh_w", tmp.ai_sh_w));
     NL_ACCUM(nvs_set_u8(h, "ai_bd_i", tmp.ai_bd_i > 2 ? 0 : tmp.ai_bd_i));
+    NL_ACCUM(nvs_set_u8(h, "sb_mode", tmp.status_bar_mode > 2 ? 0 : tmp.status_bar_mode));
+    NL_ACCUM(nvs_set_u8(h, "shot_fab", tmp.screenshot_fab_en ? 1 : 0));
 #undef NL_ACCUM
 
     err = nvs_commit(h);
