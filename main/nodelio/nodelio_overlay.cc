@@ -329,6 +329,7 @@ void nl_ov_apply_text_scale(void)
     nl_ov_apps_relayout();
     nl_ov_settings_reapply_text_scale();
     nodelio_skill_result_reapply_text_scale();
+    nl_ov_notices_reapply_text_scale();
 }
 
 void nl_ov_apply_appearance(void)
@@ -378,6 +379,7 @@ void nl_ov_apply_appearance(void)
     nodelio_skill_result_reapply_appearance();
     nl_ov_connect_reapply_appearance();
     nl_ov_ai_reapply_appearance();
+    nl_ov_notices_reapply_appearance();
 }
 
 void nl_ov_set_icon_font(lv_obj_t *obj)
@@ -527,6 +529,7 @@ void nl_ov_status_bar_on_screen(bool on)
         status_bar_hide_now();
     }
     nl_ov_shot_fab_apply_state();
+    nl_ov_notices_refresh_badge();
 }
 
 /** 顶栏左挂：与设置页「构建号」、OTA 同一套 NODELIO_BUILD_STAMP */
@@ -769,6 +772,7 @@ void nl_ov_raise_chrome(void)
     raise_shown(s_ai_drawer);
     raise_shown(s_ai_mini_fab);
     raise_shown(s_shot_fab);
+    nl_ov_notices_refresh_badge();
     nl_panel_shell_raise_toast();
 }
 
@@ -812,6 +816,7 @@ void nl_ov_close_forms(void)
     nl_ov_kb_set_visible(false);
     /* 勿在此藏 AI 抽屉：切首页/设置会走 close_forms，会话中应继续露着 */
     nl_ov_close_settings_detail();
+    nl_ov_close_notices();
     if (s_connect) {
         lv_obj_add_flag(s_connect, LV_OBJ_FLAG_HIDDEN);
     }
@@ -830,10 +835,13 @@ static bool nl_ov_obj_scrollable(lv_obj_t *o)
     return o && lv_obj_has_flag(o, LV_OBJ_FLAG_SCROLLABLE);
 }
 
-/** 优先最上层浮层：设置内页 → 连接 → 应用列表 → 设置首页 → 首页启动台 */
+/** 优先最上层浮层：消息中心 → 设置内页 → 连接 → 应用列表 → 设置首页 → 首页启动台 */
 static lv_obj_t *nl_ov_find_voice_scroll_target(void)
 {
     /* 浮层盖住下层时不穿透滚下层 */
+    if (lv_obj_t *nt = nl_ov_notices_scroll_obj()) {
+        return nt;
+    }
     if (nl_ov_obj_shown(s_settings_detail)) {
         return nl_ov_obj_scrollable(s_settings_detail_body) ? s_settings_detail_body : nullptr;
     }
@@ -1024,6 +1032,7 @@ static void apply_visible_locked(void)
     nodelio_skill_result_raise();
     s_visible = true;
     nl_ov_shot_fab_apply_state();
+    nl_ov_notices_refresh_badge();
     /* 必须在 root 置顶之后再开连接页，否则会被不透明的 s_root 盖住 */
     if (s_want_settings) {
         nl_ov_open_connect();

@@ -652,6 +652,7 @@ static void persist_connect_job(nl_conn_save_job_t *job)
         nodelio_nvs_clear_mqtt(&cfg);
         (void)nodelio_layout_cache_clear();
         (void)nodelio_apps_cache_clear();
+    (void)nodelio_notices_cache_clear();
     }
     nodelio_conn_hist_t hist{};
     nodelio_conn_hist_cache_get(&hist);
@@ -1399,6 +1400,7 @@ void nl_ov_do_factory_reset(void)
     nodelio_nvs_cache_put(&cfg);
     (void)nodelio_layout_cache_clear();
     (void)nodelio_apps_cache_clear();
+    (void)nodelio_notices_cache_clear();
     ESP_LOGW(TAG, "factory reset — reboot");
     nl_ov_toast("已清空，重启…");
     Application::GetInstance().Schedule([cfg]() {

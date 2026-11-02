@@ -18,8 +18,10 @@
 static const char *TAG = "nl_lcache";
 static const char *PATH = "/spiffs/panel_layout.json";
 static const char *APPS_PATH = "/spiffs/panel_apps.json";
+static const char *NOTICES_PATH = "/spiffs/panel_notices.json";
 static const char *APPS_NVS_NS = "nodelio";
 static const char *APPS_NVS_KEY = "apps_list";
+static const char *NOTICES_NVS_KEY = "notices_list";
 static bool s_mounted;
 static bool s_mount_failed;
 static SemaphoreHandle_t s_flash_mu;
@@ -464,6 +466,149 @@ esp_err_t nodelio_apps_cache_clear(void)
 {
     cache_flash_lock();
     esp_err_t err = cache_run_flash_safe(apps_clear_impl, NULL);
+    cache_flash_unlock();
+    return err;
+}
+
+static esp_err_t notices_nvs_save(const char *json, size_t len)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(APPS_NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_str(h, NOTICES_NVS_KEY, json);
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
+static esp_err_t notices_nvs_load(char **out_json)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(APPS_NVS_NS, NVS_READONLY, &h);
+    if (err != ESP_OK) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    size_t required = 0;
+    err = nvs_get_str(h, NOTICES_NVS_KEY, NULL, &required);
+    if (err != ESP_OK || required <= 1) {
+        nvs_close(h);
+        return ESP_ERR_NOT_FOUND;
+    }
+    char *buf = malloc(required);
+    if (!buf) {
+        nvs_close(h);
+        return ESP_ERR_NO_MEM;
+    }
+    err = nvs_get_str(h, NOTICES_NVS_KEY, buf, &required);
+    nvs_close(h);
+    if (err != ESP_OK) {
+        free(buf);
+        return ESP_ERR_NOT_FOUND;
+    }
+    *out_json = buf;
+    return ESP_OK;
+}
+
+static esp_err_t notices_nvs_clear(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(APPS_NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return ESP_OK;
+    }
+    err = nvs_erase_key(h, NOTICES_NVS_KEY);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        err = ESP_OK;
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err == ESP_OK ? ESP_OK : err;
+}
+
+static esp_err_t notices_save_impl(void *arg)
+{
+    apps_save_ctx_t *c = (apps_save_ctx_t *)arg;
+    if (mount_impl(NULL) == ESP_OK) {
+        FILE *f = fopen(NOTICES_PATH, "wb");
+        if (f) {
+            size_t n = fwrite(c->json, 1, c->len, f);
+            fclose(f);
+            if (n == c->len) {
+                return ESP_OK;
+            }
+        }
+    }
+    return notices_nvs_save(c->json, c->len);
+}
+
+esp_err_t nodelio_notices_cache_save(const char *json, size_t len)
+{
+    if (!json || len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    apps_save_ctx_t ctx = {.json = json, .len = len};
+    cache_flash_lock();
+    esp_err_t err = cache_run_flash_safe(notices_save_impl, &ctx);
+    cache_flash_unlock();
+    return err;
+}
+
+static esp_err_t notices_load_impl(void *arg)
+{
+    apps_load_ctx_t *c = (apps_load_ctx_t *)arg;
+    if (mount_impl(NULL) == ESP_OK) {
+        struct stat st;
+        if (stat(NOTICES_PATH, &st) == 0 && st.st_size > 0) {
+            FILE *f = fopen(NOTICES_PATH, "rb");
+            if (f) {
+                char *buf = malloc((size_t)st.st_size + 1);
+                if (!buf) {
+                    fclose(f);
+                    return ESP_ERR_NO_MEM;
+                }
+                size_t n = fread(buf, 1, (size_t)st.st_size, f);
+                fclose(f);
+                buf[n] = '\0';
+                *c->out_json = buf;
+                return ESP_OK;
+            }
+        }
+    }
+    return notices_nvs_load(c->out_json);
+}
+
+esp_err_t nodelio_notices_cache_load(char **out_json)
+{
+    if (!out_json) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_json = NULL;
+    apps_load_ctx_t ctx = {.out_json = out_json};
+    cache_flash_lock();
+    esp_err_t err = cache_run_flash_safe(notices_load_impl, &ctx);
+    cache_flash_unlock();
+    return err;
+}
+
+static esp_err_t notices_clear_impl(void *arg)
+{
+    (void)arg;
+    if (mount_impl(NULL) == ESP_OK) {
+        (void)unlink(NOTICES_PATH);
+    }
+    return notices_nvs_clear();
+}
+
+esp_err_t nodelio_notices_cache_clear(void)
+{
+    cache_flash_lock();
+    esp_err_t err = cache_run_flash_safe(notices_clear_impl, NULL);
     cache_flash_unlock();
     return err;
 }

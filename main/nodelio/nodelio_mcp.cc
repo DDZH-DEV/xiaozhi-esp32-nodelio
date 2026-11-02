@@ -1409,6 +1409,78 @@ void nodelio_mcp_register_tools(void)
             return list_skills_json(&cfg);
         });
 
+    mcp.AddTool(
+        "self.notice",
+        "面板未读消息提醒：op=list|open|clear；index=第几条(1起，0=全部/打开弹窗)。",
+        PropertyList({
+            Property("op", kPropertyTypeString, ""),
+            Property("index", kPropertyTypeInteger, 0),
+        }),
+        [](const PropertyList &properties) -> ToolResult {
+            std::string op = properties["op"].value<std::string>();
+            int idx = properties["index"].value<int>();
+            const int n = nodelio_panel_ui_notice_unread_count();
+            if (op.empty() || op == "list") {
+                cJSON *arr = cJSON_CreateArray();
+                if (!arr) {
+                    return "[]";
+                }
+                for (int i = 0; i < n; ++i) {
+                    const nodelio_panel_notice_t *it = nodelio_panel_ui_notice_get(i);
+                    if (!it) {
+                        continue;
+                    }
+                    cJSON *o = cJSON_CreateObject();
+                    if (!o) {
+                        continue;
+                    }
+                    cJSON_AddNumberToObject(o, "index", i + 1);
+                    cJSON_AddStringToObject(o, "title", it->title[0] ? it->title : "新通知");
+                    cJSON_AddStringToObject(o, "mode", it->mode[0] ? it->mode : "info");
+                    cJSON_AddStringToObject(o, "severity", it->severity[0] ? it->severity : "normal");
+                    if (it->app_id[0]) {
+                        cJSON_AddStringToObject(o, "app_id", it->app_id);
+                    }
+                    cJSON_AddItemToArray(arr, o);
+                }
+                char *out = cJSON_PrintUnformatted(arr);
+                cJSON_Delete(arr);
+                if (!out) {
+                    return "[]";
+                }
+                std::string s(out);
+                cJSON_free(out);
+                return s;
+            }
+            if (op == "open") {
+                if (idx > 0) {
+                    const nodelio_panel_notice_t *it = nodelio_panel_ui_notice_get(idx - 1);
+                    if (!it || !it->notice_id[0]) {
+                        return std::unexpected(std::string("未找到该条通知"));
+                    }
+                    std::string title = it->title[0] ? it->title : "通知";
+                    nodelio_panel_ui_notice_resolve(it->notice_id, true);
+                    return std::string("已打开并标为已读：") + title;
+                }
+                nodelio_panel_ui_open_notices();
+                return std::string("已打开消息中心");
+            }
+            if (op == "clear" || op == "dismiss") {
+                if (idx > 0) {
+                    const nodelio_panel_notice_t *it = nodelio_panel_ui_notice_get(idx - 1);
+                    if (!it || !it->notice_id[0]) {
+                        return std::unexpected(std::string("未找到该条通知"));
+                    }
+                    nodelio_panel_ui_notice_resolve(it->notice_id, false);
+                    return std::string("已标为已读");
+                }
+                nodelio_panel_ui_notice_resolve_all();
+                nodelio_panel_ui_close_notices();
+                return std::string("已清空全部未读消息");
+            }
+            return std::unexpected(std::string("op 须为 list/open/clear"));
+        });
+
     ESP_LOGI(TAG,
-             "MCP tools registered: reboot/wifi/goto/open_app + list_controls/control/schedule + skills");
+             "MCP tools registered: reboot/wifi/goto/open_app + list_controls/control/schedule + skills + notice");
 }

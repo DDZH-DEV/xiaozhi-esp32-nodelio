@@ -22,6 +22,7 @@ static volatile bool s_need_layout;
 static volatile bool s_need_snapshot;
 static volatile bool s_need_snapshot_force;
 static volatile bool s_connected;
+static bool s_ever_connected;
 
 static void schedule_kick_ex(bool layout, bool force)
 {
@@ -95,6 +96,7 @@ static void handle_notify_payload(const char *data, int len)
         nodelio_panel_notice_t notice;
         memset(&notice, 0, sizeof(notice));
         const cJSON *nid = cJSON_GetObjectItemCaseSensitive(root, "notice_id");
+        const cJSON *ck = cJSON_GetObjectItemCaseSensitive(root, "coalesce_key");
         const cJSON *inst = cJSON_GetObjectItemCaseSensitive(root, "instance_id");
         const cJSON *app = cJSON_GetObjectItemCaseSensitive(root, "app_id");
         const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
@@ -106,6 +108,9 @@ static void handle_notify_payload(const char *data, int len)
         const cJSON *inv = cJSON_GetObjectItemCaseSensitive(root, "invoke");
         if (cJSON_IsString(nid) && nid->valuestring) {
             snprintf(notice.notice_id, sizeof(notice.notice_id), "%s", nid->valuestring);
+        }
+        if (cJSON_IsString(ck) && ck->valuestring) {
+            snprintf(notice.coalesce_key, sizeof(notice.coalesce_key), "%s", ck->valuestring);
         }
         if (cJSON_IsString(mode) && mode->valuestring) {
             snprintf(notice.mode, sizeof(notice.mode), "%s", mode->valuestring);
@@ -195,6 +200,11 @@ static void mqtt_event(void *handler_args, esp_event_base_t base, int32_t event_
         s_connected = true;
         ESP_LOGI(TAG, "connected, subscribe %s", s_notify_topic);
         esp_mqtt_client_subscribe(s_client, s_notify_topic, 0);
+        if (s_ever_connected) {
+            /* 断线重连后静默补拉未读通知，与本地去重对齐 */
+            nodelio_panel_ui_notices_sync_async();
+        }
+        s_ever_connected = true;
         break;
     case MQTT_EVENT_DISCONNECTED:
         s_connected = false;

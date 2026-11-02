@@ -968,6 +968,7 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/overlay_settings.cc"
         "nodelio/panel_prefs.cc"
         "nodelio/overlay_diagnostics.cc"
+        "nodelio/overlay_notices.cc"
         "nodelio/overlay_apps.cc"
         "nodelio/overlay_ai_drawer.cc"
         "nodelio/panel_ui_api.cc"

@@ -341,6 +341,15 @@ bool nl_ov_skill_needs_outbound_bridge(const char *skill_id);
 /** 技能 HTTP 不可达时 toast：桥类 →「本地桥未连接」，其它 →「服务器无响应」。 */
 void nl_ov_toast_invoke_unreachable(const char *skill_id);
 
+/* —— notices —— */
+void nl_ov_notices_refresh_badge(void);
+void nl_ov_open_notices(void);
+void nl_ov_close_notices(void);
+bool nl_ov_notices_visible(void);
+lv_obj_t *nl_ov_notices_scroll_obj(void);
+void nl_ov_notices_reapply_appearance(void);
+void nl_ov_notices_reapply_text_scale(void);
+
 /* —— ai drawer —— */
 void nl_ov_create_ai_drawer(lv_obj_t *parent);
 void nl_ov_ai_reapply_appearance(void);

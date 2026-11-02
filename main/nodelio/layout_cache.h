@@ -32,6 +32,14 @@ esp_err_t nodelio_apps_cache_load(char **out_json);
 esp_err_t nodelio_apps_cache_clear(void);
 
 /**
+ * 未读通知列表缓存（`/spiffs/panel_notices.json`，无 storage 分区时落 NVS `notices_list`）。
+ * 保证断网重启也能恢复未读消息，连网 bootstrap 后与服务端对齐。
+ */
+esp_err_t nodelio_notices_cache_save(const char *json, size_t len);
+esp_err_t nodelio_notices_cache_load(char **out_json);
+esp_err_t nodelio_notices_cache_clear(void);
+
+/**
  * 首页相册 JPEG 落 SPIFFS（`/spiffs/ph_<id>.jpg`）。
  * storage 1MB：给 layout/apps 留余量，相册总预算约 700KB；单张 ≤90KB。
  * 须经 flash-safe 路径（PSRAM 任务栈不可直接 fopen）。

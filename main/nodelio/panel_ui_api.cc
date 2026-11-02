@@ -14,6 +14,7 @@
 #include "nvs_config.h"
 #include "offline_cmd.h"
 #include "offline_cmd_map.h"
+#include "panel_jobs.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
 #include "skill_result_ui.h"
@@ -54,12 +55,15 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 
 #define TAG "nl_pui"
 
+static void notice_load_disk_cache(void);
+
 extern "C" esp_err_t nodelio_panel_ui_start(const nodelio_nvs_config_t *cfg)
 {
     if (cfg) {
         s_cfg = *cfg;
         nodelio_nvs_cache_put(cfg);
     }
+    notice_load_disk_cache();
     return nodelio_overlay_init();
 }
 
@@ -367,11 +371,33 @@ extern "C" void nodelio_panel_ui_apply_skills_http_body(const char *json)
     cJSON_Delete(root);
 }
 
-/* Notice 短队列：息屏 info 延迟；action 置顶同时最多积压若干条 */
+/* Notice 仓库（PSRAM，最多 20 条）+ 息屏短队列 + 已读墓碑环（防异步 resolve 期间补拉回流） */
+static constexpr int kNoticeStoreMax = 20;
 static constexpr int kNoticeDeferMax = 5;
+static constexpr int kNoticeTombstoneMax = 16;
+
+static nodelio_panel_notice_t *s_notice_items = nullptr;
+static int s_notice_n = 0;
 static nodelio_panel_notice_t s_notice_defer[kNoticeDeferMax];
 static int s_notice_defer_n = 0;
 static char s_notice_active_id[40] = {0};
+static char s_resolved_ids[kNoticeTombstoneMax][40] = {{0}};
+static int s_resolved_ring_idx = 0;
+
+static bool notice_store_ensure(void)
+{
+    if (s_notice_items) {
+        return true;
+    }
+    s_notice_items = static_cast<nodelio_panel_notice_t *>(
+        heap_caps_calloc(kNoticeStoreMax, sizeof(nodelio_panel_notice_t),
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!s_notice_items) {
+        s_notice_items = static_cast<nodelio_panel_notice_t *>(
+            calloc(kNoticeStoreMax, sizeof(nodelio_panel_notice_t)));
+    }
+    return s_notice_items != nullptr;
+}
 
 static void notice_copy(nodelio_panel_notice_t *dst, const nodelio_panel_notice_t *src)
 {
@@ -379,6 +405,286 @@ static void notice_copy(nodelio_panel_notice_t *dst, const nodelio_panel_notice_
         return;
     }
     *dst = *src;
+}
+
+static bool notice_is_tombstoned(const char *notice_id)
+{
+    if (!notice_id || !notice_id[0]) {
+        return false;
+    }
+    for (int i = 0; i < kNoticeTombstoneMax; ++i) {
+        if (s_resolved_ids[i][0] && strcmp(s_resolved_ids[i], notice_id) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void notice_mark_tombstone(const char *notice_id)
+{
+    if (!notice_id || !notice_id[0] || notice_is_tombstoned(notice_id)) {
+        return;
+    }
+    snprintf(s_resolved_ids[s_resolved_ring_idx], sizeof(s_resolved_ids[0]), "%s", notice_id);
+    s_resolved_ring_idx = (s_resolved_ring_idx + 1) % kNoticeTombstoneMax;
+}
+
+static void notice_normalize_defaults(nodelio_panel_notice_t *n)
+{
+    if (!n) {
+        return;
+    }
+    if (!n->mode[0]) {
+        if (strcmp(n->reason, "needs_you") == 0) {
+            snprintf(n->mode, sizeof(n->mode), "action");
+        } else {
+            snprintf(n->mode, sizeof(n->mode), "info");
+        }
+    }
+    if (!n->severity[0]) {
+        snprintf(n->severity, sizeof(n->severity), "normal");
+    }
+    if (!n->coalesce_key[0] && n->session[0]) {
+        const char *ka = n->app_id[0] ? n->app_id : "app";
+        snprintf(n->coalesce_key, sizeof(n->coalesce_key), "%s:session:%s", ka, n->session);
+    }
+}
+
+static void notice_persist_disk_cache(void)
+{
+    if (!s_notice_items || s_notice_n <= 0) {
+        (void)nodelio_notices_cache_clear();
+        return;
+    }
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr = cJSON_CreateArray();
+    if (!root || !arr) {
+        cJSON_Delete(root);
+        cJSON_Delete(arr);
+        return;
+    }
+    cJSON_AddItemToObject(root, "notices", arr);
+    for (int i = 0; i < s_notice_n; ++i) {
+        const nodelio_panel_notice_t *it = &s_notice_items[i];
+        cJSON *obj = cJSON_CreateObject();
+        if (!obj) {
+            continue;
+        }
+        cJSON_AddStringToObject(obj, "notice_id", it->notice_id);
+        if (it->coalesce_key[0]) {
+            cJSON_AddStringToObject(obj, "coalesce_key", it->coalesce_key);
+        }
+        cJSON_AddStringToObject(obj, "mode", it->mode);
+        cJSON_AddStringToObject(obj, "severity", it->severity);
+        cJSON_AddStringToObject(obj, "title", it->title);
+        if (it->app_id[0]) {
+            cJSON_AddStringToObject(obj, "app_id", it->app_id);
+        }
+        if (it->invoke_app[0]) {
+            cJSON *inv = cJSON_CreateObject();
+            if (inv) {
+                cJSON_AddStringToObject(inv, "app_id", it->invoke_app);
+                if (it->invoke_params[0]) {
+                    cJSON *pm = cJSON_Parse(it->invoke_params);
+                    if (pm) {
+                        cJSON_AddItemToObject(inv, "params", pm);
+                    }
+                }
+                cJSON_AddItemToObject(obj, "invoke", inv);
+            }
+        }
+        if (it->session[0]) {
+            cJSON_AddStringToObject(obj, "session", it->session);
+        }
+        if (it->reason[0]) {
+            cJSON_AddStringToObject(obj, "reason", it->reason);
+        }
+        cJSON_AddBoolToObject(obj, "wake", it->wake != 0);
+        cJSON_AddItemToArray(arr, obj);
+    }
+    char *printed = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (printed) {
+        (void)nodelio_notices_cache_save(printed, strlen(printed));
+        cJSON_free(printed);
+    }
+}
+
+/**
+ * 写入/合并单条未读通知（0=最新）。
+ * @return true=新增或 coalesce 产生新通知；false=已存在同 notice_id 或已在已读墓碑中（勿重复弹 Toast）。
+ */
+static bool notice_store_upsert(const nodelio_panel_notice_t *in, bool persist)
+{
+    if (!in || !notice_store_ensure()) {
+        return false;
+    }
+    nodelio_panel_notice_t item;
+    notice_copy(&item, in);
+    notice_normalize_defaults(&item);
+
+    if (item.notice_id[0] && notice_is_tombstoned(item.notice_id)) {
+        return false;
+    }
+
+    /* 1) notice_id 精确去重：已存在则原地更新，返回 false 阻止重复弹窗 */
+    if (item.notice_id[0]) {
+        for (int i = 0; i < s_notice_n; ++i) {
+            if (strcmp(s_notice_items[i].notice_id, item.notice_id) == 0) {
+                s_notice_items[i] = item;
+                if (persist) {
+                    notice_persist_disk_cache();
+                }
+                return false;
+            }
+        }
+    }
+
+    /* 2) coalesce_key 同类合并：删掉旧同源条目，新条目置顶 */
+    if (item.coalesce_key[0]) {
+        for (int i = 0; i < s_notice_n; ++i) {
+            if (s_notice_items[i].coalesce_key[0] &&
+                strcmp(s_notice_items[i].coalesce_key, item.coalesce_key) == 0) {
+                if (i + 1 < s_notice_n) {
+                    memmove(&s_notice_items[i], &s_notice_items[i + 1],
+                            sizeof(s_notice_items[0]) * (size_t)(s_notice_n - i - 1));
+                }
+                --s_notice_n;
+                break;
+            }
+        }
+    }
+
+    /* 3) 置顶插入（0=最新），超出 kNoticeStoreMax 丢弃最旧 */
+    if (s_notice_n >= kNoticeStoreMax) {
+        s_notice_n = kNoticeStoreMax - 1;
+    }
+    if (s_notice_n > 0) {
+        memmove(&s_notice_items[1], &s_notice_items[0],
+                sizeof(s_notice_items[0]) * (size_t)s_notice_n);
+    }
+    s_notice_items[0] = item;
+    ++s_notice_n;
+    if (persist) {
+        notice_persist_disk_cache();
+    }
+    return true;
+}
+
+static bool notice_store_remove_by_id(const char *notice_id, nodelio_panel_notice_t *out_removed)
+{
+    if (!notice_id || !notice_id[0] || !s_notice_items) {
+        return false;
+    }
+    for (int i = 0; i < s_notice_n; ++i) {
+        if (strcmp(s_notice_items[i].notice_id, notice_id) == 0) {
+            if (out_removed) {
+                *out_removed = s_notice_items[i];
+            }
+            if (i + 1 < s_notice_n) {
+                memmove(&s_notice_items[i], &s_notice_items[i + 1],
+                        sizeof(s_notice_items[0]) * (size_t)(s_notice_n - i - 1));
+            }
+            --s_notice_n;
+            notice_persist_disk_cache();
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool parse_notice_json_item(const cJSON *obj, nodelio_panel_notice_t *out)
+{
+    if (!cJSON_IsObject(obj) || !out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    const cJSON *nid = cJSON_GetObjectItemCaseSensitive(obj, "notice_id");
+    const cJSON *ck = cJSON_GetObjectItemCaseSensitive(obj, "coalesce_key");
+    const cJSON *inst = cJSON_GetObjectItemCaseSensitive(obj, "instance_id");
+    const cJSON *app = cJSON_GetObjectItemCaseSensitive(obj, "app_id");
+    const cJSON *mode = cJSON_GetObjectItemCaseSensitive(obj, "mode");
+    const cJSON *sev = cJSON_GetObjectItemCaseSensitive(obj, "severity");
+    const cJSON *title = cJSON_GetObjectItemCaseSensitive(obj, "title");
+    const cJSON *reason = cJSON_GetObjectItemCaseSensitive(obj, "reason");
+    const cJSON *session = cJSON_GetObjectItemCaseSensitive(obj, "session");
+    const cJSON *wake = cJSON_GetObjectItemCaseSensitive(obj, "wake");
+    const cJSON *inv = cJSON_GetObjectItemCaseSensitive(obj, "invoke");
+    if (cJSON_IsString(nid) && nid->valuestring) {
+        snprintf(out->notice_id, sizeof(out->notice_id), "%s", nid->valuestring);
+    }
+    if (cJSON_IsString(ck) && ck->valuestring) {
+        snprintf(out->coalesce_key, sizeof(out->coalesce_key), "%s", ck->valuestring);
+    }
+    if (cJSON_IsString(mode) && mode->valuestring) {
+        snprintf(out->mode, sizeof(out->mode), "%s", mode->valuestring);
+    }
+    if (cJSON_IsString(sev) && sev->valuestring) {
+        snprintf(out->severity, sizeof(out->severity), "%s", sev->valuestring);
+    }
+    if (cJSON_IsString(title) && title->valuestring) {
+        snprintf(out->title, sizeof(out->title), "%s", title->valuestring);
+    }
+    if (cJSON_IsString(reason) && reason->valuestring) {
+        snprintf(out->reason, sizeof(out->reason), "%s", reason->valuestring);
+    }
+    if (cJSON_IsString(session) && session->valuestring) {
+        snprintf(out->session, sizeof(out->session), "%s", session->valuestring);
+    }
+    if (cJSON_IsTrue(wake)) {
+        out->wake = 1;
+    }
+    if (cJSON_IsString(app) && app->valuestring) {
+        snprintf(out->app_id, sizeof(out->app_id), "%s", app->valuestring);
+    } else if (cJSON_IsString(inst) && inst->valuestring) {
+        snprintf(out->app_id, sizeof(out->app_id), "%s", inst->valuestring);
+    }
+    if (cJSON_IsObject(inv)) {
+        const cJSON *ia = cJSON_GetObjectItemCaseSensitive(inv, "app_id");
+        const cJSON *ip = cJSON_GetObjectItemCaseSensitive(inv, "params");
+        if (cJSON_IsString(ia) && ia->valuestring) {
+            snprintf(out->invoke_app, sizeof(out->invoke_app), "%s", ia->valuestring);
+        }
+        if (ip) {
+            char *printed = cJSON_PrintUnformatted(ip);
+            if (printed) {
+                snprintf(out->invoke_params, sizeof(out->invoke_params), "%s", printed);
+                cJSON_free(printed);
+            }
+        }
+    }
+    if (!out->invoke_app[0] && out->app_id[0]) {
+        snprintf(out->invoke_app, sizeof(out->invoke_app), "%s", out->app_id);
+    }
+    notice_normalize_defaults(out);
+    return out->notice_id[0] != '\0' || out->title[0] != '\0' || out->app_id[0] != '\0';
+}
+
+static void notice_load_disk_cache(void)
+{
+    char *json = nullptr;
+    if (nodelio_notices_cache_load(&json) != ESP_OK || !json) {
+        return;
+    }
+    cJSON *root = cJSON_Parse(json);
+    free(json);
+    if (!root) {
+        return;
+    }
+    const cJSON *arr = cJSON_GetObjectItemCaseSensitive(root, "notices");
+    if (cJSON_IsArray(arr) && notice_store_ensure()) {
+        s_notice_n = 0;
+        const int total = cJSON_GetArraySize(arr);
+        /* 数组 0=最新，逆序 upsert 或顺次追加保持原顺序 */
+        for (int i = total - 1; i >= 0; --i) {
+            nodelio_panel_notice_t item;
+            if (parse_notice_json_item(cJSON_GetArrayItem(arr, i), &item)) {
+                (void)notice_store_upsert(&item, false);
+            }
+        }
+        ESP_LOGI(TAG, "loaded %d unread notices from cache", s_notice_n);
+    }
+    cJSON_Delete(root);
 }
 
 static bool notice_sev_at_least_warning(const char *sev)
@@ -453,6 +759,9 @@ static void notice_present(const nodelio_panel_notice_t *n)
         }
     }
     nl_ov_toast(toast);
+    if (strcmp(n->mode, "alert") == 0 && strcmp(n->severity, "critical") == 0) {
+        nodelio_panel_ui_play_cue(0);
+    }
 
     /* 有 invoke_app（或 action/alert 带 app_id）才拉 Envelope；纯 title info 零 HTTP */
     const bool has_invoke_target = n->invoke_app[0] || n->app_id[0];
@@ -470,6 +779,14 @@ static void notice_enqueue_deferred(const nodelio_panel_notice_t *n)
 {
     if (!n) {
         return;
+    }
+    /* 息屏队列内按 notice_id / coalesce_key 去重，避免息屏期间重复堆积 */
+    for (int i = 0; i < s_notice_defer_n; ++i) {
+        if ((n->notice_id[0] && strcmp(s_notice_defer[i].notice_id, n->notice_id) == 0) ||
+            (n->coalesce_key[0] && strcmp(s_notice_defer[i].coalesce_key, n->coalesce_key) == 0)) {
+            notice_copy(&s_notice_defer[i], n);
+            return;
+        }
     }
     if (s_notice_defer_n >= kNoticeDeferMax) {
         /* 丢最旧 */
@@ -509,22 +826,31 @@ extern "C" void nodelio_panel_ui_notice_clear(const char *notice_id)
     }
     char *id = strdup(notice_id);
     Application::GetInstance().Schedule([id]() {
-        if (id && s_notice_active_id[0] && strcmp(s_notice_active_id, id) == 0) {
+        if (!id) {
+            return;
+        }
+        notice_mark_tombstone(id);
+        (void)notice_store_remove_by_id(id, nullptr);
+        if (s_notice_active_id[0] && strcmp(s_notice_active_id, id) == 0) {
             s_notice_active_id[0] = '\0';
         }
-        if (id) {
-            for (int i = 0; i < s_notice_defer_n; ++i) {
-                if (strcmp(s_notice_defer[i].notice_id, id) == 0) {
-                    if (i + 1 < s_notice_defer_n) {
-                        memmove(&s_notice_defer[i], &s_notice_defer[i + 1],
-                                sizeof(s_notice_defer[0]) * (size_t)(s_notice_defer_n - i - 1));
-                    }
-                    --s_notice_defer_n;
-                    break;
+        for (int i = 0; i < s_notice_defer_n; ++i) {
+            if (strcmp(s_notice_defer[i].notice_id, id) == 0) {
+                if (i + 1 < s_notice_defer_n) {
+                    memmove(&s_notice_defer[i], &s_notice_defer[i + 1],
+                            sizeof(s_notice_defer[0]) * (size_t)(s_notice_defer_n - i - 1));
                 }
+                --s_notice_defer_n;
+                break;
             }
-            free(id);
         }
+        {
+            DisplayLockGuard lock(nl_ov_disp());
+            if (lock) {
+                nl_ov_notices_refresh_badge();
+            }
+        }
+        free(id);
     });
 }
 
@@ -538,19 +864,19 @@ extern "C" void nodelio_panel_ui_notice(const nodelio_panel_notice_t *notice)
         return;
     }
     notice_copy(copy, notice);
-    if (!copy->mode[0]) {
-        if (strcmp(copy->reason, "needs_you") == 0) {
-            snprintf(copy->mode, sizeof(copy->mode), "action");
-        } else if (strcmp(copy->reason, "completed") == 0) {
-            snprintf(copy->mode, sizeof(copy->mode), "info");
-        } else {
-            snprintf(copy->mode, sizeof(copy->mode), "info");
-        }
-    }
-    if (!copy->severity[0]) {
-        snprintf(copy->severity, sizeof(copy->severity), "normal");
-    }
+    notice_normalize_defaults(copy);
     Application::GetInstance().Schedule([copy]() {
+        /* 先入库去重：若已存在同 notice_id 或已在墓碑中，直接跳过，绝不重复弹 Toast */
+        if (!notice_store_upsert(copy, true)) {
+            free(copy);
+            return;
+        }
+        {
+            DisplayLockGuard lock(nl_ov_disp());
+            if (lock) {
+                nl_ov_notices_refresh_badge();
+            }
+        }
         const bool sleeping = Board::GetInstance().IsInSleepMode();
         const bool is_info = strcmp(copy->mode, "info") == 0;
         if (sleeping && is_info && !notice_wants_wake(copy)) {
@@ -561,6 +887,196 @@ extern "C" void nodelio_panel_ui_notice(const nodelio_panel_notice_t *notice)
         notice_maybe_wake(copy);
         notice_present(copy);
         free(copy);
+    });
+}
+
+extern "C" void nodelio_panel_ui_apply_notices_http_body(const char *json)
+{
+    if (!json || !json[0]) {
+        return;
+    }
+    char *dup = strdup(json);
+    if (!dup) {
+        return;
+    }
+    Application::GetInstance().Schedule([dup]() {
+        cJSON *root = cJSON_Parse(dup);
+        free(dup);
+        if (!root) {
+            return;
+        }
+        const cJSON *arr = cJSON_GetObjectItemCaseSensitive(root, "notices");
+        if (cJSON_IsArray(arr) && notice_store_ensure()) {
+            /* 以服务端 pending 列表为真值静默对齐（过滤本地刚点已读的墓碑 ID，去重，不弹 Toast） */
+            s_notice_n = 0;
+            const int total = cJSON_GetArraySize(arr);
+            for (int i = total - 1; i >= 0; --i) {
+                nodelio_panel_notice_t item;
+                if (parse_notice_json_item(cJSON_GetArrayItem(arr, i), &item)) {
+                    (void)notice_store_upsert(&item, false);
+                }
+            }
+            notice_persist_disk_cache();
+            {
+                DisplayLockGuard lock(nl_ov_disp());
+                if (lock) {
+                    nl_ov_notices_refresh_badge();
+                }
+            }
+            ESP_LOGI(TAG, "reconciled %d unread notices from cloud", s_notice_n);
+        }
+        cJSON_Delete(root);
+    });
+}
+
+static void notices_sync_worker(void *arg)
+{
+    (void)arg;
+    nodelio_nvs_config_t cfg;
+    if (!nl_ov_cfg_http_ready(&cfg, false) || !cfg.device_key[0]) {
+        return;
+    }
+    char base[160];
+    nl_url_strip_base(cfg.server_url, base, sizeof(base));
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/devices/%s/panel/notices", base, cfg.device_id);
+    const int cap = 8 * 1024;
+    char *body = static_cast<char *>(heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!body) {
+        body = static_cast<char *>(malloc(cap));
+    }
+    if (!body) {
+        return;
+    }
+    body[0] = '\0';
+    int status = 0;
+    if (nodelio_http_get_ms(url, cfg.device_key, nullptr, &status, body, cap, 6000) == ESP_OK &&
+        status == 200) {
+        nodelio_panel_ui_apply_notices_http_body(body);
+    }
+    free(body);
+}
+
+extern "C" void nodelio_panel_ui_notices_sync_async(void)
+{
+    (void)nodelio::SubmitPanelJob(nodelio::PanelJobLane::Background, notices_sync_worker, nullptr,
+                                  nullptr, 0, "notices.sync", true);
+}
+
+extern "C" int nodelio_panel_ui_notice_unread_count(void)
+{
+    return s_notice_n;
+}
+
+extern "C" const nodelio_panel_notice_t *nodelio_panel_ui_notice_get(int index)
+{
+    if (!s_notice_items || index < 0 || index >= s_notice_n) {
+        return nullptr;
+    }
+    return &s_notice_items[index];
+}
+
+static void notice_resolve_worker(void *arg)
+{
+    char *nid = static_cast<char *>(arg);
+    if (!nid) {
+        return;
+    }
+    nodelio_nvs_config_t cfg;
+    if (nl_ov_cfg_http_ready(&cfg, false) && cfg.device_key[0] && nid[0]) {
+        char base[160];
+        nl_url_strip_base(cfg.server_url, base, sizeof(base));
+        char url[280];
+        snprintf(url, sizeof(url), "%s/api/devices/%s/panel/notices/%s/resolve", base,
+                 cfg.device_id, nid);
+        int status = 0;
+        (void)nodelio_http_post_json_ms(url, cfg.device_key, "{}", &status, nullptr, 0, 5000);
+    }
+    free(nid);
+}
+
+extern "C" void nodelio_panel_ui_notice_resolve(const char *notice_id, bool open_target)
+{
+    if (!notice_id || !notice_id[0]) {
+        return;
+    }
+    char *id = strdup(notice_id);
+    if (!id) {
+        return;
+    }
+    Application::GetInstance().Schedule([id, open_target]() {
+        notice_mark_tombstone(id);
+        nodelio_panel_notice_t removed;
+        memset(&removed, 0, sizeof(removed));
+        const bool found = notice_store_remove_by_id(id, &removed);
+        if (s_notice_active_id[0] && strcmp(s_notice_active_id, id) == 0) {
+            s_notice_active_id[0] = '\0';
+        }
+        if (open_target && found && (removed.invoke_app[0] || removed.app_id[0])) {
+            notice_do_invoke(&removed);
+        }
+        {
+            DisplayLockGuard lock(nl_ov_disp());
+            if (lock) {
+                nl_ov_notices_refresh_badge();
+            }
+        }
+        if (!nodelio::SubmitPanelJob(nodelio::PanelJobLane::Control, notice_resolve_worker, id,
+                                     free, 0, nullptr, true)) {
+            free(id);
+        }
+    });
+}
+
+extern "C" void nodelio_panel_ui_notice_resolve_all(void)
+{
+    Application::GetInstance().Schedule([]() {
+        if (!s_notice_items || s_notice_n <= 0) {
+            return;
+        }
+        for (int i = 0; i < s_notice_n; ++i) {
+            const char *nid = s_notice_items[i].notice_id;
+            if (!nid[0]) {
+                continue;
+            }
+            notice_mark_tombstone(nid);
+            char *id_copy = strdup(nid);
+            if (id_copy) {
+                if (!nodelio::SubmitPanelJob(nodelio::PanelJobLane::Control, notice_resolve_worker,
+                                             id_copy, free, 0, nullptr, true)) {
+                    free(id_copy);
+                }
+            }
+        }
+        s_notice_n = 0;
+        s_notice_active_id[0] = '\0';
+        s_notice_defer_n = 0;
+        notice_persist_disk_cache();
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            nl_ov_notices_refresh_badge();
+        }
+    });
+}
+
+extern "C" void nodelio_panel_ui_open_notices(void)
+{
+    Application::GetInstance().Schedule([]() {
+        nodelio_overlay_set_visible(true);
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            nl_ov_open_notices();
+        }
+    });
+}
+
+extern "C" void nodelio_panel_ui_close_notices(void)
+{
+    Application::GetInstance().Schedule([]() {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            nl_ov_close_notices();
+        }
     });
 }
 

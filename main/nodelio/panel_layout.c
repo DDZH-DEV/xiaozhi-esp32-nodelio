@@ -936,6 +936,7 @@ esp_err_t nodelio_bootstrap_fetch(const nodelio_nvs_config_t *cfg, int known_ver
     }
     (void)snapshot_apply_devices(devices);
     bootstrap_apply_skills(root);
+    bootstrap_apply_notices(root);
 
     ESP_LOGI(TAG, "bootstrap ok v%d layout_%s", out_layout->layout_version, changed ? "new" : "same");
     cJSON_Delete(root);
