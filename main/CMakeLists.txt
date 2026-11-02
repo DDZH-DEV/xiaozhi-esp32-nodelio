@@ -982,6 +982,7 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/fonts/font_puhui_14_1.c"
         "nodelio/skill/device_caps.c"
         "nodelio/skill/content_envelope.c"
+        "nodelio/skill/lunar_date.c"
         "nodelio/skill/skill_runtime.c"
         "nodelio/skill/skill_result_ui.cc"
         "nodelio/skill/media_player.cc"

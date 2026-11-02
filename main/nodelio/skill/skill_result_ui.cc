@@ -3,6 +3,7 @@
 #include "panel_jobs.h"
 
 #include "device_caps.h"
+#include "lunar_date.h"
 #include "media_player.h"
 #include "nl_url_util.h"
 #include "nodelio_http.h"
@@ -166,6 +167,10 @@ static int s_play_idx = -1;
 static int s_list_page;
 static lv_obj_t *s_hdr_mid_btn;
 static lv_obj_t *s_hdr_btns;
+static lv_obj_t *s_hdr;        /* 头部行；精简模式下整体收起 */
+static lv_obj_t *s_hdr_txt;    /* 标题 + 副标题；精简模式下只留标题 */
+static lv_obj_t *s_close_btn;  /* 关闭钮；精简模式下浮到卡片右上角 */
+static bool s_hdr_minimal;     /* 日历：顶部只留关闭，把高度让给内容 */
 static lv_obj_t *s_news_zoom_bar; /* 新闻详情：顶栏刷新左侧 A-/A+ */
 static lv_obj_t *s_row_idx_labels[64];  /* 序号胶囊标签（数字/耳机） */
 static lv_obj_t *s_row_btns[64];       /* 播放/暂停按钮 */
@@ -2999,6 +3004,7 @@ static void ensure_card(void)
     lv_obj_add_flag(s_card, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t *hdr = lv_obj_create(s_card);
+    s_hdr = hdr;
     lv_obj_remove_style_all(hdr);
     lv_obj_set_width(hdr, lv_pct(100));
     lv_obj_set_height(hdr, LV_SIZE_CONTENT);
@@ -3006,6 +3012,7 @@ static void ensure_card(void)
     lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     lv_obj_t *hdr_txt = lv_obj_create(hdr);
+    s_hdr_txt = hdr_txt;
     lv_obj_remove_style_all(hdr_txt);
     lv_obj_set_flex_grow(hdr_txt, 1);
     lv_obj_set_height(hdr_txt, LV_SIZE_CONTENT);
@@ -3051,6 +3058,7 @@ static void ensure_card(void)
     lv_obj_add_flag(xbtn, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(xbtn, 12);
     lv_obj_add_event_cb(xbtn, on_close_card, LV_EVENT_CLICKED, nullptr);
+    s_close_btn = xbtn;
     lv_obj_t *xl = lv_label_create(xbtn);
     lv_obj_set_style_text_font(xl, &font_material_symbols_20_4, 0);
     lv_label_set_text(xl, MATERIAL_SYMBOLS_CLOSE);
@@ -3305,11 +3313,12 @@ static void apply_card_chrome(void)
 {
     const bool music = strcmp(s_env->card_type, "music_list") == 0;
     const bool news = strcmp(s_env->card_type, "news_list") == 0;
+    const bool daily = strcmp(s_env->card_type, "calendar_weather") == 0;
     const bool dsh_detail =
         s_env->detail_body && s_env->detail_body[0] && strstr(s_env->app_id, "dsh") != nullptr;
     /* 曲库改全量滚动后不再占分页钮；新闻中间钮=收起 */
     const bool mid_btn = news || list_page_count() > 1;
-    const bool compact = !music && !news && strcmp(s_env->card_type, "calendar_weather") != 0 &&
+    const bool compact = !music && !news && !daily &&
                          !mid_btn && !dsh_detail && s_env->filter_n == 0 && s_env->track_n <= 4;
     /* 字号条仅新闻详情；切到其它卡或列表时收起 */
     if (!news || s_news_detail < 0) {
@@ -3325,6 +3334,35 @@ static void apply_card_chrome(void)
             lv_obj_add_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
         }
     }
+
+    /* 日历：顶部只留关闭。标题、副标题、刷新、翻页全部收起，
+     * 关闭钮浮到卡片右上角，日历网格从卡片顶端开始排。 */
+    s_hdr_minimal = daily;
+    if (s_hdr) {
+        if (s_hdr_minimal) {
+            lv_obj_add_flag(s_hdr, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_height(s_hdr, 0);
+        } else {
+            lv_obj_clear_flag(s_hdr, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_height(s_hdr, LV_SIZE_CONTENT);
+        }
+    }
+    if (s_close_btn) {
+        if (s_hdr_minimal) {
+            /* 脱离头部行，直接浮在结果卡上；尺寸 44 保证可点。 */
+            lv_obj_set_parent(s_close_btn, s_card);
+            lv_obj_add_flag(s_close_btn, LV_OBJ_FLAG_FLOATING);
+            lv_obj_set_size(s_close_btn, 44, 44);
+            lv_obj_align(s_close_btn, LV_ALIGN_TOP_RIGHT, -4, 4);
+            /* 提到最前，避免被后建的列表盖住。 */
+            lv_obj_move_to_index(s_close_btn, -1);
+        } else if (s_hdr_btns && lv_obj_get_parent(s_close_btn) != s_hdr_btns) {
+            lv_obj_set_parent(s_close_btn, s_hdr_btns);
+            lv_obj_clear_flag(s_close_btn, LV_OBJ_FLAG_FLOATING);
+            lv_obj_set_size(s_close_btn, 44, 44);
+        }
+    }
+
     if (!s_card) {
         return;
     }
@@ -3347,6 +3385,9 @@ static void apply_card_chrome(void)
             lv_obj_set_flex_grow(s_card_list, 1);
         }
     }
+    /* 日历用更紧的内边距，把省下来的高度全给网格。 */
+    lv_obj_set_style_pad_all(s_card, s_hdr_minimal ? 8 : 12, 0);
+    lv_obj_set_style_pad_row(s_card, s_hdr_minimal ? 0 : 8, 0);
 }
 
 static bool dsh_subtitle_is_running(const char *sub)
