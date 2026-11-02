@@ -1145,6 +1145,7 @@ void nl_ov_open_settings_detail(set_page_id_t page)
     lv_obj_set_scroll_dir(body, LV_DIR_VER);
     lv_obj_add_flag(body, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(body, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
     if (page == SET_PAGE_DIAGNOSTICS) {
         nl_ov_build_diagnostics(body);
@@ -1859,6 +1860,7 @@ static void fill_settings_hub(void)
     lv_obj_set_style_bg_opa(s_settings, LV_OPA_COVER, 0);
     lv_obj_set_scroll_dir(s_settings, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_settings, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(s_settings, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
     load_audio_prefs();
     char bri_sub[72];

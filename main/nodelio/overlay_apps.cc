@@ -506,8 +506,20 @@ static void render_list(void)
             lv_obj_set_size(view.pod, pod_size, pod_size);
             nl_ov_set_font(view.title);
             nl_ov_set_font(view.subtitle);
-            lv_obj_set_height(view.title, nl_ov_ui_font_line_h());
-            lv_obj_set_height(view.subtitle, nl_ov_ui_font_line_h());
+            const int font_h = nl_ov_ui_font_line_h();
+            lv_obj_set_height(view.title, font_h);
+            /* 副文与应用卡同宽规则：卡宽 - 左右内边距 - 列间距 - 图标底座。
+             * 方屏双列时约 140px，单行会截成「内置 · 月历 /…」，按两行折。 */
+            int sub_w = card_w - 10 - 8 - 16 - pod_size;
+            if (sub_w < 48) {
+                sub_w = 48;
+            }
+            int sub_h = nl_ov_wrapped_text_h(lv_label_get_text(view.subtitle), sub_w);
+            const int sub_cap = font_h * 2 + (line - font_h);
+            if (sub_h > sub_cap) {
+                sub_h = sub_cap;
+            }
+            lv_obj_set_height(view.subtitle, sub_h);
             view.width = card_w;
             view.height = card_h;
             view.pod_size = pod_size;
@@ -1285,6 +1297,7 @@ void nl_ov_build_apps(void)
     lv_obj_add_flag(s_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(s_list, LV_OBJ_FLAG_SCROLL_ELASTIC);
     if (s_split) {
         apps_apply_pane(apps_pane_target_w(true), true);
     }

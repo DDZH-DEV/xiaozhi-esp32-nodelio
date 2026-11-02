@@ -67,7 +67,9 @@ void ui_styles_init(void)
     lv_style_set_pad_row(&st_btn_base, 4);
 
     lv_style_init(&st_btn_pressed);
+#if !CONFIG_IDF_TARGET_ESP32S3
     lv_style_set_translate_y(&st_btn_pressed, 1);
+#endif
 
     lv_style_init(&st_btn_off);
     lv_style_set_opa(&st_btn_off, LV_OPA_50);
@@ -101,6 +103,11 @@ void ui_style_card(lv_obj_t *obj)
     if (!obj) {
         return;
     }
+#if CONFIG_IDF_TARGET_ESP32S3
+    /* S3 无 PPA：浅色/暗色均关闭卡片高斯软件阴影，避免滚动全屏重算 Alpha 混合 */
+    lv_obj_set_style_shadow_width(obj, 0, 0);
+    return;
+#else
     if (ui_palette_is_dark()) {
         lv_obj_set_style_shadow_width(obj, 0, 0);
         return;
@@ -112,6 +119,7 @@ void ui_style_card(lv_obj_t *obj)
     lv_obj_set_style_shadow_ofs_x(obj, 0, 0);
     lv_obj_set_style_shadow_ofs_y(obj, 2, 0);
     lv_obj_set_style_shadow_opa(obj, LV_OPA_30, 0);
+#endif
 }
 
 int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out)
@@ -196,7 +204,9 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
 
     lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
     lv_obj_set_style_border_color(btn, lv_color_hex(accent_c), LV_STATE_PRESSED);
+#if !CONFIG_IDF_TARGET_ESP32S3
     lv_obj_set_style_translate_y(btn, 1, LV_STATE_PRESSED);
+#endif
 
     lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -234,6 +244,15 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_clear_flag(text, LV_OBJ_FLAG_SCROLLABLE);
 
     const int font_h = nl_ov_ui_font_line_h();
+    /* 副文可用宽 = 卡宽 - 左右内边距 - 列间距 - 图标底座（有右图标再让出位置）。
+     * 方屏双列 + 大字档只有 ~140px，一行装不下「重新拉取首页控件」，须折两行。 */
+    int sub_w = tile_w - 10 - 8 - col_gap - pod_sz;
+    if (right_icon && right_icon[0]) {
+        sub_w -= font_h + 8;
+    }
+    if (sub_w < 48) {
+        sub_w = 48;
+    }
 
     lv_obj_t *t = lv_label_create(text);
     lv_label_set_text(t, title ? title : "");
@@ -247,10 +266,16 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
 
     lv_obj_t *s = lv_label_create(text);
     lv_label_set_text(s, sub ? sub : "");
+    /* 副文最多两行：折行 + 溢出打点。卡高由 ui_settings_tile_height() 按两行留，
+     * 单行文案只占一行高，整组仍在卡内垂直居中。 */
     lv_label_set_long_mode(s, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s, lv_pct(100));
-    /* 副文只显示一行。按折行预留两行高时，字贴在标签上沿，整组会显得偏上。 */
-    lv_obj_set_height(s, font_h);
+    int sub_h = nl_ov_wrapped_text_h(sub, sub_w);
+    const int sub_cap = font_h * 2 + (nl_ov_ui_line_box() - font_h);
+    if (sub_h > sub_cap) {
+        sub_h = sub_cap;
+    }
+    lv_obj_set_height(s, sub_h);
     apply_font(s);
     lv_obj_set_style_text_align(s, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_color(s, UI_TEXT_MUTED, 0);
@@ -318,7 +343,8 @@ lv_obj_t *ui_make_nav_bar(lv_obj_t *parent, int h, const char *title, lv_event_c
     lv_obj_set_ext_click_area(back, UI_EXT_CLICK);
     lv_obj_set_style_bg_color(back, UI_BACK_BTN, 0);
     lv_obj_set_style_bg_opa(back, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
+    /* 方角：设置详情/连接页的返回是文字胶囊，不再画成圆球。 */
+    lv_obj_set_style_radius(back, 0, 0);
     lv_obj_set_style_shadow_width(back, 0, 0);
     lv_obj_set_style_border_width(back, 0, 0);
     lv_obj_add_style(back, &st_btn_pressed, LV_STATE_PRESSED);

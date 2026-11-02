@@ -1253,9 +1253,31 @@ static bool list_use_comfortable(void)
     return true;
 }
 
+static int music_end_sz(void);
+
+/** 紧凑行一格给歌名/标题至少留这么宽，否则双列只会截成「走…」。 */
+#define SKILL_COMPACT_TEXT_MIN 96
+
 static int list_cols(void)
 {
-    return list_use_comfortable() ? SKILL_LIST_COLS : SKILL_PAGE_COLS;
+    if (list_use_comfortable()) {
+        return SKILL_LIST_COLS;
+    }
+    /* 双列只在文字还够宽时成立。方屏 480（卡 412）双列每格约 200px，
+     * 扣掉序号圆标、播放钮和内边距只剩 70px 出头，歌名被截成两个字。
+     * 宽屏（卡 560+）仍保持双列。 */
+    const bool music = s_env && strcmp(s_env->card_type, "music_list") == 0;
+    const int mark = music ? music_end_sz() : 22;
+    const int pad_hor = music ? 10 : 6;
+    const int gap = music ? 10 : 6;
+    const int play_w = music ? mark : SKILL_CTRL_SZ;
+    const int cell_gap = 6; /* 与 fill_list 里 line 的 pad_column 一致 */
+    const int per_cell = (skill_panel_w() - cell_gap * (SKILL_PAGE_COLS - 1)) / SKILL_PAGE_COLS;
+    const int text_w = per_cell - pad_hor * 2 - gap - mark - (gap + play_w);
+    if (text_w < SKILL_COMPACT_TEXT_MIN) {
+        return SKILL_LIST_COLS;
+    }
+    return SKILL_PAGE_COLS;
 }
 
 /** 曲库左右端圆标：不小于播放钮，并随字号加大，避免大字档把序号裁进 22px 盒。 */
@@ -1363,7 +1385,7 @@ static int list_page_rows(void)
 
 static int list_page_size(void)
 {
-    /* 曲库/电台：双列一次铺全量 + 指滑，避免矮屏分页估行仍裁末行 */
+    /* 曲库/电台：一次铺全量 + 指滑，避免矮屏分页估行仍裁末行 */
     if (list_use_comfortable() || strcmp(s_env->card_type, "music_list") == 0) {
         return s_env->track_n > 0 ? s_env->track_n : (SKILL_LIST_COLS * SKILL_LIST_ROWS);
     }

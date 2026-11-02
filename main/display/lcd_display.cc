@@ -248,13 +248,14 @@ RgbLcdDisplay::RgbLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
     port_cfg.task_priority = 1;
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     port_cfg.timer_period_ms = CONFIG_NODELIO_S3_LVGL_TICK_MS;
-#else
-    port_cfg.timer_period_ms = 50;
-#endif
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* S3 无 PPA：提高渲染优先级并绑 Core 1，避免 Core 0 WiFi/MQTT 抢占导致滑屏卡顿 */
+    port_cfg.task_priority = 4;
+    port_cfg.task_affinity = 1;
     /* 默认 7KB 不够面板壳+MCP 并发；栈放 PSRAM */
     port_cfg.task_stack = 12288;
     port_cfg.task_stack_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#else
+    port_cfg.timer_period_ms = 50;
 #endif
     lvgl_port_init(&port_cfg);
 

@@ -1234,6 +1234,20 @@ idf_component_register(SRCS ${SOURCES}
                         ${MAIN_PRIV_REQUIRES_EXTRA}
                     )
 
+if(NOT CMAKE_BUILD_EARLY_EXPANSION)
+    if(NOT PYTHON)
+        set(PYTHON python)
+    endif()
+    execute_process(
+        COMMAND ${PYTHON} ${PROJECT_DIR}/scripts/nodelio_patch_esp_ml307.py
+        WORKING_DIRECTORY ${PROJECT_DIR}
+        RESULT_VARIABLE NODELIO_ML307_PATCH_RC
+    )
+    if(NOT NODELIO_ML307_PATCH_RC EQUAL 0)
+        message(FATAL_ERROR "nodelio_patch_esp_ml307.py failed")
+    endif()
+endif()
+
 # SILA 墙板：编译前按源码指纹生成 YYYYMMDD.NNN 构建号（改代码才涨，重编不涨）
 if(CONFIG_NODELIO_PANEL AND NOT CMAKE_BUILD_EARLY_EXPANSION)
     # AFE + RGB/I2S leave too little DMA-capable SRAM for the hardware AES

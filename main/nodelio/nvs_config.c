@@ -833,7 +833,11 @@ uint8_t nodelio_ai_border_width(void)
 uint8_t nodelio_ai_shadow_width(void)
 {
     if (!s_ram_ok || s_ram.ai_sh_w == NODELIO_AI_UNSET || s_ram.ai_sh_w > NODELIO_AI_SH_MAX) {
+#if CONFIG_IDF_TARGET_ESP32S3
+        return 0;
+#else
         return s_ram_ok && s_ram.ui_mode == 1 ? 0 : NODELIO_AI_SH_DEFAULT;
+#endif
     }
     return s_ram.ai_sh_w;
 }

@@ -645,6 +645,7 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
     lv_obj_add_flag(s_ai_drawer_body, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(s_ai_drawer_body, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scroll_dir(s_ai_drawer_body, LV_DIR_VER);
+    lv_obj_clear_flag(s_ai_drawer_body, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
     s_ai_drawer_text = lv_label_create(s_ai_drawer_body);
     lv_label_set_text(s_ai_drawer_text, "说唤醒词「你好小智」或吩咐指令…");

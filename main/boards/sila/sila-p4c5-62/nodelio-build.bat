@@ -35,6 +35,8 @@ set "PATH=D:\Espressif\python_env\idf6.1_py3.11_env\Scripts;D:\Espressif\tools\i
 call "%IDF_PATH%\export.bat"
 if errorlevel 1 exit /b 1
 cd /d "!REPO!"
+python "!REPO!\scripts\nodelio_patch_esp_ml307.py"
+if errorlevel 1 exit /b 1
 
 echo [p4c5-62] idf.py --version
 idf.py --version

@@ -1853,7 +1853,10 @@ void Application::HandleStateChangedEvent() {
 #endif
             break;
         case kDeviceStateNotifying:
+            /* 面板浮层把「说话中...」当成小智会话弹出。点播不是说话，面板不写这句。 */
+#if !CONFIG_NODELIO_PANEL
             display->SetStatus(Lang::Strings::SPEAKING);
+#endif
             /* 须关 voice processing + 唤醒 AFE：HTTP 点歌开声瞬间若仍 feed，
              * AFE(FEED) ring 会堆满并抢核，听感就是前几秒「跳一下」。点停靠 UI。 */
             audio_service_.EnableVoiceProcessing(false);

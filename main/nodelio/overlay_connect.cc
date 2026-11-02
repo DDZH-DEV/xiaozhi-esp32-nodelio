@@ -134,26 +134,57 @@ static void rebuild_server_hist_chips(void)
     }
 }
 
+/** 方屏（sila-86）用分组卡片布局；宽屏沿用原来的平铺小节。 */
+static bool connect_square_layout(void)
+{
+    return nodelio_display_profile()->nav_width == 0;
+}
+
+/** 输入框边框宽度固定：聚焦只换颜色。改宽度会连带改内容区高度，整页跟着跳。 */
+#define CONN_TA_BORDER 2
+/** 方屏字段内边距大一点，触摸更容易命中；宽屏维持原来的紧凑值。 */
+static int conn_ta_pad_v(void) { return connect_square_layout() ? 12 : 8; }
+
+static int connect_field_h(void)
+{
+    return nl_ov_ui_font_line_h() + 4 + 2 * CONN_TA_BORDER + 2 * conn_ta_pad_v();
+}
+
 static void style_ta(lv_obj_t *ta)
 {
-    lv_obj_set_height(ta, 40);
+    if (!ta) {
+        return;
+    }
+    /* 先切单行：它内部会把高度改成 LV_SIZE_CONTENT，必须在之后再锁定固定高。 */
     lv_textarea_set_one_line(ta, true);
     lv_textarea_set_cursor_click_pos(ta, true);
+
+    const int font_h = nl_ov_ui_font_line_h();
+    const int pad_v = conn_ta_pad_v();
+    /* 高度给字体上下留出 4px 安全裕量，彻底避免因基线/字高微小偏差导致 cur_pos.y+font_h > content_h 触发自动滚动 */
+    const int safe_h = font_h + 4;
+    lv_obj_set_height(ta, safe_h + 2 * CONN_TA_BORDER + 2 * pad_v);
+    lv_obj_set_style_pad_ver(ta, pad_v, 0);
+    lv_obj_set_style_pad_hor(ta, 12, 0);
+    lv_obj_set_style_text_line_space(ta, 0, 0);
     lv_obj_set_style_bg_color(ta, UI_FIELD, 0);
     lv_obj_set_style_bg_opa(ta, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(ta, 1, 0);
+    lv_obj_set_style_border_width(ta, CONN_TA_BORDER, 0);
     lv_obj_set_style_border_color(ta, UI_BORDER, 0);
-    lv_obj_set_style_radius(ta, 0, 0);
-    lv_obj_set_style_pad_hor(ta, 10, 0);
-    lv_obj_set_style_pad_ver(ta, 8, 0);
+    lv_obj_set_style_radius(ta, connect_square_layout() ? UI_RADIUS_SM : 0, 0);
     nl_ov_set_font(ta);
     lv_obj_set_style_text_color(ta, UI_TEXT, 0);
     lv_obj_set_style_text_font(ta, nl_ov_ui_font(), LV_PART_TEXTAREA_PLACEHOLDER);
     lv_obj_set_style_text_color(ta, UI_TEXT_MUTED, LV_PART_TEXTAREA_PLACEHOLDER);
     lv_obj_set_style_bg_color(ta, UI_FIELD_FOCUS, LV_STATE_FOCUSED);
-    lv_obj_set_style_border_width(ta, 2, LV_STATE_FOCUSED);
+    lv_obj_set_style_border_width(ta, CONN_TA_BORDER, LV_STATE_FOCUSED);
     lv_obj_set_style_border_color(ta, UI_ACCENT, LV_STATE_FOCUSED);
     lv_obj_set_style_outline_width(ta, 0, LV_STATE_FOCUSED);
+    /* 彻底杜绝垂直滚动与滚动条闪烁：单行输入框仅允许水平滚动 */
+    lv_obj_set_scroll_dir(ta, LV_DIR_HOR);
+    lv_obj_set_scrollbar_mode(ta, LV_SCROLLBAR_MODE_OFF);
+    /* 关掉聚焦时的自动滚动：它带 400ms 动画，和键盘弹开的重新布局叠在一起就是「跳」。 */
+    lv_obj_clear_flag(ta, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
 }
 
 static void add_field_label(lv_obj_t *parent, const char *text)
@@ -162,6 +193,65 @@ static void add_field_label(lv_obj_t *parent, const char *text)
     lv_label_set_text(l, text);
     nl_ov_set_font(l);
     lv_obj_set_style_text_color(l, UI_TEXT_DIM, 0);
+}
+
+/* —— 方屏分组卡片：网络 / 服务器 / 设备 —— */
+#define CONN_CARD_MAX 4
+static lv_obj_t *s_conn_cards[CONN_CARD_MAX];
+static int s_conn_card_n;
+static lv_obj_t *s_conn_actions; /* 方屏底部常驻操作条 */
+static lv_obj_t *s_conn_tip;
+
+/** 分组容器：方屏建卡片，宽屏仍用平铺小节标题。返回后续控件该挂的父对象。 */
+static lv_obj_t *conn_section(const char *title)
+{
+    if (!connect_square_layout()) {
+        if (title && title[0]) {
+            add_field_label(s_connect_scroll, title);
+        }
+        return s_connect_scroll;
+    }
+    lv_obj_t *card = lv_obj_create(s_connect_scroll);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_width(card, lv_pct(100));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(card, UI_SURFACE, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_color(card, UI_TILE_OFF_BORDER, 0);
+    lv_obj_set_style_border_opa(card, LV_OPA_COVER, 0);
+    ui_style_card(card);
+    lv_obj_set_style_pad_all(card, 14, 0);
+    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    if (s_conn_card_n < CONN_CARD_MAX) {
+        s_conn_cards[s_conn_card_n++] = card;
+    }
+    if (title && title[0]) {
+        lv_obj_t *hdr = lv_obj_create(card);
+        lv_obj_remove_style_all(hdr);
+        lv_obj_set_width(hdr, lv_pct(100));
+        lv_obj_set_height(hdr, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(hdr, 6, 0);
+        lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *bar = lv_obj_create(hdr);
+        lv_obj_remove_style_all(bar);
+        lv_obj_set_size(bar, 3, 13);
+        lv_obj_set_style_bg_color(bar, UI_ACCENT, 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(bar, 2, 0);
+
+        lv_obj_t *t = lv_label_create(hdr);
+        lv_label_set_text(t, title);
+        nl_ov_set_font(t);
+        lv_obj_set_style_text_color(t, UI_TEXT, 0);
+    }
+    return card;
 }
 
 /* —— keyboard (lazy) —— */
@@ -313,8 +403,17 @@ static void kb_apply_layout(bool kb_on)
         lv_obj_align(s_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
         lv_obj_set_style_min_height(s_kb, 36, LV_PART_ITEMS);
     }
+    /* 方屏「保存」条是 flex 末项：给整页加底部内边距，键盘弹开时它被顶到键盘上沿，
+     * 而不是被键盘盖住。别用 lv_obj_align —— flex 子项的位置由流式布局决定。 */
+    if (s_conn_actions && s_connect) {
+        const int kb_h = kb_on ? (h * 42) / 100 : 0;
+        lv_obj_set_style_pad_bottom(s_connect, kb_h, 0);
+        /* 改内边距不会自动重排父容器，显式更新一次，否则卡片还按旧高度排。 */
+        lv_obj_update_layout(s_connect);
+    }
     if (s_connect_scroll) {
-        lv_obj_set_style_pad_bottom(s_connect_scroll, kb_on ? 220 : NL_UI_SETTINGS_DETAIL_PAD, 0);
+        /* 底部操作条已常驻，滚动区只需留一点呼吸位。 */
+        lv_obj_set_style_pad_bottom(s_connect_scroll, kb_on ? 8 : NL_UI_SETTINGS_DETAIL_PAD, 0);
         lv_obj_set_style_pad_right(s_connect_scroll, NL_UI_SETTINGS_DETAIL_PAD, 0);
     }
 }
@@ -424,6 +523,9 @@ static void bind_kb_for_ta(lv_obj_t *ta)
 {
     ensure_kb();
     if (!s_kb || !ta) {
+        return;
+    }
+    if (lv_keyboard_get_textarea(s_kb) == ta && !lv_obj_has_flag(s_kb, LV_OBJ_FLAG_HIDDEN)) {
         return;
     }
     lv_keyboard_set_textarea(s_kb, ta);
@@ -740,12 +842,13 @@ void nl_ov_build_connect(void)
     lv_obj_clear_flag(s_connect, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_connect, LV_OBJ_FLAG_HIDDEN);
 
-    (void)ui_make_nav_bar(s_connect, UI_NAV_H, "连接", on_nav_back);
+    (void)ui_make_nav_bar(s_connect, UI_NAV_H, connect_square_layout() ? "连接设置" : "连接", on_nav_back);
 
     s_connect_scroll = lv_obj_create(s_connect);
     lv_obj_set_width(s_connect_scroll, lv_pct(100));
     lv_obj_set_flex_grow(s_connect_scroll, 1);
-    lv_obj_set_style_bg_opa(s_connect_scroll, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(s_connect_scroll, UI_BG, 0);
+    lv_obj_set_style_bg_opa(s_connect_scroll, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_connect_scroll, 0, 0);
     lv_obj_set_style_pad_left(s_connect_scroll, NL_UI_SETTINGS_DETAIL_PAD, 0);
     lv_obj_set_style_pad_right(s_connect_scroll, NL_UI_SETTINGS_DETAIL_PAD, 0);
@@ -755,6 +858,7 @@ void nl_ov_build_connect(void)
     lv_obj_set_flex_flow(s_connect_scroll, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scrollbar_mode(s_connect_scroll, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scroll_dir(s_connect_scroll, LV_DIR_VER);
+    lv_obj_clear_flag(s_connect_scroll, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
     nodelio_nvs_cache_get(&s_cfg);
     {
@@ -780,8 +884,9 @@ void nl_ov_build_connect(void)
     nl_url_parse_server(s_cfg.server_url, host, sizeof(host), port, sizeof(port), &s_https);
 
     /* WiFi：扫描选网，不必手填 SSID */
-    add_field_label(s_connect_scroll, "WiFi 名称");
-    lv_obj_t *ssid_row = lv_obj_create(s_connect_scroll);
+    lv_obj_t *wifi_card = conn_section("网络");
+    add_field_label(wifi_card, "WiFi 名称");
+    lv_obj_t *ssid_row = lv_obj_create(wifi_card);
     lv_obj_set_width(ssid_row, lv_pct(100));
     lv_obj_set_height(ssid_row, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(ssid_row, LV_OPA_TRANSP, 0);
@@ -799,10 +904,19 @@ void nl_ov_build_connect(void)
     lv_textarea_set_placeholder_text(s_ta_ssid, "点扫描选网或手填");
     wire_ta_input(s_ta_ssid);
 
-    lv_obj_t *scan_btn = ui_make_action_btn(ssid_row, "扫描", 80, 40, on_wifi_scan_btn);
+    lv_obj_t *scan_btn = ui_make_action_btn(ssid_row, "扫描", connect_square_layout() ? 72 : 80, connect_field_h(), on_wifi_scan_btn);
     s_scan_btn_lbl = lv_obj_get_child(scan_btn, 0);
+    if (connect_square_layout()) {
+        lv_obj_set_style_bg_color(scan_btn, UI_CAPSULE_OFF, 0);
+        lv_obj_set_style_border_width(scan_btn, 1, 0);
+        lv_obj_set_style_border_color(scan_btn, UI_ACCENT, 0);
+        lv_obj_set_style_border_opa(scan_btn, LV_OPA_COVER, 0);
+        if (s_scan_btn_lbl) {
+            lv_obj_set_style_text_color(s_scan_btn_lbl, UI_ACCENT, 0);
+        }
+    }
 
-    s_wifi_list = lv_obj_create(s_connect_scroll);
+    s_wifi_list = lv_obj_create(wifi_card);
     lv_obj_set_width(s_wifi_list, lv_pct(100));
     lv_obj_set_height(s_wifi_list, 168); /* 约 4 行，内部自滚，避免撑满挡住下面表单 */
     lv_obj_set_style_bg_color(s_wifi_list, UI_PANEL, 0);
@@ -815,12 +929,13 @@ void nl_ov_build_connect(void)
     lv_obj_set_flex_flow(s_wifi_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(s_wifi_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_wifi_list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(s_wifi_list, LV_OBJ_FLAG_SCROLL_ELASTIC);
     lv_obj_add_flag(s_wifi_list, LV_OBJ_FLAG_HIDDEN);
     s_wifi_scanning = false;
     s_scan_n = 0;
 
-    add_field_label(s_connect_scroll, "WiFi 密码（已存网络可留空）");
-    s_ta_pass = lv_textarea_create(s_connect_scroll);
+    add_field_label(wifi_card, "WiFi 密码（已存网络可留空）");
+    s_ta_pass = lv_textarea_create(wifi_card);
     style_ta(s_ta_pass);
     lv_obj_set_width(s_ta_pass, lv_pct(100));
     lv_textarea_set_password_mode(s_ta_pass, true);
@@ -828,8 +943,8 @@ void nl_ov_build_connect(void)
     lv_textarea_set_placeholder_text(s_ta_pass, "输入密码");
     wire_ta_input(s_ta_pass);
 
-    add_field_label(s_connect_scroll, "服务器");
-    lv_obj_t *proto_row = lv_obj_create(s_connect_scroll);
+    lv_obj_t *srv_card = conn_section("服务器");
+    lv_obj_t *proto_row = lv_obj_create(srv_card);
     lv_obj_set_width(proto_row, lv_pct(100));
     lv_obj_set_height(proto_row, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(proto_row, LV_OPA_TRANSP, 0);
@@ -841,7 +956,7 @@ void nl_ov_build_connect(void)
     lv_obj_clear_flag(proto_row, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *proto_btn = ui_make_action_btn(
-        proto_row, proto_btn_text(), 88, UI_BTN_H_SM,
+        proto_row, proto_btn_text(), connect_square_layout() ? 68 : 76, connect_field_h(),
         [](lv_event_t *) {
             s_https = !s_https;
             if (s_proto_lbl) {
@@ -849,6 +964,14 @@ void nl_ov_build_connect(void)
             }
         });
     s_proto_lbl = lv_obj_get_child(proto_btn, 0);
+    if (connect_square_layout()) {
+        lv_obj_set_style_bg_color(proto_btn, UI_CAPSULE_OFF, 0);
+        lv_obj_set_style_border_width(proto_btn, 1, 0);
+        lv_obj_set_style_border_color(proto_btn, UI_TILE_OFF_BORDER, 0);
+        if (s_proto_lbl) {
+            lv_obj_set_style_text_color(s_proto_lbl, UI_ACCENT, 0);
+        }
+    }
 
     s_ta_host = lv_textarea_create(proto_row);
     style_ta(s_ta_host);
@@ -862,19 +985,20 @@ void nl_ov_build_connect(void)
 
     s_ta_port = lv_textarea_create(proto_row);
     style_ta(s_ta_port);
-    lv_obj_set_width(s_ta_port, 80);
+    lv_obj_set_width(s_ta_port, connect_square_layout() ? 66 : 72);
+    lv_textarea_set_placeholder_text(s_ta_port, "8899");
     lv_textarea_set_max_length(s_ta_port, 5);
     lv_textarea_set_text(s_ta_port, port);
     lv_textarea_set_accepted_chars(s_ta_port, "0123456789");
     wire_ta_input(s_ta_port);
 
-    s_hist_hint = lv_label_create(s_connect_scroll);
+    s_hist_hint = lv_label_create(srv_card);
     lv_label_set_text(s_hist_hint, "历史服务器（点选回填）");
     nl_ov_set_font(s_hist_hint);
     lv_obj_set_style_text_color(s_hist_hint, UI_TEXT_DIM, 0);
     lv_obj_add_flag(s_hist_hint, LV_OBJ_FLAG_HIDDEN);
 
-    s_hist_row = lv_obj_create(s_connect_scroll);
+    s_hist_row = lv_obj_create(srv_card);
     lv_obj_set_width(s_hist_row, lv_pct(100));
     lv_obj_set_height(s_hist_row, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(s_hist_row, LV_OPA_TRANSP, 0);
@@ -887,25 +1011,48 @@ void nl_ov_build_connect(void)
     lv_obj_clear_flag(s_hist_row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_hist_row, LV_OBJ_FLAG_HIDDEN);
 
-    add_field_label(s_connect_scroll, "绑定码");
-    s_ta_owner = lv_textarea_create(s_connect_scroll);
+    lv_obj_t *dev_card = conn_section("设备");
+    add_field_label(dev_card, "绑定码");
+    s_ta_owner = lv_textarea_create(dev_card);
     style_ta(s_ta_owner);
     lv_obj_set_width(s_ta_owner, lv_pct(100));
     lv_textarea_set_max_length(s_ta_owner, sizeof(s_cfg.owner) - 1);
     lv_textarea_set_text(s_ta_owner, s_cfg.owner);
     wire_ta_input(s_ta_owner);
 
-    add_field_label(s_connect_scroll, "截屏接收地址（留空同服务器）");
-    s_ta_screenshot = lv_textarea_create(s_connect_scroll);
+    add_field_label(dev_card, "截屏接收地址（留空同服务器）");
+    s_ta_screenshot = lv_textarea_create(dev_card);
     style_ta(s_ta_screenshot);
     lv_textarea_set_placeholder_text(s_ta_screenshot, "如 192.168.1.x 或完整 URL");
-    lv_textarea_set_one_line(s_ta_screenshot, true);
     lv_obj_set_width(s_ta_screenshot, lv_pct(100));
     lv_textarea_set_max_length(s_ta_screenshot, sizeof(s_cfg.screenshot_url) - 1);
     lv_textarea_set_text(s_ta_screenshot, s_cfg.screenshot_url);
     wire_ta_input(s_ta_screenshot);
 
-    lv_obj_t *btn_row = lv_obj_create(s_connect_scroll);
+    /* 方屏把「保存」钉在屏底，不随表单滚走；宽屏仍留在表单末尾。 */
+    lv_obj_t *btn_host = s_connect_scroll;
+    if (connect_square_layout()) {
+        s_conn_actions = lv_obj_create(s_connect);
+        lv_obj_remove_style_all(s_conn_actions);
+        lv_obj_set_width(s_conn_actions, lv_pct(100));
+        lv_obj_set_height(s_conn_actions, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(s_conn_actions, UI_PANEL, 0);
+        lv_obj_set_style_bg_opa(s_conn_actions, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(s_conn_actions, 1, 0);
+        lv_obj_set_style_border_side(s_conn_actions, LV_BORDER_SIDE_TOP, 0);
+        lv_obj_set_style_border_color(s_conn_actions, UI_BORDER, 0);
+        lv_obj_set_style_border_opa(s_conn_actions, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_hor(s_conn_actions, NL_UI_SETTINGS_DETAIL_PAD, 0);
+        lv_obj_set_style_pad_ver(s_conn_actions, 10, 0);
+        lv_obj_set_style_pad_column(s_conn_actions, 10, 0);
+        lv_obj_set_flex_flow(s_conn_actions, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(s_conn_actions, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(s_conn_actions, LV_OBJ_FLAG_SCROLLABLE);
+        btn_host = s_conn_actions;
+    }
+
+    lv_obj_t *btn_row = lv_obj_create(btn_host);
     lv_obj_set_width(btn_row, lv_pct(100));
     lv_obj_set_height(btn_row, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
@@ -917,10 +1064,12 @@ void nl_ov_build_connect(void)
 
     lv_obj_t *cancel = lv_button_create(btn_row);
     lv_obj_set_flex_grow(cancel, 1);
-    lv_obj_set_height(cancel, UI_BTN_H_SM);
+    lv_obj_set_height(cancel, connect_square_layout() ? 40 : UI_BTN_H_SM);
     lv_obj_set_ext_click_area(cancel, UI_EXT_CLICK);
-    lv_obj_set_style_bg_color(cancel, UI_OFFLINE, 0);
-    lv_obj_set_style_radius(cancel, UI_RADIUS_SM, 0);
+    lv_obj_set_style_bg_color(cancel, connect_square_layout() ? UI_SURFACE : UI_OFFLINE, 0);
+    lv_obj_set_style_border_width(cancel, connect_square_layout() ? 1 : 0, 0);
+    lv_obj_set_style_border_color(cancel, UI_TILE_OFF_BORDER, 0);
+    lv_obj_set_style_radius(cancel, connect_square_layout() ? UI_RADIUS_SM : 0, 0);
     lv_obj_set_style_shadow_width(cancel, 0, 0);
     lv_obj_add_event_cb(cancel, [](lv_event_t *) { nl_ov_close_connect(); }, LV_EVENT_CLICKED, nullptr);
     lv_obj_t *cl = lv_label_create(cancel);
@@ -930,12 +1079,12 @@ void nl_ov_build_connect(void)
     lv_obj_center(cl);
 
     lv_obj_t *save = lv_button_create(btn_row);
-    lv_obj_set_flex_grow(save, 1);
-    lv_obj_set_height(save, UI_BTN_H_SM);
+    lv_obj_set_flex_grow(save, connect_square_layout() ? 2 : 1);
+    lv_obj_set_height(save, connect_square_layout() ? 40 : UI_BTN_H_SM);
     lv_obj_set_ext_click_area(save, UI_EXT_CLICK);
     lv_obj_set_style_bg_color(save, UI_ACCENT, 0);
     lv_obj_set_style_bg_color(save, UI_ACCENT_PRESSED, LV_STATE_PRESSED);
-    lv_obj_set_style_radius(save, UI_RADIUS_SM, 0);
+    lv_obj_set_style_radius(save, connect_square_layout() ? UI_RADIUS_SM : 0, 0);
     lv_obj_set_style_shadow_width(save, 0, 0);
     lv_obj_add_event_cb(save, on_save, LV_EVENT_CLICKED, nullptr);
     lv_obj_t *sl = lv_label_create(save);
@@ -944,12 +1093,14 @@ void nl_ov_build_connect(void)
     lv_obj_set_style_text_color(sl, UI_ON_TILE, 0);
     lv_obj_center(sl);
 
-    lv_obj_t *tip = lv_label_create(s_connect_scroll);
-    lv_label_set_text(tip, "先点「扫描」选 WiFi，再填密码与服务器；点「保存并重启」写入闪存。返回也会保存已填主机与绑定码");
-    nl_ov_set_font(tip);
-    lv_obj_set_style_text_color(tip, UI_TEXT_TIP, 0);
-    lv_label_set_long_mode(tip, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(tip, lv_pct(100));
+    if (!connect_square_layout()) {
+        s_conn_tip = lv_label_create(s_connect_scroll);
+        lv_label_set_text(s_conn_tip, "先点「扫描」选 WiFi，再填密码与服务器；点「保存并重启」写入闪存。返回也会保存已填主机与绑定码");
+        nl_ov_set_font(s_conn_tip);
+        lv_obj_set_style_text_color(s_conn_tip, UI_TEXT_TIP, 0);
+        lv_label_set_long_mode(s_conn_tip, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(s_conn_tip, lv_pct(100));
+    }
     rebuild_server_hist_chips();
 }
 
@@ -1092,7 +1243,12 @@ static void paint_connect_action(lv_obj_t *lbl)
     if (!btn) {
         return;
     }
-    lv_obj_set_style_bg_color(btn, UI_BACK_BTN, 0);
+    if (connect_square_layout()) {
+        lv_obj_set_style_bg_color(btn, UI_CAPSULE_OFF, 0);
+        lv_obj_set_style_border_color(btn, lbl == s_scan_btn_lbl ? UI_ACCENT : UI_TILE_OFF_BORDER, 0);
+    } else {
+        lv_obj_set_style_bg_color(btn, UI_BACK_BTN, 0);
+    }
     lv_obj_set_style_text_color(lbl, UI_ACCENT, 0);
 }
 
@@ -1127,19 +1283,67 @@ void nl_ov_connect_reapply_appearance(void)
             lv_obj_set_style_text_color(s_hist_hint, UI_TEXT_DIM, 0);
         }
         if (s_connect_scroll) {
+            lv_obj_set_style_bg_color(s_connect_scroll, UI_BG, 0);
             const uint32_t n = lv_obj_get_child_count(s_connect_scroll);
             for (uint32_t i = 0; i < n; i++) {
                 lv_obj_t *ch = lv_obj_get_child(s_connect_scroll, i);
-                if (ch != s_hist_hint && lv_obj_check_type(ch, &lv_label_class)) {
+                if (ch == s_conn_tip) {
+                    lv_obj_set_style_text_color(ch, UI_TEXT_TIP, 0);
+                } else if (ch != s_hist_hint && lv_obj_check_type(ch, &lv_label_class)) {
                     lv_obj_set_style_text_color(ch, UI_TEXT_DIM, 0);
                 }
             }
+            /* 宽屏：按钮行是滚动区最后一个子对象；方屏已移到常驻操作条。 */
             if (n > 0) {
                 lv_obj_t *row = lv_obj_get_child(s_connect_scroll, n - 1);
                 if (row && lv_obj_get_child_count(row) >= 2) {
                     lv_obj_t *cancel = lv_obj_get_child(row, 0);
                     lv_obj_t *save = lv_obj_get_child(row, 1);
-                    lv_obj_set_style_bg_color(cancel, UI_OFFLINE, 0);
+                    lv_obj_set_style_bg_color(cancel, connect_square_layout() ? UI_SURFACE : UI_OFFLINE, 0);
+                    lv_obj_set_style_border_color(cancel, UI_TILE_OFF_BORDER, 0);
+                    if (lv_obj_t *cl = lv_obj_get_child(cancel, 0)) {
+                        lv_obj_set_style_text_color(cl, UI_TEXT_SUB, 0);
+                    }
+                    lv_obj_set_style_bg_color(save, UI_ACCENT, 0);
+                    lv_obj_set_style_bg_color(save, UI_ACCENT_PRESSED, LV_STATE_PRESSED);
+                    if (lv_obj_t *sl = lv_obj_get_child(save, 0)) {
+                        lv_obj_set_style_text_color(sl, UI_ON_TILE, 0);
+                    }
+                }
+            }
+        }
+        for (int i = 0; i < s_conn_card_n; i++) {
+            lv_obj_t *card = s_conn_cards[i];
+            if (!card) {
+                continue;
+            }
+            lv_obj_set_style_bg_color(card, UI_SURFACE, 0);
+            lv_obj_set_style_border_color(card, UI_TILE_OFF_BORDER, 0);
+            ui_style_card(card);
+            if (lv_obj_get_child_count(card) > 0) {
+                lv_obj_t *hdr = lv_obj_get_child(card, 0);
+                if (lv_obj_check_type(hdr, &lv_label_class)) {
+                    lv_obj_set_style_text_color(hdr, UI_TEXT_SUB, 0);
+                } else if (lv_obj_get_child_count(hdr) >= 2) {
+                    lv_obj_t *bar = lv_obj_get_child(hdr, 0);
+                    lv_obj_set_style_bg_color(bar, UI_ACCENT, 0);
+                    lv_obj_t *t = lv_obj_get_child(hdr, 1);
+                    if (t && lv_obj_check_type(t, &lv_label_class)) {
+                        lv_obj_set_style_text_color(t, UI_TEXT, 0);
+                    }
+                }
+            }
+        }
+        if (s_conn_actions) {
+            lv_obj_set_style_bg_color(s_conn_actions, UI_PANEL, 0);
+            lv_obj_set_style_border_color(s_conn_actions, UI_BORDER, 0);
+            if (lv_obj_get_child_count(s_conn_actions) > 0) {
+                lv_obj_t *row = lv_obj_get_child(s_conn_actions, 0);
+                if (row && lv_obj_get_child_count(row) >= 2) {
+                    lv_obj_t *cancel = lv_obj_get_child(row, 0);
+                    lv_obj_t *save = lv_obj_get_child(row, 1);
+                    lv_obj_set_style_bg_color(cancel, connect_square_layout() ? UI_SURFACE : UI_OFFLINE, 0);
+                    lv_obj_set_style_border_color(cancel, UI_TILE_OFF_BORDER, 0);
                     if (lv_obj_t *cl = lv_obj_get_child(cancel, 0)) {
                         lv_obj_set_style_text_color(cl, UI_TEXT_SUB, 0);
                     }

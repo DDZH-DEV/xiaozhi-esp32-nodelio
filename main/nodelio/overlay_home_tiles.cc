@@ -921,6 +921,11 @@ static void tile_apply_trans(lv_obj_t *obj)
     if (!obj) {
         return;
     }
+#if CONFIG_IDF_TARGET_ESP32S3
+    /* S3 无 PPA：跳过磁贴整树逐帧颜色插值，单帧即时切换状态色 */
+    lv_obj_remove_local_style_prop(obj, LV_STYLE_TRANSITION, 0);
+    return;
+#endif
     if (s_tile_bulk_refresh) {
         /* 禁止写成 transition=NULL：按下时 LVGL update_obj_state 会解引用崩溃。 */
         lv_obj_remove_local_style_prop(obj, LV_STYLE_TRANSITION, 0);
@@ -992,6 +997,10 @@ static void tile_icon_pop(lv_obj_t *cap)
     if (!cap) {
         return;
     }
+#if CONFIG_IDF_TARGET_ESP32S3
+    /* S3 无 PPA：避免 transform_scale 触发 LVGL 9 分配 ARGB8888 离屏图层与软件双线性缩放 */
+    return;
+#endif
     const int32_t w = lv_obj_get_width(cap);
     const int32_t h = lv_obj_get_height(cap);
     lv_obj_set_style_transform_pivot_x(cap, w > 0 ? w / 2 : 16, 0);
@@ -2001,9 +2010,11 @@ static lv_obj_t *make_tile_shell(const nl_widget_t *w, tile_kind_t kind, int cel
     lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(tile, UI_EXT_CLICK);
     lv_obj_set_style_bg_color(tile, lv_color_hex(color_pressed(fill)), LV_STATE_PRESSED);
+#if !CONFIG_IDF_TARGET_ESP32S3
     lv_obj_set_style_translate_y(tile, 1, LV_STATE_PRESSED);
     ensure_tile_trans();
     lv_obj_set_style_transition(tile, &s_tile_trans, 0);
+#endif
     return tile;
 }
 
@@ -2040,7 +2051,9 @@ static lv_obj_t *make_dual_seg(lv_obj_t *parent, nl_widget_t *w, intptr_t role, 
     lv_obj_add_flag(seg, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(seg, UI_EXT_CLICK);
     lv_obj_set_style_bg_color(seg, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+#if !CONFIG_IDF_TARGET_ESP32S3
     lv_obj_set_style_translate_y(seg, 1, LV_STATE_PRESSED);
+#endif
     lv_obj_add_event_cb(seg, on_dual_seg, LV_EVENT_CLICKED, w);
 
     char short_n[24];
@@ -3744,6 +3757,7 @@ static void fill_home_launcher(void)
     lv_obj_add_flag(s_home, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_home, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_home, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(s_home, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
     lv_obj_t *hdr = lv_obj_create(s_home);
     lv_obj_remove_style_all(hdr);
