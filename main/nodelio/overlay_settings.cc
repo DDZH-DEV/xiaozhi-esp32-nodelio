@@ -104,10 +104,24 @@ static void on_screenshot_fab_chip(lv_event_t *e)
     nl_ov_commit_screenshot_fab((uint8_t)en);
 }
 
-static void on_card_radius_chip(lv_event_t *e)
+static lv_obj_t *s_card_rad_lbl = nullptr;
+
+static void on_card_radius_changed(lv_event_t *e)
 {
-    intptr_t rad = (intptr_t)lv_event_get_user_data(e);
-    nl_ov_commit_card_radius((uint8_t)rad);
+    lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
+    int v = (int)lv_slider_get_value(sl);
+    if (s_card_rad_lbl) {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%dpx", v);
+        lv_label_set_text(s_card_rad_lbl, buf);
+    }
+}
+
+static void on_card_radius_release(lv_event_t *e)
+{
+    lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
+    int v = (int)lv_slider_get_value(sl);
+    nl_ov_commit_card_radius((uint8_t)v);
 }
 
 static void on_idle_sleep_changed(lv_event_t *e)
@@ -186,11 +200,11 @@ static lv_obj_t *audio_ctrl_band(lv_obj_t *parent, const char *title, const char
     lv_obj_set_style_border_width(band, 1, 0);
     lv_obj_set_style_border_color(band, UI_TILE_OFF_BORDER, 0);
     lv_obj_set_style_border_opa(band, LV_OPA_80, 0);
-    lv_obj_set_style_pad_left(band, 14, 0);
-    lv_obj_set_style_pad_right(band, 14, 0);
-    lv_obj_set_style_pad_top(band, 10, 0);
-    lv_obj_set_style_pad_bottom(band, 10, 0);
-    lv_obj_set_style_pad_row(band, 6, 0);
+    lv_obj_set_style_pad_left(band, 18, 0);
+    lv_obj_set_style_pad_right(band, 18, 0);
+    lv_obj_set_style_pad_top(band, 12, 0);
+    lv_obj_set_style_pad_bottom(band, 12, 0);
+    lv_obj_set_style_pad_row(band, 8, 0);
     lv_obj_set_flex_flow(band, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(band, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_clear_flag(band, LV_OBJ_FLAG_SCROLLABLE);
@@ -637,40 +651,17 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         nl_ov_set_font(fab_hint);
         lv_obj_set_style_text_color(fab_hint, UI_TEXT_TIP, 0);
 
-        const uint8_t rad_cur = s_cfg.card_radius > 2 ? 0 : s_cfg.card_radius;
-        static const char *k_rad_names[] = {"标准", "直角", "圆润"};
-        lv_obj_t *rad_band = audio_ctrl_band(body, "卡片圆角", k_rad_names[rad_cur], nullptr);
-        lv_obj_t *rad_row = lv_obj_create(rad_band);
-        lv_obj_remove_style_all(rad_row);
-        lv_obj_set_width(rad_row, lv_pct(100));
-        lv_obj_set_height(rad_row, 44);
-        lv_obj_set_flex_flow(rad_row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(rad_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(rad_row, 8, 0);
-        lv_obj_clear_flag(rad_row, LV_OBJ_FLAG_SCROLLABLE);
-        for (int i = 0; i < 3; i++) {
-            const bool on = rad_cur == (uint8_t)i;
-            lv_obj_t *chip = lv_obj_create(rad_row);
-            lv_obj_remove_style_all(chip);
-            lv_obj_set_flex_grow(chip, 1);
-            lv_obj_set_height(chip, 44);
-            lv_obj_set_style_radius(chip, 12, 0);
-            lv_obj_set_style_bg_color(chip, on ? UI_ACCENT : UI_CAPSULE_OFF, 0);
-            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
-            lv_obj_set_style_bg_color(chip, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
-            lv_obj_set_style_translate_y(chip, 1, LV_STATE_PRESSED);
-            lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_ext_click_area(chip, UI_EXT_CLICK);
-            lv_obj_add_event_cb(chip, on_card_radius_chip, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-            lv_obj_t *lab = lv_label_create(chip);
-            nl_ov_set_font(lab);
-            lv_label_set_text(lab, k_rad_names[i]);
-            lv_obj_set_style_text_color(lab, on ? UI_ON_TILE : UI_TEXT, 0);
-            lv_obj_center(lab);
-        }
+        char rad_str[16];
+        std::snprintf(rad_str, sizeof(rad_str), "%dpx", nodelio_card_radius_px());
+        lv_obj_t *rad_band = audio_ctrl_band(body, "卡片圆角", rad_str, &s_card_rad_lbl);
+        lv_obj_t *rad_sl = lv_slider_create(rad_band);
+        ui_style_slider(rad_sl);
+        lv_slider_set_range(rad_sl, 0, 24);
+        lv_slider_set_value(rad_sl, nodelio_card_radius_px(), LV_ANIM_OFF);
+        lv_obj_add_event_cb(rad_sl, on_card_radius_changed, LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_add_event_cb(rad_sl, on_card_radius_release, LV_EVENT_RELEASED, nullptr);
         lv_obj_t *rad_hint = lv_label_create(rad_band);
-        lv_label_set_text(rad_hint, "自定义全屏卡片与磁贴圆角弧度");
+        lv_label_set_text(rad_hint, "拖动调节全屏卡片与磁贴圆角弧度 (0-24px)");
         nl_ov_set_font(rad_hint);
         lv_obj_set_style_text_color(rad_hint, UI_TEXT_TIP, 0);
     } else if (page == SET_PAGE_SYS) {

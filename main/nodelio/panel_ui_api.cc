@@ -446,7 +446,7 @@ static void notice_normalize_defaults(nodelio_panel_notice_t *n)
     }
     if (!n->coalesce_key[0] && n->session[0]) {
         const char *ka = n->app_id[0] ? n->app_id : "app";
-        snprintf(n->coalesce_key, sizeof(n->coalesce_key), "%s:session:%s", ka, n->session);
+        snprintf(n->coalesce_key, sizeof(n->coalesce_key), "%.70s:session:%.79s", ka, n->session);
     }
 }
 
@@ -1062,7 +1062,9 @@ extern "C" void nodelio_panel_ui_notice_resolve_all(void)
 extern "C" void nodelio_panel_ui_open_notices(void)
 {
     Application::GetInstance().Schedule([]() {
-        nodelio_overlay_set_visible(true);
+        if (!nodelio_overlay_visible()) {
+            nodelio_overlay_show(false);
+        }
         DisplayLockGuard lock(nl_ov_disp());
         if (lock) {
             nl_ov_open_notices();

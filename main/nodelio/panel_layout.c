@@ -788,6 +788,29 @@ static void bootstrap_apply_skills(const cJSON *root)
     cJSON_free(printed);
 }
 
+static void bootstrap_apply_notices(const cJSON *root)
+{
+    if (!root) {
+        return;
+    }
+    const cJSON *nt = cJSON_GetObjectItemCaseSensitive((cJSON *)root, "notices");
+    if (!nt) {
+        return;
+    }
+    cJSON *slim = cJSON_CreateObject();
+    if (!slim) {
+        return;
+    }
+    cJSON_AddItemReferenceToObject(slim, "notices", (cJSON *)nt);
+    char *printed = cJSON_PrintUnformatted(slim);
+    cJSON_Delete(slim);
+    if (!printed) {
+        return;
+    }
+    nodelio_panel_ui_apply_notices_http_body(printed);
+    cJSON_free(printed);
+}
+
 static void bootstrap_cache_layout(int version, const cJSON *layout_obj)
 {
     if (!layout_obj || version <= 0) {

@@ -290,7 +290,7 @@ void nl_ov_commit_ui_mode(uint8_t mode);
 void nl_ov_commit_text_scale(uint8_t scale);
 void nl_ov_commit_status_bar_mode(uint8_t mode);
 void nl_ov_commit_screenshot_fab(uint8_t en);
-void nl_ov_commit_card_radius(uint8_t rad_mode);
+void nl_ov_commit_card_radius(uint8_t rad_px);
 void nl_ov_persist_voice_and_reboot(void);
 void nl_ov_apply_sleep_board(void);
 void nl_ov_fill_settings(void);

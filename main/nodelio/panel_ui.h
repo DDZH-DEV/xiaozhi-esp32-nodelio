@@ -58,6 +58,7 @@ void nodelio_panel_ui_skills_changed(void);
 
 /** bootstrap /skills 响应：同步写入已装列表与钉选（可无 UI 锁）；随后 Schedule 刷 UI. */
 void nodelio_panel_ui_apply_skills_http_body(const char *json);
+void nodelio_panel_ui_apply_notices_http_body(const char *json);
 
 /**
  * MQTT kind=notice（及过渡 skill_hint）：事件驱动 Toast / 单次 invoke。
@@ -67,6 +68,7 @@ typedef struct nodelio_panel_notice {
     char notice_id[40];
     char mode[12];
     char severity[12];
+    char coalesce_key[168];
     char title[96];
     char app_id[72];
     char invoke_app[72];
@@ -80,6 +82,13 @@ void nodelio_panel_ui_notice(const nodelio_panel_notice_t *notice);
 void nodelio_panel_ui_notice_clear(const char *notice_id);
 /** 息屏期间积压的 info：亮屏后 Flush（由板级 OnExitSleepMode 调用）。 */
 void nodelio_panel_ui_notice_flush_deferred(void);
+int nodelio_panel_ui_notice_unread_count(void);
+const nodelio_panel_notice_t *nodelio_panel_ui_notice_get(int index);
+void nodelio_panel_ui_notice_resolve(const char *notice_id, bool open_target);
+void nodelio_panel_ui_notice_resolve_all(void);
+void nodelio_panel_ui_open_notices(void);
+void nodelio_panel_ui_close_notices(void);
+void nodelio_panel_ui_notices_sync_async(void);
 
 /**
  * 旧 MQTT kind=skill_hint 入口：映射为 notice 后处理。

@@ -300,6 +300,11 @@ void nodelio_overlay_apply_text_scale(void)
 
 void nl_ov_apply_text_scale(void)
 {
+    static uint8_t s_last_applied_scale = 255;
+    const uint8_t cur_scale = (uint8_t)nodelio_text_scale();
+    const bool scale_changed = (cur_scale != s_last_applied_scale);
+    s_last_applied_scale = cur_scale;
+
     if (s_root) {
         lv_obj_set_style_text_font(s_root, nl_ov_ui_font(), 0);
     }
@@ -323,7 +328,7 @@ void nl_ov_apply_text_scale(void)
     }
     apply_font_if(s_ai_drawer_status);
     apply_font_if(s_ai_drawer_text);
-    if (s_have_layout && s_home) {
+    if (scale_changed && s_have_layout && s_home) {
         nl_ov_fill_home();
     }
     nl_ov_apps_relayout();

@@ -1018,6 +1018,10 @@ void nodelio_overlay_on_status_locked(const char *status)
             nl_ov_hide_ai_drawer();
             return;
         }
+        /* 抽屉隐藏且未在会话中时，后台建链/入网状态禁止自动弹出抽屉（避免开机初始化与网络通知重叠） */
+        if (ph == CHAT_CONNECT && (!s_ai_drawer || lv_obj_has_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN))) {
+            return;
+        }
         nl_ov_show_ai_drawer_locked(ph, status, nullptr);
     }
 }

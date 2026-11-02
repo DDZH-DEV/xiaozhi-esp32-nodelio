@@ -49,7 +49,7 @@ typedef struct {
     uint8_t ai_bd_i;    /* 边框色 0=默认 1=暖灰 2=绿 */
     uint8_t status_bar_mode;   /* 顶栏状态栏：0=自动隐藏(默认) 1=常显 2=常隐 */
     uint8_t screenshot_fab_en; /* 截图悬浮图标：0=隐藏 1=显示(默认) */
-    uint8_t card_radius;       /* 卡片圆角档位：0=标准(16px,默认) 1=直角(4px) 2=圆润(22px) */
+    uint8_t card_radius;       /* 卡片圆角像素半径：0–24px (默认 12px) */
 } nodelio_nvs_config_t;
 
 #define NODELIO_TEXT_SCALE_DEFAULT 1

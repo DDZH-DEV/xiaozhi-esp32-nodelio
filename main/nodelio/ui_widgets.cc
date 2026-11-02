@@ -435,6 +435,8 @@ void ui_style_slider(lv_obj_t *sl)
     lv_obj_set_width(sl, lv_pct(100));
     lv_obj_set_height(sl, 6);
     lv_obj_set_ext_click_area(sl, 21);
+    lv_obj_set_style_margin_top(sl, 8, 0);
+    lv_obj_set_style_margin_bottom(sl, 8, 0);
     lv_obj_set_style_pad_all(sl, 0, LV_PART_MAIN);
     lv_obj_set_style_bg_color(sl, UI_SLIDER_TRACK, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_MAIN);
@@ -446,7 +448,7 @@ void ui_style_slider(lv_obj_t *sl)
     lv_obj_set_style_border_color(sl, UI_BORDER, LV_PART_KNOB);
     lv_obj_set_style_shadow_width(sl, 0, LV_PART_KNOB);
     lv_obj_set_style_radius(sl, LV_RADIUS_CIRCLE, LV_PART_KNOB);
-    lv_obj_set_style_pad_all(sl, 10, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(sl, 8, LV_PART_KNOB);
 }
 
 void ui_style_switch(lv_obj_t* sw) {

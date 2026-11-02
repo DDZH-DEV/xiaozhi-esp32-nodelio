@@ -190,8 +190,8 @@ static void style_notice_chrome(void)
         return;
     }
     lv_obj_set_style_bg_color(s_notice_card, UI_PANEL, 0);
-    lv_obj_set_style_border_color(s_notice_card, UI_BORDER_GLOW, 0);
-    lv_obj_set_style_radius(s_notice_card, UI_RADIUS_LG, 0);
+    lv_obj_set_style_border_color(s_notice_card, UI_BORDER, 0);
+    lv_obj_set_style_radius(s_notice_card, UI_RADIUS_MD, 0);
     if (s_notice_title_lbl) {
         nl_ov_set_font_title(s_notice_title_lbl);
         lv_obj_set_style_text_color(s_notice_title_lbl, UI_TEXT, 0);

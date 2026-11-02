@@ -330,22 +330,23 @@ void nl_ov_commit_screenshot_fab(uint8_t en)
     nl_ov_open_settings_detail(SET_PAGE_DISP);
 }
 
-void nl_ov_commit_card_radius(uint8_t rad_mode)
+void nl_ov_commit_card_radius(uint8_t rad_px)
 {
-    rad_mode = rad_mode > 2 ? 0 : rad_mode;
-    if (s_cfg.card_radius == rad_mode) {
+    rad_px = rad_px > 24 ? 12 : rad_px;
+    if (s_cfg.card_radius == rad_px) {
         return;
     }
-    s_cfg.card_radius = rad_mode;
+    s_cfg.card_radius = rad_px;
     nl_ov_persist_cfg_async();
-    Application::GetInstance().Schedule([rad_mode]() {
+    Application::GetInstance().Schedule([rad_px]() {
         DisplayLockGuard lock(nl_ov_disp());
         if (!lock) {
             return;
         }
         nl_ov_apply_appearance();
-        static const char *k_rad_toast[] = {"圆角 标准 (16px)", "圆角 直角 (4px)", "圆角 圆润 (22px)"};
-        nl_ov_toast(k_rad_toast[rad_mode]);
+        char toast[32];
+        std::snprintf(toast, sizeof(toast), "卡片圆角已设为 %dpx", (int)rad_px);
+        nl_ov_toast(toast);
         nl_ov_open_settings_detail(SET_PAGE_DISP);
     });
 }
