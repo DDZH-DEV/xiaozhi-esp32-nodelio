@@ -1,4 +1,6 @@
-/* Built-in daily view. Included by skill_result_ui.cc; no polling task or calendar dependency. */
+#include "skill_ui_priv.h"
+
+/* Built-in daily view. No polling task or calendar dependency. */
 static uint32_t s_daily_generation;
 static bool s_daily_weather;
 static int s_daily_year;
@@ -25,7 +27,6 @@ static void daily_reset_month(void) {
     }
 }
 
-static void fill_calendar_weather(void);
 static void daily_pager_footer(lv_obj_t* parent);
 
 static void daily_redraw(void) {
@@ -783,7 +784,7 @@ static void daily_pager_footer(lv_obj_t* parent) {
     }
 }
 
-static void fill_calendar_weather(void) {
+void fill_calendar_weather(void) {
     bzero(s_row_idx_labels, sizeof(s_row_idx_labels));
     bzero(s_row_btns, sizeof(s_row_btns));
     /* 日历用精简头部：先收紧卡片内边距，daily_cell_h() 才是按 pad 8 算的。

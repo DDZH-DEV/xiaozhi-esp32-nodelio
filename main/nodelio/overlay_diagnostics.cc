@@ -4,9 +4,23 @@
 #include "audio_codec.h"
 #include "board.h"
 #include "board_info.h"
+#include "display/display.h"
+#include "nl_url_util.h"
+#include "nodelio_http.h"
+#include "panel_jobs.h"
 #include "ui_widgets.h"
+#include "wifi_provision.h"
 
+#include <esp_heap_caps.h>
+#include <esp_log.h>
+#include <esp_timer.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <new>
+#include <string>
+
+static const char *TAG = "nodelio_ov";
 
 namespace {
 struct Diagnostics {
@@ -136,4 +150,177 @@ void nl_ov_build_diagnostics(lv_obj_t* body) {
                 (unsigned long)frames);
         },
         250, state);
+}
+
+struct shot_job {
+    std::string *jpeg;
+    nodelio_nvs_config_t cfg;
+};
+
+static void capture_and_upload_screenshot(void)
+{
+    if (nodelio_wifi_is_asleep() || !nodelio_wifi_has_ip()) {
+        nl_ov_toast("网络未就绪");
+        return;
+    }
+    Display *disp = Board::GetInstance().GetDisplay();
+    if (!disp) {
+        nl_ov_toast("未检测到显示屏");
+        return;
+    }
+    nodelio_nvs_config_t shot_cfg{};
+    if (!nl_ov_cfg_http_ready(&shot_cfg, true)) {
+        return;
+    }
+    const size_t dram_before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    const size_t dram_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    /* 技能卡打开时常见 free≈17KB、largest≈7KB（碎片）。心跳仍能短 TCP，
+     * 勿用 16KB 一刀切；仅在几乎无连续块时放弃。JPEG/任务走 PSRAM。 */
+    if (dram_before < 3 * 1024) {
+        ESP_LOGW(TAG, "screenshot skip: largest_dram=%u free=%u", (unsigned)dram_before,
+                 (unsigned)dram_free);
+        nl_ov_toast("内存过碎，先关掉技能卡再截");
+        return;
+    }
+    /* JPEG 在 LVGL 线程生成；HTTP 必须扔后台，否则堵 UI / 撑爆 LVGL 栈 */
+    auto *jpeg = new (std::nothrow) std::string();
+    if (!jpeg) {
+        nl_ov_toast("内存不足");
+        return;
+    }
+    /* 碎片严重时压质量，减小编码峰值与上传体积 */
+    const int quality = (dram_before < 20 * 1024) ? 40 : ((dram_before < 40 * 1024) ? 55 : 70);
+    lv_obj_t *snap = lv_layer_top();
+    if (!disp->SnapshotToJpeg(*jpeg, quality, snap) || jpeg->empty()) {
+        ESP_LOGW(TAG, "SnapshotToJpeg failed q=%d dram=%u", quality, (unsigned)dram_before);
+        delete jpeg;
+        nl_ov_toast("截屏生成失败");
+        return;
+    }
+    ESP_LOGI(TAG, "screenshot jpeg=%u q=%d dram_free_largest=%u", (unsigned)jpeg->size(), quality,
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+
+    auto *job = static_cast<shot_job *>(heap_caps_malloc(sizeof(shot_job), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!job) {
+        delete jpeg;
+        nl_ov_toast("无法上传");
+        return;
+    }
+    job->jpeg = jpeg;
+    job->cfg = shot_cfg;
+    nl_ov_toast("正在上传截图…");
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Background,
+            [](void* p) {
+                auto *job = static_cast<shot_job *>(p);
+                /* 把 JPEG 拷到 PSRAM，释放 string 可能占的内部堆，给 lwIP TCP 缓冲腾地方 */
+                const size_t n = job->jpeg->size();
+                uint8_t *ps =
+                    static_cast<uint8_t *>(heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                if (ps) {
+                    memcpy(ps, job->jpeg->data(), n);
+                    delete job->jpeg;
+                    job->jpeg = nullptr;
+                }
+                const void *body = ps ? static_cast<const void *>(ps) : job->jpeg->data();
+                const size_t body_n = ps ? n : job->jpeg->size();
+
+                char url[256];
+                const char *custom = job->cfg.screenshot_url;
+                while (*custom == ' ' || *custom == '\t') custom++;
+                if (*custom != '\0') {
+                    if (strstr(custom, "://")) {
+                        if (strchr(strstr(custom, "://") + 3, '/')) {
+                            std::snprintf(url, sizeof(url), "%s", custom);
+                        } else {
+                            std::snprintf(url, sizeof(url), "%s/api/devices/%s/panel/screenshot", custom, job->cfg.device_id);
+                        }
+                    } else {
+                        char host_port[sizeof(job->cfg.screenshot_url) + 8];
+                        if (strchr(custom, ':')) {
+                            std::snprintf(host_port, sizeof(host_port), "%s", custom);
+                        } else {
+                            std::snprintf(host_port, sizeof(host_port), "%s:8899", custom);
+                        }
+                        std::snprintf(url, sizeof(url), "http://%s/api/devices/%s/panel/screenshot", host_port, job->cfg.device_id);
+                    }
+                } else {
+                    char base[160];
+                    nl_url_strip_base(job->cfg.server_url, base, sizeof(base));
+                    std::snprintf(url, sizeof(url), "%s/api/devices/%s/panel/screenshot", base, job->cfg.device_id);
+                }
+                int http_status = 0;
+                esp_err_t err = nodelio_http_post_image(url, job->cfg.device_key, body, body_n, &http_status);
+                if (err == ESP_OK && http_status >= 200 && http_status < 300) {
+                    ESP_LOGI(TAG, "Screenshot uploaded successfully: %u bytes", (unsigned)body_n);
+                    /* P3c：多屏时提示当前屏序号，便于各拍一帧 */
+                    const int pi = nl_ov_home_user_page_index();
+                    const int pn = nl_ov_home_user_page_count();
+                    if (pi >= 0 && pn > 1) {
+                        char msg[40];
+                        std::snprintf(msg, sizeof(msg), "已上传 · 屏%d/%d", pi + 1, pn);
+                        nodelio_panel_ui_toast_defer(msg);
+                    } else {
+                        nodelio_panel_ui_toast_defer("已上传实机截图");
+                    }
+                } else {
+                    ESP_LOGW(TAG, "Screenshot upload failed err=%s http=%d jpeg=%u dram=%u",
+                             esp_err_to_name(err), http_status, (unsigned)body_n,
+                             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+                    if (err == ESP_ERR_NO_MEM || err == ESP_ERR_INVALID_STATE) {
+                        nodelio_panel_ui_toast_defer("内存/网络忙，稍后再截");
+                    } else {
+                        nodelio_panel_ui_toast_defer("截图上传失败");
+                    }
+                }
+                if (ps) {
+                    heap_caps_free(ps);
+                }
+                if (job->jpeg) {
+                    delete job->jpeg;
+                }
+                heap_caps_free(job);
+            },
+            job,
+            [](void* p) {
+                auto* a = static_cast<shot_job*>(p);
+                delete a->jpeg;
+                free(a);
+            })) {
+        if (job->jpeg) {
+            delete job->jpeg;
+        }
+        heap_caps_free(job);
+        nl_ov_toast("无法上传");
+    }
+}
+
+void nl_ov_trigger_screenshot(void)
+{
+    static uint32_t last_click_ms = 0;
+    uint32_t now = esp_timer_get_time() / 1000;
+    if (now - last_click_ms < 1200) {
+        return;
+    }
+    last_click_ms = now;
+
+    bool shot_fab_hidden_temp = false;
+    if (s_shot_fab && !lv_obj_has_flag(s_shot_fab, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_add_flag(s_shot_fab, LV_OBJ_FLAG_HIDDEN);
+        shot_fab_hidden_temp = true;
+        lv_refr_now(nullptr);
+    }
+
+    capture_and_upload_screenshot();
+
+    if (shot_fab_hidden_temp && s_shot_fab && s_cfg.screenshot_fab_en) {
+        lv_obj_clear_flag(s_shot_fab, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_shot_fab);
+    }
+}
+
+void nl_ov_on_brand_click(lv_event_t *e)
+{
+    (void)e;
+    nl_ov_trigger_screenshot();
 }

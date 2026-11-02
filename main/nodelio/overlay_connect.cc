@@ -48,6 +48,18 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 
 #define TAG "nl_conn"
 
+static lv_obj_t *s_ta_host;
+static lv_obj_t *s_ta_port;
+static lv_obj_t *s_ta_owner;
+static lv_obj_t *s_proto_lbl;
+static lv_obj_t *s_ta_ssid;
+static lv_obj_t *s_ta_pass;
+static lv_obj_t *s_wifi_list;
+static lv_obj_t *s_scan_btn_lbl;
+static nodelio_wifi_ap_t s_scan_aps[NL_WIFI_SCAN_MAX];
+static int s_scan_n;
+static bool s_wifi_scanning;
+
 static lv_obj_t *s_hist_row;
 static lv_obj_t *s_hist_hint;
 static lv_obj_t *s_ta_screenshot = nullptr;

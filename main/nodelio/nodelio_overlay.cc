@@ -77,15 +77,12 @@ lv_obj_t *s_fab;
 lv_obj_t *s_root;
 lv_obj_t *s_body;
 lv_obj_t *s_home;
-lv_obj_t *s_eq_bars[3];
 lv_obj_t *s_ai_drawer;           /* 底部居中 AI 悬浮胶囊 */
 lv_obj_t *s_ai_drawer_status;    /* 状态小标题（如 "小智在听…" / "小智回答"） */
-lv_obj_t *s_ai_drawer_body;      /* 正文滚动容器 */
 lv_obj_t *s_ai_drawer_text;      /* 对话正文：最近 5 句 */
 lv_obj_t *s_ai_mini_fab;         /* 最小化圆钮（仅图标） */
 lv_obj_t *s_shot_fab = nullptr;    /* 调试截图悬浮图标 */
 lv_timer_t *s_ai_hide_timer;     /* 会话闲置自动收起定时器 */
-char s_ai_show_text[NL_CHAT_SHOW_CAP]; /* 抽屉展示缓冲 */
 lv_obj_t *s_settings;
 lv_obj_t *s_tabbar;
 lv_obj_t *s_tab_btns[NL_TAB_N]; /* 0=首页 1=应用 2=设置 */
@@ -109,36 +106,13 @@ lv_obj_t *s_bri_val_lbl;
 lv_obj_t *s_vol_val_lbl;
 uint8_t s_brightness = 80;
 uint8_t s_volume = 70;
-lv_timer_t *s_sys_timer;
-lv_obj_t *s_sys_up_lbl;
-lv_obj_t *s_sys_dram_lbl;
-lv_obj_t *s_sys_psram_lbl;
-lv_obj_t *s_sys_tasks_lbl;
-char s_sys_last_up[40];
-char s_sys_last_dram[24];
-char s_sys_last_psram[24];
-char s_sys_last_tasks[16];
 
 lv_obj_t *s_connect;
 lv_obj_t *s_connect_scroll;
 lv_obj_t *s_kb;
-lv_obj_t *s_ta_host;
-lv_obj_t *s_ta_port;
-lv_obj_t *s_ta_owner;
-lv_obj_t *s_proto_lbl;
-lv_obj_t *s_ta_ssid;
-lv_obj_t *s_ta_pass;
-lv_obj_t *s_wifi_list;
-lv_obj_t *s_scan_btn_lbl;
-nodelio_wifi_ap_t s_scan_aps[NL_WIFI_SCAN_MAX];
-int s_scan_n;
-bool s_wifi_scanning;
 int s_grid_ox;
 int s_grid_oy;
 int s_active_tab; /* NL_TAB_HOME / APPS / SET */
-
-chat_phase_t s_chat_phase = CHAT_IDLE;
-char s_chat_text[NL_CHAT_CAP];
 
 nl_dev_cache_t *s_devs = nullptr;
 int s_dev_n = 0;

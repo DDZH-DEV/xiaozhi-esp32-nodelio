@@ -48,6 +48,12 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 
 #define TAG "nl_ai"
 
+static lv_obj_t *s_eq_bars[3];
+static lv_obj_t *s_ai_drawer_body;
+static char s_ai_show_text[NL_CHAT_SHOW_CAP];
+static chat_phase_t s_chat_phase = CHAT_IDLE;
+static char s_chat_text[NL_CHAT_CAP];
+
 /** 说话时正文限频（RGB 全刷太贵） */
 static int64_t s_speak_text_last_us;
 static char s_speak_text_pending[NL_CHAT_CAP];

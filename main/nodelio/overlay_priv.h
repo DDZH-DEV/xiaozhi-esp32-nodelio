@@ -88,15 +88,12 @@ extern lv_obj_t *s_fab;
 extern lv_obj_t *s_root;
 extern lv_obj_t *s_body;
 extern lv_obj_t *s_home;
-extern lv_obj_t *s_eq_bars[3];
 extern lv_obj_t *s_ai_drawer;
 extern lv_obj_t *s_ai_drawer_status;
-extern lv_obj_t *s_ai_drawer_body;
 extern lv_obj_t *s_ai_drawer_text;
 extern lv_obj_t *s_ai_mini_fab; /* 最小化：右下角仅图标 */
 extern lv_obj_t *s_shot_fab;    /* 调试截图悬浮图标 */
 extern lv_timer_t *s_ai_hide_timer;
-extern char s_ai_show_text[NL_CHAT_SHOW_CAP];
 extern lv_obj_t *s_settings;
 extern lv_obj_t *s_tabbar;
 extern lv_obj_t *s_tab_btns[3];
@@ -125,36 +122,14 @@ extern lv_obj_t *s_bri_val_lbl;
 extern lv_obj_t *s_vol_val_lbl;
 extern uint8_t s_brightness;
 extern uint8_t s_volume;
-extern lv_timer_t *s_sys_timer;
-extern lv_obj_t *s_sys_up_lbl;
-extern lv_obj_t *s_sys_dram_lbl;
-extern lv_obj_t *s_sys_psram_lbl;
-extern lv_obj_t *s_sys_tasks_lbl;
-extern char s_sys_last_up[40];
-extern char s_sys_last_dram[24];
-extern char s_sys_last_psram[24];
-extern char s_sys_last_tasks[16];
 
 extern lv_obj_t *s_connect;
 extern lv_obj_t *s_connect_scroll;
 extern lv_obj_t *s_kb;
-extern lv_obj_t *s_ta_host;
-extern lv_obj_t *s_ta_port;
-extern lv_obj_t *s_ta_owner;
-extern lv_obj_t *s_proto_lbl;
-extern lv_obj_t *s_ta_ssid;
-extern lv_obj_t *s_ta_pass;
-extern lv_obj_t *s_wifi_list;
-extern lv_obj_t *s_scan_btn_lbl;
-extern nodelio_wifi_ap_t s_scan_aps[NL_WIFI_SCAN_MAX];
-extern int s_scan_n;
-extern bool s_wifi_scanning;
 extern int s_grid_ox;
 extern int s_grid_oy;
 extern int s_active_tab;
-
-extern chat_phase_t s_chat_phase;
-extern char s_chat_text[NL_CHAT_CAP];
+extern uint32_t s_home_gen;
 
 extern nl_dev_cache_t *s_devs;
 extern int s_dev_n;
@@ -207,10 +182,30 @@ void nl_ov_show_page(int tab);
 void nl_ov_close_forms(void);
 void nl_ov_ensure_devs_cache(void);
 
-/* —— home tiles —— */
+/* —— home tiles / photo / cmd —— */
 /** Structural invalidation; hidden pages rebuild on their next reveal. Display lock required. */
 void nl_ov_fill_home(void);
 void nl_ov_home_prepare(void);
+bool nl_ov_home_is_visible_and_clean(void);
+void nl_ov_home_mark_state_dirty(void);
+void nl_ov_style_tile_visual(lv_obj_t *tile, const nl_widget_t *w);
+void nl_ov_place_grid_obj(lv_obj_t *obj, const nl_widget_t *w, int cell_w, int cell_h);
+lv_obj_t *nl_ov_make_tile_shell(const nl_widget_t *w, tile_kind_t kind, int cell_w, int cell_h);
+lv_obj_t *nl_ov_widget_icon_pod(lv_obj_t *parent, const char *glyph, lv_color_t bg, int sz);
+void nl_ov_photo_reset_rt(void);
+void nl_ov_photo_cache_prune_layout(void);
+void nl_ov_photo_timer_ensure(void);
+void nl_ov_fill_photo_frame(nl_widget_t *w, int cell_w, int cell_h);
+void nl_ov_format_countdown(int sec, char *buf, size_t buflen);
+void nl_ov_style_hint_pill(lv_obj_t *hint, bool countdown);
+bool nl_ov_widget_is_on(const nl_widget_t *w, tile_kind_t kind);
+bool nl_ov_widget_state_unknown(const nl_widget_t *w, tile_kind_t kind);
+int nl_ov_widget_pwm_duty(const nl_widget_t *w);
+void nl_ov_set_widget_cache_state(const nl_widget_t *w, const char *st);
+bool nl_ov_widget_is_cmd_pending(const nl_widget_t *w);
+void nl_ov_dispatch_async_cmd(const nl_widget_t *w, const char *value, bool rollback_on_fail);
+void nl_ov_home_switch_commit(nl_widget_t *w, const char *want);
+void nl_ov_widget_cmd(const nl_widget_t *w, const char *value);
 /** Refresh matching skill content only; nullptr refreshes all visible skill widgets. */
 void nl_ov_home_refresh_skill(const char* skill_id);
 void nl_ov_refresh_home_tiles(void);
@@ -282,7 +277,22 @@ void nl_ov_kb_set_visible(bool on);
 /** 连接页与侧栏键盘跟设置子页同一块内容区，工作区变宽时重排。 */
 void nl_ov_connect_relayout(void);
 
-/* —— settings —— */
+/* —— settings & prefs —— */
+void nl_ov_load_audio_prefs(void);
+void nl_ov_apply_brightness(uint8_t pct);
+void nl_ov_apply_volume(uint8_t pct);
+void nl_ov_persist_ui_prefs(bool volume_changed);
+void nl_ov_refresh_bri_vol_labels(void);
+void nl_ov_persist_cfg_async(void);
+const char *nl_ov_text_scale_name(uint8_t scale);
+const char *nl_ov_ui_mode_name(uint8_t mode);
+void nl_ov_commit_ui_mode(uint8_t mode);
+void nl_ov_commit_text_scale(uint8_t scale);
+void nl_ov_commit_status_bar_mode(uint8_t mode);
+void nl_ov_commit_screenshot_fab(uint8_t en);
+void nl_ov_commit_card_radius(uint8_t rad_mode);
+void nl_ov_persist_voice_and_reboot(void);
+void nl_ov_apply_sleep_board(void);
 void nl_ov_fill_settings(void);
 /** 工作区宽度变化后重排设置入口卡，不关已打开的子页。 */
 void nl_ov_settings_sync_columns(void);

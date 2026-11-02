@@ -1,9 +1,25 @@
-/* 由 skill_result_ui.cc 在 fill_list 定义前包含。依赖该文件的静态状态。 */
+#include "skill_ui_priv.h"
 
-static void fill_list(void);
+int s_news_detail = -1;
+uint32_t s_news_gen = 1;
+bool s_news_screen_hook = false;
+lv_obj_t *s_news_zoom_bar = nullptr; /* 新闻详情：顶栏刷新左侧 A-/A+ */
+lv_obj_t *s_news_body_lbl = nullptr;
+/** 详情正文驻 PSRAM，供 lv_label_set_text_static，避免长文二次占 LVGL 池失败后仍显示摘要 */
+char *s_news_body_heap = nullptr;
+
+struct news_job_t {
+    int slot;
+    uint32_t gen;
+    char url[320];
+    int nav; /* 0 拉正文；>0 下一篇并标已读；<0 上一篇并标已读 */
+};
+static QueueHandle_t s_news_q = nullptr;
+static StackType_t *s_news_stack = nullptr;
+static StaticTask_t s_news_tcb;
+
 static bool news_step_locked(int delta, char *title, size_t title_len);
 static void news_fetch_article(const news_job_t *job);
-bool nodelio_skill_news_action(const char *op, char *out, size_t out_len);
 static bool news_load_spoken(int idx, uint32_t gen, char *out, size_t out_len, bool reset_chunk);
 static void news_speak_clear(void);
 static void news_apply_body_zoom(void);
@@ -25,7 +41,7 @@ static void news_abs_url(const char *in, char *out, size_t out_len)
     }
 }
 
-static void news_on_screen(bool on)
+void news_on_screen(bool on)
 {
     if (on) {
         return;
@@ -677,7 +693,7 @@ static bool news_pull_article_text(int idx, char **out_heap, const char **out_vi
 static uint8_t s_news_zoom = 1;
 static lv_obj_t *s_news_zoom_hint = nullptr;
 
-static void news_sync_global_text_scale(void)
+void news_sync_global_text_scale(void)
 {
     uint8_t z = nodelio_text_scale();
     if (z > UI_NEWS_ZOOM_MAX) {
@@ -739,7 +755,7 @@ static void ensure_news_zoom_hdr(void)
     lv_obj_add_flag(s_news_zoom_bar, LV_OBJ_FLAG_HIDDEN);
 }
 
-static void set_news_zoom_hdr_visible(bool on)
+void set_news_zoom_hdr_visible(bool on)
 {
     ensure_news_zoom_hdr();
     if (!s_news_zoom_bar || !lv_obj_is_valid(s_news_zoom_bar)) {
@@ -1150,7 +1166,7 @@ static void news_set_nav_bar(bool on)
     lv_obj_set_height(s_dsh_detail_bar, 52);
 }
 
-static void fill_news(void)
+void fill_news(void)
 {
     set_hdr_mid_icon(MATERIAL_SYMBOLS_KEYBOARD_ARROW_DOWN);
     s_news_gen += 1;

@@ -144,7 +144,8 @@ int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out)
         return tile_w;
     }
     const int max_cols = profile->nav_width ? 4 : 2;
-    const int min_tile = 220;
+    /* 方屏（底栏）固定两列：480 宽扣边距后每列约 218~220，大字档 gap=12 时会跌破 220 退成单列。 */
+    const int min_tile = profile->nav_width ? 220 : 160;
     int columns = max_cols;
     while (columns > 1) {
         const int tw = (avail - gap * (columns - 1)) / columns;

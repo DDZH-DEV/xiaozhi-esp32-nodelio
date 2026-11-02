@@ -21,7 +21,6 @@
 #include "ui_widgets.h"
 #include "wifi_manager.h"
 #include "wifi_provision.h"
-#include "jpg/jpeg_to_image.h"
 #include <material_symbols.h>
 
 LV_FONT_DECLARE(font_material_symbols_20_4);
@@ -38,7 +37,6 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
-#include <freertos/idf_additions.h>
 #include <freertos/idf_additions.h>
 #include <freertos/task.h>
 #include <lvgl.h>
@@ -62,266 +60,17 @@ static bool s_home_cacheable;
 static void build_home_view(void);
 static void refresh_skill_widget(lv_obj_t* tile, nl_widget_t* widget);
 
-static lv_timer_t *s_cd_timer;
 /** fill_home 世代：异步相册图回写时丢弃过期结果 */
-static uint32_t s_home_gen;
+uint32_t s_home_gen;
 
-#define NL_PHOTO_RT_MAX 8
-typedef struct {
-    char widget_id[NL_LAYOUT_STR];
-    uint8_t idx;
-    uint8_t paused;
-    uint16_t interval_sec;
-    int64_t next_ms;
-} photo_rt_t;
-static photo_rt_t s_photo_rt[NL_PHOTO_RT_MAX];
-static int s_photo_rt_n;
-static lv_timer_t *s_photo_timer;
-
-/** 轮播 JPEG 常驻 PSRAM：切张先吃内存，避免每次 HTTP */
-#define NL_PHOTO_BLOB_MAX 8
-typedef struct {
-    char id[NL_PHOTO_ID_MAX];
-    uint8_t *data;
-    size_t len;
-} photo_blob_t;
-static photo_blob_t s_photo_blobs[NL_PHOTO_BLOB_MAX];
-
-static void photo_blob_free_slot(photo_blob_t *b)
+bool nl_ov_home_is_visible_and_clean(void)
 {
-    if (!b) {
-        return;
-    }
-    if (b->data) {
-        heap_caps_free(b->data);
-        b->data = nullptr;
-    }
-    b->len = 0;
-    b->id[0] = '\0';
+    return s_home && !s_home_structure_dirty && !lv_obj_has_flag(s_home, LV_OBJ_FLAG_HIDDEN);
 }
 
-static photo_blob_t *photo_blob_find(const char *id)
+void nl_ov_home_mark_state_dirty(void)
 {
-    if (!id || !id[0]) {
-        return nullptr;
-    }
-    for (int i = 0; i < NL_PHOTO_BLOB_MAX; i++) {
-        if (s_photo_blobs[i].data && s_photo_blobs[i].len > 0 && strcmp(s_photo_blobs[i].id, id) == 0) {
-            return &s_photo_blobs[i];
-        }
-    }
-    return nullptr;
-}
-
-static bool photo_blob_has(const char *id)
-{
-    return photo_blob_find(id) != nullptr;
-}
-
-static void photo_blob_put(const char *id, const uint8_t *data, size_t len)
-{
-    if (!id || !id[0] || !data || len == 0) {
-        return;
-    }
-    photo_blob_t *slot = photo_blob_find(id);
-    if (!slot) {
-        for (int i = 0; i < NL_PHOTO_BLOB_MAX; i++) {
-            if (!s_photo_blobs[i].data) {
-                slot = &s_photo_blobs[i];
-                break;
-            }
-        }
-    }
-    if (!slot) {
-        /* 满则挤掉第 0 槽 */
-        slot = &s_photo_blobs[0];
-        photo_blob_free_slot(slot);
-    }
-    uint8_t *copy = static_cast<uint8_t *>(heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!copy) {
-        return;
-    }
-    memcpy(copy, data, len);
-    if (slot->data) {
-        heap_caps_free(slot->data);
-    }
-    slot->data = copy;
-    slot->len = len;
-    snprintf(slot->id, sizeof(slot->id), "%s", id);
-}
-
-static void photo_blob_prune_keep(const char *const *ids, size_t n)
-{
-    for (int i = 0; i < NL_PHOTO_BLOB_MAX; i++) {
-        if (!s_photo_blobs[i].data) {
-            continue;
-        }
-        bool keep = false;
-        for (size_t k = 0; k < n; k++) {
-            if (ids[k] && strcmp(ids[k], s_photo_blobs[i].id) == 0) {
-                keep = true;
-                break;
-            }
-        }
-        if (!keep) {
-            photo_blob_free_slot(&s_photo_blobs[i]);
-        }
-    }
-}
-
-static void format_countdown(int sec, char *buf, size_t buflen)
-{
-    if (!buf || buflen < 4) {
-        return;
-    }
-    if (sec < 0) {
-        sec = 0;
-    }
-    if (sec >= 3600) {
-        std::snprintf(buf, buflen, "%dh%02d", sec / 3600, (sec % 3600) / 60);
-    } else if (sec >= 60) {
-        std::snprintf(buf, buflen, "%d:%02d", sec / 60, sec % 60);
-    } else {
-        std::snprintf(buf, buflen, "%ds", sec);
-    }
-}
-
-/** 右上角药丸：文字在底色内水平垂直居中 */
-static void style_hint_pill(lv_obj_t *hint, bool countdown)
-{
-    if (!hint) {
-        return;
-    }
-    nl_ov_set_font_compact(hint);
-    lv_obj_set_style_radius(hint, UI_RADIUS_XS, 0);
-    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_left(hint, countdown ? 5 : 4, 0);
-    lv_obj_set_style_pad_right(hint, countdown ? 5 : 4, 0);
-    lv_obj_set_style_pad_top(hint, 1, 0);
-    lv_obj_set_style_pad_bottom(hint, 1, 0);
-    /* 数字倒计时略宽，避免「9:59」贴边显偏 */
-    if (countdown) {
-        lv_obj_set_style_min_width(hint, 28, 0);
-    } else {
-        lv_obj_set_style_min_width(hint, 18, 0);
-    }
-}
-
-static bool any_countdown_active(void)
-{
-    if (!s_devs) {
-        return false;
-    }
-    for (int i = 0; i < s_dev_n; i++) {
-        if (s_devs[i].countdown > 0) {
-            return true;
-        }
-        for (uint8_t c = 0; c < s_devs[i].ch_n; c++) {
-            if (s_devs[i].ch_cd[c] > 0) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w);
-/** 指令飞行中：防连点；失败/超时按 from 回滚。 */
-static bool widget_is_cmd_pending(const nl_widget_t *w);
-
-/** 倒计时 tick：只改角标文字；刚归零的磁贴单刷一次。禁止每秒全页 style_tile（RGB 全刷抢音频） */
-static void countdown_tick_ui(void)
-{
-    if (!s_home || !s_devs) {
-        return;
-    }
-
-    struct {
-        lv_obj_t *tile;
-        nl_widget_t *w;
-    } active[24];
-    int n = 0;
-    const bool visible = !s_home_structure_dirty && !lv_obj_has_flag(s_home, LV_OBJ_FLAG_HIDDEN);
-    const uint32_t cnt = lv_obj_get_child_count(s_home);
-    for (uint32_t i = 0; visible && i < cnt && n < 24; i++) {
-        lv_obj_t *tile = lv_obj_get_child(s_home, i);
-        auto *w = static_cast<nl_widget_t *>(lv_obj_get_user_data(tile));
-        if (!w || nl_ov_widget_countdown(w) <= 0) {
-            continue;
-        }
-        active[n].tile = tile;
-        active[n].w = w;
-        n++;
-    }
-    for (int i = 0; i < s_dev_n; i++) {
-        if (s_devs[i].countdown > 0) {
-            s_devs[i].countdown--;
-        }
-        for (uint8_t c = 0; c < s_devs[i].ch_n; c++) {
-            if (s_devs[i].ch_cd[c] > 0) {
-                s_devs[i].ch_cd[c]--;
-            }
-        }
-    }
-    if (!visible) {
-        s_home_state_dirty = true;
-        return;
-    }
-
-    for (int i = 0; i < n; i++) {
-        lv_obj_t *tile = active[i].tile;
-        nl_widget_t *w = active[i].w;
-        const int cd = nl_ov_widget_countdown(w);
-        lv_obj_t *hint = nullptr;
-        const uint32_t sub = lv_obj_get_child_count(tile);
-        for (uint32_t j = 0; j < sub; j++) {
-            lv_obj_t *ch = lv_obj_get_child(tile, j);
-            if ((intptr_t)lv_obj_get_user_data(ch) == TILE_CHILD_HINT) {
-                hint = ch;
-                break;
-            }
-        }
-        if (cd > 0) {
-            if (!hint) {
-                continue;
-            }
-            char hb[12];
-            format_countdown(cd, hb, sizeof(hb));
-            lv_obj_clear_flag(hint, LV_OBJ_FLAG_HIDDEN);
-            lv_label_set_text(hint, hb);
-        } else {
-            style_tile_visual(tile, w);
-        }
-    }
-}
-
-static void cd_timer_ensure(bool want)
-{
-    if (want) {
-        if (!s_cd_timer) {
-            s_cd_timer = lv_timer_create(
-                [](lv_timer_t *) {
-                    if (!s_screen_on || !s_devs) {
-                        return;
-                    }
-                    if (!any_countdown_active()) {
-                        if (s_cd_timer) {
-                            lv_timer_pause(s_cd_timer);
-                        }
-                        return;
-                    }
-                    countdown_tick_ui();
-                    if (!any_countdown_active() && s_cd_timer) {
-                        lv_timer_pause(s_cd_timer);
-                    }
-                },
-                1000, nullptr);
-        } else {
-            lv_timer_resume(s_cd_timer);
-        }
-    } else if (s_cd_timer) {
-        lv_timer_pause(s_cd_timer);
-    }
+    s_home_state_dirty = true;
 }
 
 static void short_label(const char *in, char *out, size_t out_len, size_t max_runes = 3)
@@ -538,367 +287,6 @@ static uint32_t color_pressed(uint32_t c)
     uint32_t g = ((c >> 8) & 0xff) * 200 / 255;
     uint32_t b = (c & 0xff) * 200 / 255;
     return (r << 16) | (g << 8) | b;
-}
-
-nl_dev_cache_t *nl_ov_find_dev(const char *device_id)
-{
-    nl_ov_ensure_devs_cache();
-    if (!s_devs || !device_id || !device_id[0]) {
-        return nullptr;
-    }
-    for (int i = 0; i < s_dev_n; i++) {
-        if (strcmp(s_devs[i].id, device_id) == 0) {
-            return &s_devs[i];
-        }
-    }
-    return nullptr;
-}
-
-static nl_dev_cache_t *ensure_dev(const char *device_id)
-{
-    nl_ov_ensure_devs_cache();
-    if (!s_devs) {
-        return nullptr;
-    }
-    nl_dev_cache_t *d = nl_ov_find_dev(device_id);
-    if (d) {
-        return d;
-    }
-    if (!device_id || !device_id[0] || s_dev_n >= NL_DEV_CACHE_MAX) {
-        return nullptr;
-    }
-    d = &s_devs[s_dev_n++];
-    std::memset(d, 0, sizeof(*d));
-    std::snprintf(d->id, sizeof(d->id), "%s", device_id);
-    d->online = true;
-    return d;
-}
-
-static bool state_is_unknown(const char *st)
-{
-    return !st || !st[0] || strcasecmp(st, "UNKNOWN") == 0;
-}
-
-static bool state_is_on(const char *st)
-{
-    if (state_is_unknown(st)) {
-        return false;
-    }
-    if (strcasecmp(st, "ON") == 0 || strcasecmp(st, "OPEN") == 0) {
-        return true;
-    }
-    if (strcasecmp(st, "OFF") == 0 || strcasecmp(st, "CLOSE") == 0) {
-        return false;
-    }
-    /* 自锁 "1" / PWM duty "1"…"100"；勿把裸 GPIO 高低与逻辑开关联想 */
-    char *end = nullptr;
-    long v = strtol(st, &end, 10);
-    if (end != st && *end == '\0' && v > 0) {
-        return true;
-    }
-    return false;
-}
-
-static int bind_channel_index(const nl_widget_t *w)
-{
-    if (!w) {
-        return -1;
-    }
-    if (w->bind.kind == NL_BIND_DEVICE_CHANNEL) {
-        return w->bind.channel;
-    }
-    if (w->bind.kind == NL_BIND_DEVICE_PIN) {
-        return w->bind.pin >= 0 ? w->bind.pin : w->bind.channel;
-    }
-    return -1;
-}
-
-static void set_channel_state(nl_dev_cache_t *d, int ch, const char *st)
-{
-    if (!d || ch < 0 || !st) {
-        return;
-    }
-    for (uint8_t i = 0; i < d->ch_n; i++) {
-        if (d->ch_idx[i] == ch) {
-            std::snprintf(d->ch_st[i], sizeof(d->ch_st[i]), "%s", st);
-            return;
-        }
-    }
-    if (d->ch_n < NL_CH_PER_DEV) {
-        d->ch_idx[d->ch_n] = (int16_t)ch;
-        std::snprintf(d->ch_st[d->ch_n], sizeof(d->ch_st[0]), "%s", st);
-        d->ch_n++;
-    }
-}
-
-/** 读绑定通道/整机当前缓存态字符串；无则 nullptr。 */
-static const char *widget_cache_state(const nl_widget_t *w)
-{
-    if (!w || !w->bind.device_id[0]) {
-        return nullptr;
-    }
-    nl_dev_cache_t *d = nl_ov_find_dev(w->bind.device_id);
-    if (!d) {
-        return nullptr;
-    }
-    int ch = bind_channel_index(w);
-    if (ch >= 0) {
-        for (uint8_t i = 0; i < d->ch_n; i++) {
-            if (d->ch_idx[i] == ch) {
-                return d->ch_st[i];
-            }
-        }
-        return nullptr;
-    }
-    return d->power;
-}
-
-/** 通道/引脚只看对应通道态；勿回退整机 power（易把 UNKNOWN/其它路当成开）。 */
-static bool widget_is_on(const nl_widget_t *w, tile_kind_t kind)
-{
-    if (!w) {
-        return false;
-    }
-    if (kind == TILE_SCENE || w->bind.kind == NL_BIND_HOME_SCENARIO) {
-        return true;
-    }
-    const char *st = widget_cache_state(w);
-    if (state_is_unknown(st)) {
-        return false;
-    }
-    return state_is_on(st);
-}
-
-static bool widget_state_unknown(const nl_widget_t *w, tile_kind_t kind)
-{
-    if (!w || kind == TILE_SCENE || w->bind.kind == NL_BIND_HOME_SCENARIO) {
-        return false;
-    }
-    if (!w->bind.device_id[0]) {
-        return true;
-    }
-    if (!nl_ov_find_dev(w->bind.device_id)) {
-        return true;
-    }
-    return state_is_unknown(widget_cache_state(w));
-}
-
-static int widget_pwm_duty(const nl_widget_t *w)
-{
-    if (!w) {
-        return 0;
-    }
-    nl_dev_cache_t *d = nl_ov_find_dev(w->bind.device_id);
-    if (!d) {
-        return 0;
-    }
-    int ch = bind_channel_index(w);
-    if (ch >= 0) {
-        for (uint8_t i = 0; i < d->ch_n; i++) {
-            if (d->ch_idx[i] == ch) {
-                return (int)strtol(d->ch_st[i], nullptr, 10);
-            }
-        }
-        return 0;
-    }
-    return (int)strtol(d->power, nullptr, 10);
-}
-
-static void set_widget_cache_state(const nl_widget_t *w, const char *st)
-{
-    if (!w || !st || w->bind.device_id[0] == '\0') {
-        return;
-    }
-    nl_dev_cache_t *d = ensure_dev(w->bind.device_id);
-    if (!d) {
-        return;
-    }
-    int ch = bind_channel_index(w);
-    if (ch >= 0) {
-        set_channel_state(d, ch, st);
-        return;
-    }
-    std::snprintf(d->power, sizeof(d->power), "%s", st);
-}
-
-
-static int bind_channel_index_of(const nl_bind_t *bind)
-{
-    if (!bind) {
-        return -1;
-    }
-    if (bind->kind == NL_BIND_DEVICE_CHANNEL) {
-        return bind->channel;
-    }
-    if (bind->kind == NL_BIND_DEVICE_PIN) {
-        return bind->pin >= 0 ? bind->pin : bind->channel;
-    }
-    return -1;
-}
-
-static bool bind_matches_momentary(const nl_bind_t *bind)
-{
-    const nodelio_panel_layout_t *layout = nodelio_panel_ui_get_layout();
-    if (!layout || !bind || bind->device_id[0] == '\0') {
-        return false;
-    }
-    const int ch = bind_channel_index_of(bind);
-    for (int pi = 0; pi < layout->page_count; pi++) {
-        const nl_page_t *pg = &layout->pages[pi];
-        for (int si = 0; si < pg->section_count; si++) {
-            const nl_section_t *sec = &pg->sections[si];
-            for (int wi = 0; wi < sec->widget_count; wi++) {
-                const nl_widget_t *w = &sec->widgets[wi];
-                if (strcmp(w->skin, "momentary") != 0) {
-                    continue;
-                }
-                if (strcmp(w->bind.device_id, bind->device_id) != 0) {
-                    continue;
-                }
-                if (bind_channel_index(w) == ch) {
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
-}
-
-void nl_ov_set_countdown(const char *device_id, int channel_index, int seconds)
-{
-    if (!device_id || !device_id[0]) {
-        return;
-    }
-    nl_dev_cache_t *d = ensure_dev(device_id);
-    if (!d) {
-        return;
-    }
-    if (seconds < 0) {
-        seconds = 0;
-    }
-    if (seconds > 32767) {
-        seconds = 32767;
-    }
-    if (channel_index < 0) {
-        d->countdown = (int16_t)seconds;
-    } else {
-        bool found = false;
-        for (uint8_t i = 0; i < d->ch_n; i++) {
-            if (d->ch_idx[i] == channel_index) {
-                d->ch_cd[i] = (int16_t)seconds;
-                found = true;
-                break;
-            }
-        }
-        if (!found && d->ch_n < NL_CH_PER_DEV) {
-            d->ch_idx[d->ch_n] = (int16_t)channel_index;
-            d->ch_st[d->ch_n][0] = '\0';
-            d->ch_cd[d->ch_n] = (int16_t)seconds;
-            d->ch_n++;
-        }
-    }
-    cd_timer_ensure(any_countdown_active());
-}
-
-int nl_ov_widget_countdown(const nl_widget_t *w)
-{
-    if (!w || !w->bind.device_id[0] || w->bind.kind == NL_BIND_HOME_SCENARIO) {
-        return 0;
-    }
-    nl_dev_cache_t *d = nl_ov_find_dev(w->bind.device_id);
-    if (!d) {
-        return 0;
-    }
-    int ch = bind_channel_index(w);
-    if (ch < 0) {
-        return d->countdown > 0 ? d->countdown : 0;
-    }
-    for (uint8_t i = 0; i < d->ch_n; i++) {
-        if (d->ch_idx[i] == ch) {
-            return d->ch_cd[i] > 0 ? d->ch_cd[i] : 0;
-        }
-    }
-    return 0;
-}
-
-void nl_ov_apply_bind_state(const nl_bind_t *bind, const char *value)
-{
-    if (!bind || !value || !value[0] || bind->device_id[0] == '\0') {
-        return;
-    }
-    if (bind->kind != NL_BIND_DEVICE_CHANNEL && bind->kind != NL_BIND_DEVICE_PIN) {
-        return;
-    }
-    if (strcasecmp(value, "CANCEL_COUNTDOWN") == 0) {
-        nl_ov_set_countdown(bind->device_id, bind_channel_index_of(bind), 0);
-        return;
-    }
-    if (strncasecmp(value, "OFF_IN", 6) == 0) {
-        const char *p = value + 6;
-        while (*p == ' ' || *p == '\t') {
-            p++;
-        }
-        int sec = atoi(p);
-        if (sec > 0) {
-            nl_ov_set_countdown(bind->device_id, bind_channel_index_of(bind), sec);
-        }
-        return;
-    }
-    if (strcasecmp(value, "SET_PWM") == 0) {
-        return;
-    }
-    /* 开关会取消倒计时（固件 OFF 亦清） */
-    if (strcasecmp(value, "ON") == 0 || strcasecmp(value, "OFF") == 0 ||
-        strcasecmp(value, "TOGGLE") == 0 || strcasecmp(value, "OPEN") == 0 ||
-        strcasecmp(value, "CLOSE") == 0) {
-        nl_ov_set_countdown(bind->device_id, bind_channel_index_of(bind), 0);
-    }
-    /* 点动只发脉冲，禁止把本地态翻成开 */
-    if (bind_matches_momentary(bind)) {
-        return;
-    }
-
-    char st[12];
-    if (strcasecmp(value, "TOGGLE") == 0) {
-        nl_dev_cache_t *cur = nl_ov_find_dev(bind->device_id);
-        bool on = false;
-        int ch = bind_channel_index_of(bind);
-        if (cur) {
-            if (ch >= 0) {
-                for (uint8_t i = 0; i < cur->ch_n; i++) {
-                    if (cur->ch_idx[i] == ch) {
-                        on = state_is_on(cur->ch_st[i]);
-                        break;
-                    }
-                }
-            } else {
-                on = state_is_on(cur->power);
-            }
-        }
-        std::snprintf(st, sizeof(st), "%s", on ? "OFF" : "ON");
-    } else if (strcasecmp(value, "ON") == 0 || strcasecmp(value, "OPEN") == 0) {
-        std::snprintf(st, sizeof(st), "ON");
-    } else if (strcasecmp(value, "OFF") == 0 || strcasecmp(value, "CLOSE") == 0) {
-        std::snprintf(st, sizeof(st), "OFF");
-    } else {
-        char *end = nullptr;
-        (void)strtol(value, &end, 10);
-        if (end == value || (end && *end != '\0')) {
-            return; /* 非开关/PWM 数值，忽略 */
-        }
-        std::snprintf(st, sizeof(st), "%s", value);
-    }
-
-    nl_dev_cache_t *d = ensure_dev(bind->device_id);
-    if (!d) {
-        return;
-    }
-    int ch = bind_channel_index_of(bind);
-    if (ch >= 0) {
-        set_channel_state(d, ch, st);
-    } else {
-        std::snprintf(d->power, sizeof(d->power), "%s", st);
-    }
 }
 
 /** snapshot/批量刷态时禁止色过渡（否则开机十几颗磁贴同时 ease 像闪屏） */
@@ -1123,7 +511,7 @@ static bool tile_visual_unchanged(lv_obj_t* tile, const tile_visual_state_t& sta
     return false;
 }
 
-static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
+void nl_ov_style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
 {
     if (!tile || !w) {
         return;
@@ -1137,11 +525,11 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
     if (w->bind.kind != NL_BIND_HOME_SCENARIO && w->bind.device_id[0]) {
         online = nodelio_panel_ui_device_online(w->bind.device_id);
     }
-    const bool unknown = widget_state_unknown(w, kind);
+    const bool unknown = nl_ov_widget_state_unknown(w, kind);
     /* 点按已乐观写缓存；失败/超时回滚。不转圈等真态 */
-    bool on = !unknown && widget_is_on(w, kind);
+    bool on = !unknown && nl_ov_widget_is_on(w, kind);
     const tile_visual_state_t state{
-        online, unknown, on, widget_pwm_duty(w), nl_ov_widget_countdown(w), nl_ov_ui_font()};
+        online, unknown, on, nl_ov_widget_pwm_duty(w), nl_ov_widget_countdown(w), nl_ov_ui_font()};
     if (tile_visual_unchanged(tile, state))
         return;
     const bool on_rising = tile_vis_on_rising(w->id, on && online);
@@ -1268,11 +656,11 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                     /* 1x1：倒计时优先生效；否则仅离线显示「离」 */
                     if (cd > 0) {
                         char hb[12];
-                        format_countdown(cd, hb, sizeof(hb));
+                        nl_ov_format_countdown(cd, hb, sizeof(hb));
                         lv_obj_clear_flag(ch, LV_OBJ_FLAG_HIDDEN);
                         lv_label_set_text(ch, hb);
                         nl_ov_set_font_compact(ch);
-                        style_hint_pill(ch, true);
+                        nl_ov_style_hint_pill(ch, true);
                         lv_obj_set_style_text_color(ch, UI_WARN, 0);
                         lv_obj_set_style_bg_color(ch, UI_SURFACE_PRESSED, 0);
                         lv_obj_set_style_bg_opa(ch, LV_OPA_70, 0);
@@ -1281,7 +669,7 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                         lv_obj_clear_flag(ch, LV_OBJ_FLAG_HIDDEN);
                         lv_label_set_text(ch, "离");
                         nl_ov_set_font_compact(ch);
-                        style_hint_pill(ch, false);
+                        nl_ov_style_hint_pill(ch, false);
                         lv_obj_set_style_text_color(ch, hint_c, 0);
                         lv_obj_set_style_bg_color(ch, badge_bg, 0);
                         lv_obj_set_style_bg_opa(ch, LV_OPA_60, 0);
@@ -1299,10 +687,10 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                 lv_obj_clear_flag(ch, LV_OBJ_FLAG_HIDDEN);
                 if (cd > 0) {
                     char hb[12];
-                    format_countdown(cd, hb, sizeof(hb));
+                    nl_ov_format_countdown(cd, hb, sizeof(hb));
                     lv_label_set_text(ch, hb);
                     nl_ov_set_font_compact(ch);
-                    style_hint_pill(ch, true);
+                    nl_ov_style_hint_pill(ch, true);
                     lv_obj_set_style_text_color(ch, UI_WARN, 0);
                     lv_obj_set_style_bg_color(ch, UI_SURFACE_PRESSED, 0);
                     lv_obj_set_style_bg_opa(ch, LV_OPA_70, 0);
@@ -1322,24 +710,24 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                             prefix = "表 ";
                         }
                     }
-                    std::snprintf(hb, sizeof(hb), "%s%d%%", prefix, widget_pwm_duty(w));
+                    std::snprintf(hb, sizeof(hb), "%s%d%%", prefix, nl_ov_widget_pwm_duty(w));
                     lv_label_set_text(ch, hb);
                     nl_ov_set_font_compact(ch);
-                    style_hint_pill(ch, false);
+                    nl_ov_style_hint_pill(ch, false);
                     lv_obj_set_style_text_color(ch, hint_c, 0);
                     lv_obj_set_style_bg_color(ch, UI_FIELD, 0);
                     lv_obj_set_style_bg_opa(ch, LV_OPA_COVER, 0);
                 } else if (kind == TILE_SCENE) {
                     lv_label_set_text(ch, "情景");
                     nl_ov_set_font_compact(ch);
-                    style_hint_pill(ch, false);
+                    nl_ov_style_hint_pill(ch, false);
                     lv_obj_set_style_text_color(ch, UI_TEXT_MUTED, 0);
                     lv_obj_set_style_bg_opa(ch, LV_OPA_TRANSP, 0);
                 } else if (w && strcmp(w->skin, "momentary") == 0) {
                     /* 点动角标 */
                     lv_label_set_text(ch, (!online) ? "离" : "点动");
                     nl_ov_set_font_compact(ch);
-                    style_hint_pill(ch, false);
+                    nl_ov_style_hint_pill(ch, false);
                     lv_obj_set_style_text_color(ch, on && online ? ui_color_on(badge_bg) : hint_c,
                                                 0);
                     lv_obj_set_style_bg_color(ch, badge_bg, 0);
@@ -1349,7 +737,7 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                     const char *act = on ? dl_on : dl_off;
                     lv_label_set_text(ch, (!online) ? "离" : (act ? act : (on ? "NO" : "NC")));
                     nl_ov_set_font_compact(ch);
-                    style_hint_pill(ch, false);
+                    nl_ov_style_hint_pill(ch, false);
                     lv_obj_set_style_text_color(ch, online ? ui_color_on(badge_bg) : hint_c, 0);
                     lv_obj_set_style_bg_color(ch, badge_bg, 0);
                     lv_obj_set_style_bg_opa(ch, LV_OPA_COVER, 0);
@@ -1357,7 +745,7 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
                     /* 开/关/离：右上角/右侧小角标，不占主列 */
                     lv_label_set_text(ch, (!online) ? "离" : (on ? "开" : "关"));
                     nl_ov_set_font_compact(ch);
-                    style_hint_pill(ch, false);
+                    nl_ov_style_hint_pill(ch, false);
                     lv_obj_set_style_text_color(ch, on && online ? ui_color_on(badge_bg) : hint_c,
                                                 0);
                     lv_obj_set_style_bg_color(ch, badge_bg, 0);
@@ -1376,7 +764,7 @@ static void style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
             }
         } else if (lv_obj_check_type(ch, &lv_slider_class)) {
             ui_set_enabled(ch, online);
-            int duty = widget_pwm_duty(w);
+            int duty = nl_ov_widget_pwm_duty(w);
             int mn = w->bind.min;
             int mx = w->bind.max > mn ? w->bind.max : 100;
             if (duty < mn) {
@@ -1409,7 +797,7 @@ void nl_ov_refresh_home_tiles(void)
         if (!w) {
             continue;
         }
-        style_tile_visual(child, w);
+        nl_ov_style_tile_visual(child, w);
     }
     s_tile_bulk_refresh = false;
     /* 刷态时拆掉过渡；刷完立刻挂回，否则下次按下走 NULL transition。 */
@@ -1422,7 +810,7 @@ void nl_ov_refresh_home_tiles(void)
     }
 }
 
-static void place_grid_obj(lv_obj_t *obj, const nl_widget_t *w, int cell_w, int cell_h)
+void nl_ov_place_grid_obj(lv_obj_t *obj, const nl_widget_t *w, int cell_w, int cell_h)
 {
     int gw = w->gw > 0 ? w->gw : 1;
     int gh = w->gh > 0 ? w->gh : 1;
@@ -1434,475 +822,6 @@ static void place_grid_obj(lv_obj_t *obj, const nl_widget_t *w, int cell_w, int 
     int th = gh * cell_h + (gh - 1) * GRID_GAP;
     lv_obj_set_pos(obj, x, y);
     lv_obj_set_size(obj, tw, th);
-}
-
-struct shot_job {
-    std::string *jpeg;
-    nodelio_nvs_config_t cfg;
-};
-
-static void capture_and_upload_screenshot(void)
-{
-    if (nodelio_wifi_is_asleep() || !nodelio_wifi_has_ip()) {
-        nl_ov_toast("网络未就绪");
-        return;
-    }
-    Display *disp = Board::GetInstance().GetDisplay();
-    if (!disp) {
-        nl_ov_toast("未检测到显示屏");
-        return;
-    }
-    nodelio_nvs_config_t shot_cfg{};
-    if (!nl_ov_cfg_http_ready(&shot_cfg, true)) {
-        return;
-    }
-    const size_t dram_before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    const size_t dram_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    /* 技能卡打开时常见 free≈17KB、largest≈7KB（碎片）。心跳仍能短 TCP，
-     * 勿用 16KB 一刀切；仅在几乎无连续块时放弃。JPEG/任务走 PSRAM。 */
-    if (dram_before < 3 * 1024) {
-        ESP_LOGW(TAG, "screenshot skip: largest_dram=%u free=%u", (unsigned)dram_before,
-                 (unsigned)dram_free);
-        nl_ov_toast("内存过碎，先关掉技能卡再截");
-        return;
-    }
-    /* JPEG 在 LVGL 线程生成；HTTP 必须扔后台，否则堵 UI / 撑爆 LVGL 栈 */
-    auto *jpeg = new (std::nothrow) std::string();
-    if (!jpeg) {
-        nl_ov_toast("内存不足");
-        return;
-    }
-    /* 碎片严重时压质量，减小编码峰值与上传体积 */
-    const int quality = (dram_before < 20 * 1024) ? 40 : ((dram_before < 40 * 1024) ? 55 : 70);
-    lv_obj_t *snap = lv_layer_top();
-    if (!disp->SnapshotToJpeg(*jpeg, quality, snap) || jpeg->empty()) {
-        ESP_LOGW(TAG, "SnapshotToJpeg failed q=%d dram=%u", quality, (unsigned)dram_before);
-        delete jpeg;
-        nl_ov_toast("截屏生成失败");
-        return;
-    }
-    ESP_LOGI(TAG, "screenshot jpeg=%u q=%d dram_free_largest=%u", (unsigned)jpeg->size(), quality,
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-
-    auto *job = static_cast<shot_job *>(heap_caps_malloc(sizeof(shot_job), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!job) {
-        delete jpeg;
-        nl_ov_toast("无法上传");
-        return;
-    }
-    job->jpeg = jpeg;
-    job->cfg = shot_cfg;
-    nl_ov_toast("正在上传截图…");
-    if (!nodelio::SubmitPanelJob(
-            nodelio::PanelJobLane::Background,
-            [](void* p) {
-                auto *job = static_cast<shot_job *>(p);
-                /* 把 JPEG 拷到 PSRAM，释放 string 可能占的内部堆，给 lwIP TCP 缓冲腾地方 */
-                const size_t n = job->jpeg->size();
-                uint8_t *ps =
-                    static_cast<uint8_t *>(heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-                if (ps) {
-                    memcpy(ps, job->jpeg->data(), n);
-                    delete job->jpeg;
-                    job->jpeg = nullptr;
-                }
-                const void *body = ps ? static_cast<const void *>(ps) : job->jpeg->data();
-                const size_t body_n = ps ? n : job->jpeg->size();
-
-                char url[256];
-                const char *custom = job->cfg.screenshot_url;
-                while (*custom == ' ' || *custom == '\t') custom++;
-                if (*custom != '\0') {
-                    if (strstr(custom, "://")) {
-                        if (strchr(strstr(custom, "://") + 3, '/')) {
-                            std::snprintf(url, sizeof(url), "%s", custom);
-                        } else {
-                            std::snprintf(url, sizeof(url), "%s/api/devices/%s/panel/screenshot", custom, job->cfg.device_id);
-                        }
-                    } else {
-                        char host_port[sizeof(job->cfg.screenshot_url) + 8];
-                        if (strchr(custom, ':')) {
-                            std::snprintf(host_port, sizeof(host_port), "%s", custom);
-                        } else {
-                            std::snprintf(host_port, sizeof(host_port), "%s:8899", custom);
-                        }
-                        std::snprintf(url, sizeof(url), "http://%s/api/devices/%s/panel/screenshot", host_port, job->cfg.device_id);
-                    }
-                } else {
-                    char base[160];
-                    nl_url_strip_base(job->cfg.server_url, base, sizeof(base));
-                    std::snprintf(url, sizeof(url), "%s/api/devices/%s/panel/screenshot", base, job->cfg.device_id);
-                }
-                int http_status = 0;
-                esp_err_t err = nodelio_http_post_image(url, job->cfg.device_key, body, body_n, &http_status);
-                if (err == ESP_OK && http_status >= 200 && http_status < 300) {
-                    ESP_LOGI(TAG, "Screenshot uploaded successfully: %u bytes", (unsigned)body_n);
-                    /* P3c：多屏时提示当前屏序号，便于各拍一帧 */
-                    const int pi = nl_ov_home_user_page_index();
-                    const int pn = nl_ov_home_user_page_count();
-                    if (pi >= 0 && pn > 1) {
-                        char msg[40];
-                        std::snprintf(msg, sizeof(msg), "已上传 · 屏%d/%d", pi + 1, pn);
-                        nodelio_panel_ui_toast_defer(msg);
-                    } else {
-                        nodelio_panel_ui_toast_defer("已上传实机截图");
-                    }
-                } else {
-                    ESP_LOGW(TAG, "Screenshot upload failed err=%s http=%d jpeg=%u dram=%u",
-                             esp_err_to_name(err), http_status, (unsigned)body_n,
-                             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-                    if (err == ESP_ERR_NO_MEM || err == ESP_ERR_INVALID_STATE) {
-                        nodelio_panel_ui_toast_defer("内存/网络忙，稍后再截");
-                    } else {
-                        nodelio_panel_ui_toast_defer("截图上传失败");
-                    }
-                }
-                if (ps) {
-                    heap_caps_free(ps);
-                }
-                if (job->jpeg) {
-                    delete job->jpeg;
-                }
-                heap_caps_free(job);
-            },
-            job,
-            [](void* p) {
-                auto* a = static_cast<shot_job*>(p);
-                delete a->jpeg;
-                free(a);
-            })) {
-        if (job->jpeg) {
-            delete job->jpeg;
-        }
-        heap_caps_free(job);
-        nl_ov_toast("无法上传");
-    }
-}
-
-void nl_ov_trigger_screenshot(void)
-{
-    static uint32_t last_click_ms = 0;
-    uint32_t now = esp_timer_get_time() / 1000;
-    if (now - last_click_ms < 1200) {
-        return;
-    }
-    last_click_ms = now;
-
-    bool shot_fab_hidden_temp = false;
-    if (s_shot_fab && !lv_obj_has_flag(s_shot_fab, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_add_flag(s_shot_fab, LV_OBJ_FLAG_HIDDEN);
-        shot_fab_hidden_temp = true;
-        lv_refr_now(nullptr);
-    }
-
-    capture_and_upload_screenshot();
-
-    if (shot_fab_hidden_temp && s_shot_fab && s_cfg.screenshot_fab_en) {
-        lv_obj_clear_flag(s_shot_fab, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(s_shot_fab);
-    }
-}
-
-void nl_ov_on_brand_click(lv_event_t *e)
-{
-    (void)e;
-    nl_ov_trigger_screenshot();
-}
-
-/* —— 首页开关：点按乐观写缓存；HTTP 成败定生死；失败/超时回滚。不转圈等 snapshot —— */
-#define NL_CMD_PENDING_MAX 10  // 8 queued + 1 running + 1 tentative submission
-#define NL_CMD_ROLLBACK_MS 8000
-
-struct cmd_pending_t {
-    bool active;
-    uint32_t sequence;
-    char widget_id[NL_LAYOUT_STR];
-    char device_id[NL_LAYOUT_STR];
-    int16_t channel;
-    char from[12]; /* 点击前缓存态，失败回滚用 */
-    int64_t deadline_us;
-};
-
-static cmd_pending_t s_cmd_pending[NL_CMD_PENDING_MAX];
-static lv_timer_t *s_pending_timer;
-static uint32_t s_cmd_sequence;
-
-static uint32_t cmd_pending_sequence(const char* widget_id) {
-    for (const auto& pending : s_cmd_pending) {
-        if (pending.active && strcmp(pending.widget_id, widget_id) == 0)
-            return pending.sequence;
-    }
-    return 0;
-}
-
-static bool widget_is_cmd_pending(const nl_widget_t *w)
-{
-    if (!w || !w->id[0]) {
-        return false;
-    }
-    for (int i = 0; i < NL_CMD_PENDING_MAX; i++) {
-        if (s_cmd_pending[i].active && strcmp(s_cmd_pending[i].widget_id, w->id) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static void cmd_pending_timer_ensure(bool want);
-
-static void cmd_pending_clear_slot(cmd_pending_t *p)
-{
-    if (!p) {
-        return;
-    }
-    p->active = false;
-    p->widget_id[0] = '\0';
-    p->device_id[0] = '\0';
-    p->from[0] = '\0';
-    p->channel = -1;
-    p->deadline_us = 0;
-}
-
-static bool cmd_pending_any(void)
-{
-    for (int i = 0; i < NL_CMD_PENDING_MAX; i++) {
-        if (s_cmd_pending[i].active) {
-            return true;
-        }
-    }
-    return false;
-}
-
-void nl_ov_cmd_pending_clear_all(void)
-{
-    for (int i = 0; i < NL_CMD_PENDING_MAX; i++) {
-        cmd_pending_clear_slot(&s_cmd_pending[i]);
-    }
-    cmd_pending_timer_ensure(false);
-}
-
-/** 兼容旧调用点；乐观路径不再等 snapshot 对齐。 */
-void nl_ov_cmd_pending_scan_match(void) {}
-
-static void cmd_pending_clear_widget(const char *widget_id)
-{
-    if (!widget_id || !widget_id[0]) {
-        return;
-    }
-    for (int i = 0; i < NL_CMD_PENDING_MAX; i++) {
-        if (s_cmd_pending[i].active && strcmp(s_cmd_pending[i].widget_id, widget_id) == 0) {
-            cmd_pending_clear_slot(&s_cmd_pending[i]);
-        }
-    }
-    cmd_pending_timer_ensure(cmd_pending_any());
-}
-
-/** 失败/超时：按 from 写回缓存并清 pending。 */
-static void cmd_pending_rollback_widget(const char *widget_id)
-{
-    if (!widget_id || !widget_id[0]) {
-        return;
-    }
-    for (int i = 0; i < NL_CMD_PENDING_MAX; i++) {
-        cmd_pending_t *p = &s_cmd_pending[i];
-        if (!p->active || strcmp(p->widget_id, widget_id) != 0) {
-            continue;
-        }
-        if (p->device_id[0] && p->from[0]) {
-            nl_dev_cache_t *d = ensure_dev(p->device_id);
-            if (d) {
-                if (p->channel >= 0) {
-                    set_channel_state(d, p->channel, p->from);
-                } else {
-                    std::snprintf(d->power, sizeof(d->power), "%s", p->from);
-                }
-            }
-        }
-        cmd_pending_clear_slot(p);
-    }
-    cmd_pending_timer_ensure(cmd_pending_any());
-}
-
-static void cmd_pending_begin(const nl_widget_t* w) {
-    if (!w || !w->id[0]) {
-        return;
-    }
-    cmd_pending_clear_widget(w->id);
-    int slot = -1;
-    for (int i = 0; i < NL_CMD_PENDING_MAX; i++) {
-        if (!s_cmd_pending[i].active) {
-            slot = i;
-            break;
-        }
-    }
-    if (slot < 0) {
-        int64_t oldest = INT64_MAX;
-        for (int i = 0; i < NL_CMD_PENDING_MAX; i++) {
-            if (s_cmd_pending[i].deadline_us < oldest) {
-                oldest = s_cmd_pending[i].deadline_us;
-                slot = i;
-            }
-        }
-        if (slot < 0) {
-            slot = 0;
-        }
-        cmd_pending_rollback_widget(s_cmd_pending[slot].widget_id);
-    }
-    cmd_pending_t* p = &s_cmd_pending[slot];
-    p->active = true;
-    if (++s_cmd_sequence == 0)
-        ++s_cmd_sequence;
-    p->sequence = s_cmd_sequence;
-    std::snprintf(p->widget_id, sizeof(p->widget_id), "%s", w->id);
-    std::snprintf(p->device_id, sizeof(p->device_id), "%s", w->bind.device_id);
-    p->channel = (int16_t)bind_channel_index(w);
-    const char* cur = widget_cache_state(w);
-    if (cur && cur[0]) {
-        std::snprintf(p->from, sizeof(p->from), "%s", cur);
-    } else {
-        std::snprintf(p->from, sizeof(p->from), "%s", "UNKNOWN");
-    }
-    p->deadline_us = esp_timer_get_time() + (int64_t)NL_CMD_ROLLBACK_MS * 1000;
-    cmd_pending_timer_ensure(true);
-}
-
-static void cmd_pending_tick(void)
-{
-    const int64_t now = esp_timer_get_time();
-    bool rolled = false;
-    for (int i = 0; i < NL_CMD_PENDING_MAX; i++) {
-        cmd_pending_t *p = &s_cmd_pending[i];
-        if (!p->active) {
-            continue;
-        }
-        if (now < p->deadline_us) {
-            continue;
-        }
-        char wid[NL_LAYOUT_STR];
-        std::snprintf(wid, sizeof(wid), "%s", p->widget_id);
-        cmd_pending_rollback_widget(wid);
-        rolled = true;
-    }
-    if (rolled) {
-        nl_ov_toast("操作超时");
-        nl_ov_refresh_home_tiles();
-    }
-    cmd_pending_timer_ensure(cmd_pending_any());
-}
-
-static void cmd_pending_timer_ensure(bool want)
-{
-    if (want) {
-        if (!s_pending_timer) {
-            s_pending_timer = lv_timer_create(
-                [](lv_timer_t *) {
-                    if (!s_screen_on) {
-                        return;
-                    }
-                    cmd_pending_tick();
-                },
-                400, nullptr);
-        } else {
-            lv_timer_resume(s_pending_timer);
-        }
-    } else if (s_pending_timer) {
-        lv_timer_pause(s_pending_timer);
-    }
-}
-
-struct async_cmd_item_t {
-    char widget_id[NL_LAYOUT_STR];
-    nl_bind_t bind;
-    char value[16];
-    bool rollback_on_fail; /* 首页开关：点按已乐观写态，失败回滚 */
-    uint32_t sequence;
-};
-
-static void async_cmd_worker(void* arg) {
-    const auto item = *static_cast<async_cmd_item_t*>(arg);
-    free(arg);
-    int http = 0;
-    nodelio_nvs_config_t cmd_cfg{};
-    nl_ov_cfg_for_http(&cmd_cfg);
-    /* 点按已写缓存；HTTP 成功不再二次乐观（DIOL 成功仍会落真态） */
-    esp_err_t err = nodelio_panel_command_ex(&cmd_cfg, item.widget_id, "set", &item.bind,
-                                             item.value, &http, !item.rollback_on_fail);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "async cmd %s http=%d err=%s", item.widget_id, http, esp_err_to_name(err));
-        DisplayLockGuard lock(nl_ov_disp());
-        if (lock) {
-            const char* msg = "操作未响应";
-            if (http == 503) {
-                msg = "设备未在线";
-            } else if (http == 401) {
-                msg = "需口令";
-            }
-            nl_ov_toast(msg);
-            if (item.rollback_on_fail && item.sequence == cmd_pending_sequence(item.widget_id)) {
-                cmd_pending_rollback_widget(item.widget_id);
-                nl_ov_refresh_home_tiles();
-            }
-        }
-    } else {
-        s_cloud_ok = true;
-        DisplayLockGuard lock(nl_ov_disp());
-        if (lock) {
-            if (s_cloud_lbl) {
-                nl_ov_refresh_status_icons(s_wifi_ok, true, nullptr);
-            }
-            if (item.rollback_on_fail && item.sequence == cmd_pending_sequence(item.widget_id)) {
-                cmd_pending_clear_widget(item.widget_id);
-            }
-        }
-    }
-}
-
-static void dispatch_async_cmd(const nl_widget_t* w, const char* value, bool rollback_on_fail) {
-    if (!w)
-        return;
-    auto* item = static_cast<async_cmd_item_t*>(calloc(1, sizeof(async_cmd_item_t)));
-    if (item) {
-        std::snprintf(item->widget_id, sizeof(item->widget_id), "%s", w->id);
-        item->bind = w->bind;
-        std::snprintf(item->value, sizeof(item->value), "%s", value ? value : "TOGGLE");
-        item->rollback_on_fail = rollback_on_fail;
-        item->sequence = cmd_pending_sequence(w->id);
-        if (nodelio::SubmitPanelJob(nodelio::PanelJobLane::Control, async_cmd_worker, item,
-                                    [](void* p) { free(p); }))
-            return;
-        free(item);
-    }
-    // Never evict an accepted control command to make room for a newer one.
-    if (rollback_on_fail) {
-        cmd_pending_rollback_widget(w->id);
-        nl_ov_refresh_home_tiles();
-    }
-    nl_ov_toast("操作繁忙，请稍后重试");
-}
-
-/** 首页开关：记 from → 乐观写缓存 → 下发；失败回滚。 */
-static void home_switch_commit(nl_widget_t *w, const char *want)
-{
-    if (!w || !want || !want[0]) {
-        return;
-    }
-    cmd_pending_begin(w);
-    set_widget_cache_state(w, want);
-    nl_ov_refresh_home_tiles();
-    dispatch_async_cmd(w, want, true);
-}
-
-static void widget_cmd(const nl_widget_t *w, const char *value)
-{
-    if (!w) {
-        return;
-    }
-    if (w->bind.kind != NL_BIND_HOME_SCENARIO && w->bind.device_id[0] &&
-        !nodelio_panel_ui_device_online(w->bind.device_id)) {
-        nl_ov_toast("设备未在线");
-        return;
-    }
-    dispatch_async_cmd(w, value, false);
 }
 
 /** DualLine 支路：点 NC→OFF、点 NO→ON（绝对态，非翻转） */
@@ -1919,14 +838,14 @@ static void on_dual_seg(lv_event_t *e)
     if (!w || !seg) {
         return;
     }
-    if (widget_is_cmd_pending(w)) {
+    if (nl_ov_widget_is_cmd_pending(w)) {
         return;
     }
     intptr_t role = (intptr_t)lv_obj_get_user_data(seg);
     const bool want_on = (role == TILE_CHILD_DL_ON);
     const char *want = want_on ? "ON" : "OFF";
     tile_kind_t kind = tile_kind_of(w);
-    if (widget_is_on(w, kind) == want_on) {
+    if (nl_ov_widget_is_on(w, kind) == want_on) {
         return; /* 已在目标支路 */
     }
     if (w->bind.device_id[0] && !nodelio_panel_ui_device_online(w->bind.device_id)) {
@@ -1941,7 +860,7 @@ static void on_dual_seg(lv_event_t *e)
     std::snprintf(toast, sizeof(toast), "已切到 %s",
                   branch && branch[0] ? branch : (want_on ? "NO" : "NC"));
     nl_ov_toast(toast);
-    home_switch_commit(w, want);
+    nl_ov_home_switch_commit(w, want);
 }
 
 static void on_btn(lv_event_t *e)
@@ -1956,7 +875,7 @@ static void on_btn(lv_event_t *e)
     }
     if (w->type == NL_WIDGET_SCENE_CHIP || w->type == NL_WIDGET_SCENE_GRID ||
         w->bind.kind == NL_BIND_HOME_SCENARIO) {
-        widget_cmd(w, w->bind.name);
+        nl_ov_widget_cmd(w, w->bind.name);
         /* 轻反馈：边框闪 + 短弹 */
         if (tgt) {
             lv_obj_set_style_border_width(tgt, 2, 0);
@@ -1977,20 +896,20 @@ static void on_btn(lv_event_t *e)
             lv_obj_set_style_border_color(tgt, UI_ACCENT_SOFT, 0);
             tile_icon_pop(tgt);
         }
-        dispatch_async_cmd(w, "TOGGLE", false);
+        nl_ov_dispatch_async_cmd(w, "TOGGLE", false);
         return;
     }
-    if (widget_is_cmd_pending(w)) {
+    if (nl_ov_widget_is_cmd_pending(w)) {
         return;
     }
     tile_kind_t kind = tile_kind_of(w);
-    const char *want = widget_is_on(w, kind) ? "OFF" : "ON";
+    const char *want = nl_ov_widget_is_on(w, kind) ? "OFF" : "ON";
     if (w->bind.kind != NL_BIND_HOME_SCENARIO && w->bind.device_id[0] &&
         !nodelio_panel_ui_device_online(w->bind.device_id)) {
         nl_ov_toast("设备未在线");
         return;
     }
-    home_switch_commit(w, want);
+    nl_ov_home_switch_commit(w, want);
 }
 
 static void on_slider(lv_event_t *e)
@@ -2006,12 +925,12 @@ static void on_slider(lv_event_t *e)
     int duty = (int)lv_slider_get_value(slider);
     char val[12];
     std::snprintf(val, sizeof(val), "%d", duty);
-    set_widget_cache_state(w, val);
+    nl_ov_set_widget_cache_state(w, val);
     nl_ov_refresh_home_tiles();
-    widget_cmd(w, val);
+    nl_ov_widget_cmd(w, val);
 }
 
-static lv_obj_t *make_tile_shell(const nl_widget_t *w, tile_kind_t kind, int cell_w, int cell_h)
+lv_obj_t *nl_ov_make_tile_shell(const nl_widget_t *w, tile_kind_t kind, int cell_w, int cell_h)
 {
     uint32_t fill = widget_fill_for_state(w, kind, true, false, false);
     lv_obj_t *tile = lv_obj_create(s_home);
@@ -2025,7 +944,7 @@ static lv_obj_t *make_tile_shell(const nl_widget_t *w, tile_kind_t kind, int cel
     lv_obj_set_style_pad_all(tile, UI_PAD_SM, 0);
     ui_style_card(tile);
     lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
-    place_grid_obj(tile, w, cell_w, cell_h);
+    nl_ov_place_grid_obj(tile, w, cell_w, cell_h);
     lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(tile, UI_EXT_CLICK);
     lv_obj_set_style_bg_color(tile, lv_color_hex(color_pressed(fill)), LV_STATE_PRESSED);
@@ -2277,7 +1196,7 @@ static void add_tile_labels(lv_obj_t *tile, nl_widget_t *w, tile_kind_t kind, co
     lv_obj_set_style_radius(hint, UI_RADIUS_XS, 0);
     lv_obj_set_style_bg_color(hint, UI_TILE_BADGE_OFF, 0);
     lv_obj_set_style_bg_opa(hint, LV_OPA_70, 0);
-    style_hint_pill(hint, false);
+    nl_ov_style_hint_pill(hint, false);
     lv_obj_align(hint, is_row ? LV_ALIGN_RIGHT_MID : LV_ALIGN_TOP_RIGHT, is_row ? -2 : -4, is_row ? 0 : 4);
 
     if (is_1x1 || dl_segs) {
@@ -2541,7 +1460,7 @@ static void fill_skill_tile(nl_widget_t *w, int cell_w, int cell_h)
         return;
     }
     const char *title = w->title[0] ? w->title : w->skill_id;
-    lv_obj_t *tile = make_tile_shell(w, TILE_SCENE, cell_w, cell_h);
+    lv_obj_t *tile = nl_ov_make_tile_shell(w, TILE_SCENE, cell_w, cell_h);
     lv_obj_set_style_bg_color(tile, UI_TILE_OFF, 0);
     lv_obj_set_style_bg_color(tile, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
     bool is_1x1 = (w->gw <= 1 && w->gh <= 1);
@@ -2644,7 +1563,7 @@ static void on_skill_widget_click(lv_event_t *e)
     nl_ov_invoke_skill_async(w->skill_id, body);
 }
 
-static lv_obj_t *widget_icon_pod(lv_obj_t *parent, const char *glyph, lv_color_t bg, int sz)
+lv_obj_t *nl_ov_widget_icon_pod(lv_obj_t *parent, const char *glyph, lv_color_t bg, int sz)
 {
     lv_obj_t *pod = lv_obj_create(parent);
     lv_obj_remove_style_all(pod);
@@ -2661,682 +1580,12 @@ static lv_obj_t *widget_icon_pod(lv_obj_t *parent, const char *glyph, lv_color_t
     return pod;
 }
 
-static void on_photo_img_deleted(lv_event_t *e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_DELETE) {
-        return;
-    }
-    auto *dsc = static_cast<lv_image_dsc_t *>(lv_event_get_user_data(e));
-    if (!dsc) {
-        return;
-    }
-    if (dsc->data) {
-        heap_caps_free(const_cast<uint8_t *>(dsc->data));
-        dsc->data = nullptr;
-    }
-    free(dsc);
-}
-
-static lv_obj_t *find_home_tile_by_widget_id(const char *widget_id)
-{
-    if (!s_home || !widget_id || !widget_id[0]) {
-        return nullptr;
-    }
-    const uint32_t n = lv_obj_get_child_count(s_home);
-    for (uint32_t i = 0; i < n; i++) {
-        lv_obj_t *ch = lv_obj_get_child(s_home, i);
-        if (!ch) {
-            continue;
-        }
-        auto *w = static_cast<const nl_widget_t *>(lv_obj_get_user_data(ch));
-        if (w && w->type == NL_WIDGET_PHOTO_FRAME && strcmp(w->id, widget_id) == 0) {
-            return ch;
-        }
-    }
-    return nullptr;
-}
-
-static void photo_nav_raise(lv_obj_t *tile)
-{
-    if (!tile) {
-        return;
-    }
-    lv_obj_update_layout(tile);
-    /* 未出图时 layout 宽高可能仍为 0；回退到 place_grid_obj 写入的 style 尺寸，
-     * 否则右钮会落到 x=10（看起来像叠在左上角）。 */
-    int32_t tw = lv_obj_get_width(tile);
-    int32_t th = lv_obj_get_height(tile);
-    if (tw <= 0) {
-        tw = lv_obj_get_style_width(tile, LV_PART_MAIN);
-    }
-    if (th <= 0) {
-        th = lv_obj_get_style_height(tile, LV_PART_MAIN);
-    }
-    const int32_t btn = 48;
-    const int32_t y = (th > btn) ? ((th - btn) / 2) : 0;
-    for (uint32_t i = 0; i < lv_obj_get_child_count(tile); i++) {
-        lv_obj_t *ch = lv_obj_get_child(tile, i);
-        if (!ch || !lv_obj_has_flag(ch, LV_OBJ_FLAG_USER_1)) {
-            continue;
-        }
-        lv_obj_add_flag(ch, (lv_obj_flag_t)(LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_IGNORE_LAYOUT));
-        const intptr_t delta = (intptr_t)lv_obj_get_user_data(ch);
-        if (delta < 0) {
-            lv_obj_set_pos(ch, 10, y);
-        } else {
-            lv_obj_set_pos(ch, (tw > btn + 10) ? (tw - btn - 10) : 10, y);
-        }
-        lv_obj_move_foreground(ch);
-    }
-}
-
-static void photo_apply_rgb(const char *widget_id, uint8_t *rgb, size_t rgb_len, size_t w, size_t h,
-                            size_t stride, bool fit_contain, uint32_t gen)
-{
-    if (gen != s_home_gen || !s_home || s_active_tab != NL_TAB_HOME) {
-        if (rgb) {
-            heap_caps_free(rgb);
-        }
-        return;
-    }
-    lv_obj_t *tile = find_home_tile_by_widget_id(widget_id);
-    if (!tile || !rgb || w == 0 || h == 0) {
-        if (rgb) {
-            heap_caps_free(rgb);
-        }
-        if (tile) {
-            lv_obj_t *hint = lv_obj_get_child(tile, 0);
-            if (hint && lv_obj_check_type(hint, &lv_label_class)) {
-                lv_label_set_text(hint, "加载失败");
-                lv_obj_set_style_text_color(hint, UI_TEXT_MUTED, 0);
-                lv_obj_center(hint);
-            }
-            photo_nav_raise(tile);
-        }
-        return;
-    }
-    /* 清掉占位/旧图，保留 USER_1 导航钮 */
-    uint32_t ci = 0;
-    while (ci < lv_obj_get_child_count(tile)) {
-        lv_obj_t *ch = lv_obj_get_child(tile, ci);
-        if (ch && lv_obj_has_flag(ch, LV_OBJ_FLAG_USER_1)) {
-            ci++;
-            continue;
-        }
-        lv_obj_del(ch);
-    }
-    auto *dsc = static_cast<lv_image_dsc_t *>(calloc(1, sizeof(lv_image_dsc_t)));
-    if (!dsc) {
-        heap_caps_free(rgb);
-        lv_obj_t *lb = lv_label_create(tile);
-        nl_ov_set_font(lb);
-        lv_label_set_text(lb, "内存不足");
-        lv_obj_set_style_text_color(lb, UI_TEXT_MUTED, 0);
-        lv_obj_center(lb);
-        return;
-    }
-    dsc->data = rgb;
-    dsc->data_size = rgb_len;
-    dsc->header.magic = LV_IMAGE_HEADER_MAGIC;
-    dsc->header.cf = LV_COLOR_FORMAT_RGB565;
-    dsc->header.w = (uint32_t)w;
-    dsc->header.h = (uint32_t)h;
-    dsc->header.stride = (uint32_t)stride;
-
-    lv_obj_t *img = lv_image_create(tile);
-    lv_obj_set_size(img, lv_pct(100), lv_pct(100));
-    lv_obj_center(img);
-    lv_obj_set_style_radius(img, UI_RADIUS_MD, 0);
-    lv_obj_set_style_clip_corner(img, true, 0);
-    lv_image_set_src(img, dsc);
-    lv_image_set_inner_align(img, fit_contain ? LV_IMAGE_ALIGN_CONTAIN : LV_IMAGE_ALIGN_COVER);
-    lv_obj_clear_flag(img, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(img, on_photo_img_deleted, LV_EVENT_DELETE, dsc);
-    photo_nav_raise(tile);
-}
-
-static photo_rt_t *photo_rt_find(const char *widget_id)
-{
-    if (!widget_id || !widget_id[0]) {
-        return nullptr;
-    }
-    for (int i = 0; i < s_photo_rt_n; i++) {
-        if (strcmp(s_photo_rt[i].widget_id, widget_id) == 0) {
-            return &s_photo_rt[i];
-        }
-    }
-    return nullptr;
-}
-
-static void photo_show_loading(const char *widget_id, const char *text)
-{
-    lv_obj_t *tile = find_home_tile_by_widget_id(widget_id);
-    if (!tile) {
-        return;
-    }
-    uint32_t ci = 0;
-    while (ci < lv_obj_get_child_count(tile)) {
-        lv_obj_t *ch = lv_obj_get_child(tile, ci);
-        if (ch && lv_obj_has_flag(ch, LV_OBJ_FLAG_USER_1)) {
-            ci++;
-            continue;
-        }
-        lv_obj_del(ch);
-    }
-    lv_obj_t *lb = lv_label_create(tile);
-    nl_ov_set_font(lb);
-    lv_label_set_text(lb, text ? text : "加载中");
-    lv_obj_set_style_text_color(lb, UI_TEXT_MUTED, 0);
-    lv_obj_center(lb);
-    photo_nav_raise(tile);
-}
-
-static void photo_cache_prune_layout(void)
-{
-    if (!s_layout) {
-        return;
-    }
-    constexpr size_t kMaxKeep = 48;
-    const char *ids[kMaxKeep];
-    size_t n = 0;
-    for (int pi = 0; pi < s_layout->page_count && n < kMaxKeep; pi++) {
-        const nl_page_t *pg = &s_layout->pages[pi];
-        if (pg->system_page[0] != '\0') {
-            continue;
-        }
-        for (int si = 0; si < pg->section_count && n < kMaxKeep; si++) {
-            const nl_section_t *sec = &pg->sections[si];
-            for (int wi = 0; wi < sec->widget_count && n < kMaxKeep; wi++) {
-                const nl_widget_t *w = &sec->widgets[wi];
-                if (w->type != NL_WIDGET_PHOTO_FRAME) {
-                    continue;
-                }
-                for (uint8_t i = 0; i < w->photo_n && n < kMaxKeep; i++) {
-                    if (w->photo_ids[i][0]) {
-                        ids[n++] = w->photo_ids[i];
-                    }
-                }
-            }
-        }
-    }
-    photo_blob_prune_keep(ids, n);
-    (void)nodelio_photo_cache_prune(ids, n);
-}
-
-static void photo_fetch_async(const nl_widget_t *w, uint8_t idx)
-{
-    if (!w || w->photo_n == 0 || idx >= w->photo_n || !w->photo_ids[idx][0]) {
-        return;
-    }
-    struct photo_arg {
-        nodelio_nvs_config_t cfg;
-        char widget_id[NL_LAYOUT_STR];
-        char photo_id[NL_PHOTO_ID_MAX];
-        uint8_t fit_contain;
-        uint32_t gen;
-    };
-    auto *arg = static_cast<photo_arg *>(malloc(sizeof(photo_arg)));
-    if (!arg) {
-        return;
-    }
-    nl_ov_cfg_for_http(&arg->cfg);
-    snprintf(arg->widget_id, sizeof(arg->widget_id), "%s", w->id);
-    snprintf(arg->photo_id, sizeof(arg->photo_id), "%s", w->photo_ids[idx]);
-    arg->fit_contain = w->photo_fit_contain;
-    arg->gen = s_home_gen;
-
-    if (!nodelio::SubmitPanelJob(
-            nodelio::PanelJobLane::Background,
-            [](void* p) {
-                auto *a = static_cast<photo_arg *>(p);
-                {
-                    DisplayLockGuard lock(nl_ov_disp());
-                    if (!lock || a->gen != s_home_gen) {
-                        free(a);
-                        return;
-                    }
-                }
-                constexpr int kJpegCap = 90 * 1024;
-                uint8_t *jpeg = nullptr;
-                size_t jpeg_n = 0;
-                int status = 0;
-                esp_err_t err = ESP_FAIL;
-                bool own_jpeg = false;
-                bool from_flash = false;
-
-                /* 1) PSRAM 热缓存（拷贝，防并发 put 释放） */
-                photo_blob_t *blob = photo_blob_find(a->photo_id);
-                if (blob && blob->data && blob->len > 0) {
-                    jpeg = static_cast<uint8_t *>(
-                        heap_caps_malloc(blob->len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-                    if (jpeg) {
-                        memcpy(jpeg, blob->data, blob->len);
-                        jpeg_n = blob->len;
-                        own_jpeg = true;
-                        err = ESP_OK;
-                        status = 200;
-                    }
-                }
-
-                auto try_http = [&]() {
-                    if (nodelio_wifi_is_asleep() || !nodelio_wifi_has_ip() || !a->cfg.server_url[0] ||
-                        !a->cfg.device_id[0]) {
-                        return;
-                    }
-                    if (!jpeg || !own_jpeg) {
-                        jpeg = static_cast<uint8_t *>(
-                            heap_caps_malloc((size_t)kJpegCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-                        own_jpeg = jpeg != nullptr;
-                        if (!jpeg) {
-                            return;
-                        }
-                    }
-                    char base[160];
-                    nl_url_strip_base(a->cfg.server_url, base, sizeof(base));
-                    char url[420];
-                    snprintf(url, sizeof(url), "%s/api/devices/%s/panel/photos/%s", base, a->cfg.device_id,
-                             a->photo_id);
-                    err = nodelio_http_get_bin(url, a->cfg.device_key, &status, jpeg, kJpegCap, &jpeg_n);
-                    from_flash = false;
-                    if (err == ESP_OK && status == 200 && jpeg_n > 0) {
-                        photo_blob_put(a->photo_id, jpeg, jpeg_n);
-                        (void)nodelio_photo_cache_save(a->photo_id, jpeg, jpeg_n);
-                    } else if (status == 404) {
-                        (void)nodelio_photo_cache_remove(a->photo_id);
-                    }
-                };
-
-                /* 2) SPIFFS → 3) HTTP */
-                if (!(err == ESP_OK && status == 200 && jpeg_n > 0)) {
-                    jpeg = static_cast<uint8_t *>(
-                        heap_caps_malloc((size_t)kJpegCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-                    own_jpeg = jpeg != nullptr;
-                    if (jpeg) {
-                        if (nodelio_photo_cache_load(a->photo_id, jpeg, (size_t)kJpegCap, &jpeg_n) ==
-                                ESP_OK &&
-                            jpeg_n > 0) {
-                            err = ESP_OK;
-                            status = 200;
-                            from_flash = true;
-                            photo_blob_put(a->photo_id, jpeg, jpeg_n);
-                        } else {
-                            try_http();
-                        }
-                    }
-                }
-
-                uint8_t *rgb = nullptr;
-                size_t rgb_len = 0, iw = 0, ih = 0, stride = 0;
-                const char *fail_tip = nullptr;
-                if (err == ESP_OK && status == 200 && jpeg_n > 0) {
-                    if (jpeg_to_image(jpeg, jpeg_n, &rgb, &rgb_len, &iw, &ih, &stride) != ESP_OK) {
-                        rgb = nullptr;
-                        if (from_flash || photo_blob_find(a->photo_id)) {
-                            (void)nodelio_photo_cache_remove(a->photo_id);
-                            photo_blob_t *bad = photo_blob_find(a->photo_id);
-                            if (bad) {
-                                photo_blob_free_slot(bad);
-                            }
-                            jpeg_n = 0;
-                            status = 0;
-                            err = ESP_FAIL;
-                            try_http();
-                            if (err == ESP_OK && status == 200 && jpeg_n > 0) {
-                                if (jpeg_to_image(jpeg, jpeg_n, &rgb, &rgb_len, &iw, &ih, &stride) !=
-                                    ESP_OK) {
-                                    rgb = nullptr;
-                                    fail_tip = "解码失败";
-                                }
-                            }
-                        } else {
-                            fail_tip = "解码失败";
-                        }
-                    }
-                }
-                if (!rgb && !fail_tip) {
-                    if (status == 401 || status == 403) {
-                        fail_tip = "鉴权失败";
-                    } else if (status == 404) {
-                        fail_tip = "图已失效";
-                    } else if (nodelio_wifi_is_asleep() || !nodelio_wifi_has_ip()) {
-                        fail_tip = "无缓存";
-                    } else {
-                        fail_tip = "加载失败";
-                    }
-                }
-                if (own_jpeg && jpeg) {
-                    heap_caps_free(jpeg);
-                }
-                std::string wid(a->widget_id);
-                const bool fit = a->fit_contain != 0;
-                const uint32_t gen = a->gen;
-                std::string tip(fail_tip ? fail_tip : "");
-                free(a);
-                Application::GetInstance().Schedule([wid, rgb, rgb_len, iw, ih, stride, fit, gen, tip]() {
-                    DisplayLockGuard lock(nl_ov_disp());
-                    if (gen != s_home_gen) {
-                        if (rgb) {
-                            heap_caps_free(rgb);
-                        }
-                        return;
-                    }
-                    if (rgb) {
-                        photo_apply_rgb(wid.c_str(), rgb, rgb_len, iw, ih, stride, fit, gen);
-                    } else if (!tip.empty()) {
-                        photo_show_loading(wid.c_str(), tip.c_str());
-                    }
-                });
-            },
-            arg, [](void* p) { free(p); }, 0, arg->widget_id)) {
-        free(arg);
-    }
-}
-
-static const nl_widget_t *photo_widget_by_id(const char *widget_id)
-{
-    if (!s_layout || !widget_id) {
-        return nullptr;
-    }
-    for (int pi = 0; pi < s_layout->page_count; pi++) {
-        const nl_page_t *pg = &s_layout->pages[pi];
-        if (pg->system_page[0] != '\0') {
-            continue;
-        }
-        for (int si = 0; si < pg->section_count; si++) {
-            const nl_section_t *sec = &pg->sections[si];
-            for (int wi = 0; wi < sec->widget_count; wi++) {
-                const nl_widget_t *w = &sec->widgets[wi];
-                if (w->type == NL_WIDGET_PHOTO_FRAME && strcmp(w->id, widget_id) == 0) {
-                    return w;
-                }
-            }
-        }
-    }
-    return nullptr;
-}
-
-/** 左右循环切图（到头绕回） */
-static void photo_step(photo_rt_t *rt, int delta)
-{
-    if (!rt || delta == 0) {
-        return;
-    }
-    const nl_widget_t *w = photo_widget_by_id(rt->widget_id);
-    if (!w || w->photo_n < 2) {
-        return;
-    }
-    int n = (int)w->photo_n;
-    int next = ((int)rt->idx + delta) % n;
-    if (next < 0) {
-        next += n;
-    }
-    rt->idx = (uint8_t)next;
-    rt->paused = 0;
-    /* 热缓存命中不闪「加载中」 */
-    if (!photo_blob_has(w->photo_ids[rt->idx])) {
-        photo_show_loading(rt->widget_id, "加载中");
-    }
-    photo_fetch_async(w, rt->idx);
-    const int sec = rt->interval_sec >= 3 ? rt->interval_sec : 8;
-    rt->next_ms = esp_timer_get_time() / 1000 + (int64_t)sec * 1000;
-}
-
-static void photo_advance(photo_rt_t *rt)
-{
-    photo_step(rt, 1);
-}
-
-static void on_photo_timer(lv_timer_t *t)
-{
-    (void)t;
-    if (!s_screen_on || s_active_tab != NL_TAB_HOME || !s_home ||
-        lv_obj_has_flag(s_home, LV_OBJ_FLAG_HIDDEN)) {
-        return;
-    }
-    if (nodelio_wifi_is_asleep()) {
-        return;
-    }
-    const int64_t now = esp_timer_get_time() / 1000;
-    for (int i = 0; i < s_photo_rt_n; i++) {
-        photo_rt_t *rt = &s_photo_rt[i];
-        if (rt->paused || rt->next_ms <= 0 || now < rt->next_ms) {
-            continue;
-        }
-        photo_advance(rt);
-    }
-}
-
-static void photo_timer_ensure(void)
-{
-    if (s_photo_timer) {
-        return;
-    }
-    s_photo_timer = lv_timer_create(on_photo_timer, 1000, nullptr);
-}
-
-/** 占网格一半及以上视为大图（含 6×6）；多屏时滑动优先翻页 */
-static bool photo_frame_is_large(const nl_widget_t *w)
-{
-    if (!w) {
-        return false;
-    }
-    int cols = nodelio_display_profile()->grid_cols;
-    int rows = nodelio_display_profile()->grid_rows;
-    if (s_layout) {
-        if (s_layout->grid_cols > 0) {
-            cols = s_layout->grid_cols;
-        }
-        if (s_layout->grid_rows > 0) {
-            rows = s_layout->grid_rows;
-        }
-    }
-    const int area = (int)w->gw * (int)w->gh;
-    const int total = cols * rows;
-    return total > 0 && area * 2 >= total;
-}
-
-/**
- * 左滑下一张、右滑上一张。
- * 多首页屏时不吞手势，否则大图会挡掉分屏翻页。
- */
-static void on_photo_frame_gesture(lv_event_t *e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_GESTURE) {
-        return;
-    }
-    auto *w = static_cast<nl_widget_t *>(lv_event_get_user_data(e));
-    if (!w || w->type != NL_WIDGET_PHOTO_FRAME || w->photo_n < 2) {
-        return;
-    }
-    if (s_home_user_n > 1) {
-        return;
-    }
-    lv_indev_t *indev = lv_indev_active();
-    if (!indev) {
-        return;
-    }
-    lv_dir_t dir = lv_indev_get_gesture_dir(indev);
-    if (dir != LV_DIR_LEFT && dir != LV_DIR_RIGHT) {
-        return;
-    }
-    photo_rt_t *rt = photo_rt_find(w->id);
-    if (!rt) {
-        return;
-    }
-    lv_indev_wait_release(indev);
-    photo_step(rt, dir == LV_DIR_LEFT ? 1 : -1);
-}
-
-/** 小图多屏：点左/右约 1/3 切图（大图不用，易误触翻页） */
-static void on_photo_frame_side_click(lv_event_t *e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
-        return;
-    }
-    auto *w = static_cast<nl_widget_t *>(lv_event_get_user_data(e));
-    if (!w || w->type != NL_WIDGET_PHOTO_FRAME || w->photo_n < 2) {
-        return;
-    }
-    lv_obj_t *tile = static_cast<lv_obj_t *>(lv_event_get_current_target(e));
-    lv_indev_t *indev = lv_indev_active();
-    if (!tile || !indev) {
-        return;
-    }
-    lv_point_t pt;
-    lv_indev_get_point(indev, &pt);
-    lv_area_t area;
-    lv_obj_get_coords(tile, &area);
-    const int32_t tw = lv_area_get_width(&area);
-    if (tw < 8) {
-        return;
-    }
-    const int32_t x = pt.x - area.x1;
-    int delta = 0;
-    if (x < tw / 3) {
-        delta = -1;
-    } else if (x > (tw * 2) / 3) {
-        delta = 1;
-    } else {
-        return;
-    }
-    photo_rt_t *rt = photo_rt_find(w->id);
-    if (!rt) {
-        return;
-    }
-    photo_step(rt, delta);
-}
-
-static void on_photo_nav_btn(lv_event_t *e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
-        return;
-    }
-    auto *w = static_cast<nl_widget_t *>(lv_event_get_user_data(e));
-    lv_obj_t *btn = static_cast<lv_obj_t *>(lv_event_get_current_target(e));
-    if (!w || !btn) {
-        return;
-    }
-    const intptr_t delta = (intptr_t)lv_obj_get_user_data(btn);
-    photo_rt_t *rt = photo_rt_find(w->id);
-    if (!rt || (delta != 1 && delta != -1)) {
-        return;
-    }
-    photo_step(rt, (int)delta);
-}
-
-static void photo_add_nav_btn(lv_obj_t *tile, nl_widget_t *w, int delta, bool left)
-{
-    (void)left;
-    lv_obj_t *btn = lv_obj_create(tile);
-    lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, 48, 48);
-    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(btn, UI_SURFACE, 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_30, 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_50, LV_STATE_PRESSED);
-    lv_obj_set_style_border_width(btn, 0, 0);
-    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_flag(btn, (lv_obj_flag_t)(LV_OBJ_FLAG_USER_1 | LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_IGNORE_LAYOUT));
-    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_ext_click_area(btn, 10);
-    lv_obj_set_user_data(btn, (void *)(intptr_t)delta);
-    lv_obj_add_event_cb(btn, on_photo_nav_btn, LV_EVENT_CLICKED, w);
-    lv_obj_t *lb = lv_label_create(btn);
-    nl_ov_set_font(lb);
-    lv_label_set_text(lb, delta < 0 ? "<" : ">");
-    lv_obj_set_style_text_color(lb, UI_TEXT, 0);
-    lv_obj_set_style_text_opa(lb, LV_OPA_70, 0);
-    lv_obj_center(lb);
-    lv_obj_clear_flag(lb, LV_OBJ_FLAG_CLICKABLE);
-}
-
-static void photo_ensure_nav_btns(lv_obj_t *tile, nl_widget_t *w)
-{
-    if (!tile || !w || w->photo_n < 2) {
-        return;
-    }
-    bool have = false;
-    for (uint32_t i = 0; i < lv_obj_get_child_count(tile); i++) {
-        lv_obj_t *ch = lv_obj_get_child(tile, i);
-        if (ch && lv_obj_has_flag(ch, LV_OBJ_FLAG_USER_1)) {
-            have = true;
-            break;
-        }
-    }
-    if (!have) {
-        photo_add_nav_btn(tile, w, -1, true);
-        photo_add_nav_btn(tile, w, 1, false);
-    }
-    photo_nav_raise(tile);
-}
-
-static void photo_rt_register(const nl_widget_t *w)
-{
-    if (!w || w->photo_n < 2 || s_photo_rt_n >= NL_PHOTO_RT_MAX) {
-        return;
-    }
-    photo_rt_t *rt = &s_photo_rt[s_photo_rt_n++];
-    memset(rt, 0, sizeof(*rt));
-    snprintf(rt->widget_id, sizeof(rt->widget_id), "%s", w->id);
-    rt->idx = 0;
-    rt->paused = 0;
-    rt->interval_sec = w->photo_interval_sec >= 3 ? w->photo_interval_sec : 8;
-    rt->next_ms = esp_timer_get_time() / 1000 + (int64_t)rt->interval_sec * 1000;
-    photo_timer_ensure();
-}
-
-static void fill_photo_frame(nl_widget_t *w, int cell_w, int cell_h)
-{
-    if (!w) {
-        return;
-    }
-    lv_obj_t *tile = make_tile_shell(w, TILE_SCENE, cell_w, cell_h);
-    lv_obj_set_style_bg_color(tile, UI_TILE_OFF, 0);
-    lv_obj_set_style_border_width(tile, 1, 0);
-    lv_obj_set_style_border_color(tile, UI_TILE_OFF_BORDER, 0);
-    lv_obj_set_style_border_opa(tile, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(tile, 0, 0);
-    /* 图铺满圆角卡：必须 clip，否则四角直角图溢出成黑块 */
-    lv_obj_set_style_clip_corner(tile, true, 0);
-    lv_obj_set_layout(tile, LV_LAYOUT_NONE);
-
-    lv_obj_t *lb = lv_label_create(tile);
-    nl_ov_set_font(lb);
-    if (w->photo_n == 0 || !w->photo_ids[0][0]) {
-        lv_label_set_text(lb, "去 APP 添加");
-        lv_obj_set_style_text_color(lb, UI_TEXT_MUTED, 0);
-        lv_obj_center(lb);
-        return;
-    }
-    lv_label_set_text(lb, "加载中");
-    lv_obj_set_style_text_color(lb, UI_TEXT_MUTED, 0);
-    lv_obj_center(lb);
-    if (w->photo_n >= 2) {
-        const bool multi = s_home_user_n > 1;
-        const bool large = photo_frame_is_large(w);
-        if (multi && large) {
-            /* 大图多屏：整卡不抢点击，滑动直达翻页；左右钮循环切图 */
-            lv_obj_clear_flag(tile, LV_OBJ_FLAG_CLICKABLE);
-            photo_ensure_nav_btns(tile, w);
-        } else if (multi) {
-            lv_obj_add_event_cb(tile, on_photo_frame_gesture, LV_EVENT_GESTURE, w);
-            lv_obj_add_event_cb(tile, on_photo_frame_side_click, LV_EVENT_CLICKED, w);
-        } else {
-            lv_obj_add_event_cb(tile, on_photo_frame_gesture, LV_EVENT_GESTURE, w);
-            lv_obj_add_event_cb(tile, on_photo_frame_side_click, LV_EVENT_CLICKED, w);
-            lv_obj_clear_flag(tile, LV_OBJ_FLAG_GESTURE_BUBBLE);
-        }
-        photo_rt_register(w);
-    }
-    photo_fetch_async(w, 0);
-}
-
 static void fill_skill_widget(nl_widget_t *w, int cell_w, int cell_h)
 {
     if (!w || !w->skill_id[0]) {
         return;
     }
-    lv_obj_t *tile = make_tile_shell(w, TILE_SCENE, cell_w, cell_h);
+    lv_obj_t *tile = nl_ov_make_tile_shell(w, TILE_SCENE, cell_w, cell_h);
     lv_obj_set_style_bg_color(tile, UI_TILE_OFF, 0);
     lv_obj_set_style_border_width(tile, 1, 0);
     lv_obj_set_style_border_color(tile, UI_TILE_OFF_BORDER, 0);
@@ -3374,7 +1623,7 @@ static void refresh_skill_widget(lv_obj_t* tile, nl_widget_t* w) {
     lv_obj_set_style_pad_column(tile, 10, 0);
 
     const int pod_sz = one_row ? 30 : 38;
-    widget_icon_pod(tile, widget_glyph, UI_ACCENT, pod_sz);
+    nl_ov_widget_icon_pod(tile, widget_glyph, UI_ACCENT, pod_sz);
 
     lv_obj_t *col = lv_obj_create(tile);
     lv_obj_remove_style_all(col);
@@ -3496,7 +1745,7 @@ static void home_apply_delta(int delta)
     s_home_user_cur = next;
     home_remember_current_id();
     ++s_home_gen;
-    s_photo_rt_n = 0;
+    nl_ov_photo_reset_rt();
     if (!hidden) {
         lv_obj_clear_flag(s_home, LV_OBJ_FLAG_HIDDEN);
     } else {
@@ -3800,8 +2049,8 @@ static void build_home_view(void) {
     s_home_state_dirty = false;
     s_home_cacheable = false;
     s_home_gen++;
-    s_photo_rt_n = 0;
-    photo_cache_prune_layout();
+    nl_ov_photo_reset_rt();
+    nl_ov_photo_cache_prune_layout();
     /* C3：钉选清单仅开机/invalidate 后拉一次，无定时轮询市场 */
     nl_ov_home_skills_ensure_fetched();
 
@@ -3980,7 +2229,7 @@ static void build_home_view(void) {
                 continue;
             }
             if (w->type == NL_WIDGET_PHOTO_FRAME) {
-                fill_photo_frame(w, cell_w, cell_h);
+                nl_ov_fill_photo_frame(w, cell_w, cell_h);
                 continue;
             }
             if (!nodelio_controls_enabled()) {
@@ -3990,7 +2239,7 @@ static void build_home_view(void) {
             if (kind == TILE_PWM) {
                 bool is_1x1 = (w && w->gw <= 1 && w->gh <= 1);
                 bool is_row = (w && w->gw >= 2 && w->gh <= 1);
-                lv_obj_t *row = make_tile_shell(w, kind, cell_w, cell_h);
+                lv_obj_t *row = nl_ov_make_tile_shell(w, kind, cell_w, cell_h);
                 if (is_1x1) {
                     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
                     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -4055,7 +2304,7 @@ static void build_home_view(void) {
                 lv_obj_set_style_radius(hint, UI_RADIUS_XS, 0);
                 lv_obj_set_style_bg_color(hint, UI_TILE_BADGE_ON, 0);
                 lv_obj_set_style_bg_opa(hint, LV_OPA_70, 0);
-                style_hint_pill(hint, false);
+                nl_ov_style_hint_pill(hint, false);
                 lv_obj_align(hint, is_row ? LV_ALIGN_RIGHT_MID : LV_ALIGN_TOP_RIGHT, is_row ? -2 : -4, is_row ? 0 : 4);
 
                 if (is_1x1) {
@@ -4075,10 +2324,10 @@ static void build_home_view(void) {
                 lv_obj_set_style_bg_color(sl, UI_ON_TILE, LV_PART_KNOB);
                 lv_slider_set_range(sl, w->bind.min, w->bind.max > w->bind.min ? w->bind.max : 100);
                 lv_obj_add_event_cb(sl, on_slider, LV_EVENT_ALL, w);
-                style_tile_visual(row, w);
+                nl_ov_style_tile_visual(row, w);
                 continue;
             }
-            lv_obj_t *tile = make_tile_shell(w, kind, cell_w, cell_h);
+            lv_obj_t *tile = nl_ov_make_tile_shell(w, kind, cell_w, cell_h);
             {
                 const bool dl = widget_is_dual_line(w);
                 ESP_LOGD(TAG, "draw switch '%s' skin='%s' dual=%d segs=%d vert=%d %dx%d", title,
@@ -4093,7 +2342,7 @@ static void build_home_view(void) {
                 lv_obj_add_event_cb(tile, on_btn, LV_EVENT_CLICKED, w);
             }
             add_tile_labels(tile, w, kind, title);
-            style_tile_visual(tile, w);
+            nl_ov_style_tile_visual(tile, w);
         }
     }
 

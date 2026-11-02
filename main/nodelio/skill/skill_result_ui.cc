@@ -1,144 +1,31 @@
-#include "skill_result_ui.h"
-#include "news_read_progress.h"
-#include "panel_jobs.h"
+#include "skill_ui_priv.h"
 
-#include "device_caps.h"
-#include "lunar_date.h"
-#include "media_player.h"
-#include "nl_url_util.h"
-#include "nodelio_http.h"
-#include "nodelio_overlay.h"
-#include "overlay_priv.h"
-#include "panel_ui.h"
-#include "skill_runtime.h"
-#include "ui_theme.h"
-#include "ui_widgets.h"
-
-#include "application.h"
-#include "board.h"
-#include "board_info.h"
-#include "display.h"
-#include "offline_cmd.h"
-#include "offline_cmd_map.h"
-
-#include <cJSON.h>
-#include <esp_heap_caps.h>
-#include <esp_log.h>
-#include <esp_random.h>
-#include <esp_timer.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/queue.h>
-#include <freertos/task.h>
-#include <lvgl.h>
-#include <material_symbols.h>
-
-#include <atomic>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <ctime>
-
-LV_FONT_DECLARE(font_material_symbols_20_4);
-LV_FONT_DECLARE(font_material_symbols_30_4);
-
-#define TAG "nl_skill_ui"
-
-#define SKILL_CARD_W (nodelio_display_profile()->result_width)
-/* result_max_height 仍按「顶栏占位」算。顶栏现已透明且空闲隐藏，开面板时把这段高度加回去。
- * 有 now_playing 条时须再扣 SKILL_NOW_H+SKILL_GAP，否则卡底会画出屏外。 */
-#define SKILL_CARD_H_MAX (nodelio_display_profile()->result_max_height + NL_UI_STATUS_H)
-#define SKILL_NOW_H 64
-#define SKILL_GAP 12
-/** 顶栏不占位，面板从屏顶留白起排。 */
-static int skill_top_y(void)
-{
-    return SKILL_GAP;
-}
-#define SKILL_CARD_H_MIN 180
-#define SKILL_BORDER_OPA 200
-#define SKILL_SCRIM_OPA 170
-#define SKILL_EQ_N 4
-#define SKILL_CTRL_SZ 44
-#define SKILL_PLAY_CTRL_SZ 48
-#define SKILL_MINI_SZ 52
-#define SKILL_ANIM_MS 280
-#define SKILL_ANIM_SLIDE 28
-#define SKILL_ANIM_SLIDE_X 72
-#define SKILL_PAGE_COLS 2
-#define SKILL_PAGE_ROWS 5
-#define SKILL_PAGE_SIZE (SKILL_PAGE_COLS * SKILL_PAGE_ROWS)
-/* 普通 list（DSH 等）：单列舒适行，避免双列挤成省略号 */
-#define SKILL_LIST_COLS 1
-#define SKILL_LIST_ROWS 4
-#define SKILL_LIST_ROW_H 68
-/* 曲库：标题 + 艺人各一行；左右圆标同尺寸。矮屏有 now_playing 时靠动态行数分页 */
-#define SKILL_MUSIC_ROW_H 64
-#define SKILL_LIST_HDR_BUDGET 48
-#define SKILL_LIST_CHROME_PAD 32 /* card pad_all×2 + pad_row */
-#define NEWS_ARTICLE_CAP (20 * 1024)
-/* JSON 转义后的正文预算；预留标题、提示及 MCP/session 包装，总包控制在 2KB 内。 */
-#define NEWS_MCP_CHUNK 640
-/* 本地 detect 播报：整包 JSON 须 ≤720B（聆听 DRAM~9KB）；正文约 360B ≈120 字，多段「继续读」。 */
-#define NEWS_LOCAL_SPEAK_CHUNK 360
-/* 云端回源拉正文最多约 8s，默认 HTTP 读超时 2.5s 会在状态行到达前断开 */
-#define NEWS_HTTP_IO_MS 12000
-#define NEWS_TASK_STACK 10240
-/* 服务端 dsh.status 桥超时 20s；面板须略长，否则等桥时 SO_RCVTIMEO 先断 → recv=0「加载失败」 */
-#define DSH_HTTP_IO_MS 22000
-/* 任务详情页静默拉最新末轮；仅亮屏+停留详情时跑，省电 */
-#define DSH_DETAIL_POLL_MS 10000
-
-static lv_obj_t *s_scrim;
-static lv_obj_t *s_card;
-static lv_obj_t *s_filter_bar;
-static lv_obj_t *s_dsh_status;      /* 续聊/执行中状态条：EQ + 文案 */
-static lv_obj_t *s_dsh_status_lbl;
-static lv_obj_t *s_dsh_eq[3];
-static lv_obj_t *s_dsh_confirm_bar; /* 续聊待确认：发送 / 取消 */
-static lv_obj_t *s_dsh_detail_bar;  /* 详情底栏：续聊悬浮，不随正文滚走 */
-static char s_dsh_pending_preview[96] = {0};
-static lv_obj_t *s_card_list;
-static lv_obj_t *s_card_title;
-static lv_obj_t *s_card_sub;
-static lv_obj_t *s_now_bar;
-static lv_obj_t *s_now_eq_wrap;
-static lv_obj_t *s_now_eq[SKILL_EQ_N];
-static lv_obj_t *s_now_lbl;
-static lv_obj_t *s_now_sub;
-static lv_obj_t *s_now_btns;
-static lv_obj_t *s_now_pause_btn;
-static lv_obj_t *s_now_prev_btn;
-static lv_obj_t *s_now_next_btn;
-static lv_obj_t *s_mini_fab;
-static lv_obj_t *s_mini_ic;
-static lv_timer_t *s_ttl_tmr;
-static lv_timer_t *s_dsh_detail_poll;
-static char s_dsh_detail_ws[200];
-static char s_dsh_detail_sess[80];
-static std::atomic<bool> s_dsh_detail_busy{false};
-static lv_anim_t s_now_border_anim;
-static bool s_now_border_anim_on;
-static bool s_mini_pulse_on;
-static bool s_dsh_eq_anim_on;
-static bool s_dsh_row_pulse_on;
-static lv_obj_t *s_dsh_focus_row; /* 续聊焦点行，rebuild 时清空 */
-static lv_obj_t *s_dsh_pulse_rows[SKILL_LIST_ROWS]; /* 边框呼吸：焦点 + 执行中 */
-static int s_dsh_pulse_n;
-enum dsh_ui_phase_t : uint8_t { DSH_UI_IDLE = 0, DSH_UI_ARMED, DSH_UI_DISPATCHED };
-static dsh_ui_phase_t s_dsh_phase = DSH_UI_IDLE;
-static char s_dsh_focus_sess[80];
-static char s_dsh_focus_ws[200];
-static char s_dsh_last_instr[96];
-static int64_t s_dsh_dispatched_us; /* DISPATCHED 起算，约 25s 内保留乐观态 */
-static bool s_minimized;
-static bool s_ui_closing;
-static uint32_t s_close_gen;
-static nodelio_nvs_config_t s_skill_cfg;
+lv_obj_t *s_scrim = nullptr;
+lv_obj_t *s_card = nullptr;
+lv_obj_t *s_filter_bar = nullptr;
+lv_obj_t *s_card_list = nullptr;
+lv_obj_t *s_card_title = nullptr;
+lv_obj_t *s_card_sub = nullptr;
+lv_timer_t *s_ttl_tmr = nullptr;
+bool s_minimized = false;
+bool s_ui_closing = false;
+uint32_t s_close_gen = 0;
+nodelio_nvs_config_t s_skill_cfg;
 /** ~54KB：必须 PSRAM。由 deliver 堆分配后交给 show 接管，禁止再拷一份。 */
-static nl_content_envelope_t *s_env;
-static bool s_have_env;
+nl_content_envelope_t *s_env = nullptr;
+bool s_have_env = false;
+int s_play_idx = -1;
+int s_list_page = 0;
+lv_obj_t *s_hdr_mid_btn = nullptr;
+lv_obj_t *s_hdr_btns = nullptr;
+lv_obj_t *s_hdr = nullptr;        /* 头部行；精简模式下整体收起 */
+lv_obj_t *s_hdr_txt = nullptr;    /* 标题 + 副标题；精简模式下只留标题 */
+lv_obj_t *s_close_btn = nullptr;  /* 关闭钮；精简模式下浮到卡片右上角 */
+bool s_hdr_minimal = false;     /* 日历：顶部只留关闭，把高度让给内容 */
+lv_obj_t *s_row_idx_labels[64] = {nullptr};  /* 序号胶囊标签（数字/耳机） */
+lv_obj_t *s_row_btns[64] = {nullptr};       /* 播放/暂停按钮 */
 
-static void free_skill_env(void)
+void free_skill_env(void)
 {
     if (!s_env) {
         return;
@@ -152,7 +39,7 @@ static void free_skill_env(void)
     s_have_env = false;
 }
 
-static void free_owned_env(nl_content_envelope_t *env)
+void free_owned_env(nl_content_envelope_t *env)
 {
     if (!env) {
         return;
@@ -163,44 +50,15 @@ static void free_owned_env(nl_content_envelope_t *env)
     }
     heap_caps_free(env);
 }
-static int s_play_idx = -1;
-static int s_list_page;
-static lv_obj_t *s_hdr_mid_btn;
-static lv_obj_t *s_hdr_btns;
-static lv_obj_t *s_hdr;        /* 头部行；精简模式下整体收起 */
-static lv_obj_t *s_hdr_txt;    /* 标题 + 副标题；精简模式下只留标题 */
-static lv_obj_t *s_close_btn;  /* 关闭钮；精简模式下浮到卡片右上角 */
-static bool s_hdr_minimal;     /* 日历：顶部只留关闭，把高度让给内容 */
-static lv_obj_t *s_news_zoom_bar; /* 新闻详情：顶栏刷新左侧 A-/A+ */
-static lv_obj_t *s_row_idx_labels[64];  /* 序号胶囊标签（数字/耳机） */
-static lv_obj_t *s_row_btns[64];       /* 播放/暂停按钮 */
-static int s_news_detail = -1;
-static uint32_t s_news_gen = 1;
-static bool s_news_screen_hook = false;
-
-struct news_job_t {
-    int slot;
-    uint32_t gen;
-    char url[320];
-    int nav; /* 0 拉正文；>0 下一篇并标已读；<0 上一篇并标已读 */
-};
-static QueueHandle_t s_news_q = nullptr;
-static lv_obj_t *s_news_body_lbl = nullptr;
-/** 详情正文驻 PSRAM，供 lv_label_set_text_static，避免长文二次占 LVGL 池失败后仍显示摘要 */
-static char *s_news_body_heap = nullptr;
-static StackType_t *s_news_stack = nullptr;
-static StaticTask_t s_news_tcb;
 
 /** 技能层抬完后把状态栏、小智和提示条按固定顺序压回去。 */
-static void ensure_chrome_order(void)
+void ensure_chrome_order(void)
 {
     nl_ov_raise_chrome();
 }
 
-static void apply_card_chrome(void);
-
 /** 宽屏且列表、播放条同时可见：播放条嵌进列表框底，不再单独占一条。 */
-static bool skill_player_docked(void)
+bool skill_player_docked(void)
 {
     if (!nodelio_display_profile()->nav_width) {
         return false;
@@ -211,7 +69,7 @@ static bool skill_player_docked(void)
 }
 
 /** 列表卡可用高度。宽屏播放条嵌进框内时，外框铺满右列。 */
-static int skill_card_h_max(void)
+int skill_card_h_max(void)
 {
     const auto *p = nodelio_display_profile();
     if (skill_player_docked()) {
@@ -234,7 +92,7 @@ static int skill_card_h_max(void)
 }
 
 /** 宽屏：右侧应用宽度。首页给左栏留固定宽，避免启动台被应用列表轨挤扁。 */
-static int skill_panel_w(void)
+int skill_panel_w(void)
 {
     const auto *p = nodelio_display_profile();
     if (!p->nav_width) {
@@ -263,7 +121,7 @@ static int skill_panel_w(void)
 }
 
 /** 应用外框：石板细边，靠表面提亮，不用品牌绿描边。 */
-static void style_skill_frame(void)
+void style_skill_frame(void)
 {
     if (!s_card) {
         return;
@@ -286,46 +144,7 @@ static void style_skill_frame(void)
     ui_style_card(s_card);
 }
 
-/** docked：框内凹槽。否则独立一条，同样不用绿框。 */
-static void style_now_bar(bool docked)
-{
-    if (!s_now_bar) {
-        return;
-    }
-    const bool wide = nodelio_display_profile()->nav_width != 0;
-    if (!wide) {
-        lv_obj_set_style_shadow_width(s_now_bar, 0, 0);
-        lv_obj_set_style_shadow_opa(s_now_bar, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_bg_color(s_now_bar, UI_SURFACE, 0);
-        lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(s_now_bar, 0, 0);
-        lv_obj_set_style_border_width(s_now_bar, 1, 0);
-        lv_obj_set_style_border_side(s_now_bar, LV_BORDER_SIDE_BOTTOM, 0);
-        lv_obj_set_style_border_color(s_now_bar, UI_BORDER, 0);
-        lv_obj_set_style_border_opa(s_now_bar, LV_OPA_60, 0);
-        lv_obj_set_style_pad_hor(s_now_bar, 14, 0);
-        return;
-    }
-    if (docked) {
-        lv_obj_set_style_shadow_width(s_now_bar, 0, 0);
-        lv_obj_set_style_shadow_opa(s_now_bar, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_bg_color(s_now_bar, UI_PANEL, 0);
-        lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(s_now_bar, UI_RADIUS_SM, 0);
-        lv_obj_set_style_border_width(s_now_bar, 0, 0);
-        return;
-    }
-    lv_obj_set_style_bg_color(s_now_bar, UI_SURFACE, 0);
-    lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_now_bar, 16, 0);
-    ui_style_card(s_now_bar);
-    lv_obj_set_style_border_width(s_now_bar, ui_palette_is_dark() ? 1 : 0, 0);
-    lv_obj_set_style_border_side(s_now_bar, LV_BORDER_SIDE_FULL, 0);
-    lv_obj_set_style_border_color(s_now_bar, UI_BORDER, 0);
-    lv_obj_set_style_border_opa(s_now_bar, LV_OPA_80, 0);
-}
-
-static void layout_skill_layers(void)
+void layout_skill_layers(void)
 {
     const int panel_w = skill_panel_w();
     const bool card_up = s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN);
@@ -399,9 +218,6 @@ static void layout_skill_layers(void)
 }
 
 void nodelio_skill_result_layout(void) { layout_skill_layers(); }
-
-static void fill_list(void);
-static void news_sync_global_text_scale(void);
 
 void nodelio_skill_result_reapply_text_scale(void)
 {
@@ -511,12 +327,7 @@ void nodelio_skill_result_reapply_appearance(void)
     }
 }
 
-bool nodelio_skill_mini_fab_visible(void)
-{
-    return s_mini_fab && !lv_obj_has_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN);
-}
-
-static void raise_skill_layers(void)
+void raise_skill_layers(void)
 {
     if (s_scrim && !lv_obj_has_flag(s_scrim, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_move_foreground(s_scrim);
@@ -542,7 +353,7 @@ void nodelio_skill_result_raise(void)
 }
 
 /** 曲库或播放条可见时挡住下层应用页，避免点穿卡片 */
-static void sync_player_block_scrim(void)
+void sync_player_block_scrim(void)
 {
     if (!s_scrim) {
         return;
@@ -558,7 +369,7 @@ static void sync_player_block_scrim(void)
     }
 }
 
-static void set_drawer_for_skill(bool skill_on)
+void set_drawer_for_skill(bool skill_on)
 {
     s_skill_ui_active = skill_on;
     if (skill_on) {
@@ -568,424 +379,13 @@ static void set_drawer_for_skill(bool skill_on)
     nl_ov_restore_ai_drawer_if_session();
 }
 
-static void stop_dsh_detail_poll(void)
-{
-    if (s_dsh_detail_poll) {
-        lv_timer_del(s_dsh_detail_poll);
-        s_dsh_detail_poll = nullptr;
-    }
-}
-
-static void clear_ttl(void)
+void clear_ttl(void)
 {
     if (s_ttl_tmr) {
         lv_timer_del(s_ttl_tmr);
     }
     s_ttl_tmr = nullptr;
 }
-
-/** DSH 无 ttl 时默认 120s 无操作关卡（省电）；桥可下发更大/更小 ttl_sec */
-#define DSH_IDLE_TTL_SEC_DEFAULT 120
-static void on_ttl(lv_timer_t *t);
-static void restart_skill_ttl(void);
-
-static void dsh_fetch_detail(const char *ws, const char *sess, bool silent);
-static void on_dsh_detail_poll(lv_timer_t *t);
-static void fill_list(void);
-static void anim_eq_height(void *var, int32_t v);
-static void anim_border_opa(void *var, int32_t v);
-static bool dsh_subtitle_is_running(const char *sub);
-static bool dsh_subtitle_needs_you(const char *sub);
-
-static bool dsh_is_detail_view(void)
-{
-    return s_have_env && s_env && s_env->detail_body && s_env->detail_body[0] &&
-           strstr(s_env->app_id, "dsh") != nullptr && s_card &&
-           !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN) && !s_minimized;
-}
-
-/** 从 track 的 arm 动作取出 workspace/session */
-static void dsh_extract_arm(const nl_env_track_t *tr, char *ws, size_t ws_len, char *sess,
-                            size_t sess_len)
-{
-    if (ws && ws_len) {
-        ws[0] = '\0';
-    }
-    if (sess && sess_len) {
-        sess[0] = '\0';
-    }
-    if (!tr) {
-        return;
-    }
-    for (int ai = 0; ai < tr->invoke_n; ai++) {
-        const char *pj = tr->invokes[ai].params_json;
-        if (!pj[0] || strstr(pj, "\"arm\"") == nullptr) {
-            continue;
-        }
-        cJSON *root = cJSON_Parse(pj);
-        if (!root) {
-            continue;
-        }
-        const cJSON *jw = cJSON_GetObjectItemCaseSensitive(root, "workspace");
-        const cJSON *js = cJSON_GetObjectItemCaseSensitive(root, "session");
-        if (ws && ws_len && cJSON_IsString(jw) && jw->valuestring) {
-            snprintf(ws, ws_len, "%s", jw->valuestring);
-        }
-        if (sess && sess_len && cJSON_IsString(js) && js->valuestring) {
-            snprintf(sess, sess_len, "%s", js->valuestring);
-        }
-        cJSON_Delete(root);
-        if (sess && sess[0]) {
-            break;
-        }
-    }
-    if (sess && sess_len && !sess[0] && tr->id[0]) {
-        snprintf(sess, sess_len, "%s", tr->id);
-    }
-}
-
-static void remember_dsh_detail_keys(void)
-{
-    s_dsh_detail_ws[0] = '\0';
-    s_dsh_detail_sess[0] = '\0';
-    if (!s_have_env || !s_env || s_env->track_n <= 0) {
-        return;
-    }
-    dsh_extract_arm(&s_env->tracks[0], s_dsh_detail_ws, sizeof(s_dsh_detail_ws), s_dsh_detail_sess,
-                    sizeof(s_dsh_detail_sess));
-}
-
-static bool dsh_track_is_focus(int track_idx)
-{
-    if (s_dsh_phase == DSH_UI_IDLE || !s_dsh_focus_sess[0] || !s_env) {
-        return false;
-    }
-    if (track_idx < 0 || track_idx >= s_env->track_n) {
-        return false;
-    }
-    char ws[200] = {0};
-    char sess[80] = {0};
-    dsh_extract_arm(&s_env->tracks[track_idx], ws, sizeof(ws), sess, sizeof(sess));
-    return sess[0] && strcmp(sess, s_dsh_focus_sess) == 0;
-}
-
-static void stop_dsh_row_pulses(void)
-{
-    if (!s_dsh_row_pulse_on) {
-        s_dsh_pulse_n = 0;
-        return;
-    }
-    for (int i = 0; i < s_dsh_pulse_n; i++) {
-        if (s_dsh_pulse_rows[i]) {
-            lv_anim_delete(s_dsh_pulse_rows[i], anim_border_opa);
-        }
-        s_dsh_pulse_rows[i] = nullptr;
-    }
-    s_dsh_pulse_n = 0;
-    s_dsh_row_pulse_on = false;
-}
-
-static void stop_dsh_eq_anims(void)
-{
-    if (!s_dsh_eq_anim_on) {
-        return;
-    }
-    for (int i = 0; i < 3; i++) {
-        if (s_dsh_eq[i]) {
-            lv_anim_delete(s_dsh_eq[i], anim_eq_height);
-            lv_obj_set_height(s_dsh_eq[i], 6 + i * 3);
-        }
-    }
-    s_dsh_eq_anim_on = false;
-}
-
-static void stop_dsh_status_anims(void)
-{
-    stop_dsh_eq_anims();
-    stop_dsh_row_pulses();
-}
-
-static void dsh_register_pulse_row(lv_obj_t *row)
-{
-    if (!row || s_dsh_pulse_n >= SKILL_LIST_ROWS) {
-        return;
-    }
-    for (int i = 0; i < s_dsh_pulse_n; i++) {
-        if (s_dsh_pulse_rows[i] == row) {
-            return;
-        }
-    }
-    s_dsh_pulse_rows[s_dsh_pulse_n++] = row;
-}
-
-static void start_dsh_row_pulses(void)
-{
-    if (s_dsh_pulse_n <= 0) {
-        return;
-    }
-    if (s_dsh_row_pulse_on) {
-        for (int i = 0; i < s_dsh_pulse_n; i++) {
-            if (s_dsh_pulse_rows[i]) {
-                lv_anim_delete(s_dsh_pulse_rows[i], anim_border_opa);
-            }
-        }
-        s_dsh_row_pulse_on = false;
-    }
-    for (int i = 0; i < s_dsh_pulse_n; i++) {
-        lv_obj_t *row = s_dsh_pulse_rows[i];
-        if (!row) {
-            continue;
-        }
-        lv_anim_t b;
-        lv_anim_init(&b);
-        lv_anim_set_var(&b, row);
-        lv_anim_set_values(&b, 90, 220);
-        lv_anim_set_time(&b, 700);
-        lv_anim_set_playback_time(&b, 700);
-        lv_anim_set_repeat_count(&b, LV_ANIM_REPEAT_INFINITE);
-        lv_anim_set_path_cb(&b, lv_anim_path_ease_in_out);
-        lv_anim_set_exec_cb(&b, anim_border_opa);
-        lv_anim_set_delay(&b, (uint32_t)(i * 80));
-        lv_anim_start(&b);
-    }
-    s_dsh_row_pulse_on = true;
-}
-
-static void start_dsh_status_anims(void)
-{
-    if (!s_dsh_status || lv_obj_has_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN)) {
-        start_dsh_row_pulses();
-        return;
-    }
-    stop_dsh_eq_anims();
-    static const int32_t k_lo[3] = {5, 8, 6};
-    static const int32_t k_hi[3] = {14, 18, 16};
-    static const uint32_t k_ms[3] = {360, 440, 400};
-    for (int i = 0; i < 3; i++) {
-        if (!s_dsh_eq[i]) {
-            continue;
-        }
-        lv_anim_t a;
-        lv_anim_init(&a);
-        lv_anim_set_var(&a, s_dsh_eq[i]);
-        lv_anim_set_values(&a, k_lo[i], k_hi[i]);
-        lv_anim_set_time(&a, k_ms[i]);
-        lv_anim_set_playback_time(&a, k_ms[i]);
-        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-        lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-        lv_anim_set_exec_cb(&a, anim_eq_height);
-        lv_anim_set_delay(&a, (uint32_t)(i * 60));
-        lv_anim_start(&a);
-    }
-    s_dsh_eq_anim_on = true;
-    if (s_dsh_focus_row) {
-        dsh_register_pulse_row(s_dsh_focus_row);
-    }
-    start_dsh_row_pulses();
-}
-
-static void dsh_hide_confirm_bar(void)
-{
-    if (s_dsh_confirm_bar) {
-        lv_obj_add_flag(s_dsh_confirm_bar, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_height(s_dsh_confirm_bar, 0);
-    }
-}
-
-static void dsh_clear_ui_phase(void)
-{
-    stop_dsh_status_anims();
-    s_dsh_phase = DSH_UI_IDLE;
-    s_dsh_focus_sess[0] = '\0';
-    s_dsh_focus_ws[0] = '\0';
-    s_dsh_last_instr[0] = '\0';
-    s_dsh_pending_preview[0] = '\0';
-    s_dsh_focus_row = nullptr;
-    s_dsh_dispatched_us = 0;
-    if (s_dsh_status) {
-        lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_height(s_dsh_status, 0);
-    }
-    dsh_hide_confirm_bar();
-}
-
-static void dsh_paint_status_strip(void)
-{
-    if (!s_dsh_status || !s_dsh_status_lbl) {
-        return;
-    }
-    if (s_dsh_phase == DSH_UI_IDLE) {
-        /* 仅收顶条 EQ；列表「正在用」行的青色呼吸由 fill_list 保留 */
-        stop_dsh_eq_anims();
-        lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_height(s_dsh_status, 0);
-        dsh_hide_confirm_bar();
-        start_dsh_row_pulses();
-        return;
-    }
-    lv_obj_clear_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_height(s_dsh_status, 32);
-    uint32_t pill = UI_C_TILE_SWITCH;
-    uint32_t bar = UI_C_ACCENT_SOFT;
-    const char *txt = "续聊中 · 请直接说指令";
-    const bool pending = s_dsh_pending_preview[0] != '\0' && s_dsh_phase == DSH_UI_ARMED;
-    if (s_dsh_phase == DSH_UI_DISPATCHED) {
-        pill = UI_C_TILE_PWM;
-        bar = UI_C_INFO;
-        if (s_dsh_last_instr[0]) {
-            static char buf[120];
-            snprintf(buf, sizeof(buf), "已投递 · %s", s_dsh_last_instr);
-            txt = buf;
-        } else {
-            txt = "已投递 · 执行中";
-        }
-        dsh_hide_confirm_bar();
-    } else if (pending) {
-        pill = UI_C_TILE_GPIO;
-        bar = UI_C_WARN;
-        static char pbuf[120];
-        snprintf(pbuf, sizeof(pbuf), "待确认 · %s", s_dsh_pending_preview);
-        txt = pbuf;
-        if (s_dsh_confirm_bar) {
-            lv_obj_clear_flag(s_dsh_confirm_bar, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_height(s_dsh_confirm_bar, 44);
-        }
-    } else {
-        dsh_hide_confirm_bar();
-    }
-    lv_obj_set_style_bg_color(s_dsh_status, lv_color_hex(pill), 0);
-    for (int i = 0; i < 3; i++) {
-        if (s_dsh_eq[i]) {
-            lv_obj_set_style_bg_color(s_dsh_eq[i], lv_color_hex(bar), 0);
-        }
-    }
-    lv_label_set_text(s_dsh_status_lbl, txt);
-    lv_obj_set_style_text_color(s_dsh_status_lbl, UI_TEXT, 0);
-    if (s_card_sub) {
-        if (pending) {
-            lv_label_set_text(s_card_sub, "待确认 · 说「是」发送 · 「不用」取消");
-        } else {
-            lv_label_set_text(s_card_sub,
-                              s_dsh_phase == DSH_UI_ARMED ? "续聊中 · 直接说 · 点「取消」退出"
-                                                         : "已投递 · 等回复");
-        }
-        lv_obj_set_style_text_color(s_card_sub, lv_color_hex(bar), 0);
-    }
-    start_dsh_status_anims();
-}
-
-/** 续聊焦点=绿；执行中=青；等你确认=琥珀 */
-static void dsh_style_list_row(lv_obj_t *row, int track_idx, lv_obj_t *idx_pod, lv_obj_t *artist_lbl,
-                               const char *artist)
-{
-    if (!row) {
-        return;
-    }
-    const bool focus = dsh_track_is_focus(track_idx);
-    const bool running = dsh_subtitle_is_running(artist);
-    const bool needs_you = dsh_subtitle_needs_you(artist);
-    if (!focus && !running && !needs_you) {
-        return;
-    }
-    const bool dispatched = focus && s_dsh_phase == DSH_UI_DISPATCHED;
-    const bool armed = focus && s_dsh_phase == DSH_UI_ARMED;
-    /* 优先级：武装绿 > 待确认琥珀 > 投递/执行中青 */
-    const bool work_amber = !armed && needs_you;
-    const bool work_cyan = !armed && !work_amber && (dispatched || running);
-    if (focus) {
-        s_dsh_focus_row = row;
-    }
-    lv_obj_set_style_border_width(row, 2, 0);
-    lv_obj_set_style_border_color(row, work_amber ? UI_WARN : (work_cyan ? UI_INFO : UI_ACCENT), 0);
-    lv_obj_set_style_border_opa(row, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(row, work_amber ? UI_TILE_GPIO : (work_cyan ? UI_TILE_PWM : UI_TILE_SWITCH),
-                              0);
-    if (idx_pod) {
-        lv_obj_set_style_bg_color(idx_pod,
-                                  work_amber ? UI_CAPSULE_GPIO
-                                             : (work_cyan ? UI_CAPSULE_PWM : UI_CAPSULE_ON),
-                                  0);
-        lv_obj_t *ic = lv_obj_get_child(idx_pod, 0);
-        if (ic) {
-            lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
-            lv_label_set_text(ic, armed ? MATERIAL_SYMBOLS_MIC : MATERIAL_SYMBOLS_PROGRESS_ACTIVITY);
-            lv_obj_set_style_text_color(ic, UI_ON_TILE, 0);
-        }
-    }
-    if (artist_lbl && armed) {
-        if (s_dsh_pending_preview[0]) {
-            char line[128];
-            snprintf(line, sizeof(line), "待确认 · %s", s_dsh_pending_preview);
-            lv_label_set_text(artist_lbl, line);
-            lv_obj_set_style_text_color(artist_lbl, UI_WARN, 0);
-        } else {
-            lv_label_set_text(artist_lbl, "续聊中 · 开麦等待你的指令");
-            lv_obj_set_style_text_color(artist_lbl, UI_ACCENT_SOFT, 0);
-        }
-    } else if (artist_lbl && dispatched) {
-        if (s_dsh_last_instr[0]) {
-            char line[128];
-            snprintf(line, sizeof(line), "已投递 · %s", s_dsh_last_instr);
-            lv_label_set_text(artist_lbl, line);
-        } else {
-            lv_label_set_text(artist_lbl, "已投递 · 正在执行…");
-        }
-        lv_obj_set_style_text_color(artist_lbl, UI_INFO, 0);
-    } else if (artist_lbl && needs_you) {
-        lv_obj_set_style_text_color(artist_lbl, UI_WARN, 0);
-    } else if (artist_lbl && running) {
-        lv_obj_set_style_text_color(artist_lbl, UI_INFO, 0);
-    }
-    dsh_register_pulse_row(row);
-}
-
-static void dsh_enter_armed(const char *ws, const char *sess)
-{
-    s_dsh_phase = DSH_UI_ARMED;
-    s_dsh_focus_ws[0] = '\0';
-    s_dsh_focus_sess[0] = '\0';
-    s_dsh_last_instr[0] = '\0';
-    s_dsh_focus_row = nullptr;
-    if (ws && ws[0]) {
-        snprintf(s_dsh_focus_ws, sizeof(s_dsh_focus_ws), "%s", ws);
-    }
-    if (sess && sess[0]) {
-        snprintf(s_dsh_focus_sess, sizeof(s_dsh_focus_sess), "%s", sess);
-    }
-    /* 勿同步 fill_list：语音回调在 main 上，整表重建 + scroll_to_view 会撑爆 IDLE0 WDT */
-    dsh_paint_status_strip();
-    if (s_card_sub && s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr) {
-        lv_label_set_text(s_card_sub, "续聊中 · 直接说指令");
-    }
-}
-
-static void start_dsh_detail_poll(void)
-{
-    remember_dsh_detail_keys();
-    if (!s_dsh_detail_sess[0]) {
-        stop_dsh_detail_poll();
-        return;
-    }
-    if (!s_dsh_detail_poll) {
-        s_dsh_detail_poll = lv_timer_create(on_dsh_detail_poll, DSH_DETAIL_POLL_MS, nullptr);
-    } else {
-        lv_timer_reset(s_dsh_detail_poll);
-    }
-}
-
-static void on_dsh_detail_poll(lv_timer_t *t)
-{
-    (void)t;
-    if (!dsh_is_detail_view() || s_dsh_detail_busy || !s_dsh_detail_sess[0]) {
-        return;
-    }
-    if (!nodelio_panel_ui_screen_on()) {
-        return;
-    }
-    dsh_fetch_detail(s_dsh_detail_ws, s_dsh_detail_sess, true);
-}
-
-static void close_list_keep_player(void);
 
 static void on_ttl(lv_timer_t *t)
 {
@@ -1009,7 +409,7 @@ static void on_ttl(lv_timer_t *t)
     nodelio_skill_result_hide();
 }
 
-static void restart_skill_ttl(void)
+void restart_skill_ttl(void)
 {
     clear_ttl();
     if (!s_env) {
@@ -1028,27 +428,10 @@ static void restart_skill_ttl(void)
     }
 }
 
-static void fill_list(void);
-static void apply_card_chrome(void);
-static void reopen_list(void);
 static void request_reshuffle(void);
-static void json_escape_str(char *out, size_t out_len, const char *in);
-static void minimize_to_fab(void);
-static void expand_from_fab(void);
-static void anim_show_obj(lv_obj_t *obj, bool from_below);
-static void reset_obj_anim_style(lv_obj_t *obj);
-static void anim_eq_height(void *var, int32_t v);
-static void anim_border_opa(void *var, int32_t v);
-static void hide_mini_fab(void);
-static void show_mini_fab(bool playing);
-static void stop_now_anims(void);
-static void start_now_anims(void);
-static void stop_mini_pulse(void);
-static void hide_mini_fab(void);
-static void dismiss_library_and_player(void);
 
 /** track | live | episode；无 env 时按 track */
-static const char *env_media_kind(void)
+const char *env_media_kind(void)
 {
     if (!s_have_env || !s_env || !s_env->media_kind[0]) {
         return "track";
@@ -1056,49 +439,12 @@ static const char *env_media_kind(void)
     return s_env->media_kind;
 }
 
-static bool env_media_is_live(void)
+bool env_media_is_live(void)
 {
     return strcmp(env_media_kind(), "live") == 0;
 }
 
-/** 按 media_kind 刷新 now_playing 副文案与切台键可见性 */
-static void apply_now_media_chrome(bool playing, bool paused, bool list_open)
-{
-    if (s_now_prev_btn) {
-        if (env_media_is_live()) {
-            lv_obj_add_flag(s_now_prev_btn, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_clear_flag(s_now_prev_btn, LV_OBJ_FLAG_HIDDEN);
-        }
-    }
-    if (s_now_next_btn) {
-        if (env_media_is_live()) {
-            lv_obj_add_flag(s_now_next_btn, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_clear_flag(s_now_next_btn, LV_OBJ_FLAG_HIDDEN);
-        }
-    }
-    if (!s_now_sub) {
-        return;
-    }
-    if (paused) {
-        lv_label_set_text(s_now_sub, "已暂停 · 点播放继续");
-        return;
-    }
-    const char *kind = env_media_kind();
-    if (strcmp(kind, "live") == 0) {
-        lv_label_set_text(s_now_sub, list_open ? "直播 · 收听中" : "直播 · 点此打开列表");
-    } else if (strcmp(kind, "episode") == 0) {
-        lv_label_set_text(s_now_sub, list_open ? (playing ? "播客 · 播放中" : "播客")
-                                                : "播客 · 点此打开列表");
-    } else if (list_open) {
-        lv_label_set_text(s_now_sub, playing ? "正在播放" : "点此打开列表");
-    } else {
-        lv_label_set_text(s_now_sub, "点此打开列表");
-    }
-}
-
-static void close_list_keep_player(void)
+void close_list_keep_player(void)
 {
     clear_ttl();
     stop_dsh_detail_poll();
@@ -1153,107 +499,12 @@ static void on_scrim_click(lv_event_t *e)
     }
 }
 
-static void on_minimize(lv_event_t *e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
-        return;
-    }
-    minimize_to_fab();
-}
-
-static void on_mini_fab(lv_event_t *e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
-        return;
-    }
-    expand_from_fab();
-}
-
 static void on_reopen_list(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
         return;
     }
     reopen_list();
-}
-
-static void dsh_refresh_list(void)
-{
-    if (!s_skill_cfg.server_url[0] || !s_skill_cfg.device_id[0]) {
-        nl_ov_toast("未配置服务器");
-        return;
-    }
-    char ws[200] = {0};
-    if (s_have_env && s_env) {
-        for (int i = 0; i < s_env->filter_n; i++) {
-            if (s_env->filters[i].selected && s_env->filters[i].workspace[0]) {
-                snprintf(ws, sizeof(ws), "%s", s_env->filters[i].workspace);
-                break;
-            }
-        }
-        if (s_env->detail_body) {
-            heap_caps_free(s_env->detail_body);
-            s_env->detail_body = nullptr;
-        }
-    }
-    stop_dsh_detail_poll();
-    s_dsh_detail_ws[0] = '\0';
-    s_dsh_detail_sess[0] = '\0';
-    struct refresh_arg {
-        nodelio_nvs_config_t cfg;
-        char ws[200];
-    };
-    auto *arg = static_cast<refresh_arg *>(malloc(sizeof(refresh_arg)));
-    if (!arg) {
-        nl_ov_toast("内存不足");
-        return;
-    }
-    arg->cfg = s_skill_cfg;
-    snprintf(arg->ws, sizeof(arg->ws), "%s", ws);
-    nl_ov_toast("刷新…");
-    if (!nodelio::SubmitPanelJob(
-            nodelio::PanelJobLane::Interactive,
-            [](void* p) {
-                auto *a = static_cast<refresh_arg *>(p);
-                char base[160];
-                nl_url_strip_base(a->cfg.server_url, base, sizeof(base));
-                char url[400];
-                snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/dsh.status/invoke", base,
-                         a->cfg.device_id);
-                char ws_esc[400];
-                json_escape_str(ws_esc, sizeof(ws_esc), a->ws);
-                char body[440];
-                if (ws_esc[0]) {
-                    snprintf(body, sizeof(body), "{\"workspace\":\"%s\"}", ws_esc);
-                } else {
-                    snprintf(body, sizeof(body), "{}");
-                }
-                const int cap = nodelio_caps_max_content_bytes() + 512;
-                char *resp = static_cast<char *>(
-                    heap_caps_malloc((size_t)cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-                if (!resp) {
-                    resp = static_cast<char *>(malloc((size_t)cap));
-                }
-                if (!resp) {
-                    nodelio_panel_ui_toast_defer("内存不足");
-                } else {
-                    resp[0] = '\0';
-                    int status = 0;
-                    esp_err_t err = nodelio_http_post_json_ms(url, a->cfg.device_key, body, &status, resp,
-                                                              cap - 1, DSH_HTTP_IO_MS);
-                    if (err == ESP_OK && resp[0] && (status == 200 || status == 201)) {
-                        nodelio_skill_deliver_json(&a->cfg, resp, false, nullptr, 0);
-                    } else {
-                        nodelio_panel_ui_toast_defer("刷新失败");
-                    }
-                    free(resp);
-                }
-                free(a);
-            },
-            arg, [](void* p) { free(p); }, nodelio_panel_begin_skill_view())) {
-        free(arg);
-        nl_ov_toast("刷新失败");
-    }
 }
 
 static void on_reshuffle(lv_event_t *e)
@@ -1272,8 +523,6 @@ static void on_reshuffle(lv_event_t *e)
     }
     request_reshuffle();
 }
-
-static bool skill_ui_is_up(void);
 
 /** 曲库双列紧凑；其它 list 默认单列舒适（density=compact 仍双列） */
 static bool list_use_comfortable(void)
@@ -1328,7 +577,7 @@ static int music_end_sz(void)
     return sz;
 }
 
-static void paint_music_mark(lv_obj_t *lbl, bool playing, int index)
+void paint_music_mark(lv_obj_t *lbl, bool playing, int index)
 {
     if (!lbl) {
         return;
@@ -1428,7 +677,7 @@ static int list_page_size(void)
 }
 
 /** 播放条显隐改卡高后重排曲库，并跳到当前在播页 */
-static void reflow_music_list_if_open(void)
+void reflow_music_list_if_open(void)
 {
     if (!s_have_env || !s_env || !s_card || !s_card_list) {
         return;
@@ -1455,7 +704,7 @@ static int list_page_count(void)
     return (s_env->track_n + ps - 1) / ps;
 }
 
-static void set_hdr_mid_icon(const char *sym)
+void set_hdr_mid_icon(const char *sym)
 {
     if (!s_hdr_mid_btn || !sym) {
         return;
@@ -1492,15 +741,7 @@ static void on_hdr_mid(lv_event_t *e)
     fill_list();
 }
 
-static void on_dsh_back_list(lv_event_t *e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
-        return;
-    }
-    dsh_refresh_list();
-}
-
-static void reopen_list(void)
+void reopen_list(void)
 {
     if (s_env->track_n <= 0 || !s_card) {
         nl_ov_toast("暂无曲目列表");
@@ -1597,128 +838,6 @@ static void request_reshuffle(void) {
     nl_ov_toast("换一批…");
 }
 
-static void play_at(int idx);
-
-/* 播放器关闭时恢复列表序号，避免耳机图标一直占着当前行 */
-static void clear_play_mark(void)
-{
-    if (s_play_idx < 0 || s_play_idx >= 64) {
-        s_play_idx = -1;
-        return;
-    }
-    if (s_row_idx_labels[s_play_idx]) {
-        if (s_env && strcmp(s_env->card_type, "music_list") == 0) {
-            paint_music_mark(s_row_idx_labels[s_play_idx], false, s_play_idx);
-        } else {
-            char idx_buf[16];
-            snprintf(idx_buf, sizeof(idx_buf), "%d", s_play_idx + 1);
-            nl_ov_set_font(s_row_idx_labels[s_play_idx]);
-            lv_label_set_text(s_row_idx_labels[s_play_idx], idx_buf);
-            lv_obj_set_style_text_color(s_row_idx_labels[s_play_idx], UI_ACCENT_SOFT, 0);
-        }
-    }
-    if (s_row_btns[s_play_idx]) {
-        lv_obj_t *lbl = lv_obj_get_child(s_row_btns[s_play_idx], 0);
-        if (lbl) {
-            lv_label_set_text(lbl, MATERIAL_SYMBOLS_PLAY_ARROW);
-        }
-    }
-    s_play_idx = -1;
-}
-
-/* 只更新指定行的图标，避免重建整个列表 */
-static void update_row_icon(int idx)
-{
-    if (idx < 0 || idx >= 64) {
-        return;
-    }
-    DisplayLockGuard lock(nl_ov_disp());
-    if (!lock) {
-        return;
-    }
-    /* 更新序号胶囊：当前播放显示耳机 */
-    if (s_row_idx_labels[idx]) {
-        if (s_env && strcmp(s_env->card_type, "music_list") == 0) {
-            paint_music_mark(s_row_idx_labels[idx], true, idx);
-        } else {
-            lv_obj_set_style_text_font(s_row_idx_labels[idx], &font_material_symbols_20_4, 0);
-            lv_label_set_text(s_row_idx_labels[idx], MATERIAL_SYMBOLS_HEADPHONES);
-            lv_obj_set_style_text_color(s_row_idx_labels[idx], UI_ACCENT, 0);
-        }
-    }
-    /* 更新播放按钮：改为暂停图标 */
-    if (s_row_btns[idx]) {
-        lv_obj_t *lbl = lv_obj_get_child(s_row_btns[idx], 0);
-        if (lbl) {
-            lv_label_set_text(lbl, MATERIAL_SYMBOLS_PAUSE);
-        }
-    }
-}
-
-static void play_at(int idx)
-{
-    if (!nodelio_caps_has_media()) {
-        nl_ov_toast("本机暂不支持播放");
-        return;
-    }
-    if (idx < 0 || idx >= s_env->track_n || !s_env->tracks[idx].playback_url[0]) {
-        return;
-    }
-    /* 恢复上一首的图标 */
-    if (s_play_idx >= 0 && s_play_idx < 64) {
-        DisplayLockGuard lock(nl_ov_disp());
-        if (lock) {
-            if (s_row_idx_labels[s_play_idx]) {
-                if (strcmp(s_env->card_type, "music_list") == 0) {
-                    paint_music_mark(s_row_idx_labels[s_play_idx], false, s_play_idx);
-                } else {
-                    char idx_buf[16];
-                    snprintf(idx_buf, sizeof(idx_buf), "%d", s_play_idx + 1);
-                    nl_ov_set_font(s_row_idx_labels[s_play_idx]);
-                    lv_label_set_text(s_row_idx_labels[s_play_idx], idx_buf);
-                    lv_obj_set_style_text_color(s_row_idx_labels[s_play_idx], UI_ACCENT_SOFT, 0);
-                }
-            }
-            if (s_row_btns[s_play_idx]) {
-                lv_obj_t *lbl = lv_obj_get_child(s_row_btns[s_play_idx], 0);
-                if (lbl) {
-                    lv_label_set_text(lbl, MATERIAL_SYMBOLS_PLAY_ARROW);
-                }
-            }
-        }
-    }
-    s_play_idx = idx;
-    (void)nodelio_media_play_track(&s_skill_cfg, &s_env->tracks[idx]);
-    /* 只更新当前行的图标，避免重建整个列表 */
-    update_row_icon(idx);
-}
-
-static int neighbor_playable(int from, int dir)
-{
-    if (s_env->track_n <= 0 || (dir != 1 && dir != -1)) {
-        return -1;
-    }
-    /* from < 0：下一首从 0 起，上一首从末尾起（换一批后当前曲可能不在新列表里） */
-    int start = from;
-    if (start < 0 || start >= s_env->track_n) {
-        start = (dir > 0) ? -1 : 0;
-    }
-    for (int step = 1; step <= s_env->track_n; step++) {
-        int idx = start + dir * step;
-        idx %= s_env->track_n;
-        if (idx < 0) {
-            idx += s_env->track_n;
-        }
-        if (s_env->tracks[idx].playback_url[0]) {
-            return idx;
-        }
-    }
-    return -1;
-}
-
-static void dsh_fetch_session_detail(int track_idx);
-static void fill_dsh_detail(void);
-
 static void on_play_row(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
@@ -1737,7 +856,7 @@ static void on_play_row(lv_event_t *e)
 }
 
 /** JSON 字符串转义（路径反斜杠）；out 须大于 in*2。 */
-static void json_escape_str(char *out, size_t out_len, const char *in)
+void json_escape_str(char *out, size_t out_len, const char *in)
 {
     if (!out || out_len == 0) {
         return;
@@ -1759,210 +878,8 @@ static void json_escape_str(char *out, size_t out_len, const char *in)
     out[o] = '\0';
 }
 
-/** 拉 dsh.status 会话详情（含 body）。silent：定时刷新，无 toast、失败不打扰。 */
-static void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
-{
-    if (!sess || !sess[0] || !s_skill_cfg.server_url[0] || !s_skill_cfg.device_id[0]) {
-        if (!silent) {
-            nl_ov_toast("无法打开详情");
-        }
-        return;
-    }
-    if (s_dsh_detail_busy) {
-        return;
-    }
-    struct detail_arg {
-        nodelio_nvs_config_t cfg;
-        char ws[200];
-        char sess[80];
-        bool silent;
-    };
-    auto *arg = static_cast<detail_arg *>(malloc(sizeof(detail_arg)));
-    if (!arg) {
-        if (!silent) {
-            nl_ov_toast("内存不足");
-        }
-        return;
-    }
-    arg->cfg = s_skill_cfg;
-    snprintf(arg->ws, sizeof(arg->ws), "%s", ws ? ws : "");
-    snprintf(arg->sess, sizeof(arg->sess), "%s", sess);
-    arg->silent = silent;
-    snprintf(s_dsh_detail_ws, sizeof(s_dsh_detail_ws), "%s", arg->ws);
-    snprintf(s_dsh_detail_sess, sizeof(s_dsh_detail_sess), "%s", arg->sess);
-    s_dsh_detail_busy = true;
-    if (!silent) {
-        nl_ov_toast("加载回复…");
-    }
-    if (!nodelio::SubmitPanelJob(
-            nodelio::PanelJobLane::Interactive,
-            [](void* p) {
-                auto *a = static_cast<detail_arg *>(p);
-                char base[160];
-                nl_url_strip_base(a->cfg.server_url, base, sizeof(base));
-                char url[480];
-                snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/dsh.status/invoke", base,
-                         a->cfg.device_id);
-                /* ws≤199 转义≤398；sess≤79 转义≤158；外壳约 34 → body≥591 */
-                char ws_esc[400];
-                char sess_esc[160];
-                json_escape_str(ws_esc, sizeof(ws_esc), a->ws);
-                json_escape_str(sess_esc, sizeof(sess_esc), a->sess);
-                /* silent：定时刷新，桥端跳过 TTS；detail_tts 由 Host 从技能配置注入 */
-                char body[680];
-                if (ws_esc[0]) {
-                    if (a->silent) {
-                        snprintf(body, sizeof(body),
-                                 "{\"workspace\":\"%s\",\"session\":\"%s\",\"silent\":true}", ws_esc,
-                                 sess_esc);
-                    } else {
-                        snprintf(body, sizeof(body), "{\"workspace\":\"%s\",\"session\":\"%s\"}",
-                                 ws_esc, sess_esc);
-                    }
-                } else if (a->silent) {
-                    snprintf(body, sizeof(body), "{\"session\":\"%s\",\"silent\":true}", sess_esc);
-                } else {
-                    snprintf(body, sizeof(body), "{\"session\":\"%s\"}", sess_esc);
-                }
-                const int cap = nodelio_caps_max_content_bytes() + 512;
-                char *resp = static_cast<char *>(
-                    heap_caps_malloc((size_t)cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-                if (!resp) {
-                    resp = static_cast<char *>(malloc((size_t)cap));
-                }
-                if (!resp) {
-                    if (!a->silent) {
-                        nodelio_panel_ui_toast_defer("内存不足");
-                    }
-                } else {
-                    resp[0] = '\0';
-                    int status = 0;
-                    esp_err_t err = nodelio_http_post_json_ms(url, a->cfg.device_key, body, &status, resp,
-                                                              cap - 1, DSH_HTTP_IO_MS);
-                    if (err == ESP_OK && resp[0] && (status == 200 || status == 201)) {
-                        /* 静默轮询：用户已回列表/收起则丢弃，避免把详情又顶回来 */
-                        DisplayLockGuard view_lock(nl_ov_disp());
-                        const bool still =
-                            view_lock &&
-                            nodelio_panel_skill_view_current(nodelio_panel_job_result_epoch()) &&
-                            (!a->silent ||
-                             (s_dsh_detail_sess[0] && strcmp(s_dsh_detail_sess, a->sess) == 0 &&
-                              !s_minimized && s_have_env && s_env && s_env->detail_body &&
-                              s_env->detail_body[0]));
-                        if (still) {
-                            char spoken[NL_ENV_SPOKEN];
-                            spoken[0] = '\0';
-                            nodelio_skill_deliver_json(&a->cfg, resp, false, spoken, sizeof(spoken));
-                            /* 首次打开：有桥 TTS 则播；续聊武装也播（点开详情就是要听回复）。
-                             * 勿仅靠 spoken 文本：服务端可能只带 spoken.audio.urls。 */
-                            if (!a->silent) {
-                                struct UrlPack {
-                                    char urls[NL_ENV_SPOKEN_AUDIO_MAX][NL_ENV_URL];
-                                    int n;
-                                };
-                                auto *pack = static_cast<UrlPack *>(calloc(1, sizeof(UrlPack)));
-                                const char *spoken_src =
-                                    spoken[0] ? spoken
-                                              : (s_env && s_env->display_title[0] ? s_env->display_title
-                                                                                 : "详情");
-                                char *sp = strdup(spoken_src);
-                                if (sp) {
-                                    /* 详情回退 display_title 常带 #N；去掉以免 toast/摘要念「井号」 */
-                                    for (char *q = sp; *q;) {
-                                        if (*q == '#') {
-                                            memmove(q, q + 1, strlen(q + 1) + 1);
-                                            continue;
-                                        }
-                                        if ((unsigned char)q[0] == 0xEF && (unsigned char)q[1] == 0xBC &&
-                                            (unsigned char)q[2] == 0x83) {
-                                            memmove(q, q + 3, strlen(q + 3) + 1);
-                                            continue;
-                                        }
-                                        q++;
-                                    }
-                                }
-                                if (sp && pack) {
-                                    pack->n = nodelio_skill_last_spoken_audio_urls(
-                                        pack->urls, NL_ENV_SPOKEN_AUDIO_MAX);
-                                    ESP_LOGI(TAG, "detail TTS schedule n=%d spoken=%d armed=%d",
-                                             pack->n, spoken[0] ? 1 : 0,
-                                             nodelio_panel_ui_dsh_is_armed() ? 1 : 0);
-                                    const auto reply_epoch = nodelio_panel_job_result_epoch();
-                                    Application::GetInstance().Schedule([sp, pack, reply_epoch]() {
-                                        if (!nodelio_panel_skill_view_current(reply_epoch)) {
-                                            free(sp);
-                                            free(pack);
-                                            return;
-                                        }
-                                        if (pack->n > 0) {
-                                            nodelio_offline_cmd_yield_for_cloud_audio();
-                                            const size_t dram = heap_caps_get_largest_free_block(
-                                                MALLOC_CAP_INTERNAL);
-                                            if (dram >= 24 * 1024) {
-                                                ESP_LOGI(TAG, "detail TTS playlist n=%d dram=%u",
-                                                         pack->n, (unsigned)dram);
-                                                nodelio_panel_ui_announce_spoken_playlist(
-                                                    sp, pack->urls, pack->n);
-                                            } else {
-                                                ESP_LOGW(TAG, "detail TTS skip dram=%u → toast",
-                                                         (unsigned)dram);
-                                                nodelio_panel_ui_toast_defer(sp);
-                                            }
-                                        } else if (sp[0]) {
-                                            ESP_LOGW(TAG, "detail TTS no wav → toast only");
-                                            nodelio_panel_ui_announce_spoken(sp);
-                                        }
-                                        free(sp);
-                                        free(pack);
-                                    });
-                                } else {
-                                    free(sp);
-                                    free(pack);
-                                }
-                            }
-                        }
-                    } else if (!a->silent) {
-                        if (err != ESP_OK || status == 0 || !resp[0]) {
-                            nl_ov_toast_invoke_unreachable("dsh.status");
-                        } else {
-                            nodelio_panel_ui_toast_defer("加载失败");
-                        }
-                    }
-                    free(resp);
-                }
-                s_dsh_detail_busy = false;
-                free(a);
-            },
-            arg,
-            [](void* p) {
-                s_dsh_detail_busy = false;
-                free(p);
-            },
-            silent ? nodelio_panel_skill_view_epoch() : nodelio_panel_begin_skill_view())) {
-        s_dsh_detail_busy = false;
-        free(arg);
-        if (!silent) {
-            nl_ov_toast("无法打开详情");
-        }
-    }
-}
-
-/** 从列表行打开详情。 */
-static void dsh_fetch_session_detail(int track_idx)
-{
-    if (!s_have_env || !s_env || track_idx < 0 || track_idx >= s_env->track_n) {
-        return;
-    }
-    char ws[200] = {0};
-    char sess[80] = {0};
-    dsh_extract_arm(&s_env->tracks[track_idx], ws, sizeof(ws), sess, sizeof(sess));
-    Board::GetInstance().NoteUserActivity();
-    restart_skill_ttl();
-    dsh_fetch_detail(ws, sess, false);
-}
-
 /** user_data = (track_idx << 8) | action_idx；走 Host invoke，禁止直连桥。 */
-static void run_invoke_action(const nl_env_invoke_action_t *ia)
+void run_invoke_action(const nl_env_invoke_action_t *ia)
 {
     if (!ia) {
         return;
@@ -2117,7 +1034,7 @@ static void run_invoke_action(const nl_env_invoke_action_t *ia)
     }
 }
 
-static void on_invoke_action(lv_event_t *e)
+void on_invoke_action(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
         return;
@@ -2133,7 +1050,7 @@ static void on_invoke_action(lv_event_t *e)
 }
 
 /** 「第一个 / 第2个 / 选三」→ 1-based；失败返回 0 */
-static int parse_ordinal_zh(const char *phrase)
+int parse_ordinal_zh(const char *phrase)
 {
     if (!phrase || !phrase[0]) {
         return 0;
@@ -2167,7 +1084,7 @@ static int parse_ordinal_zh(const char *phrase)
     return 0;
 }
 
-static void invoke_filter_workspace(const nl_env_filter_t *f)
+void invoke_filter_workspace(const nl_env_filter_t *f)
 {
     if (!f || !f->workspace[0] || !s_env) {
         return;
@@ -2333,7 +1250,7 @@ bool nodelio_skill_try_pick_phrase(const char *text)
     return true;
 }
 
-static lv_obj_t *make_text_action_btn(lv_obj_t *parent, const char *title, lv_event_cb_t cb, void *ud)
+lv_obj_t *make_text_action_btn(lv_obj_t *parent, const char *title, lv_event_cb_t cb, void *ud)
 {
     lv_obj_t *btn = lv_obj_create(parent);
     lv_obj_remove_style_all(btn);
@@ -2354,140 +1271,6 @@ static lv_obj_t *make_text_action_btn(lv_obj_t *parent, const char *title, lv_ev
     lv_obj_set_style_text_color(lbl, UI_ON_TILE, 0);
     lv_obj_center(lbl);
     return btn;
-}
-
-static void on_stop_now(lv_event_t *e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
-        return;
-    }
-    nodelio_media_stop();
-    /* 播放条和曲库一起退下，动画结束后释放对象 */
-    dismiss_library_and_player();
-}
-
-static void on_pause_now(lv_event_t *e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
-        return;
-    }
-    if (nodelio_media_is_paused()) {
-        nodelio_media_resume();
-    } else {
-        nodelio_media_pause();
-    }
-}
-
-/** 播歌时内部 DRAM 常开不起唤醒：点麦克风 = 暂停并进对话 */
-static void on_voice_now(lv_event_t *e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
-        return;
-    }
-    Board::GetInstance().NoteUserActivity();
-    nl_ov_toast("请说…");
-    Application::GetInstance().Schedule([]() {
-        auto &app = Application::GetInstance();
-        if (nodelio_media_is_playing()) {
-            nodelio_media_pause_for_voice();
-            nodelio_offline_cmd_yield_for_cloud_audio();
-            app.GetAudioService().EnableVoiceProcessing(false);
-        } else if (nodelio_media_is_paused()) {
-            /* 已暂停：清掉 pause_close，避免对话中途关播放器 */
-            nodelio_media_pause_for_voice(); /* no-op if not playing; need disarm close */
-        }
-        if (app.GetDeviceState() == kDeviceStateIdle ||
-            app.GetDeviceState() == kDeviceStateNotifying) {
-            app.ToggleChatState();
-        }
-    });
-}
-
-static void on_prev_now(lv_event_t *e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
-        return;
-    }
-    if (!nodelio_skill_media_prev()) {
-        nl_ov_toast("没有上一首");
-    }
-}
-
-static void on_next_now(lv_event_t *e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
-        return;
-    }
-    if (!nodelio_skill_media_next()) {
-        nl_ov_toast("没有下一首");
-    }
-}
-
-static void set_pause_btn_icon(bool playing)
-{
-    if (!s_now_pause_btn) {
-        return;
-    }
-    lv_obj_t *ic = lv_obj_get_child(s_now_pause_btn, 0);
-    if (ic) {
-        lv_label_set_text(ic, playing ? MATERIAL_SYMBOLS_PAUSE : MATERIAL_SYMBOLS_PLAY_ARROW);
-    }
-}
-
-bool nodelio_skill_media_prev(void)
-{
-    if (env_media_is_live()) {
-        return false;
-    }
-    int idx = neighbor_playable(s_play_idx, -1);
-    if (idx < 0) {
-        return false;
-    }
-    play_at(idx);
-    return true;
-}
-
-bool nodelio_skill_media_next(void)
-{
-    if (env_media_is_live()) {
-        return false;
-    }
-    int idx = neighbor_playable(s_play_idx, +1);
-    if (idx < 0) {
-        return false;
-    }
-    play_at(idx);
-    return true;
-}
-
-bool nodelio_skill_media_play_any(char *title_out, size_t title_out_len)
-{
-    if (title_out && title_out_len > 0) {
-        title_out[0] = '\0';
-    }
-    if (!s_have_env || s_env->track_n <= 0) {
-        return false;
-    }
-    int idxs[NL_ENV_TRACK_MAX];
-    int n = 0;
-    for (int i = 0; i < s_env->track_n && n < NL_ENV_TRACK_MAX; i++) {
-        if (s_env->tracks[i].playback_url[0]) {
-            idxs[n++] = i;
-        }
-    }
-    if (n <= 0) {
-        return false;
-    }
-    int slot = (int)(esp_random() % (uint32_t)n);
-    if (n > 1 && idxs[slot] == s_play_idx) {
-        slot = (slot + 1) % n;
-    }
-    const int pick = idxs[slot];
-    play_at(pick);
-    if (title_out && title_out_len > 0 && pick >= 0 && pick < s_env->track_n) {
-        snprintf(title_out, title_out_len, "%s", s_env->tracks[pick].title);
-    }
-    return true;
 }
 
 /** 新结果仅 1 首且可在旧列表中找到 → 保留旧列表只切播，避免「随便」再搜把歌单冲成 1 首。 */
@@ -2520,8 +1303,8 @@ static int find_track_in_env(const nl_content_envelope_t *hay, const nl_env_trac
 }
 
 /** Material Symbols 图标钮（勿用 nl_ov_set_font：普惠字库无符号字形） */
-static lv_obj_t *make_icon_btn(lv_obj_t *parent, lv_color_t bg, lv_color_t fg, const char *sym,
-                               lv_event_cb_t cb)
+lv_obj_t *make_icon_btn(lv_obj_t *parent, lv_color_t bg, lv_color_t fg, const char *sym,
+                        lv_event_cb_t cb)
 {
     lv_obj_t *btn = lv_obj_create(parent);
     lv_obj_remove_style_all(btn);
@@ -2543,8 +1326,8 @@ static lv_obj_t *make_icon_btn(lv_obj_t *parent, lv_color_t bg, lv_color_t fg, c
 }
 
 /** 播放控制专用大图标钮（提高点击命中率） */
-static lv_obj_t *make_play_ctrl_btn(lv_obj_t *parent, lv_color_t bg, lv_color_t fg, const char *sym,
-                                    lv_event_cb_t cb)
+lv_obj_t *make_play_ctrl_btn(lv_obj_t *parent, lv_color_t bg, lv_color_t fg, const char *sym,
+                             lv_event_cb_t cb)
 {
     lv_obj_t *btn = lv_obj_create(parent);
     lv_obj_remove_style_all(btn);
@@ -2565,12 +1348,12 @@ static lv_obj_t *make_play_ctrl_btn(lv_obj_t *parent, lv_color_t bg, lv_color_t 
     return btn;
 }
 
-static void anim_eq_height(void *var, int32_t v)
+void anim_eq_height(void *var, int32_t v)
 {
     lv_obj_set_height((lv_obj_t *)var, (lv_coord_t)v);
 }
 
-static void anim_border_opa(void *var, int32_t v)
+void anim_border_opa(void *var, int32_t v)
 {
     lv_obj_set_style_border_opa((lv_obj_t *)var, (lv_opa_t)v, 0);
 }
@@ -2596,7 +1379,7 @@ static bool skill_slide_from_right(void)
 }
 
 /** from_below=true：宽屏自右侧滑入，方屏自下方滑入（禁止负 translate 盖住顶栏）。 */
-static void anim_show_obj(lv_obj_t *obj, bool from_below)
+void anim_show_obj(lv_obj_t *obj, bool from_below)
 {
     if (!obj) {
         return;
@@ -2645,6 +1428,7 @@ static void null_skill_widget_ptrs(void)
     for (int i = 0; i < 3; i++) {
         s_dsh_eq[i] = nullptr;
     }
+    s_dsh_confirm_bar = nullptr;
     s_dsh_detail_bar = nullptr;
     s_card_list = nullptr;
     s_card_title = nullptr;
@@ -2662,6 +1446,9 @@ static void null_skill_widget_ptrs(void)
     s_now_next_btn = nullptr;
     s_mini_fab = nullptr;
     s_mini_ic = nullptr;
+    s_hdr = nullptr;
+    s_hdr_txt = nullptr;
+    s_close_btn = nullptr;
     s_hdr_btns = nullptr;
     s_hdr_mid_btn = nullptr;
     s_news_zoom_bar = nullptr;
@@ -2783,7 +1570,7 @@ static bool slide_out_obj(lv_obj_t *obj, bool with_done)
     return true;
 }
 
-static void dismiss_library_and_player(void)
+void dismiss_library_and_player(void)
 {
     nodelio_panel_begin_skill_view();
     s_close_gen += 1;
@@ -2817,7 +1604,7 @@ static void dismiss_library_and_player(void)
     }
 }
 
-static void reset_obj_anim_style(lv_obj_t *obj)
+void reset_obj_anim_style(lv_obj_t *obj)
 {
     if (!obj) {
         return;
@@ -2828,195 +1615,6 @@ static void reset_obj_anim_style(lv_obj_t *obj)
     lv_obj_set_style_opa(obj, LV_OPA_COVER, 0);
     lv_obj_set_style_translate_x(obj, 0, 0);
     lv_obj_set_style_translate_y(obj, 0, 0);
-}
-
-static void stop_mini_pulse(void)
-{
-    if (s_mini_pulse_on && s_mini_fab) {
-        lv_anim_delete(s_mini_fab, anim_border_opa);
-        s_mini_pulse_on = false;
-        lv_obj_set_style_border_opa(s_mini_fab, SKILL_BORDER_OPA, 0);
-    }
-}
-
-static void start_mini_pulse(void)
-{
-    if (!s_mini_fab) {
-        return;
-    }
-    stop_mini_pulse();
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, s_mini_fab);
-    lv_anim_set_values(&a, 90, 240);
-    lv_anim_set_time(&a, 900);
-    lv_anim_set_playback_time(&a, 900);
-    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-    lv_anim_set_exec_cb(&a, anim_border_opa);
-    lv_anim_start(&a);
-    s_mini_pulse_on = true;
-}
-
-static void hide_mini_fab(void)
-{
-    stop_mini_pulse();
-    if (s_mini_fab) {
-        reset_obj_anim_style(s_mini_fab);
-        lv_obj_add_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN);
-    }
-    nl_ov_apps_layout_chrome();
-}
-
-static void show_mini_fab(bool playing)
-{
-    if (!s_mini_fab) {
-        return;
-    }
-    lv_obj_clear_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN);
-    if (s_mini_ic) {
-        lv_label_set_text(s_mini_ic, playing ? MATERIAL_SYMBOLS_MUSIC_NOTE : MATERIAL_SYMBOLS_HEADPHONES);
-    }
-    anim_show_obj(s_mini_fab, false);
-    if (playing) {
-        start_mini_pulse();
-    } else {
-        stop_mini_pulse();
-    }
-    layout_skill_layers();
-    raise_skill_layers();
-}
-
-static void minimize_to_fab(void)
-{
-    clear_ttl();
-    stop_dsh_detail_poll();
-    s_dsh_detail_ws[0] = '\0';
-    s_dsh_detail_sess[0] = '\0';
-    s_minimized = true;
-    reset_obj_anim_style(s_scrim);
-    reset_obj_anim_style(s_card);
-    reset_obj_anim_style(s_now_bar);
-    if (s_scrim) {
-        lv_obj_add_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (s_card) {
-        lv_obj_add_flag(s_card, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (s_now_bar) {
-        stop_now_anims();
-        lv_obj_add_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
-    }
-    set_drawer_for_skill(false);
-    show_mini_fab(nodelio_media_is_playing());
-    nl_ov_apps_notify_skill_open(false);
-    ensure_chrome_order();
-}
-
-static void expand_from_fab(void)
-{
-    if (!s_ready || !s_root) {
-        return;
-    }
-    if (!s_visible) {
-        nodelio_overlay_show(false);
-    }
-    s_minimized = false;
-    hide_mini_fab();
-
-    const bool playing = nodelio_media_is_playing();
-    const bool paused = nodelio_media_is_paused();
-    const bool have_list = s_have_env && s_env->track_n > 0 && s_card;
-
-    if (have_list) {
-        set_drawer_for_skill(true);
-        if (s_scrim) {
-            lv_obj_clear_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
-            anim_show_obj(s_scrim, false);
-        }
-        if (s_card_title) {
-            const char *title = s_env->display_title[0] ? s_env->display_title : "搜索结果";
-            lv_label_set_text(s_card_title, title);
-        }
-        fill_list();
-        lv_obj_clear_flag(s_card, LV_OBJ_FLAG_HIDDEN);
-        anim_show_obj(s_card, true);
-    } else {
-        set_drawer_for_skill(false);
-    }
-
-    if (s_now_bar && (playing || paused)) {
-        apply_now_media_chrome(playing, paused, have_list);
-        set_pause_btn_icon(playing);
-        lv_obj_clear_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
-        if (playing) {
-            start_now_anims();
-        } else {
-            stop_now_anims();
-        }
-        anim_show_obj(s_now_bar, true);
-    }
-
-    layout_skill_layers();
-    raise_skill_layers();
-    ensure_chrome_order();
-    if (have_list) {
-        nl_ov_apps_notify_skill_open(true);
-    }
-}
-
-static void stop_now_anims(void)
-{
-    if (s_now_border_anim_on && s_now_bar) {
-        lv_anim_delete(s_now_bar, anim_border_opa);
-        s_now_border_anim_on = false;
-        lv_obj_set_style_border_opa(s_now_bar, SKILL_BORDER_OPA, 0);
-    }
-    for (int i = 0; i < SKILL_EQ_N; i++) {
-        if (s_now_eq[i]) {
-            lv_anim_delete(s_now_eq[i], anim_eq_height);
-            lv_obj_set_height(s_now_eq[i], 8 + (i % 3) * 4);
-        }
-    }
-}
-
-static void start_now_anims(void)
-{
-    if (!s_now_bar) {
-        return;
-    }
-    stop_now_anims();
-
-    lv_anim_init(&s_now_border_anim);
-    lv_anim_set_var(&s_now_border_anim, s_now_bar);
-    lv_anim_set_values(&s_now_border_anim, 110, 240);
-    lv_anim_set_time(&s_now_border_anim, 900);
-    lv_anim_set_playback_time(&s_now_border_anim, 900);
-    lv_anim_set_repeat_count(&s_now_border_anim, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_set_path_cb(&s_now_border_anim, lv_anim_path_ease_in_out);
-    lv_anim_set_exec_cb(&s_now_border_anim, anim_border_opa);
-    lv_anim_start(&s_now_border_anim);
-    s_now_border_anim_on = true;
-
-    static const int32_t k_lo[SKILL_EQ_N] = {6, 10, 8, 12};
-    static const int32_t k_hi[SKILL_EQ_N] = {18, 24, 20, 22};
-    static const uint32_t k_ms[SKILL_EQ_N] = {380, 460, 420, 500};
-    for (int i = 0; i < SKILL_EQ_N; i++) {
-        if (!s_now_eq[i]) {
-            continue;
-        }
-        lv_anim_t a;
-        lv_anim_init(&a);
-        lv_anim_set_var(&a, s_now_eq[i]);
-        lv_anim_set_values(&a, k_lo[i], k_hi[i]);
-        lv_anim_set_time(&a, k_ms[i]);
-        lv_anim_set_playback_time(&a, k_ms[i]);
-        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-        lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-        lv_anim_set_exec_cb(&a, anim_eq_height);
-        lv_anim_set_delay(&a, (uint32_t)(i * 70));
-        lv_anim_start(&a);
-    }
 }
 
 static void ensure_card(void)
@@ -3364,10 +1962,7 @@ static void ensure_card(void)
     ensure_chrome_order();
 }
 
-#include "news_list_ui.inc"
-#include "calendar_weather_ui.inc"
-
-static void apply_card_chrome(void)
+void apply_card_chrome(void)
 {
     const bool music = strcmp(s_env->card_type, "music_list") == 0;
     const bool news = strcmp(s_env->card_type, "news_list") == 0;
@@ -3449,235 +2044,7 @@ static void apply_card_chrome(void)
     lv_obj_set_style_pad_row(s_card, s_hdr_minimal ? 0 : 8, 0);
 }
 
-static bool dsh_subtitle_is_running(const char *sub)
-{
-    if (!sub || !sub[0]) {
-        return false;
-    }
-    return strstr(sub, "正在用") != nullptr || strstr(sub, "正在思考") != nullptr ||
-           strstr(sub, "执行中") != nullptr;
-}
-
-static bool dsh_subtitle_needs_you(const char *sub)
-{
-    if (!sub || !sub[0]) {
-        return false;
-    }
-    return strstr(sub, "等你确认") != nullptr;
-}
-
-/** 焦点会话在新列表中的副标题；无焦点返回 nullptr */
-static const char *dsh_focus_track_artist(void)
-{
-    if (!s_env || !s_dsh_focus_sess[0]) {
-        return nullptr;
-    }
-    for (int i = 0; i < s_env->track_n; i++) {
-        char ws[200] = {0};
-        char sess[80] = {0};
-        dsh_extract_arm(&s_env->tracks[i], ws, sizeof(ws), sess, sizeof(sess));
-        if (sess[0] && strcmp(sess, s_dsh_focus_sess) == 0) {
-            return s_env->tracks[i].artist;
-        }
-    }
-    return nullptr;
-}
-
-/** 详情页：执行中/待确认 → 顶状态条 EQ；空闲则按续聊 phase 画 */
-static void dsh_detail_paint_running(const char *subtitle)
-{
-    /* 与列表同一套：待确认必须出「发送/取消」。详情原先只画续聊态，确认条被吃掉 */
-    const bool pending = s_dsh_pending_preview[0] != '\0' && s_dsh_phase == DSH_UI_ARMED;
-    if (pending) {
-        dsh_paint_status_strip();
-        /* 底栏与确认条叠两套取消，待确认时只留发送/取消 */
-        if (s_dsh_detail_bar) {
-            lv_obj_add_flag(s_dsh_detail_bar, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_height(s_dsh_detail_bar, 0);
-        }
-        return;
-    }
-    dsh_hide_confirm_bar();
-    const bool needs_you = dsh_subtitle_needs_you(subtitle);
-    const bool running = s_dsh_phase == DSH_UI_DISPATCHED || s_dsh_phase == DSH_UI_ARMED ||
-                         dsh_subtitle_is_running(subtitle) || needs_you;
-    if (!running) {
-        if (s_dsh_phase == DSH_UI_IDLE) {
-            stop_dsh_status_anims();
-            if (s_dsh_status) {
-                lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
-                lv_obj_set_height(s_dsh_status, 0);
-            }
-        } else {
-            dsh_paint_status_strip();
-        }
-        return;
-    }
-    if (!s_dsh_status || !s_dsh_status_lbl) {
-        return;
-    }
-    lv_obj_clear_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_height(s_dsh_status, 32);
-    uint32_t pill = UI_C_TILE_PWM;
-    uint32_t bar = UI_C_INFO;
-    const char *txt = "执行中…";
-    if (s_dsh_phase == DSH_UI_ARMED) {
-        pill = UI_C_TILE_SWITCH;
-        bar = UI_C_ACCENT_SOFT;
-        txt = "续聊中 · 请直接说指令";
-    } else if (needs_you) {
-        pill = UI_C_TILE_GPIO;
-        bar = UI_C_WARN;
-        txt = subtitle && subtitle[0] ? subtitle : "等你确认";
-    } else if (s_dsh_phase == DSH_UI_DISPATCHED && s_dsh_last_instr[0]) {
-        static char buf[120];
-        snprintf(buf, sizeof(buf), "已投递 · %s", s_dsh_last_instr);
-        txt = buf;
-    } else if (subtitle && subtitle[0] && dsh_subtitle_is_running(subtitle)) {
-        txt = subtitle;
-    }
-    lv_obj_set_style_bg_color(s_dsh_status, lv_color_hex(pill), 0);
-    for (int i = 0; i < 3; i++) {
-        if (s_dsh_eq[i]) {
-            lv_obj_set_style_bg_color(s_dsh_eq[i], lv_color_hex(bar), 0);
-        }
-    }
-    lv_label_set_text(s_dsh_status_lbl, txt);
-    lv_obj_set_style_text_color(s_dsh_status_lbl, UI_TEXT, 0);
-    if (s_card_sub) {
-        if (s_dsh_phase == DSH_UI_ARMED) {
-            lv_label_set_text(s_card_sub, "续聊中 · 直接说 · 底栏可取消");
-        } else if (needs_you) {
-            lv_label_set_text(s_card_sub, "待你确认 · 底栏可返回列表");
-        } else {
-            lv_label_set_text(s_card_sub, "执行中 · 底栏可返回列表");
-        }
-        lv_obj_set_style_text_color(s_card_sub, lv_color_hex(bar), 0);
-    }
-    start_dsh_status_anims();
-}
-
-/** DSH 会话详情：滚动纯文本；续聊固定底栏；执行中顶条 EQ */
-static void fill_dsh_detail(void)
-{
-    if (!s_card_list || !s_env) {
-        return;
-    }
-    /* 定时刷新重建时保留阅读位置，避免跳回顶 */
-    const lv_coord_t keep_y =
-        (s_news_body_lbl && s_card_list) ? lv_obj_get_scroll_y(s_card_list) : 0;
-    lv_obj_clean(s_card_list);
-    s_news_body_lbl = nullptr;
-    bzero(s_row_idx_labels, sizeof(s_row_idx_labels));
-    bzero(s_row_btns, sizeof(s_row_btns));
-    lv_obj_add_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(s_card_list, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(s_card_list, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_style_pad_bottom(s_card_list, 8, 0);
-
-    const char *artist =
-        (s_env->track_n > 0 && s_env->tracks[0].artist[0]) ? s_env->tracks[0].artist : "";
-    const bool needs_you = dsh_subtitle_needs_you(artist);
-    const bool running =
-        dsh_subtitle_is_running(artist) || needs_you || s_dsh_phase != DSH_UI_IDLE;
-
-    if (s_card_sub) {
-        if (needs_you) {
-            lv_label_set_text(s_card_sub, "待你确认 · 底栏可返回列表");
-            lv_obj_set_style_text_color(s_card_sub, UI_WARN, 0);
-        } else if (running) {
-            lv_label_set_text(s_card_sub, "执行中 · 底栏可返回列表");
-            lv_obj_set_style_text_color(s_card_sub, UI_INFO, 0);
-        } else {
-            lv_label_set_text(s_card_sub, "上滑阅读 · 底栏返回列表 / 续聊");
-            lv_obj_set_style_text_color(s_card_sub, UI_TEXT_MUTED, 0);
-        }
-    }
-
-    if (s_env->track_n > 0 && s_env->tracks[0].title[0]) {
-        lv_obj_t *ttl = lv_label_create(s_card_list);
-        nl_ov_set_font(ttl);
-        lv_label_set_text(ttl, s_env->tracks[0].title);
-        lv_obj_set_width(ttl, lv_pct(100));
-        lv_label_set_long_mode(ttl, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_color(ttl, UI_TEXT, 0);
-    }
-    if (artist[0] && !dsh_subtitle_is_running(artist) && !dsh_subtitle_needs_you(artist)) {
-        /* 空闲字幕仍放正文上；执行中/待确认改走顶状态条，避免重复 */
-        lv_obj_t *sub = lv_label_create(s_card_list);
-        nl_ov_set_font(sub);
-        lv_label_set_text(sub, artist);
-        lv_obj_set_width(sub, lv_pct(100));
-        lv_label_set_long_mode(sub, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_color(sub, UI_TEXT_MUTED, 0);
-    }
-
-    s_news_body_lbl = lv_label_create(s_card_list);
-    nl_ov_set_font(s_news_body_lbl);
-    const char *body =
-        (s_env->detail_body && s_env->detail_body[0]) ? s_env->detail_body : "（无正文）";
-    lv_label_set_text(s_news_body_lbl, body);
-    lv_obj_set_width(s_news_body_lbl, lv_pct(100));
-    lv_label_set_long_mode(s_news_body_lbl, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(s_news_body_lbl, UI_TEXT, 0);
-    lv_obj_set_style_pad_top(s_news_body_lbl, 8, 0);
-
-    /* 底栏：返回列表 + 续聊（固定不滚） */
-    if (s_dsh_detail_bar) {
-        lv_obj_clean(s_dsh_detail_bar);
-        lv_obj_set_flex_align(s_dsh_detail_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
-        lv_obj_t *back = make_text_action_btn(s_dsh_detail_bar, "返回列表", on_dsh_back_list, nullptr);
-        if (back) {
-            lv_obj_set_style_bg_color(back, UI_CAPSULE_OFF, 0);
-            lv_obj_t *bl = lv_obj_get_child(back, 0);
-            if (bl) {
-                lv_obj_set_style_text_color(bl, UI_TEXT_SUB, 0);
-            }
-            lv_obj_set_size(back, LV_SIZE_CONTENT, 40);
-            lv_obj_set_style_pad_hor(back, 14, 0);
-        }
-        if (s_env->track_n > 0) {
-            for (int ai = 0; ai < s_env->tracks[0].invoke_n && ai < NL_ENV_ACTION_MAX; ai++) {
-                const intptr_t packed = ((intptr_t)0 << 8) | (intptr_t)ai;
-                const char *btn_title = s_env->tracks[0].invokes[ai].title;
-                lv_color_t btn_bg = UI_ACCENT;
-                if (strstr(btn_title, "续聊") != nullptr) {
-                    if (s_dsh_phase == DSH_UI_ARMED) {
-                        btn_title = "取消";
-                        btn_bg = UI_WARN;
-                    } else if (s_dsh_phase == DSH_UI_DISPATCHED || dsh_subtitle_is_running(artist) ||
-                               dsh_subtitle_needs_you(artist)) {
-                        btn_title = dsh_subtitle_needs_you(artist) ? "待确认" : "执行中";
-                        btn_bg = dsh_subtitle_needs_you(artist) ? UI_WARN : UI_INFO;
-                    }
-                }
-                lv_obj_t *ab =
-                    make_text_action_btn(s_dsh_detail_bar, btn_title, on_invoke_action, (void *)packed);
-                if (ab) {
-                    lv_obj_set_style_bg_color(ab, btn_bg, 0);
-                    lv_obj_set_size(ab, LV_SIZE_CONTENT, 40);
-                    lv_obj_set_style_pad_hor(ab, 16, 0);
-                }
-            }
-        }
-        lv_obj_clear_flag(s_dsh_detail_bar, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_height(s_dsh_detail_bar, 48);
-    }
-
-    dsh_detail_paint_running(artist);
-
-    if (keep_y > 0) {
-        lv_obj_update_layout(s_card_list);
-        lv_obj_scroll_to_y(s_card_list, keep_y, LV_ANIM_OFF);
-    } else {
-        lv_obj_scroll_to_y(s_card_list, 0, LV_ANIM_OFF);
-    }
-    apply_card_chrome();
-    start_dsh_detail_poll();
-}
-
-static void fill_list(void)
+void fill_list(void)
 {
     if (!s_card_list || !s_env) {
         return;
@@ -4005,7 +2372,7 @@ static void fill_list(void)
     }
 }
 
-static bool skill_ui_is_up(void)
+bool skill_ui_is_up(void)
 {
     if (s_have_env) {
         return true;
@@ -4392,173 +2759,5 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
         ESP_LOGI(TAG, "news read offer → 要读吗？");
         nodelio_panel_ui_request_cloud_speak("要读吗？");
         Application::GetInstance().ArmPendingConfirmReadNews();
-    }
-}
-
-void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
-{
-    DisplayLockGuard lock(nl_ov_disp());
-    if (!lock) {
-        return;
-    }
-    if (s_ui_closing && (!title || !title[0])) {
-        return;
-    }
-    if (s_ui_closing) {
-        s_close_gen += 1;
-        s_ui_closing = false;
-        reset_obj_anim_style(s_scrim);
-        reset_obj_anim_style(s_card);
-        reset_obj_anim_style(s_now_bar);
-    }
-    if (!nodelio_caps_has_surface("now_playing") || !s_now_bar) {
-        return;
-    }
-    /* 无标题 → 关闭播放器 */
-    if (!title || !title[0]) {
-        stop_now_anims();
-        set_pause_btn_icon(true);
-        clear_play_mark();
-        const bool bar_was_up = s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
-        if (s_minimized) {
-            if (s_have_env && s_env->track_n > 0) {
-                show_mini_fab(false);
-            } else {
-                s_minimized = false;
-                hide_mini_fab();
-            }
-        }
-        sync_player_block_scrim();
-        layout_skill_layers();
-        if (bar_was_up) {
-            reflow_music_list_if_open();
-        }
-        raise_skill_layers();
-        ensure_chrome_order();
-        return;
-    }
-
-    lv_label_set_text(s_now_lbl, title);
-    set_pause_btn_icon(playing);
-
-    if (s_minimized) {
-        show_mini_fab(playing);
-        layout_skill_layers();
-        ensure_chrome_order();
-        return;
-    }
-
-    {
-        const bool list_open = s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN);
-        apply_now_media_chrome(playing, !playing, list_open);
-    }
-    const bool was_hidden = lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
-    if (playing) {
-        start_now_anims();
-    } else {
-        stop_now_anims();
-    }
-    if (was_hidden) {
-        anim_show_obj(s_now_bar, true);
-    }
-    sync_player_block_scrim();
-    layout_skill_layers();
-    if (was_hidden) {
-        reflow_music_list_if_open();
-    }
-    raise_skill_layers();
-    ensure_chrome_order();
-}
-
-void nodelio_skill_dsh_on_confirm_pending(const char *instruction)
-{
-    s_dsh_pending_preview[0] = '\0';
-    if (instruction && instruction[0]) {
-        snprintf(s_dsh_pending_preview, sizeof(s_dsh_pending_preview), "%s", instruction);
-        const size_t n = strlen(s_dsh_pending_preview);
-        if (n > 40) {
-            s_dsh_pending_preview[37] = '.';
-            s_dsh_pending_preview[38] = '.';
-            s_dsh_pending_preview[39] = '.';
-            s_dsh_pending_preview[40] = '\0';
-        }
-        if (s_dsh_phase == DSH_UI_IDLE) {
-            s_dsh_phase = DSH_UI_ARMED;
-        }
-    }
-    DisplayLockGuard lock(nl_ov_disp());
-    if (!lock) {
-        return;
-    }
-    /* 续聊时常收成 FAB；确认时展开，才能看见「发送/取消」 */
-    if (s_dsh_pending_preview[0] && s_minimized) {
-        expand_from_fab();
-    }
-    const bool card_open =
-        s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN) && s_skill_ui_active;
-    if (card_open && s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr && s_card_list) {
-        fill_list();
-    } else {
-        dsh_paint_status_strip();
-    }
-}
-
-void nodelio_skill_dsh_on_dispatched(const char *instruction)
-{
-    if (s_dsh_phase == DSH_UI_IDLE && !s_dsh_focus_sess[0]) {
-        char ws[200] = {0};
-        char sess[80] = {0};
-        nodelio_panel_ui_get_dsh_arm(ws, sizeof(ws), sess, sizeof(sess));
-        if (sess[0]) {
-            snprintf(s_dsh_focus_sess, sizeof(s_dsh_focus_sess), "%s", sess);
-        }
-        if (ws[0]) {
-            snprintf(s_dsh_focus_ws, sizeof(s_dsh_focus_ws), "%s", ws);
-        }
-    }
-    /* 无续聊焦点时仍 toast，避免「说了没反应」 */
-    s_dsh_phase = DSH_UI_DISPATCHED;
-    s_dsh_dispatched_us = esp_timer_get_time();
-    s_dsh_last_instr[0] = '\0';
-    if (instruction && instruction[0]) {
-        snprintf(s_dsh_last_instr, sizeof(s_dsh_last_instr), "%s", instruction);
-        const size_t n = strlen(s_dsh_last_instr);
-        if (n > 36) {
-            s_dsh_last_instr[33] = '.';
-            s_dsh_last_instr[34] = '.';
-            s_dsh_last_instr[35] = '.';
-            s_dsh_last_instr[36] = '\0';
-        }
-    }
-    DisplayLockGuard lock(nl_ov_disp());
-    if (!lock) {
-        return;
-    }
-    nl_ov_toast("正在发送，请等待结果…");
-    const bool card_open =
-        s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN) && s_skill_ui_active;
-    if (card_open && s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr && s_card_list) {
-        fill_list(); /* 列表或详情都会重画底栏/状态条 */
-    } else if (card_open) {
-        dsh_paint_status_strip();
-    }
-}
-
-void nodelio_skill_dsh_on_arm_cleared(void)
-{
-    if (s_dsh_phase != DSH_UI_ARMED && s_dsh_phase != DSH_UI_DISPATCHED) {
-        return;
-    }
-    DisplayLockGuard lock(nl_ov_disp());
-    if (!lock) {
-        dsh_clear_ui_phase();
-        return;
-    }
-    dsh_clear_ui_phase();
-    if (s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr && s_card_list &&
-        s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
-        fill_list();
     }
 }

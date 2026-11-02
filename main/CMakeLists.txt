@@ -961,9 +961,12 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/panel_jobs.cc"
         "nodelio/panel_shell.cc"
         "nodelio/overlay_home_tiles.cc"
+        "nodelio/overlay_home_photo.cc"
+        "nodelio/overlay_home_cmd.cc"
         "nodelio/overlay_home_skills.cc"
         "nodelio/overlay_connect.cc"
         "nodelio/overlay_settings.cc"
+        "nodelio/panel_prefs.cc"
         "nodelio/overlay_diagnostics.cc"
         "nodelio/overlay_apps.cc"
         "nodelio/overlay_ai_drawer.cc"
@@ -985,6 +988,10 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/skill/lunar_date.c"
         "nodelio/skill/skill_runtime.c"
         "nodelio/skill/skill_result_ui.cc"
+        "nodelio/skill/skill_news_ui.cc"
+        "nodelio/skill/skill_daily_ui.cc"
+        "nodelio/skill/skill_dsh_ui.cc"
+        "nodelio/skill/skill_media_bar.cc"
         "nodelio/skill/media_player.cc"
     )
     list(APPEND INCLUDE_DIRS
