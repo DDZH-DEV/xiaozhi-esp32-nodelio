@@ -80,10 +80,10 @@ void ui_styles_init(void)
 
     lv_style_init(&st_tab_base);
     lv_style_set_bg_opa(&st_tab_base, LV_OPA_TRANSP);
-    lv_style_set_radius(&st_tab_base, UI_RADIUS_SM);
+    lv_style_set_radius(&st_tab_base, 13);
     lv_style_set_border_width(&st_tab_base, 0);
     lv_style_set_shadow_width(&st_tab_base, 0);
-    lv_style_set_pad_ver(&st_tab_base, 6);
+    lv_style_set_pad_ver(&st_tab_base, 4);
 
     lv_style_init(&st_tab_checked);
     lv_style_set_bg_opa(&st_tab_checked, LV_OPA_COVER);

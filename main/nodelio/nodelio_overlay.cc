@@ -1186,8 +1186,8 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_set_size(s_tabbar, lv_pct(100), NL_UI_TAB_H);
     lv_obj_set_style_bg_color(s_tabbar, UI_PANEL, 0);
     lv_obj_set_style_bg_opa(s_tabbar, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(s_tabbar, 4, 0);
-    lv_obj_set_style_pad_column(s_tabbar, 4, 0);
+    lv_obj_set_style_pad_all(s_tabbar, 3, 0);
+    lv_obj_set_style_pad_column(s_tabbar, 3, 0);
     lv_obj_set_flex_flow(s_tabbar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(s_tabbar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(s_tabbar, LV_OBJ_FLAG_SCROLLABLE);
@@ -1202,7 +1202,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
         lv_obj_add_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_size(s_tabbar, lv_pct(84), NL_UI_TAB_H + 4);
         lv_obj_align(s_tabbar, LV_ALIGN_BOTTOM_MID, 0, -12);
-        lv_obj_set_style_radius(s_tabbar, (NL_UI_TAB_H + 4) / 2, 0);
+        lv_obj_set_style_radius(s_tabbar, 16, 0);
         lv_obj_set_style_shadow_width(s_tabbar, 18, 0);
         lv_obj_set_style_shadow_offset_y(s_tabbar, 4, 0);
         lv_obj_set_style_shadow_opa(s_tabbar, LV_OPA_30, 0);
