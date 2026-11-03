@@ -845,6 +845,18 @@ esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const
     if (!send_within(fd, (const char *)data, len, 4000)) {
         ESP_LOGW(TAG, "POST image body send fail errno=%d sent_target=%u dma=%u", errno, (unsigned)len,
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+        /* 对端若提前拒收并断开（如 401/403/413），接收缓冲区可能已有 HTTP 响应报文，尝试读出 */
+        char err_tmp[512];
+        int err_n = recv(fd, err_tmp, sizeof(err_tmp) - 1, 0);
+        int err_status = 0;
+        if (err_n > 0) {
+            err_tmp[err_n] = '\0';
+            sscanf(err_tmp, "HTTP/%*s %d", &err_status);
+            ESP_LOGW(TAG, "POST image server rejected with HTTP %d: %s", err_status, err_tmp);
+            if (out_status) {
+                *out_status = err_status;
+            }
+        }
         close(fd);
         return ESP_FAIL;
     }

@@ -492,7 +492,50 @@ public:
             return;
         }
         pmu_ready_ = true;
-        ESP_LOGI(kTag, "AXP2101 id 0x4A; fuel gauge read-only, rails/charging left at defaults");
+        ConfigureAxpCharging();
+    }
+
+    bool WritePmuReg(uint8_t reg, uint8_t value) {
+        if (!pmu_dev_) {
+            return false;
+        }
+        const uint8_t buf[2] = {reg, value};
+        const esp_err_t err = i2c_master_transmit(pmu_dev_, buf, sizeof(buf), 50);
+        if (err != ESP_OK) {
+            ESP_LOGW(kTag, "PMU reg 0x%02X write 0x%02X failed: %s", reg, value, esp_err_to_name(err));
+            return false;
+        }
+        return true;
+    }
+
+    void ConfigureAxpCharging() {
+        uint8_t val = 0;
+        // 1. 设置 VBUS 输入限流为 2000mA（0x16 寄存器 Bit[2:0] = 5，解除默认 500mA 限制）
+        if (ReadPmuReg(0x16, &val)) {
+            val = (val & 0xF8) | 0x05;
+            WritePmuReg(0x16, val);
+        }
+        // 2. 确保主电池充电使能（0x18 寄存器 Bit 1 = 1）
+        if (ReadPmuReg(0x18, &val)) {
+            val |= (1 << 1);
+            WritePmuReg(0x18, val);
+        }
+        // 3. 设置恒流充电（ICC）为 1000mA（0x62 寄存器 Bit[4:0] = 0x10，大幅提升充电功率）
+        if (ReadPmuReg(0x62, &val)) {
+            val = (val & 0xE0) | 0x10;
+            WritePmuReg(0x62, val);
+        }
+        // 4. 设置预充电流为 200mA（0x61 寄存器）
+        if (ReadPmuReg(0x61, &val)) {
+            val = (val & 0xF0) | 0x03;
+            WritePmuReg(0x61, val);
+        }
+        // 5. 设置充电截止电压为标准 4.2V（0x64 寄存器 Bit[2:0] = 2）
+        if (ReadPmuReg(0x64, &val)) {
+            val = (val & 0xF8) | 0x02;
+            WritePmuReg(0x64, val);
+        }
+        ESP_LOGI(kTag, "AXP2101 fast charging configured: VBUS limit=2000mA, ICC=1000mA");
     }
 
     bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
