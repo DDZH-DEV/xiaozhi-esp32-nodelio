@@ -163,13 +163,32 @@ static void paint_mini_fab_phase(chat_phase_t phase)
     }
 }
 
+static inline lv_color_t ai_drawer_bg_color(void)
+{
+    /* 深色模式：选用具有高级层级感、明朗对比的深灰蓝 0x222d3d，杜绝与底层卡片 0x151b24 融为一体；
+     * 浅色模式：选用纯净透亮的 0xffffff，轮廓分明。 */
+    return ui_palette_is_dark() ? lv_color_hex(0x222d3d) : lv_color_hex(0xffffff);
+}
+
+static inline uint32_t ai_drawer_default_border_color(void)
+{
+    /* 深色模式：微光质感边框 0x3d4e68；浅色模式：清晰轮廓 0xd0d7de */
+    return ui_palette_is_dark() ? 0x3d4e68 : 0xd0d7de;
+}
+
+static inline lv_color_t ai_drawer_btn_bg_color(void)
+{
+    /* 胶囊按钮背景：深色下 0x2e3a4e，浅色下 0xe8ecf0 */
+    return ui_palette_is_dark() ? lv_color_hex(0x2e3a4e) : lv_color_hex(0xe8ecf0);
+}
+
 static void paint_ai_drawer_frame(void)
 {
     if (!s_ai_drawer) {
         return;
     }
     const uint8_t border_w = nodelio_ai_border_width();
-    uint32_t border_c = UI_AI_DRAWER_BORDER;
+    uint32_t border_c = ai_drawer_default_border_color();
     if (nodelio_ai_border_preset() == 1) {
         border_c = 0xE3E8EE;
     } else if (nodelio_ai_border_preset() == 2) {
@@ -201,19 +220,19 @@ void nl_ov_ai_reapply_appearance(void)
         status = UI_C_INFO;
     }
     if (s_ai_drawer) {
-        lv_obj_set_style_bg_color(s_ai_drawer, UI_SURFACE, 0);
+        lv_obj_set_style_bg_color(s_ai_drawer, ai_drawer_bg_color(), 0);
         ui_style_card(s_ai_drawer);
         paint_ai_drawer_frame();
         if (lv_obj_get_child_count(s_ai_drawer) > 0) {
             lv_obj_t *hdr = lv_obj_get_child(s_ai_drawer, 0);
-            lv_obj_set_style_bg_color(hdr, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+            lv_obj_set_style_bg_color(hdr, ui_palette_is_dark() ? lv_color_hex(0x2c384c) : UI_SURFACE_PRESSED, LV_STATE_PRESSED);
             const uint32_t hn = lv_obj_get_child_count(hdr);
             if (hn > 0) {
                 lv_obj_t *btns = lv_obj_get_child(hdr, hn - 1);
                 const uint32_t bn = lv_obj_get_child_count(btns);
                 for (uint32_t i = 0; i < bn; i++) {
                     lv_obj_t *btn = lv_obj_get_child(btns, i);
-                    lv_obj_set_style_bg_color(btn, UI_CAPSULE_OFF, 0);
+                    lv_obj_set_style_bg_color(btn, ai_drawer_btn_bg_color(), 0);
                     lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
                     if (lv_obj_t *ic = lv_obj_get_child(btn, 0)) {
                         lv_obj_set_style_text_color(ic, UI_TEXT_SUB, 0);
@@ -569,7 +588,7 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
     /* 收窄居中胶囊，两侧留白，避免贴边通栏 */
     lv_obj_set_size(s_ai_drawer, nodelio_ai_drawer_width(), UI_AI_DRAWER_H);
     place_ai_drawer();
-    lv_obj_set_style_bg_color(s_ai_drawer, UI_SURFACE, 0);
+    lv_obj_set_style_bg_color(s_ai_drawer, ai_drawer_bg_color(), 0);
     lv_obj_set_style_bg_opa(s_ai_drawer, UI_AI_DRAWER_BG_OPA, 0);
     lv_obj_set_style_radius(s_ai_drawer, UI_RADIUS, 0);
     ui_style_card(s_ai_drawer);
@@ -641,7 +660,7 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
         lv_obj_remove_style_all(btn);
         lv_obj_set_size(btn, UI_AI_DRAWER_BTN_SZ, UI_AI_DRAWER_BTN_SZ);
         lv_obj_set_style_radius(btn, UI_AI_DRAWER_BTN_SZ / 2, 0);
-        lv_obj_set_style_bg_color(btn, UI_CAPSULE_OFF, 0);
+        lv_obj_set_style_bg_color(btn, ai_drawer_btn_bg_color(), 0);
         lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
         lv_obj_set_style_translate_y(btn, 1, LV_STATE_PRESSED);

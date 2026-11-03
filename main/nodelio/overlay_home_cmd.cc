@@ -549,6 +549,7 @@ struct cmd_pending_t {
     char device_id[NL_LAYOUT_STR];
     int16_t channel;
     char from[12]; /* 点击前缓存态，失败回滚用 */
+    int64_t start_us;
     int64_t deadline_us;
 };
 
@@ -569,9 +570,13 @@ bool nl_ov_widget_is_cmd_pending(const nl_widget_t *w)
     if (!w || !w->id[0]) {
         return false;
     }
+    const int64_t now = esp_timer_get_time();
     for (int i = 0; i < NL_CMD_PENDING_MAX; i++) {
         if (s_cmd_pending[i].active && strcmp(s_cmd_pending[i].widget_id, w->id) == 0) {
-            return true;
+            /* 仅在点击后 350ms 内防抖（防电容屏微抖连点）；超过 350ms 允许用户继续操作 */
+            if (now - s_cmd_pending[i].start_us < 350000) {
+                return true;
+            }
         }
     }
     return false;
@@ -691,7 +696,8 @@ static void cmd_pending_begin(const nl_widget_t* w) {
     } else {
         std::snprintf(p->from, sizeof(p->from), "%s", "UNKNOWN");
     }
-    p->deadline_us = esp_timer_get_time() + (int64_t)NL_CMD_ROLLBACK_MS * 1000;
+    p->start_us = esp_timer_get_time();
+    p->deadline_us = p->start_us + (int64_t)NL_CMD_ROLLBACK_MS * 1000;
     cmd_pending_timer_ensure(true);
 }
 

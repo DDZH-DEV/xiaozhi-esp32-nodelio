@@ -969,13 +969,13 @@ void nl_ov_workspace_reserve(int right, int bottom) {
     const auto* p = nodelio_display_profile();
     if (!p->nav_width || !s_body)
         return;
-    const int w = p->width - p->nav_width - right;
+    const int full_w = p->width - p->nav_width;
+    const int w = full_w - right;
     const int h = p->height - bottom;
-    bool home_changed = s_home && (lv_obj_get_style_width(s_home, LV_PART_MAIN) != w ||
-                                   lv_obj_get_style_height(s_home, LV_PART_MAIN) != h);
-    const bool settings_w_changed = s_settings && lv_obj_get_width(s_settings) != w;
+    /* 方案一：首页固定保持 full_w 全屏原始比例网格排版，不随右侧技能抽屉打开而挤压变形 */
     if (s_home)
-        lv_obj_set_size(s_home, w, h);
+        lv_obj_set_size(s_home, full_w, h);
+    const bool settings_w_changed = s_settings && lv_obj_get_width(s_settings) != w;
     if (s_settings)
         lv_obj_set_size(s_settings, w, h);
     if (s_settings_detail) {
@@ -984,9 +984,7 @@ void nl_ov_workspace_reserve(int right, int bottom) {
     }
     nl_ov_connect_relayout();
     nl_ov_apps_reserve_bottom(bottom);
-    if (home_changed && s_home && s_have_layout && !s_building) {
-        nl_ov_fill_home();
-    }
+    /* 首页固定保持 full_w，不触发 nl_ov_fill_home 重排，避免卡片变形与重刷卡顿 */
     if (settings_w_changed && s_settings && !s_building) {
         lv_obj_update_layout(s_settings);
         nl_ov_settings_sync_columns();

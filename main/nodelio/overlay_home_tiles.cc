@@ -860,6 +860,9 @@ static void on_dual_seg(lv_event_t *e)
     std::snprintf(toast, sizeof(toast), "已切到 %s",
                   branch && branch[0] ? branch : (want_on ? "NO" : "NC"));
     nl_ov_toast(toast);
+    if (seg) {
+        tile_icon_pop(seg);
+    }
     nl_ov_home_switch_commit(w, want);
 }
 
@@ -908,6 +911,9 @@ static void on_btn(lv_event_t *e)
         !nodelio_panel_ui_device_online(w->bind.device_id)) {
         nl_ov_toast("设备未在线");
         return;
+    }
+    if (tgt) {
+        tile_icon_pop(tgt);
     }
     nl_ov_home_switch_commit(w, want);
 }

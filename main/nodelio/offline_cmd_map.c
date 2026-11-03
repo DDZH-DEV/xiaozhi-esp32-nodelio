@@ -1685,15 +1685,13 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
              * 切歌/继续播须退会话，否则 Listening 与 HTTP 播抢通道（re-arm 与 notifying 打架）。
              * 换台：已在播电台则只回列表；否则 open 电台须退会话。
              * 关应用：方屏退会话；宽屏只收面板，小智继续听。 */
-            const bool wide =
-                nodelio_display_profile() && nodelio_display_profile()->nav_width != 0;
             if (cmd == NL_OC_RADIO_SWAP) {
                 *end_session = !nodelio_skill_is_live_radio();
             } else {
                 *end_session =
                     (cmd == NL_OC_REBOOT || cmd == NL_OC_WIFI_CONFIG ||
-                     (cmd == NL_OC_SKILL_CLOSE && !wide) || cmd == NL_OC_MEDIA_PREV ||
-                     cmd == NL_OC_MEDIA_NEXT || cmd == NL_OC_MEDIA_RESUME);
+                     cmd == NL_OC_MEDIA_PREV || cmd == NL_OC_MEDIA_NEXT ||
+                     cmd == NL_OC_MEDIA_RESUME);
             }
         }
         /* 换一篇 / 打开每日一篇：同新闻，开卡后追问要不要读 */
