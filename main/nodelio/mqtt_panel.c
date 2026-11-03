@@ -182,6 +182,37 @@ static void handle_notify_payload(const char *data, int len)
             }
             nodelio_panel_ui_set_countdown(id->valuestring, ch_idx, sec);
         }
+    } else if (cJSON_IsString(kind) && kind->valuestring &&
+               (strcmp(kind->valuestring, "state") == 0 ||
+                strcmp(kind->valuestring, "power_state") == 0)) {
+        /* 轻量推送：设备引脚/通道/开关状态变动，直接更新本地态，无需拉取全量 HTTP snapshot */
+        const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "deviceId");
+        const cJSON *ch = cJSON_GetObjectItemCaseSensitive(root, "channel");
+        const cJSON *pin = cJSON_GetObjectItemCaseSensitive(root, "pin");
+        const cJSON *st = cJSON_GetObjectItemCaseSensitive(root, "powerState");
+        if (!st) {
+            st = cJSON_GetObjectItemCaseSensitive(root, "state");
+        }
+        if (cJSON_IsString(id) && id->valuestring && id->valuestring[0] &&
+            cJSON_IsString(st) && st->valuestring) {
+            nl_bind_t bind;
+            memset(&bind, 0, sizeof(bind));
+            snprintf(bind.device_id, sizeof(bind.device_id), "%s", id->valuestring);
+            if (cJSON_IsNumber(pin)) {
+                bind.kind = NL_BIND_DEVICE_PIN;
+                bind.pin = (int)pin->valuedouble;
+                bind.channel = bind.pin;
+            } else if (cJSON_IsNumber(ch) && (int)ch->valuedouble >= 0) {
+                bind.kind = NL_BIND_DEVICE_CHANNEL;
+                bind.channel = (int)ch->valuedouble;
+                bind.pin = bind.channel;
+            } else {
+                bind.kind = NL_BIND_DEVICE_CHANNEL;
+                bind.channel = -1;
+                bind.pin = -1;
+            }
+            nodelio_panel_ui_apply_bind_state(&bind, st->valuestring);
+        }
     } else {
         /* snapshot；force=true 时跳过固件 ≥60s 限频（online/status） */
         const cJSON *force = cJSON_GetObjectItemCaseSensitive(root, "force");

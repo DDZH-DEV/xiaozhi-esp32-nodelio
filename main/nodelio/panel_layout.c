@@ -40,9 +40,9 @@ static bool s_boot_cloud_done; /* 开机云端 layout+snapshot 已成功过一�
 static int64_t s_last_snapshot_ms; /* MQTT 自动 snapshot 限频 */
 
 /** MQTT 推送 snapshot（非 force）最短间隔；手动刷新 / force 不受限 */
-#define NL_SNAPSHOT_MIN_INTERVAL_MS (60 * 1000)
-/* force（online/status）合并：多设备连跳时避免十几秒一次全量 GET + DIOL + 整页刷磁贴 */
-#define NL_SNAPSHOT_FORCE_MIN_MS (45 * 1000)
+#define NL_SNAPSHOT_MIN_INTERVAL_MS (5 * 1000)
+/* force（online/status）合并：多设备连跳时短限频，避免全量 GET 拥塞 */
+#define NL_SNAPSHOT_FORCE_MIN_MS (2 * 1000)
 
 /** cJSON 节点默认吃内部 DRAM；与 WS/MQTT 并行时易 tlsf assert → 改走 PSRAM. */
 static void *cjson_malloc_psram(size_t sz)
