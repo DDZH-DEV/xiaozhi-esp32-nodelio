@@ -42,13 +42,29 @@ struct nl_home_skill {
     bool enabled;
 };
 
-static nl_home_skill s_pins[HOME_SKILL_MAX];
+static nl_home_skill *s_pins;
 static int s_pin_n;
 static bool s_fetching;
 static bool s_dirty = true;
 
+static bool ensure_home_pins(void)
+{
+    if (s_pins) {
+        return true;
+    }
+    s_pins = static_cast<nl_home_skill *>(
+        heap_caps_calloc(HOME_SKILL_MAX, sizeof(nl_home_skill), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!s_pins) {
+        s_pins = static_cast<nl_home_skill *>(calloc(HOME_SKILL_MAX, sizeof(nl_home_skill)));
+    }
+    return s_pins != nullptr;
+}
+
 static int home_skill_strip_visible_n(void)
 {
+    if (!s_pins) {
+        return 0;
+    }
     int n = 0;
     for (int i = 0; i < s_pin_n; i++) {
         /* P3a：当前屏已挂同 skill_tile 则底条跳过，避免双入口 */
@@ -237,14 +253,30 @@ struct widget_cache_slot {
     bool fetching;
 };
 
-static widget_cache_slot s_wcache[WIDGET_CACHE_N];
+static widget_cache_slot *s_wcache;
 /* 首页多个组件同时 invoke 会撞上服务端 400ms 限流，并和公网 TLS 抢射频。 */
 static SemaphoreHandle_t s_widget_http_mu = nullptr;
 /* 上一发 invoke 结束时刻。服务端按到达时间限 400ms，这里从结束再隔 500ms。 */
 static int64_t s_widget_invoke_done_us = 0;
 
+static bool ensure_widget_cache(void)
+{
+    if (s_wcache) {
+        return true;
+    }
+    s_wcache = static_cast<widget_cache_slot *>(
+        heap_caps_calloc(WIDGET_CACHE_N, sizeof(widget_cache_slot), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!s_wcache) {
+        s_wcache = static_cast<widget_cache_slot *>(calloc(WIDGET_CACHE_N, sizeof(widget_cache_slot)));
+    }
+    return s_wcache != nullptr;
+}
+
 static widget_cache_slot *widget_cache_slot_for(const char *skill_id, bool create)
 {
+    if (!s_wcache && (!create || !ensure_widget_cache())) {
+        return nullptr;
+    }
     widget_cache_slot *free_slot = nullptr;
     for (int i = 0; i < WIDGET_CACHE_N; i++) {
         if (s_wcache[i].id[0] && skill_id && strcmp(s_wcache[i].id, skill_id) == 0) {
@@ -290,6 +322,9 @@ bool nl_ov_skill_widget_preview(const char *skill_id, nl_widget_preview *out)
 void nl_ov_skill_widget_prefetch(const char *skill_id, const char *body, int refresh_sec)
 {
     if (!skill_id || !skill_id[0] || !s_cfg.server_url[0] || !s_cfg.device_id[0]) {
+        return;
+    }
+    if (!nodelio_wifi_has_ip() || nodelio_wifi_is_asleep()) {
         return;
     }
     if (!s_widget_http_mu) {
@@ -458,7 +493,7 @@ static void on_pin_click(lv_event_t *e)
         return;
     }
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (idx < 0 || idx >= s_pin_n) {
+    if (!s_pins || idx < 0 || idx >= s_pin_n) {
         return;
     }
     if (!s_pins[idx].enabled) {
@@ -470,7 +505,7 @@ static void on_pin_click(lv_event_t *e)
 
 static lv_obj_t *make_pin_card(lv_obj_t *parent, int idx, bool compact)
 {
-    if (idx < 0 || idx >= s_pin_n || !parent) {
+    if (!s_pins || idx < 0 || idx >= s_pin_n || !parent) {
         return nullptr;
     }
     const nl_home_skill *it = &s_pins[idx];
@@ -582,6 +617,10 @@ static void apply_pins_and_refill(nl_home_skill *items, int n)
         s_fetching = false;
         s_dirty = false;
         if (!lock) {
+            free(items);
+            return;
+        }
+        if (!ensure_home_pins()) {
             free(items);
             return;
         }

@@ -27,8 +27,8 @@ static bool s_mount_failed;
 static SemaphoreHandle_t s_flash_mu;
 
 /* SPIFFS/NVS 关 Flash cache 时栈必须在内部 SRAM。
- * nl_layout 等任务栈在 PSRAM，直接 fopen 会 assert esp_task_stack_is_sane_cache_disabled。 */
-#define CACHE_FLASH_STACK_BYTES 3072
+ * nl_layout 等任务栈在 PSRAM，直接 fopen/NVS 会 assert esp_task_stack_is_sane_cache_disabled。 */
+#define CACHE_FLASH_STACK_BYTES 4096
 
 typedef esp_err_t (*cache_flash_fn)(void *ctx);
 
@@ -113,6 +113,21 @@ static esp_err_t cache_run_flash_safe(cache_flash_fn fn, void *ctx)
     xSemaphoreGive(s_flash_req);
     xSemaphoreTake(s_flash_ack, portMAX_DELAY);
     return s_flash_err;
+}
+
+esp_err_t nodelio_flash_safe_run(esp_err_t (*fn)(void *ctx), void *ctx)
+{
+    if (!fn) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    int probe = 0;
+    if (!esp_ptr_external_ram(&probe)) {
+        return fn(ctx);
+    }
+    cache_flash_lock();
+    esp_err_t err = cache_run_flash_safe(fn, ctx);
+    cache_flash_unlock();
+    return err;
 }
 
 static esp_err_t mount_impl(void *ctx)

@@ -173,13 +173,12 @@ static void capture_and_upload_screenshot(void)
         return;
     }
     const size_t dram_before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    const size_t dram_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    /* 技能卡打开时常见 free≈17KB、largest≈7KB（碎片）。心跳仍能短 TCP，
-     * 勿用 16KB 一刀切；仅在几乎无连续块时放弃。JPEG/任务走 PSRAM。 */
-    if (dram_before < 3 * 1024) {
-        ESP_LOGW(TAG, "screenshot skip: largest_dram=%u free=%u", (unsigned)dram_before,
-                 (unsigned)dram_free);
-        nl_ov_toast("内存过碎，先关掉技能卡再截");
+    const size_t dma_before = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+    /* WiFi 發送要一塊能放下 MSS 的 DMA。內部堆還有 7KB 也不代表 DMA 夠。 */
+    if (dma_before < 1536) {
+        ESP_LOGW(TAG, "screenshot skip: dma_largest=%u dram_largest=%u", (unsigned)dma_before,
+                 (unsigned)dram_before);
+        nl_ov_toast("内存过碎，稍后再截");
         return;
     }
     /* JPEG 在 LVGL 线程生成；HTTP 必须扔后台，否则堵 UI / 撑爆 LVGL 栈 */
@@ -286,7 +285,8 @@ static void capture_and_upload_screenshot(void)
                 auto* a = static_cast<shot_job*>(p);
                 delete a->jpeg;
                 free(a);
-            })) {
+            },
+            0, "screenshot")) {
         if (job->jpeg) {
             delete job->jpeg;
         }

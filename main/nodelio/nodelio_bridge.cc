@@ -23,6 +23,7 @@
 #include <cstring>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -38,6 +39,13 @@ static bool s_hb_task;
 static StackType_t *s_hb_stack;
 static StaticTask_t s_hb_tcb;
 static constexpr uint32_t kHbStackBytes = 10240;
+
+static StackType_t *s_pwr_stack;
+static StaticTask_t s_pwr_tcb;
+static constexpr uint32_t kPwrStackBytes = 12288;
+
+static constexpr uint32_t kCloudStackBytes = 12288;
+static constexpr uint32_t kStartStackBytes = 10240;
 
 /* 服务端 WALL_PANEL 离线窗口 ≥180s。snapshot 也会刷 last_seen，心跳可放宽；
  * 若近期已有 snapshot/bootstrap，本周期跳过单独 POST。 */
@@ -232,7 +240,7 @@ static void deferred_cloud_task(void *arg)
         }
     }
     s_deferred_cloud = false;
-    vTaskDelete(nullptr);
+    vTaskDeleteWithCaps(nullptr);
 }
 
 static void ensure_deferred_cloud(void)
@@ -241,8 +249,9 @@ static void ensure_deferred_cloud(void)
         return;
     }
     s_deferred_cloud = true;
-    /* register + layout HTTP，栈须 ≥ nl_start / pwr */
-    if (xTaskCreate(deferred_cloud_task, "nl_cloud", 12288, nullptr, 4, nullptr) != pdPASS) {
+    /* register + layout HTTP，一次性任务栈放 PSRAM，退出时 vTaskDeleteWithCaps 回收 */
+    if (xTaskCreateWithCaps(deferred_cloud_task, "nl_cloud", kCloudStackBytes, nullptr, 4, nullptr,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         s_deferred_cloud = false;
         ESP_LOGW(TAG, "deferred cloud task create fail");
     }
@@ -323,7 +332,10 @@ static void ensure_pwr_task(void)
     /* 断网与息屏时刻可不同；仅挂 net_cb */
     nodelio_panel_ui_set_net_cb(on_net);
     /* register/HTTP + mqtt 同任务：须 ≥ nl_start；4K 会 stack overflow 重启 */
-    if (xTaskCreate(pwr_task, "nl_pwr", 12288, nullptr, 5, nullptr) != pdPASS) {
+    if (!s_pwr_stack) {
+        s_pwr_stack = static_cast<StackType_t *>(heap_caps_malloc(kPwrStackBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (!s_pwr_stack || !xTaskCreateStatic(pwr_task, "nl_pwr", kPwrStackBytes, nullptr, 5, s_pwr_stack, &s_pwr_tcb)) {
         ESP_LOGW(TAG, "pwr task create fail");
     }
 }
@@ -475,9 +487,8 @@ static esp_err_t start_client(void)
     return ESP_OK;
 }
 
-static void start_task(void *arg)
+static void start_task_body(void)
 {
-    (void)arg;
     /* 局域网离线优先：WiFi 连通后无需等待小智激活，立即发起内网 HTTP 注册与 MQTT 启动 */
     vTaskDelay(pdMS_TO_TICKS(50));
     esp_err_t err = start_client();
@@ -485,7 +496,13 @@ static void start_task(void *arg)
         s_starting = false;
         ESP_LOGW(TAG, "start_client: %s", esp_err_to_name(err));
     }
-    vTaskDelete(nullptr);
+}
+
+static void start_task(void *arg)
+{
+    (void)arg;
+    start_task_body();
+    vTaskDeleteWithCaps(nullptr);
 }
 
 void nodelio_bridge_start_panel_mqtt(void)
@@ -535,7 +552,8 @@ esp_err_t nodelio_bridge_start(void)
     s_starting = true;
     nodelio_log_heap("bridge start");
     /* 勿在 Application 主任务里阻塞 HTTP：否则息屏 Suspend 进不了主循环 → sync 超时 UAF */
-    if (xTaskCreate(start_task, "nl_start", 8192, nullptr, 5, nullptr) != pdPASS) {
+    if (xTaskCreateWithCaps(start_task, "nl_start", kStartStackBytes, nullptr, 5, nullptr,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         s_starting = false;
         return start_client();
     }
@@ -546,7 +564,8 @@ esp_err_t nodelio_bridge_restart(void)
 {
     nodelio_bridge_stop();
     s_starting = true;
-    if (xTaskCreate(start_task, "nl_start", 8192, nullptr, 5, nullptr) != pdPASS) {
+    if (xTaskCreateWithCaps(start_task, "nl_start", kStartStackBytes, nullptr, 5, nullptr,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         s_starting = false;
         return start_client();
     }

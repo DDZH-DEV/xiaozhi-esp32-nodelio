@@ -50,14 +50,43 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 
 static lv_obj_t *s_eq_bars[3];
 static lv_obj_t *s_ai_drawer_body;
-static char s_ai_show_text[NL_CHAT_SHOW_CAP];
+static char *s_ai_show_text;
 static chat_phase_t s_chat_phase = CHAT_IDLE;
-static char s_chat_text[NL_CHAT_CAP];
+static char *s_chat_text;
 
 /** 说话时正文限频（RGB 全刷太贵） */
 static int64_t s_speak_text_last_us;
-static char s_speak_text_pending[NL_CHAT_CAP];
+static char *s_speak_text_pending;
 static bool s_speak_text_dirty;
+
+static bool ensure_ai_text_bufs(void)
+{
+    if (s_ai_show_text && s_chat_text && s_speak_text_pending) {
+        return true;
+    }
+    if (!s_ai_show_text) {
+        s_ai_show_text = static_cast<char *>(
+            heap_caps_calloc(1, NL_CHAT_SHOW_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!s_ai_show_text) {
+            s_ai_show_text = static_cast<char *>(calloc(1, NL_CHAT_SHOW_CAP));
+        }
+    }
+    if (!s_chat_text) {
+        s_chat_text = static_cast<char *>(
+            heap_caps_calloc(1, NL_CHAT_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!s_chat_text) {
+            s_chat_text = static_cast<char *>(calloc(1, NL_CHAT_CAP));
+        }
+    }
+    if (!s_speak_text_pending) {
+        s_speak_text_pending = static_cast<char *>(
+            heap_caps_calloc(1, NL_CHAT_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!s_speak_text_pending) {
+            s_speak_text_pending = static_cast<char *>(calloc(1, NL_CHAT_CAP));
+        }
+    }
+    return s_ai_show_text && s_chat_text && s_speak_text_pending;
+}
 /** 助手告别后：禁止 … / listening / restore 再闪抽屉，至下次用户开口或建链 */
 static bool s_ai_farewell_closing;
 /** 用户点关闭：本轮听/说的状态刷新不得再弹出，至下次建链或用户开口 */
@@ -745,7 +774,7 @@ static void arm_connect_delay(const char *status_text, const char *msg_text)
 
 void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, const char *msg_text)
 {
-    if (!s_ai_drawer) {
+    if (!s_ai_drawer || !ensure_ai_text_bufs()) {
         return;
     }
     if (phase == CHAT_CONNECT) {
@@ -861,7 +890,7 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
             if (phase == CHAT_SPEAK) {
                 int64_t now = esp_timer_get_time();
                 if (s_speak_text_last_us > 0 && (now - s_speak_text_last_us) < 400000) {
-                    nl_ov_utf8_copy(s_speak_text_pending, sizeof(s_speak_text_pending), body);
+                    nl_ov_utf8_copy(s_speak_text_pending, NL_CHAT_CAP, body);
                     s_speak_text_dirty = true;
                     apply = false;
                 } else {
@@ -906,8 +935,8 @@ void nl_ov_show_ai_drawer_session(chat_phase_t phase)
     const char *body = "说唤醒词「你好小智」或吩咐指令…";
     if (phase == CHAT_CONNECT) {
         body = nullptr; /* 紧凑条无正文 */
-    } else if (s_chat_text[0]) {
-        nl_ov_utf8_copy(s_ai_show_text, sizeof(s_ai_show_text),
+    } else if (ensure_ai_text_bufs() && s_chat_text[0]) {
+        nl_ov_utf8_copy(s_ai_show_text, NL_CHAT_SHOW_CAP,
                         chat_tail_lines(s_chat_text, NL_CHAT_SHOW_LINES));
         body = s_ai_show_text;
     }
@@ -916,7 +945,7 @@ void nl_ov_show_ai_drawer_session(chat_phase_t phase)
 
 static void append_chat_line(const char *role, const char *text)
 {
-    if (!text || !text[0]) {
+    if (!text || !text[0] || !ensure_ai_text_bufs()) {
         return;
     }
     const char *tag = "助手";
@@ -928,19 +957,19 @@ static void append_chat_line(const char *role, const char *text)
     char line[192];
     std::snprintf(line, sizeof(line), "%s：%s", tag, text);
     if (s_chat_text[0] == '\0') {
-        nl_ov_utf8_copy(s_chat_text, sizeof(s_chat_text), line);
+        nl_ov_utf8_copy(s_chat_text, NL_CHAT_CAP, line);
         return;
     }
     size_t a = strlen(s_chat_text);
     size_t b = strlen(line);
-    if (a + 1 + b + 1 <= sizeof(s_chat_text)) {
+    if (a + 1 + b + 1 <= NL_CHAT_CAP) {
         s_chat_text[a] = '\n';
         memcpy(s_chat_text + a + 1, line, b + 1);
         return;
     }
-    size_t max_old = (b + 2 < sizeof(s_chat_text)) ? (sizeof(s_chat_text) - 2 - b) : 0;
+    size_t max_old = (b + 2 < NL_CHAT_CAP) ? (NL_CHAT_CAP - 2 - b) : 0;
     if (max_old == 0) {
-        nl_ov_utf8_copy(s_chat_text, sizeof(s_chat_text), line);
+        nl_ov_utf8_copy(s_chat_text, NL_CHAT_CAP, line);
         return;
     }
     const char *p = s_chat_text;
@@ -954,8 +983,8 @@ static void append_chat_line(const char *role, const char *text)
         }
     }
     size_t keep = strlen(p);
-    if (keep + 1 + b + 1 > sizeof(s_chat_text)) {
-        nl_ov_utf8_copy(s_chat_text, sizeof(s_chat_text), line);
+    if (keep + 1 + b + 1 > NL_CHAT_CAP) {
+        nl_ov_utf8_copy(s_chat_text, NL_CHAT_CAP, line);
         return;
     }
     memmove(s_chat_text, p, keep);
@@ -965,7 +994,7 @@ static void append_chat_line(const char *role, const char *text)
 
 void nodelio_overlay_on_chat_locked(const char *role, const char *text)
 {
-    if (!text || !text[0]) {
+    if (!text || !text[0] || !ensure_ai_text_bufs()) {
         return;
     }
     append_chat_line(role, text);
@@ -988,7 +1017,7 @@ void nodelio_overlay_on_chat_locked(const char *role, const char *text)
     /* 抽屉展示最近 NL_CHAT_SHOW_LINES 句（含角色前缀），不再只刷最新一句 */
     chat_phase_t ph = (strcmp(role, "assistant") == 0) ? CHAT_SPEAK : CHAT_LISTEN;
     const char *status_str = (strcmp(role, "assistant") == 0) ? "小智回复" : "我说：";
-    nl_ov_utf8_copy(s_ai_show_text, sizeof(s_ai_show_text),
+    nl_ov_utf8_copy(s_ai_show_text, NL_CHAT_SHOW_CAP,
               chat_tail_lines(s_chat_text, NL_CHAT_SHOW_LINES));
 
     nl_ov_show_ai_drawer_locked(ph, status_str, s_ai_show_text);

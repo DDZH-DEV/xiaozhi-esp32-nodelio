@@ -1,5 +1,6 @@
 #include "diol_lan.h"
 
+#include "layout_cache.h"
 #include "nodelio_http.h"
 #include "panel_ui.h"
 
@@ -142,6 +143,27 @@ static void diol_nvs_key(const char *device_id, char *key, size_t key_len)
     }
 }
 
+typedef struct {
+    const char *device_id;
+    char *out;
+    int out_len;
+} diol_pass_get_ctx_t;
+
+static esp_err_t diol_pass_get_impl(void *arg)
+{
+    diol_pass_get_ctx_t *c = (diol_pass_get_ctx_t *)arg;
+    char key[16];
+    diol_nvs_key(c->device_id, key, sizeof(key));
+    nvs_handle_t h;
+    if (nvs_open(DIOL_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        return ESP_FAIL;
+    }
+    size_t len = (size_t)c->out_len;
+    (void)nvs_get_str(h, key, c->out, &len);
+    nvs_close(h);
+    return ESP_OK;
+}
+
 void nodelio_diol_pass_get(const char *device_id, char *out, int out_len)
 {
     if (!out || out_len <= 0) {
@@ -151,15 +173,32 @@ void nodelio_diol_pass_get(const char *device_id, char *out, int out_len)
     if (!device_id || !device_id[0]) {
         return;
     }
+    diol_pass_get_ctx_t ctx = {.device_id = device_id, .out = out, .out_len = out_len};
+    (void)nodelio_flash_safe_run(diol_pass_get_impl, &ctx);
+}
+
+typedef struct {
+    const char *device_id;
+    const char *pass;
+} diol_pass_set_ctx_t;
+
+static esp_err_t diol_pass_set_impl(void *arg)
+{
+    diol_pass_set_ctx_t *c = (diol_pass_set_ctx_t *)arg;
     char key[16];
-    diol_nvs_key(device_id, key, sizeof(key));
+    diol_nvs_key(c->device_id, key, sizeof(key));
     nvs_handle_t h;
-    if (nvs_open(DIOL_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
-        return;
+    if (nvs_open(DIOL_NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        return ESP_FAIL;
     }
-    size_t len = (size_t)out_len;
-    (void)nvs_get_str(h, key, out, &len);
+    if (!c->pass || !c->pass[0]) {
+        (void)nvs_erase_key(h, key);
+    } else {
+        (void)nvs_set_str(h, key, c->pass);
+    }
+    (void)nvs_commit(h);
     nvs_close(h);
+    return ESP_OK;
 }
 
 void nodelio_diol_pass_set(const char *device_id, const char *pass)
@@ -167,19 +206,8 @@ void nodelio_diol_pass_set(const char *device_id, const char *pass)
     if (!device_id || !device_id[0]) {
         return;
     }
-    char key[16];
-    diol_nvs_key(device_id, key, sizeof(key));
-    nvs_handle_t h;
-    if (nvs_open(DIOL_NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
-        return;
-    }
-    if (!pass || !pass[0]) {
-        (void)nvs_erase_key(h, key);
-    } else {
-        (void)nvs_set_str(h, key, pass);
-    }
-    (void)nvs_commit(h);
-    nvs_close(h);
+    diol_pass_set_ctx_t ctx = {.device_id = device_id, .pass = pass};
+    (void)nodelio_flash_safe_run(diol_pass_set_impl, &ctx);
 }
 
 static void normalize_host(const char *ip, char *host, int host_len)

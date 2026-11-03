@@ -99,6 +99,8 @@ char s_clock_last[8];
 bool s_screen_on = true;
 nodelio_panel_ui_screen_cb_t s_screen_cb;
 nodelio_panel_ui_net_cb_t s_net_cb;
+static bool s_boot_bl_revealed = false;
+static void reveal_boot_backlight_after_frame(void);
 
 lv_obj_t *s_settings_detail;
 lv_obj_t *s_settings_detail_body;
@@ -708,6 +710,9 @@ void nl_ov_refresh_status_icons(bool wifi_ok, bool cloud_ok, const char *msg)
     refresh_clock_lbl();
     refresh_battery_lbl();
     status_bar_relayout();
+    if (!s_boot_bl_revealed && (wifi_ok || !nodelio_nvs_has_wifi(&s_cfg))) {
+        reveal_boot_backlight_after_frame();
+    }
 }
 
 static void status_poll_cb(void *arg)
@@ -987,8 +992,6 @@ void nl_ov_workspace_reserve(int right, int bottom) {
         nl_ov_settings_sync_columns();
     }
 }
-
-static bool s_boot_bl_revealed = false;
 
 static void reveal_boot_backlight(void)
 {

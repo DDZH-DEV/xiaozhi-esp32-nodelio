@@ -268,7 +268,7 @@ bool MqttProtocol::SendText(const std::string& text) {
             return largest < 8 * 1024;
         }
         if (mcp) {
-            return nbytes > McpPayloadBudget::WireBytes(largest);
+            return nbytes > McpPayloadBudget::SendableWire(largest);
         }
         return (largest < 24 * 1024 && nbytes >= 256) ||
                (largest < 40 * 1024 && nbytes >= 800) ||

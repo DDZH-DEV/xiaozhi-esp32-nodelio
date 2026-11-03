@@ -14,6 +14,7 @@
 #include "skill_runtime.h"
 
 #include "mcp_server.h"
+#include "mcp_payload_budget.h"
 
 #include <cJSON.h>
 #include <esp_heap_caps.h>
@@ -458,13 +459,26 @@ static std::string list_controls_json()
     std::string out = printed ? printed : std::string(kControlsEmpty);
     free(printed);
 
-    /* 硬顶：MQTT MCP 常见 ~8KB；留余量给 jsonrpc 外壳 */
-    constexpr size_t kMaxBytes = 3500;
-    if (out.size() > kMaxBytes) {
+    /* 硬顶：MQTT MCP 常见 ~8KB；留余量给 jsonrpc 外壳。
+     * 八六云端回话时按当前可发线长再收一档，避免组好后被堆预算丢掉。 */
+    size_t max_bytes = 3500;
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    {
+        const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        const size_t wire = McpPayloadBudget::SendableWire(largest);
+        constexpr size_t kMqttWrap = 320;
+        if (wire <= kMqttWrap) {
+            max_bytes = 0;
+        } else if (wire - kMqttWrap < max_bytes) {
+            max_bytes = wire - kMqttWrap;
+        }
+    }
+#endif
+    if (out.size() > max_bytes) {
         ESP_LOGW(TAG, "list_controls truncated %u→%u bytes (n=%d)", (unsigned)out.size(),
-                 (unsigned)kMaxBytes, n);
+                 (unsigned)max_bytes, n);
         /* 粗暴截到合法 JSON 数组：找到最后一个完整对象 */
-        size_t cut = out.rfind("},", kMaxBytes);
+        size_t cut = out.rfind("},", max_bytes);
         if (cut != std::string::npos && cut + 1 < out.size()) {
             out.resize(cut + 1);
             out.push_back(']');

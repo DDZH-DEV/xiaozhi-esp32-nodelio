@@ -135,114 +135,37 @@ typedef struct {
     char pinyin[48];
 } nl_dyn_cmd_t;
 
-static nl_dyn_cmd_t s_dyn_cmds[NL_DYN_CMD_MAX];
+static nl_dyn_cmd_t *s_dyn_cmds;
 static int s_dyn_cmd_count = 0;
 
-/* 本板无 storage 分区；动态词落 NVS，开机无云也能装回 MultiNet。 */
-#define OC_DYN_NVS_NS "nodelio"
-#define OC_DYN_NVS_KEY "oc_dyn"
-#define OC_DYN_PACK_MAX 8
-
-typedef struct {
-    char device_id[32];
-    int16_t channel_or_pin;
-    uint8_t is_pin;
-    char action[8];
-    char name[32];
-    char pinyin[48];
-} nl_dyn_pack_t;
-
-typedef struct {
-    uint8_t n;
-    nl_dyn_pack_t items[OC_DYN_PACK_MAX];
-} nl_dyn_blob_t;
-
-static void voice_dyn_nvs_save_flash(void *arg)
+static bool ensure_dyn_cmds(void)
 {
-    nl_dyn_blob_t *blob = (nl_dyn_blob_t *)arg;
-    if (!blob) {
-        return;
+    if (s_dyn_cmds) {
+        return true;
     }
-    nvs_handle_t h;
-    if (nvs_open(OC_DYN_NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
-        heap_caps_free(blob);
-        return;
+    s_dyn_cmds = (nl_dyn_cmd_t *)heap_caps_calloc(NL_DYN_CMD_MAX, sizeof(nl_dyn_cmd_t),
+                                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_dyn_cmds) {
+        s_dyn_cmds = (nl_dyn_cmd_t *)calloc(NL_DYN_CMD_MAX, sizeof(nl_dyn_cmd_t));
     }
-    esp_err_t err = nvs_set_blob(h, OC_DYN_NVS_KEY, blob, sizeof(*blob));
-    if (err == ESP_ERR_NVS_NOT_ENOUGH_SPACE) {
-        (void)nvs_erase_key(h, OC_DYN_NVS_KEY);
-        /* 同 ns 腾空：lan 缓存可重建，优先保住口令词表 */
-        (void)nvs_erase_key(h, "lan_devs");
-        err = nvs_set_blob(h, OC_DYN_NVS_KEY, blob, sizeof(*blob));
-    }
-    if (err == ESP_OK) {
-        err = nvs_commit(h);
-    }
-    nvs_close(h);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "dyn cmds saved nvs n=%d", blob->n);
-    } else {
-        ESP_LOGW(TAG, "dyn cmds nvs save: %s", esp_err_to_name(err));
-    }
-    heap_caps_free(blob);
+    return s_dyn_cmds != NULL;
 }
 
+/* MultiNet 已移除且 panel_layout.json 已缓存于 SPIFFS，不再向 16KB NVS 写 oc_dyn。 */
 static void voice_dyn_nvs_save(void)
 {
-    /* apply_layout 可能在 PSRAM 栈的 nl_layout 任务里 → 推迟到主任务写 flash */
-    if (s_dyn_cmd_count <= 0) {
-        return;
-    }
-    nl_dyn_blob_t *blob =
-        (nl_dyn_blob_t *)heap_caps_calloc(1, sizeof(*blob), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!blob) {
-        blob = (nl_dyn_blob_t *)calloc(1, sizeof(*blob));
-    }
-    if (!blob) {
-        return;
-    }
-    const int n = s_dyn_cmd_count < OC_DYN_PACK_MAX ? s_dyn_cmd_count : OC_DYN_PACK_MAX;
-    blob->n = (uint8_t)n;
-    for (int i = 0; i < n; i++) {
-        snprintf(blob->items[i].device_id, sizeof(blob->items[i].device_id), "%s",
-                 s_dyn_cmds[i].device_id);
-        blob->items[i].channel_or_pin = (int16_t)s_dyn_cmds[i].channel_or_pin;
-        blob->items[i].is_pin = s_dyn_cmds[i].is_pin ? 1 : 0;
-        snprintf(blob->items[i].action, sizeof(blob->items[i].action), "%s", s_dyn_cmds[i].action);
-        snprintf(blob->items[i].name, sizeof(blob->items[i].name), "%s", s_dyn_cmds[i].name);
-        snprintf(blob->items[i].pinyin, sizeof(blob->items[i].pinyin), "%s", s_dyn_cmds[i].pinyin);
-    }
-    nodelio_run_on_app_task(voice_dyn_nvs_save_flash, blob);
 }
 
 static int voice_dyn_nvs_load_into_buf(void)
 {
-    nvs_handle_t h;
-    if (nvs_open(OC_DYN_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
-        return 0;
-    }
-    nl_dyn_blob_t blob;
-    size_t len = sizeof(blob);
-    esp_err_t err = nvs_get_blob(h, OC_DYN_NVS_KEY, &blob, &len);
-    nvs_close(h);
-    if (err != ESP_OK || len < sizeof(blob.n) || blob.n == 0) {
-        return 0;
-    }
-    if (blob.n > OC_DYN_PACK_MAX) {
-        blob.n = OC_DYN_PACK_MAX;
-    }
-    nodelio_offline_cmd_reset_dynamic();
-    for (int i = 0; i < blob.n; i++) {
-        (void)nodelio_offline_cmd_add_dynamic(blob.items[i].device_id, blob.items[i].channel_or_pin,
-                                              blob.items[i].is_pin != 0, blob.items[i].action,
-                                              blob.items[i].name, blob.items[i].pinyin);
-    }
-    ESP_LOGI(TAG, "dyn cmds loaded nvs n=%d", s_dyn_cmd_count);
     return s_dyn_cmd_count;
 }
 
 static const nl_dyn_cmd_t *find_dynamic_cmd(int cid)
 {
+    if (!s_dyn_cmds) {
+        return NULL;
+    }
     for (int i = 0; i < s_dyn_cmd_count; i++) {
         if (s_dyn_cmds[i].cmd_id == cid) {
             return &s_dyn_cmds[i];
@@ -254,7 +177,7 @@ static const nl_dyn_cmd_t *find_dynamic_cmd(int cid)
 bool nodelio_offline_cmd_pick_dyn(const char *action, char *device_id, size_t id_len, int *ch,
                                   bool *is_pin, char *name, size_t name_len)
 {
-    if (!action || !action[0] || !device_id || id_len == 0 || !ch || !is_pin) {
+    if (!s_dyn_cmds || !action || !action[0] || !device_id || id_len == 0 || !ch || !is_pin) {
         return false;
     }
     int best = -1;
@@ -333,6 +256,9 @@ bool nodelio_offline_cmd_add_dynamic(const char *device_id, int channel_or_pin, 
         strcmp(pinyin, "da kai kong qi") == 0 || strcmp(pinyin, "da kai mei ri yi ju") == 0) {
         return false;
     }
+    if (!ensure_dyn_cmds()) {
+        return false;
+    }
     for (int i = 0; i < s_dyn_cmd_count; i++) {
         if (strcmp(s_dyn_cmds[i].pinyin, pinyin) == 0) {
             return false; /* 同音保留先注册的磁贴 */
@@ -361,7 +287,7 @@ int nodelio_offline_cmd_dynamic_count(void)
 bool nodelio_offline_cmd_dynamic_at(int i, char *name, size_t name_len, char *action,
                                    size_t action_len)
 {
-    if (i < 0 || i >= s_dyn_cmd_count || !name || name_len == 0 || !action || action_len == 0) {
+    if (!s_dyn_cmds || i < 0 || i >= s_dyn_cmd_count || !name || name_len == 0 || !action || action_len == 0) {
         return false;
     }
     snprintf(name, name_len, "%s", s_dyn_cmds[i].name);
@@ -628,7 +554,7 @@ static int s_yield_epoch = -1;
 
 static void reserve_slot(void)
 {
-    if (s_slot || (s_mn && s_mn_data)) {
+    if (!nodelio_local_cmd_enabled() || s_slot || (s_mn && s_mn_data)) {
         return;
     }
     const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -699,7 +625,8 @@ void nodelio_offline_cmd_yield_for_cloud_audio(void)
 
 void nodelio_offline_cmd_shield_up(void)
 {
-    if (s_yield_epoch != s_dram_epoch || s_shield || s_slot || (s_mn && s_mn_data)) {
+    if (!nodelio_local_cmd_enabled() || s_yield_epoch != s_dram_epoch || s_shield || s_slot ||
+        (s_mn && s_mn_data)) {
         return;
     }
     const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);

@@ -378,25 +378,40 @@ static constexpr int kNoticeTombstoneMax = 16;
 
 static nodelio_panel_notice_t *s_notice_items = nullptr;
 static int s_notice_n = 0;
-static nodelio_panel_notice_t s_notice_defer[kNoticeDeferMax];
+static nodelio_panel_notice_t *s_notice_defer = nullptr;
 static int s_notice_defer_n = 0;
 static char s_notice_active_id[40] = {0};
-static char s_resolved_ids[kNoticeTombstoneMax][40] = {{0}};
+static char (*s_resolved_ids)[40] = nullptr;
 static int s_resolved_ring_idx = 0;
 
 static bool notice_store_ensure(void)
 {
-    if (s_notice_items) {
-        return true;
-    }
-    s_notice_items = static_cast<nodelio_panel_notice_t *>(
-        heap_caps_calloc(kNoticeStoreMax, sizeof(nodelio_panel_notice_t),
-                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!s_notice_items) {
         s_notice_items = static_cast<nodelio_panel_notice_t *>(
-            calloc(kNoticeStoreMax, sizeof(nodelio_panel_notice_t)));
+            heap_caps_calloc(kNoticeStoreMax, sizeof(nodelio_panel_notice_t),
+                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!s_notice_items) {
+            s_notice_items = static_cast<nodelio_panel_notice_t *>(
+                calloc(kNoticeStoreMax, sizeof(nodelio_panel_notice_t)));
+        }
     }
-    return s_notice_items != nullptr;
+    if (!s_notice_defer) {
+        s_notice_defer = static_cast<nodelio_panel_notice_t *>(
+            heap_caps_calloc(kNoticeDeferMax, sizeof(nodelio_panel_notice_t),
+                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!s_notice_defer) {
+            s_notice_defer = static_cast<nodelio_panel_notice_t *>(
+                calloc(kNoticeDeferMax, sizeof(nodelio_panel_notice_t)));
+        }
+    }
+    if (!s_resolved_ids) {
+        s_resolved_ids = static_cast<char (*)[40]>(
+            heap_caps_calloc(kNoticeTombstoneMax, 40, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!s_resolved_ids) {
+            s_resolved_ids = static_cast<char (*)[40]>(calloc(kNoticeTombstoneMax, 40));
+        }
+    }
+    return s_notice_items != nullptr && s_notice_defer != nullptr && s_resolved_ids != nullptr;
 }
 
 static void notice_copy(nodelio_panel_notice_t *dst, const nodelio_panel_notice_t *src)
@@ -409,7 +424,7 @@ static void notice_copy(nodelio_panel_notice_t *dst, const nodelio_panel_notice_
 
 static bool notice_is_tombstoned(const char *notice_id)
 {
-    if (!notice_id || !notice_id[0]) {
+    if (!s_resolved_ids || !notice_id || !notice_id[0]) {
         return false;
     }
     for (int i = 0; i < kNoticeTombstoneMax; ++i) {
@@ -422,7 +437,7 @@ static bool notice_is_tombstoned(const char *notice_id)
 
 static void notice_mark_tombstone(const char *notice_id)
 {
-    if (!notice_id || !notice_id[0] || notice_is_tombstoned(notice_id)) {
+    if (!notice_id || !notice_id[0] || !notice_store_ensure() || notice_is_tombstoned(notice_id)) {
         return;
     }
     snprintf(s_resolved_ids[s_resolved_ring_idx], sizeof(s_resolved_ids[0]), "%s", notice_id);
@@ -777,7 +792,7 @@ static void notice_present(const nodelio_panel_notice_t *n)
 
 static void notice_enqueue_deferred(const nodelio_panel_notice_t *n)
 {
-    if (!n) {
+    if (!n || !notice_store_ensure()) {
         return;
     }
     /* 息屏队列内按 notice_id / coalesce_key 去重，避免息屏期间重复堆积 */
@@ -799,7 +814,7 @@ static void notice_enqueue_deferred(const nodelio_panel_notice_t *n)
 
 extern "C" void nodelio_panel_ui_notice_flush_deferred(void)
 {
-    if (s_notice_defer_n <= 0) {
+    if (!s_notice_defer || s_notice_defer_n <= 0) {
         return;
     }
     const int n = s_notice_defer_n;
@@ -834,7 +849,7 @@ extern "C" void nodelio_panel_ui_notice_clear(const char *notice_id)
         if (s_notice_active_id[0] && strcmp(s_notice_active_id, id) == 0) {
             s_notice_active_id[0] = '\0';
         }
-        for (int i = 0; i < s_notice_defer_n; ++i) {
+        for (int i = 0; s_notice_defer && i < s_notice_defer_n; ++i) {
             if (strcmp(s_notice_defer[i].notice_id, id) == 0) {
                 if (i + 1 < s_notice_defer_n) {
                     memmove(&s_notice_defer[i], &s_notice_defer[i + 1],

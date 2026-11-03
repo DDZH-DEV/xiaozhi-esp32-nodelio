@@ -3,6 +3,7 @@
 
 #include "application.h"
 #include "display.h"
+#include "layout_cache.h"
 #include "nodelio_http.h"
 #include "nvs_config.h"
 #include "panel_layout.h"
@@ -849,8 +850,8 @@ extern "C" bool nodelio_panel_ui_device_online(const char *device_id)
     return d->online;
 }
 
-/* 局域网设备：云端 online 恒 false / 通道 stub OFF，跨 snapshot 保留上次探测结果防闪烁 */
-static nl_dev_cache_t s_lan_sticky[NL_DEV_CACHE_MAX];
+/* 局域网设备：云端 online 恒 false / 通道 stub OFF，跨 snapshot 保留上次探测结果防闪烁；放 PSRAM 省 ~28.8KB 片内 BSS */
+static nl_dev_cache_t *s_lan_sticky;
 static int s_lan_sticky_n = 0;
 /** snapshot_begin 前视觉签名；end 时相同则跳过整页刷磁贴 */
 static uint32_t s_snap_vis_before;
@@ -858,9 +859,22 @@ static uint32_t s_lan_pack_sig_saved;
 static int64_t s_lan_nvs_backoff_until_ms;
 #define LAN_NVS_BACKOFF_MS (10 * 60 * 1000)
 
+static bool ensure_lan_sticky(void)
+{
+    if (s_lan_sticky) {
+        return true;
+    }
+    s_lan_sticky = static_cast<nl_dev_cache_t *>(
+        heap_caps_calloc(NL_DEV_CACHE_MAX, sizeof(nl_dev_cache_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!s_lan_sticky) {
+        s_lan_sticky = static_cast<nl_dev_cache_t *>(calloc(NL_DEV_CACHE_MAX, sizeof(nl_dev_cache_t)));
+    }
+    return s_lan_sticky != nullptr;
+}
+
 static const nl_dev_cache_t *lan_sticky_find(const char *device_id)
 {
-    if (!device_id || !device_id[0]) {
+    if (!s_lan_sticky || !device_id || !device_id[0]) {
         return nullptr;
     }
     for (int i = 0; i < s_lan_sticky_n; i++) {
@@ -936,7 +950,7 @@ extern "C" void nodelio_panel_ui_snapshot_begin(void)
 {
     s_snap_vis_before = nodelio_panel_ui_dev_visual_sig();
     s_lan_sticky_n = 0;
-    if (s_devs) {
+    if (s_devs && ensure_lan_sticky()) {
         for (int i = 0; i < s_dev_n && s_lan_sticky_n < NL_DEV_CACHE_MAX; i++) {
             if (!s_devs[i].lan_control || !s_devs[i].id[0]) {
                 continue;
@@ -1198,28 +1212,45 @@ static void lan_cache_save(void)
     nodelio_run_on_app_task(lan_cache_save_flash, job);
 }
 
+static esp_err_t lan_cache_load_nvs_impl(void *arg)
+{
+    nl_lan_blob_t *blob = static_cast<nl_lan_blob_t *>(arg);
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(LAN_NVS_NS, NVS_READONLY, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    size_t len = sizeof(*blob);
+    err = nvs_get_blob(h, LAN_NVS_KEY, blob, &len);
+    nvs_close(h);
+    return err;
+}
+
 extern "C" void nodelio_panel_ui_lan_cache_load(void)
 {
-    nvs_handle_t h;
-    if (nvs_open(LAN_NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+    nl_lan_blob_t *blob = static_cast<nl_lan_blob_t *>(
+        heap_caps_calloc(1, sizeof(*blob), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!blob) {
+        blob = static_cast<nl_lan_blob_t *>(calloc(1, sizeof(*blob)));
+    }
+    if (!blob) {
         return;
     }
-    nl_lan_blob_t blob;
-    size_t len = sizeof(blob);
-    esp_err_t err = nvs_get_blob(h, LAN_NVS_KEY, &blob, &len);
-    nvs_close(h);
-    if (err != ESP_OK || blob.n == 0) {
+    esp_err_t err = nodelio_flash_safe_run(lan_cache_load_nvs_impl, blob);
+    if (err != ESP_OK || blob->n == 0) {
+        heap_caps_free(blob);
         return;
     }
-    if (blob.n > LAN_PACK_MAX) {
-        blob.n = LAN_PACK_MAX;
+    if (blob->n > LAN_PACK_MAX) {
+        blob->n = LAN_PACK_MAX;
     }
     nl_ov_ensure_devs_cache();
     if (!s_devs) {
+        heap_caps_free(blob);
         return;
     }
-    for (int i = 0; i < blob.n; i++) {
-        const nl_lan_pack_t *p = &blob.items[i];
+    for (int i = 0; i < blob->n; i++) {
+        const nl_lan_pack_t *p = &blob->items[i];
         if (!p->id[0] || !p->ip[0]) {
             continue;
         }
@@ -1239,7 +1270,8 @@ extern "C" void nodelio_panel_ui_lan_cache_load(void)
         d->online = false;
     }
     s_lan_pack_sig_saved = lan_pack_sig_now();
-    ESP_LOGI(TAG, "lan cache loaded n=%d devs=%d", blob.n, s_dev_n);
+    ESP_LOGI(TAG, "lan cache loaded n=%d devs=%d", blob->n, s_dev_n);
+    heap_caps_free(blob);
 }
 
 extern "C" void nodelio_panel_ui_snapshot_end(void)

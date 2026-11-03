@@ -283,6 +283,34 @@ static bool send_all(int fd, const char *data, size_t len)
     return true;
 }
 
+/** 截图正文：按 MSS 分片，单次 send 只等几百毫秒，总预算到了就放鎖。 */
+static bool send_within(int fd, const char *data, size_t len, int budget_ms)
+{
+    const int64_t deadline = esp_timer_get_time() + (int64_t)budget_ms * 1000;
+    size_t off = 0;
+    while (off < len) {
+        if (esp_timer_get_time() >= deadline) {
+            errno = EAGAIN;
+            return false;
+        }
+        size_t chunk = len - off;
+        if (chunk > 1440) {
+            chunk = 1440;
+        }
+        const int n = send(fd, data + off, chunk, 0);
+        if (n > 0) {
+            off += (size_t)n;
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+            vTaskDelay(pdMS_TO_TICKS(30));
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
 /** Gin/net/http 常发 Transfer-Encoding: chunked；不解包则 body 以 hex 尺寸开头，cJSON 必失败。 */
 static bool header_has_chunked(const char *headers, size_t hdr_len)
 {
@@ -707,7 +735,7 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
             return last;
         }
         /* 业务 4xx（Envelope 已写入）不重试；锁忙 / 空收才重试 */
-        if (last == ESP_ERR_INVALID_ARG || last == ESP_ERR_NOT_SUPPORTED || last == ESP_ERR_NO_MEM ||
+        if (last == ESP_ERR_INVALID_STATE || last == ESP_ERR_INVALID_ARG || last == ESP_ERR_NOT_SUPPORTED || last == ESP_ERR_NO_MEM ||
             last == ESP_ERR_INVALID_SIZE) {
             break;
         }
@@ -751,6 +779,15 @@ esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const
     if (!url || !url[0] || !data || len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
+    /* WiFi 发包要 DMA 連續塊。內部堆最大塊有 7KB 時 DMA 仍可能只剩幾百字節，
+     * 這時 send 會空等滿發送超時並佔住網鎖。不夠一個 MSS 就不要連。 */
+    const size_t dma = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    if (dma < 1536) {
+        ESP_LOGW(TAG, "POST image abort: dma_largest=%u dram_largest=%u", (unsigned)dma, (unsigned)largest);
+        return ESP_ERR_NO_MEM;
+    }
+
     /* 截图体大，等网锁更久；心跳/技能并发时 2s 易误判 */
     HttpNetGuard net(8000);
     if (!net) {
@@ -758,13 +795,6 @@ esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const
         return ESP_ERR_INVALID_STATE;
     }
     force_wifi_perf();
-
-    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    /* 碎片下 largest 常仅 6～8KB；短 TCP 心跳仍成功，勿 12KB 误杀 */
-    if (largest < 2 * 1024) {
-        ESP_LOGW(TAG, "POST image abort: largest_dram=%u (TCP buf)", (unsigned)largest);
-        return ESP_ERR_NO_MEM;
-    }
 
     std::string host;
     std::string path;
@@ -778,15 +808,18 @@ esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const
         return ESP_ERR_NOT_SUPPORTED;
     }
 
-    /* 大图：连接/发送超时加长（默认 2.5s 易在弱网半截失败 → http=0） */
-    const int connect_ms = 5000;
-    const int io_ms = 20000;
-    int fd = tcp_connect_ms(host.c_str(), port, connect_ms, io_ms);
+    /* 連接 3s。發送超時在連上後改成 400ms，正文總預算 4s，避免佔鎖 20s。 */
+    const int connect_ms = 3000;
+    int fd = tcp_connect_ms(host.c_str(), port, connect_ms, 3000);
     if (fd < 0) {
-        ESP_LOGW(TAG, "POST image connect fail %s:%d len=%u dram=%u", host.c_str(), port, (unsigned)len,
-                 (unsigned)largest);
+        ESP_LOGW(TAG, "POST image connect fail %s:%d len=%u dma=%u dram=%u", host.c_str(), port, (unsigned)len,
+                 (unsigned)dma, (unsigned)largest);
         return ESP_FAIL;
     }
+    struct timeval snd_tv = {.tv_sec = 0, .tv_usec = 400 * 1000};
+    struct timeval rcv_tv = {.tv_sec = 3, .tv_usec = 0};
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &snd_tv, sizeof(snd_tv));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcv_tv, sizeof(rcv_tv));
 
     char hdr[512];
     int hdr_len = snprintf(hdr, sizeof(hdr),
@@ -804,13 +837,14 @@ esp_err_t nodelio_http_post_image(const char *url, const char *device_key, const
     }
     req += "\r\n";
 
-    if (!send_all(fd, req.data(), req.size())) {
+    if (!send_within(fd, req.data(), req.size(), 1500)) {
         ESP_LOGW(TAG, "POST image hdr send fail errno=%d", errno);
         close(fd);
         return ESP_FAIL;
     }
-    if (!send_all(fd, (const char *)data, len)) {
-        ESP_LOGW(TAG, "POST image body send fail errno=%d sent_target=%u", errno, (unsigned)len);
+    if (!send_within(fd, (const char *)data, len, 4000)) {
+        ESP_LOGW(TAG, "POST image body send fail errno=%d sent_target=%u dma=%u", errno, (unsigned)len,
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
         close(fd);
         return ESP_FAIL;
     }

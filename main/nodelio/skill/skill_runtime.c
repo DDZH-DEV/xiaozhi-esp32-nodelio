@@ -14,9 +14,27 @@
 
 static const char *TAG = "nl_skill";
 
-static char s_last_spoken_audio[NL_ENV_URL];
+static char *s_last_spoken_audio;
 static int s_last_spoken_audio_n;
-static char s_last_spoken_audios[NL_ENV_SPOKEN_AUDIO_MAX][NL_ENV_URL];
+static char (*s_last_spoken_audios)[NL_ENV_URL];
+
+static bool ensure_spoken_audio_bufs(void)
+{
+    if (!s_last_spoken_audio) {
+        s_last_spoken_audio = (char *)heap_caps_calloc(1, NL_ENV_URL, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_last_spoken_audio) {
+            s_last_spoken_audio = (char *)calloc(1, NL_ENV_URL);
+        }
+    }
+    if (!s_last_spoken_audios) {
+        s_last_spoken_audios = (char (*)[NL_ENV_URL])heap_caps_calloc(
+            NL_ENV_SPOKEN_AUDIO_MAX, NL_ENV_URL, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_last_spoken_audios) {
+            s_last_spoken_audios = (char (*)[NL_ENV_URL])calloc(NL_ENV_SPOKEN_AUDIO_MAX, NL_ENV_URL);
+        }
+    }
+    return s_last_spoken_audio && s_last_spoken_audios;
+}
 
 bool nodelio_skill_id_is_music(const char *skill_id)
 {
@@ -91,36 +109,38 @@ void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *jso
     if (spoken_out && spoken_len) {
         nodelio_envelope_spoken_summary(env, spoken_out, spoken_len);
     }
-    s_last_spoken_audio[0] = '\0';
     s_last_spoken_audio_n = 0;
-    for (int i = 0; i < NL_ENV_SPOKEN_AUDIO_MAX; i++) {
-        s_last_spoken_audios[i][0] = '\0';
-    }
-    if (env->spoken_audio_n > 0) {
-        s_last_spoken_audio_n =
-            env->spoken_audio_n < NL_ENV_SPOKEN_AUDIO_MAX ? env->spoken_audio_n : NL_ENV_SPOKEN_AUDIO_MAX;
-        for (int i = 0; i < s_last_spoken_audio_n; i++) {
-            snprintf(s_last_spoken_audios[i], sizeof(s_last_spoken_audios[i]), "%s",
-                     env->spoken_audio_urls[i]);
+    if (ensure_spoken_audio_bufs()) {
+        s_last_spoken_audio[0] = '\0';
+        for (int i = 0; i < NL_ENV_SPOKEN_AUDIO_MAX; i++) {
+            s_last_spoken_audios[i][0] = '\0';
         }
-        snprintf(s_last_spoken_audio, sizeof(s_last_spoken_audio), "%s", s_last_spoken_audios[0]);
-    } else if (env->spoken_audio_url[0]) {
-        snprintf(s_last_spoken_audio, sizeof(s_last_spoken_audio), "%s", env->spoken_audio_url);
-        snprintf(s_last_spoken_audios[0], sizeof(s_last_spoken_audios[0]), "%s",
-                 env->spoken_audio_url);
-        s_last_spoken_audio_n = 1;
+        if (env->spoken_audio_n > 0) {
+            s_last_spoken_audio_n =
+                env->spoken_audio_n < NL_ENV_SPOKEN_AUDIO_MAX ? env->spoken_audio_n : NL_ENV_SPOKEN_AUDIO_MAX;
+            for (int i = 0; i < s_last_spoken_audio_n; i++) {
+                snprintf(s_last_spoken_audios[i], sizeof(s_last_spoken_audios[i]), "%s",
+                         env->spoken_audio_urls[i]);
+            }
+            snprintf(s_last_spoken_audio, NL_ENV_URL, "%s", s_last_spoken_audios[0]);
+        } else if (env->spoken_audio_url[0]) {
+            snprintf(s_last_spoken_audio, NL_ENV_URL, "%s", env->spoken_audio_url);
+            snprintf(s_last_spoken_audios[0], sizeof(s_last_spoken_audios[0]), "%s",
+                     env->spoken_audio_url);
+            s_last_spoken_audio_n = 1;
+        }
     }
     nodelio_skill_result_show(cfg, env, play);
 }
 
 const char *nodelio_skill_last_spoken_audio_url(void)
 {
-    return s_last_spoken_audio[0] ? s_last_spoken_audio : NULL;
+    return (s_last_spoken_audio && s_last_spoken_audio[0]) ? s_last_spoken_audio : NULL;
 }
 
 int nodelio_skill_last_spoken_audio_urls(char (*urls)[NL_ENV_URL], int max_n)
 {
-    if (!urls || max_n <= 0) {
+    if (!s_last_spoken_audios || !urls || max_n <= 0) {
         return 0;
     }
     int n = s_last_spoken_audio_n;

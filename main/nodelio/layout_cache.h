@@ -50,6 +50,12 @@ esp_err_t nodelio_photo_cache_remove(const char *photo_id);
 /** 只保留 keep 列表中的 id；其它 ph_*.jpg 删除。ids 可空、n=0 表示清空相册缓存。 */
 esp_err_t nodelio_photo_cache_prune(const char *const *ids, size_t n);
 
+/**
+ * 若当前任务栈在 PSRAM，转交常驻内部 SRAM worker 执行 fn(ctx)，
+ * 避免 NVS/SPIFFS 关 cache 时触发 esp_task_stack_is_sane_cache_disabled 断言。
+ */
+esp_err_t nodelio_flash_safe_run(esp_err_t (*fn)(void *ctx), void *ctx);
+
 #ifdef __cplusplus
 }
 #endif
