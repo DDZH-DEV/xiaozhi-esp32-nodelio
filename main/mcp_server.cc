@@ -436,6 +436,11 @@ void McpServer::PromoteTool(const std::string& name) {
     ESP_LOGI(TAG, "Promote tool to front: %s", name.c_str());
 }
 
+void McpServer::ClearRecentToolCalls() {
+    std::lock_guard<std::mutex> lock(tool_call_mutex_);
+    recent_tool_call_ids_.clear();
+}
+
 void McpServer::ParseMessage(const std::string& message, ResponseSender response_sender) {
     CJsonUniquePtr json(cJSON_Parse(message.c_str()));
     if (json == nullptr) {
@@ -528,6 +533,19 @@ void McpServer::ParseMessage(const cJSON* json, ResponseSender response_sender) 
         }
         GetToolsList(id_int, cursor_str, list_user_only_tools, response_sender);
     } else if (method_str == "tools/call") {
+        {
+            std::lock_guard<std::mutex> lock(tool_call_mutex_);
+            for (int prev_id : recent_tool_call_ids_) {
+                if (prev_id == id_int) {
+                    ESP_LOGW(TAG, "tools/call: Duplicate request id %d dropped", id_int);
+                    return;
+                }
+            }
+            recent_tool_call_ids_.push_back(id_int);
+            if (recent_tool_call_ids_.size() > 16) {
+                recent_tool_call_ids_.erase(recent_tool_call_ids_.begin());
+            }
+        }
         if (!cJSON_IsObject(params)) {
             ESP_LOGE(TAG, "tools/call: Missing params");
             ReplyError(id_int, -32602, "Missing params", response_sender);

@@ -1,4 +1,5 @@
 #include "skill_ui_priv.h"
+#include <mutex>
 
 int s_news_detail = -1;
 uint32_t s_news_gen = 1;
@@ -519,12 +520,12 @@ static bool news_format_chunk(char *out, size_t out_len, bool with_title)
     if (!piece) {
         return false;
     }
-    /* 正文在前；尾标仅给模型/设备，禁止念出（见 MCP 工具说明）。续段由设备自动请求。 */
-    const char *tail = more ? "\n【续】" : (s_speak_from_summary ? "\n【摘要】" : "\n【完】");
+    /* 只返回纯标题+正文片段；不附带【续】等尾标，防止模型同轮循环调 continue 或追问用户。 */
+    (void)more;
     if (with_title && s_speak_title[0]) {
-        snprintf(out, out_len, "%s\n%s%s", s_speak_title, piece, tail);
+        snprintf(out, out_len, "%s\n%s", s_speak_title, piece);
     } else {
-        snprintf(out, out_len, "%s%s", piece, tail);
+        snprintf(out, out_len, "%s", piece);
     }
     heap_caps_free(piece);
     return out[0] != '\0';
@@ -1070,11 +1071,6 @@ static void on_news_read_btn(lv_event_t *e)
             DisplayLockGuard lock(nl_ov_disp());
             resume = lock && news_can_resume_locked();
         }
-        const auto st = app.GetDeviceState();
-        if (st != kDeviceStateListening && st != kDeviceStateSpeaking) {
-            nl_ov_toast(resume ? "请唤醒后说「继续读」" : "请唤醒后说「读这篇」");
-            return;
-        }
         app.StartLocalNewsRead(resume ? "continue" : "read");
     });
 }
@@ -1407,8 +1403,11 @@ static bool news_step_locked(int delta, char *title, size_t title_len)
     return true;
 }
 
+static std::mutex s_news_action_mu;
+
 bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
 {
+    std::lock_guard<std::mutex> action_lock(s_news_action_mu);
     if (out && out_len > 0) {
         out[0] = '\0';
     }
@@ -1451,14 +1450,18 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
                 return false;
             }
             if (s_news_read_progress.waiting()) {
-                if (out && out_len > 0) {
-                    snprintf(out, out_len, "%s", "【等】");
+                if (s_speak_body && strcmp(s_speak_id, id) == 0) {
+                    const size_t matched = s_news_read_progress.MatchedOffset();
+                    if (matched < s_speak_off) {
+                        /* 当前段尚未播完（或刚拉取 0 句已播）：返回本段未读部分，勿回【等】导致模型停读追问 */
+                        s_speak_off = matched > s_speak_off_prev ? matched : s_speak_off_prev;
+                        return news_format_chunk(out, out_len, s_speak_off == 0);
+                    }
+                    /* 当前段文本已全部由 TTS 匹配下发，仅剩喇叭尾音在排空：直接切入下一段 */
                 }
-                return true;
-            }
-            // Preserve the confirmed cursor. A pause replays only the current
-            // sentence; a normally drained response resumes after its last sentence.
-            if (s_news_read_progress.unfinished()) {
+            } else if (s_news_read_progress.unfinished()) {
+                // Preserve the confirmed cursor. A pause replays only the current
+                // sentence; a normally drained response resumes after its last sentence.
                 s_speak_off = s_news_read_progress.ResumeOffset();
             }
             if (s_speak_body && strcmp(s_speak_id, id) == 0) {
@@ -1485,6 +1488,13 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
             }
             idx = s_news_detail;
             gen = s_news_gen;
+            /* 若「读」与「调用skill.news读」双触发，首段刚加载且尚未播报任何句子，直接重发首段 */
+            if (s_speak_body && strcmp(s_speak_id, s_env->news[idx].id) == 0 &&
+                s_news_read_progress.waiting() &&
+                s_news_read_progress.MatchedOffset() == s_speak_off_prev) {
+                s_speak_off = s_speak_off_prev;
+                return news_format_chunk(out, out_len, s_speak_off_prev == 0);
+            }
         }
         return news_load_spoken(idx, gen, out, out_len, true);
     }

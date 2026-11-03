@@ -437,6 +437,7 @@ public:
                          const PropertyList& properties, ToolCallback callback);
     /** 把已注册工具挪到 tools/list 首页（SILA 单页常仅数百字节）。 */
     void PromoteTool(const std::string& name);
+    void ClearRecentToolCalls();
     void ParseMessage(const cJSON* json, ResponseSender response_sender = nullptr);
     void ParseMessage(const std::string& message, ResponseSender response_sender = nullptr);
 
@@ -458,6 +459,8 @@ private:
                     ResponseSender response_sender);
 
     std::vector<std::unique_ptr<McpTool>> tools_;
+    std::mutex tool_call_mutex_;
+    std::vector<int> recent_tool_call_ids_;
 };
 
 #endif  // MCP_SERVER_H

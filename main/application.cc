@@ -853,6 +853,7 @@ void Application::InitializeProtocol() {
 
     protocol_->OnAudioChannelClosed([this, &board]() {
         /* 先回 idle 再降功耗：避免 goodbye 瞬间 MAX_MODEM 把尾包 UDP 打丢 */
+        McpServer::GetInstance().ClearRecentToolCalls();
         Schedule([this, &board]() {
 #if CONFIG_NODELIO_PANEL
             CancelNewsReadPlayback();
@@ -1179,11 +1180,13 @@ void Application::InitializeProtocol() {
                         }
                         return;
                     }
-                    /* 关闭电台/播客/曲库…：本地先收弹窗。云端常跟「拜拜」并结束会话；
-                     * 若只 suppress 仍停 Listening，唤醒词不开、上行也不再出字 → 假死。 */
+                    /* 关闭电台/播客/曲库…：本地先收弹窗并保持聆听，以便继续对话。 */
                     if (nodelio_skill_try_dismiss_phrase(message.c_str())) {
-                        ESP_LOGI(TAG, "stt local-route: skill dismiss → idle");
-                        EndVoiceSessionAfterLocalSkill();
+                        ESP_LOGI(TAG, "stt local-route: skill dismiss → continue listening");
+                        SuppressCloudTts(3000);
+                        dsh_local_open_cooldown_until_us_ =
+                            esp_timer_get_time() + (int64_t)20000 * 1000;
+                        ContinueListeningAfterLocalSkill();
                         return;
                     }
                     ESP_LOGI(TAG, "stt local-route: miss → cloud continues");
@@ -1637,7 +1640,7 @@ void Application::BeginWakeWordInvoke(const std::string& wake_word) {
 #else
     const bool skip_wake_encode = false;
 #endif
-    if (skip_wake_encode) {
+    if (skip_wake_encode || news_reading_) {
         audio_service_.DiscardWakeWordAudio();
     } else {
         audio_service_.EncodeWakeWord();
@@ -1715,8 +1718,13 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     protocol_->SendWakeWordDetected(wake_word);
     SetListeningMode(GetDefaultListeningMode());
 #else
-    play_popup_on_listening_ = true;
-    SetListeningMode(GetDefaultListeningMode());
+    if (!news_reading_) {
+        play_popup_on_listening_ = true;
+        SetListeningMode(GetDefaultListeningMode());
+    } else {
+        SetListeningMode(GetDefaultListeningMode());
+        protocol_->SendWakeWordDetected(wake_word);
+    }
 #endif
 }
 
@@ -2292,9 +2300,9 @@ void Application::OnNewsReadToolCalled() {
     news_awaiting_mcp_ = false;
     suppress_cloud_tts_until_us_ = 0;
     aborted_ = false;
-    if (news_playback_token_ == 0) {
-        news_playback_start_count_ = audio_service_.GetPlaybackCount();
-    }
+    news_tts_stopped_ = false;
+    news_playback_token_ = 0;
+    news_playback_start_count_ = audio_service_.GetPlaybackCount();
     ESP_LOGI(TAG, "news read: tools/call received, waiting for article result");
     nodelio_skill_news_sync_read_btn();
 }
@@ -2378,7 +2386,7 @@ void Application::SendNewsReadRequest(bool interrupt) {
         AbortSpeaking(kAbortReasonNone);
         audio_service_.ResetDecoder();
     }
-    if (GetDeviceState() == kDeviceStateSpeaking) {
+    if (GetDeviceState() == kDeviceStateSpeaking || GetDeviceState() == kDeviceStateIdle) {
         SetDeviceState(kDeviceStateListening);
     }
     /* ≤16 字；须点名 skill.news，勿说「读新闻」(云端会当成不存在的工具名) */
@@ -2417,16 +2425,53 @@ void Application::StartLocalNewsRead(const char *op)
         return;
     }
 
-    if (!protocol_ || !protocol_->IsAudioChannelOpened()) {
-        nodelio_panel_ui_toast("请先唤醒再说「读这篇」");
+    if (!protocol_) {
+        nodelio_panel_ui_toast("网络未就绪");
         return;
     }
+#if CONFIG_NODELIO_PANEL
+    if (!nodelio_xiaozhi_enabled()) {
+        nodelio_panel_ui_toast("小智未开启");
+        return;
+    }
+    if (!nodelio_wifi_has_ip()) {
+        nodelio_panel_ui_toast("WiFi未连接");
+        return;
+    }
+#endif
 
     news_read_continue_ = strcmp(use_op, "continue") == 0;
     news_reading_ = true;
     nodelio_panel_ui_set_voice_hint(news_read_continue_ ? "继续读" : "读这篇");
-    SendNewsReadRequest();
     nodelio_skill_news_sync_read_btn();
+
+    if (!protocol_->IsAudioChannelOpened()) {
+        const std::string echo = news_read_continue_ ? "调用skill.news续" : "调用skill.news读";
+        news_detect_echo_ = echo;
+        news_awaiting_mcp_ = true;
+        news_mcp_deadline_us_ = esp_timer_get_time() + 12000000;
+        aborted_ = false;
+        suppress_cloud_tts_until_us_ = 0;
+        audio_service_.DiscardWakeWordAudio();
+        auto state = GetDeviceState();
+        if (state == kDeviceStateNotifying) {
+#if CONFIG_NODELIO_PANEL
+            if (nodelio_media_is_playing()) {
+                nodelio_media_pause_for_voice();
+                nodelio_offline_cmd_yield_for_cloud_audio();
+                audio_service_.EnableVoiceProcessing(false);
+            } else {
+                StopNotification();
+            }
+#else
+            StopNotification();
+#endif
+        }
+        BeginWakeWordInvoke(echo);
+        return;
+    }
+
+    SendNewsReadRequest();
 }
 
 void Application::PauseNewsRead()
@@ -2650,7 +2695,8 @@ static bool tts_looks_like_news_instruction(const char *text)
     if (strstr(text, "逐字朗读") || strstr(text, "不要换篇") || strstr(text, "不要读出这些指令") ||
         strstr(text, "本轮不要再调") || strstr(text, "请先逐字朗读") ||
         strstr(text, "设备将在音频播完") || strstr(text, "不要自行调用 continue") ||
-        strstr(text, "Speak ONLY") || strstr(text, "speak_body_only")) {
+        strstr(text, "Speak ONLY") || strstr(text, "speak_body_only") ||
+        strstr(text, "self.skill.")) {
         return true;
     }
     const char *p = text;

@@ -925,7 +925,7 @@ void nodelio_mcp_register_tools(void)
         /* 首句点名：云端易把「读新闻」当成不存在的工具而空口否认 */
         "self.skill.news: 读新闻/读文章/每日一篇. "
         "「调用skill.news读」/读/读吧→op=read; 「调用skill.news续」/继续读→op=continue. "
-        "Speak ONLY title+body; never speak 【续】【完】; never deny — always call.",
+        "Call ONLY ONCE per turn; read returned text verbatim in full; never ask to continue.",
         PropertyList({
             Property("op", kPropertyTypeString, "read"),
         }),
