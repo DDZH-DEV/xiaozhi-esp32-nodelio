@@ -1208,7 +1208,29 @@ void fill_news(void)
         lv_obj_set_style_pad_row(s_card_list, 10, 0);
         lv_obj_set_style_pad_bottom(s_card_list, 8, 0);
 
-        lv_obj_t *back = make_text_action_btn(s_card_list, "返回列表", on_news_back, nullptr);
+        char when[24];
+        news_time_short(n->published_at, when, sizeof(when));
+        char meta[96];
+        if (n->source[0] && when[0]) {
+            snprintf(meta, sizeof(meta), "%s  ·  %s", n->source, when);
+        } else if (n->source[0]) {
+            snprintf(meta, sizeof(meta), "%s", n->source);
+        } else {
+            snprintf(meta, sizeof(meta), "%s", when[0] ? when : "");
+        }
+
+        /* 返回和来源同一行：左边按钮，右边出处，避免按钮单独占一行、右侧空一大块。 */
+        lv_obj_t *bar = lv_obj_create(s_card_list);
+        lv_obj_remove_style_all(bar);
+        lv_obj_set_width(bar, lv_pct(100));
+        lv_obj_set_height(bar, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(bar, meta[0] ? LV_FLEX_ALIGN_START : LV_FLEX_ALIGN_END,
+                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(bar, 16, 0);
+        lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *back = make_text_action_btn(bar, "返回列表", on_news_back, nullptr);
         lv_obj_set_size(back, LV_SIZE_CONTENT, 40);
         lv_obj_set_style_pad_hor(back, 14, 0);
         lv_obj_set_style_bg_color(back, UI_CAPSULE_OFF, 0);
@@ -1219,30 +1241,23 @@ void fill_news(void)
                 lv_obj_set_style_text_color(bl, UI_TEXT_SUB, 0);
             }
         }
+        if (meta[0]) {
+            lv_obj_t *meta_l = lv_label_create(bar);
+            nl_ov_set_font(meta_l);
+            lv_label_set_text(meta_l, meta);
+            lv_obj_set_flex_grow(meta_l, 1);
+            lv_obj_set_width(meta_l, 0);
+            lv_label_set_long_mode(meta_l, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_align(meta_l, LV_TEXT_ALIGN_RIGHT, 0);
+            lv_obj_set_style_text_color(meta_l, UI_TEXT_MUTED, 0);
+        }
 
         s_news_title_lbl = lv_label_create(s_card_list);
         lv_label_set_text(s_news_title_lbl, n->title);
         lv_obj_set_width(s_news_title_lbl, lv_pct(100));
         lv_label_set_long_mode(s_news_title_lbl, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(s_news_title_lbl, UI_TEXT, 0);
-        lv_obj_set_style_pad_top(s_news_title_lbl, 4, 0);
-
-        char when[24];
-        news_time_short(n->published_at, when, sizeof(when));
-        char meta[96];
-        if (n->source[0] && when[0]) {
-            snprintf(meta, sizeof(meta), "%s  ·  %s", n->source, when);
-        } else if (n->source[0]) {
-            snprintf(meta, sizeof(meta), "%s", n->source);
-        } else {
-            snprintf(meta, sizeof(meta), "%s", when[0] ? when : " ");
-        }
-        lv_obj_t *meta_l = lv_label_create(s_card_list);
-        nl_ov_set_font(meta_l);
-        lv_label_set_text(meta_l, meta);
-        lv_obj_set_width(meta_l, lv_pct(100));
-        lv_label_set_long_mode(meta_l, LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_color(meta_l, UI_TEXT_MUTED, 0);
+        lv_obj_set_style_pad_top(s_news_title_lbl, 2, 0);
 
         lv_obj_t *rule = lv_obj_create(s_card_list);
         lv_obj_remove_style_all(rule);
