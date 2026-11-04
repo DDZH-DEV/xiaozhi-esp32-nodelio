@@ -23,6 +23,13 @@
         "enum": ["0", "1"],
         "default": "0",
         "description": "打开会话详情时是否合成并播放末轮回复；关闭可避免详情轮询时桥端反复 TTS 卡顿。默认关闭。"
+      },
+      "default_workspace": {
+        "type": "string",
+        "title": "默认工作区",
+        "description": "DSH 所在电脑上的绝对路径。无武装说「让它…」时注入为派活 cwd。进度列表仍看全部工作区。",
+        "maxLength": 260,
+        "ui_hint": "text"
       }
     },
     "required": []

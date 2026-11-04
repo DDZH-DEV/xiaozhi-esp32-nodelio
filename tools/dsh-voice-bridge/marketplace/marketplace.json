@@ -14,8 +14,8 @@
       "name": "DSH 派活",
       "version": "1.0.0",
       "package_url": "/nodelio-dsh-market/packages/dsh.task/1.0.0.json",
-      "package_sha256": "30624f0e1efaaafdb4cf7aefbbbb83557e0dd963d9ce3a99e68bf682a352b915",
-      "summary": "把一句口语指令投给 DSH，并列出当前任务",
+      "package_sha256": "1ef851aff54da17cc8e3e8a2cc0ac0c4bd43907ec4b4c64785f89c4d5e76a078",
+      "summary": "内部投递：进度卡续聊时调用，不要当入口打开",
       "categories": [
         "tool"
       ],
@@ -31,9 +31,7 @@
         "content.action"
       ],
       "surfaces": [
-        "card",
-        "home_tile",
-        "voice_reply"
+        "card"
       ]
     },
     {
@@ -41,7 +39,7 @@
       "name": "DSH 进度",
       "version": "1.0.0",
       "package_url": "/nodelio-dsh-market/packages/dsh.status/1.0.0.json",
-      "package_sha256": "abf2561b76b0252c1e12d4858f0ee3b6348122324a54348722c92dc3ddf90b73",
+      "package_sha256": "9ac21edec942bfd45596d3df9bbcde121f8ccf8d28a5b758287ce1f282659c65",
       "summary": "查任务跑到第几步、卡在哪个工具",
       "categories": [
         "tool"
@@ -68,7 +66,7 @@
       "name": "DSH 确认",
       "version": "1.0.0",
       "package_url": "/nodelio-dsh-market/packages/dsh.answer/1.0.0.json",
-      "package_sha256": "413836859c932f20d26a2fe05ef7fe1132adb678ae0f1bf74b2cb379165a00fa",
+      "package_sha256": "16b08e9be34a289a0a5935e4432e883516908ab1dc4643e9d90b9e9e75846c1c",
       "summary": "内部动作：进度卡允许/拒绝（勿当入口）",
       "categories": [
         "tool"

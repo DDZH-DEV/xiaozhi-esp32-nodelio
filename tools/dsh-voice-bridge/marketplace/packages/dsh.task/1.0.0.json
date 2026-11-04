@@ -3,7 +3,7 @@
   "app_id": "dsh.task",
   "version": "1.0.0",
   "name": "DSH 派活",
-  "description": "把一句口语指令投递给 DSH 工作台执行，并返回当前工作区的任务清单。立即返回，不同步等待执行完成（协议 invoke.timeout_ms 上限 30000，长任务无法一次 invoke 内完成）。",
+  "description": "内部投递：进度卡续聊或「让它…」把指令交给 DSH。不要从应用列表打开。立即返回，不同步等待执行完成。",
   "publisher": {
     "name": "NodeLio",
     "contact": "https://github.com/DDZH-DEV/nodelio-protocol/issues"
@@ -12,7 +12,7 @@
   "min_protocol": 1,
   "requires": ["content.list", "action.invoke", "net.http_via_server"],
   "optional": ["content.text", "content.error", "content.action"],
-  "surfaces": ["card", "home_tile", "voice_reply"],
+  "surfaces": ["card"],
   "fallback": { "card_type": "plain_result" },
   "config_schema": {
     "type": "object",
