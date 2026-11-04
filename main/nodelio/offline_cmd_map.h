@@ -121,6 +121,12 @@ esp_err_t nodelio_offline_try_phrase(const nodelio_nvs_config_t *cfg, const char
  */
 bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bool *keep_cloud_tts);
 
+/**
+ * 「打开/关闭 + 布局里的开关名」：命中通断控件则下发 ON/OFF。
+ * 命中返回 true（调用方勿再当应用去打开）。
+ */
+bool nodelio_offline_try_named_switch(const char *name);
+
 /** DSH 指令/确认优先于序号选择和本机系统口令；命中后保持聆听。 */
 bool nodelio_offline_try_dsh_phrase(const char* phrase);
 

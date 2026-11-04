@@ -1437,6 +1437,11 @@ extern "C" bool nodelio_panel_ui_open_app(const char *name_or_id)
     }
     ESP_LOGI(TAG, "open_app stripped='%s'", q);
     Application::GetInstance().Schedule([q]() {
+        /* 云端常把「打开某开关」叫成 open_app。布局里有同名通断就控家，不找应用。 */
+        if (nodelio_offline_try_named_switch(q)) {
+            free(q);
+            return;
+        }
         /* 媒体须退会话才能 HTTP 播；新闻 keep_listening 追问要不要读；天气问内容 keep_cloud */
         if (!nodelio_offline_query_keeps_listening(q)) {
             auto st = Application::GetInstance().GetDeviceState();

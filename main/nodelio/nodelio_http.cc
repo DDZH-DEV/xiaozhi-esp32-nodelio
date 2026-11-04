@@ -688,6 +688,7 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
      * 心跳等后台请求仍让路给 MQTT。 */
     const bool ui_content =
         strstr(url, "/panel/news/") != nullptr || strstr(url, "/panel/snapshot") != nullptr ||
+        strstr(url, "/panel/command") != nullptr ||
         (strstr(url, "/panel/skills/") != nullptr && strstr(url, "/invoke") != nullptr);
     if (!ui_content) {
         uint32_t wait_ms = 4000;

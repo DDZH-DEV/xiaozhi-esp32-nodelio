@@ -1168,6 +1168,118 @@ static bool app_query_plausible(const char *q)
     return true;
 }
 
+static bool is_known_app_name(const char *name)
+{
+    static const char *const kKnown[] = {
+        "新闻", "曲库", "取库", "去库", "趣库", "音乐", "电台", "播客", "天气", "空气",
+        "一句", "名言", "一篇", "每日一篇", "美文", "工作台", "deepseek", "DeepSeek",
+    };
+    if (!name || !name[0]) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(kKnown) / sizeof(kKnown[0]); i++) {
+        if (strcmp(name, kKnown[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int switch_name_score(const char *query, const char *label)
+{
+    if (!query || !query[0] || !label || !label[0]) {
+        return 0;
+    }
+    if (utf8_approx_chars(label) < 2 || utf8_approx_chars(query) < 2) {
+        return 0;
+    }
+    if (strcmp(query, label) == 0) {
+        return 1000 + (int)strlen(label);
+    }
+    if (strstr(query, label) != NULL) {
+        return 100 + (int)strlen(label);
+    }
+    if (strstr(label, query) != NULL) {
+        return 80 + (int)strlen(query);
+    }
+    return 0;
+}
+
+bool nodelio_offline_try_named_switch(const char *name)
+{
+    if (!name || !name[0] || is_known_app_name(name)) {
+        return false;
+    }
+    const bool turn_off = strstr(name, "关掉") || strstr(name, "关闭") || strstr(name, "关上");
+    const nodelio_panel_layout_t *layout = nodelio_panel_ui_get_layout();
+    if (!layout) {
+        return false;
+    }
+    const nl_widget_t *best = NULL;
+    int best_sc = 0;
+    for (int pi = 0; pi < layout->page_count; pi++) {
+        const nl_page_t *pg = &layout->pages[pi];
+        for (int si = 0; si < pg->section_count; si++) {
+            const nl_section_t *sec = &pg->sections[si];
+            for (int wi = 0; wi < sec->widget_count; wi++) {
+                const nl_widget_t *w = &sec->widgets[wi];
+                if (!widget_is_onoff(w)) {
+                    continue;
+                }
+                int sc = switch_name_score(name, w->title);
+                int sc2 = switch_name_score(name, w->bind.name);
+                if (sc2 > sc) {
+                    sc = sc2;
+                }
+                if (sc > best_sc) {
+                    best_sc = sc;
+                    best = w;
+                }
+            }
+        }
+    }
+    if (!best) {
+        return false;
+    }
+    if (!nodelio_controls_enabled()) {
+        nodelio_panel_ui_set_voice_hint("控家未启用");
+        return true;
+    }
+    nodelio_nvs_config_t cfg;
+    if (nodelio_nvs_load(&cfg) != ESP_OK || !cfg.device_key[0]) {
+        nodelio_panel_ui_set_voice_hint("未绑定，无法控家");
+        return true;
+    }
+    const char *label = widget_label(best);
+    const char *value = turn_off ? "OFF" : "ON";
+    const char *verb = turn_off ? "关" : "开";
+    if (!nodelio_panel_ui_device_online(best->bind.device_id)) {
+        char t[48];
+        snprintf(t, sizeof(t), "%s离线", label);
+        nodelio_panel_ui_set_voice_hint(t);
+        return true;
+    }
+    {
+        char t[48];
+        snprintf(t, sizeof(t), "%s %s…", verb, label);
+        nodelio_panel_ui_set_voice_hint(t);
+    }
+    int http = 0;
+    esp_err_t err = nodelio_panel_command(&cfg, best->id, "set", &best->bind, value, &http);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "named switch %s http=%d: %s", best->id, http, esp_err_to_name(err));
+        nodelio_panel_ui_set_voice_hint(err == ESP_ERR_INVALID_STATE ? "设备离线" : "执行失败");
+        return true;
+    }
+    {
+        char t[48];
+        snprintf(t, sizeof(t), "已%s %s", verb, label);
+        nodelio_panel_ui_set_voice_hint(t);
+    }
+    ESP_LOGI(TAG, "named switch '%s' → %s %s", name, value, label);
+    return true;
+}
+
 /** 「打开曲库/天气…」→ 应用 invoke；控家口令不抢 */
 static bool try_open_named_app(const char *phrase)
 {
@@ -1268,6 +1380,11 @@ static bool try_open_named_app(const char *phrase)
     if (!app_query_plausible(name)) {
         ESP_LOGI(TAG, "skip open-app (not a name): '%s'", name[0] ? name : p);
         return false;
+    }
+    /* 布局里的开关名不是应用。命中则控家，避免「未找到应用」。 */
+    if (nodelio_offline_try_named_switch(name)) {
+        ESP_LOGI(TAG, "open phrase is a switch: '%s'", name);
+        return true;
     }
     ESP_LOGI(TAG, "open app query='%s'", name);
     return nodelio_panel_ui_open_app(name);
@@ -1617,6 +1734,16 @@ esp_err_t nodelio_offline_try_phrase(const nodelio_nvs_config_t *cfg, const char
     return nodelio_offline_cmd_dispatch(cfg, cmd, layout);
 }
 
+static bool phrase_names_control(const char *phrase)
+{
+    if (!phrase) {
+        return false;
+    }
+    return strstr(phrase, "灯") || strstr(phrase, "继电器") || strstr(phrase, "开关") ||
+           strstr(phrase, "插座") || strstr(phrase, "通断") || strstr(phrase, "窗帘") ||
+           strstr(phrase, "卷帘");
+}
+
 bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bool *keep_cloud_tts)
 {
     if (end_session) {
@@ -1729,6 +1856,43 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
             }
         }
         return nodelio_offline_cmd_dispatch(NULL, cmd, NULL) == ESP_OK;
+    }
+    /* 「打开继电器/灯/插座」已认成通断，但上面故意不派发裸 LIGHT_ON（以免「打开曲库」误开灯）。
+     * 句中点了名的控家对象在这里用布局缓存直接下发，不再等云端 list_controls。 */
+    if (phrase_names_control(phrase) &&
+        (cmd == NL_OC_LIGHT_ON || cmd == NL_OC_LIGHT_OFF || cmd == NL_OC_CURTAIN_OPEN ||
+         cmd == NL_OC_CURTAIN_CLOSE)) {
+        char obj[48];
+        obj[0] = '\0';
+        const char *p = strstr(phrase, "打开");
+        size_t skip = 6;
+        if (!p) {
+            p = strstr(phrase, "开启");
+        }
+        if (!p) {
+            p = strstr(phrase, "关掉");
+            skip = 6;
+        }
+        if (!p) {
+            p = strstr(phrase, "关闭");
+        }
+        if (!p) {
+            p = strstr(phrase, "关上");
+        }
+        if (p) {
+            strip_app_query(obj, sizeof(obj), p + skip);
+        }
+        if (obj[0] && nodelio_offline_try_named_switch(obj)) {
+            ESP_LOGI(TAG, "system phrase → named switch '%s'", obj);
+            return true;
+        }
+        nodelio_nvs_config_t cfg;
+        if (nodelio_nvs_load(&cfg) == ESP_OK && cfg.device_key[0]) {
+            ESP_LOGI(TAG, "system phrase → local %s", nodelio_offline_cmd_zh(cmd));
+            if (nodelio_offline_cmd_dispatch(&cfg, cmd, NULL) == ESP_OK) {
+                return true;
+            }
+        }
     }
     /* 「打开曲库」等：phrase_to_cmd_id 会落到 LIGHT_ON，这里再抢一次应用 */
     if (try_open_named_app(phrase)) {
