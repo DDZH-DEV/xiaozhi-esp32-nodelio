@@ -7,7 +7,11 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
-import { zstdDecompressSync } from 'node:zlib';
+import { zstdDecompressSync, zstdDecompress } from 'node:zlib';
+import { promisify } from 'node:util';
+
+/** zlib 的 zstdDecompress 是 callback 风格，包一层 Promise 用。 */
+const zstdDecompressAsync = promisify(zstdDecompress);
 
 /** DSH session status values that mean "a human has to act". */
 export const ATTENTION = new Set(['waiting_approval', 'waiting', 'pending']);
@@ -29,26 +33,56 @@ export function sessionLogPath(dshHome, cwd, externalSessionId) {
 
 /**
  * DSH writes one zstd frame per append, so a log is a concatenation of frames.
- * `zstdDecompressSync` only reads the first frame; split on the magic number.
+ * `zstdDecompress` only reads the first frame; split on the magic number.
+ *
+ * 注意：整体 buffer 交给 zstdDecompress 只会解出第一帧（实测 3MB 文件 1262 帧
+ * 只出 1 行），所以必须逐帧解。
  */
-export function decodeSessionLog(file) {
-  const bytes = fs.readFileSync(file);
-  const MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+
+/** 找出所有 zstd 帧的起始偏移。 */
+function zstdFrameOffsets(bytes) {
   const offsets = [];
   let index = 0;
-  while ((index = bytes.indexOf(MAGIC, index)) !== -1) {
+  while ((index = bytes.indexOf(ZSTD_MAGIC, index)) !== -1) {
     offsets.push(index);
-    index += MAGIC.length;
+    index += ZSTD_MAGIC.length;
   }
-  let text = '';
+  return offsets;
+}
+
+/**
+ * 解码会话日志（异步版）。**不要在事件循环里用同步版**：
+ * 单个 3MB 日志实测 174ms 同步解压，会整段冻住 Node 事件循环 →
+ * 期间 HTTP 不回包、watch 定时器不跑、WS 心跳停、hint 帧发不出去。
+ * 异步版保持事件循环可响应（实测同样文件 171ms，期间定时器仍触发 15 次）。
+ *
+ * @param {string} file
+ * @returns {Promise<object[]>}
+ */
+export async function decodeSessionLogAsync(file) {
+  let bytes;
+  try {
+    bytes = await fs.promises.readFile(file);
+  } catch {
+    return [];
+  }
+  const offsets = zstdFrameOffsets(bytes);
+  if (offsets.length === 0) return [];
+  const parts = [];
   for (let i = 0; i < offsets.length; i += 1) {
     const end = i + 1 < offsets.length ? offsets[i + 1] : bytes.length;
     try {
-      text += zstdDecompressSync(bytes.subarray(offsets[i], end)).toString('utf8');
+      const out = await zstdDecompressAsync(bytes.subarray(offsets[i], end));
+      parts.push(out.toString('utf8'));
     } catch {
       // A torn trailing frame (writer still appending) is expected; skip it.
     }
   }
+  return parseSessionEvents(parts.join(''));
+}
+
+function parseSessionEvents(text) {
   return text
     .split('\n')
     .filter(Boolean)
@@ -60,6 +94,64 @@ export function decodeSessionLog(file) {
       }
     })
     .filter(Boolean);
+}
+
+/**
+ * 同步解码（仅供 CLI / 无并发场景）。热路径请用 decodeSessionLogAsync。
+ * @param {string} file
+ * @returns {object[]}
+ */
+export function decodeSessionLog(file) {
+  const bytes = fs.readFileSync(file);
+  const offsets = zstdFrameOffsets(bytes);
+  let text = '';
+  for (let i = 0; i < offsets.length; i += 1) {
+    const end = i + 1 < offsets.length ? offsets[i + 1] : bytes.length;
+    try {
+      text += zstdDecompressSync(bytes.subarray(offsets[i], end)).toString('utf8');
+    } catch {
+      // A torn trailing frame (writer still appending) is expected; skip it.
+    }
+  }
+  return parseSessionEvents(text);
+}
+
+/**
+ * 会话日志缓存：按 (path, mtime, size) 命中。
+ * watch 每 8s 重扫同一批会话日志，不缓存就是每轮重复解压几十 MB。
+ */
+const s_logCache = new Map();
+const LOG_CACHE_MAX = 64;
+
+/**
+ * 取会话日志事件（异步 + mtime 缓存）。
+ * @param {string} file
+ * @returns {Promise<object[]>}
+ */
+export async function readSessionEvents(file) {
+  let st;
+  try {
+    st = await fs.promises.stat(file);
+  } catch {
+    s_logCache.delete(file);
+    return [];
+  }
+  const key = `${st.mtimeMs}:${st.size}`;
+  const hit = s_logCache.get(file);
+  if (hit && hit.key === key) return hit.events;
+  const events = await decodeSessionLogAsync(file);
+  if (s_logCache.size >= LOG_CACHE_MAX) {
+    /* 简单的 FIFO 淘汰，避免无限增长 */
+    const oldest = s_logCache.keys().next();
+    if (!oldest.done) s_logCache.delete(oldest.value);
+  }
+  s_logCache.set(file, { key, events });
+  return events;
+}
+
+/** 清空会话日志缓存（DSH 退出/重启后调用，避免读到旧尾巴）。 */
+export function clearSessionLogCache() {
+  s_logCache.clear();
 }
 
 function textFromParts(parts) {

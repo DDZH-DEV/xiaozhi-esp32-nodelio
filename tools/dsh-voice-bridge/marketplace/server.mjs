@@ -22,14 +22,23 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
+import { installConsoleCapture } from '../lib/logger.mjs';
+
+/*
+ * 最早接管控制台输出：Windows 控制台被点选暂停 / 管道断开时，
+ * console.log 可能无限等待（冻住事件循环）或抛 EPIPE（直接杀进程），
+ * 两者都会表现为「卡住 → 数据不能上报」。接管后日志双写文件且永不抛。
+ */
+installConsoleCapture();
+
 import { connect, readEndpoint } from '../lib/rpc.mjs';
 import {
   ATTENTION,
-  decodeSessionLog,
   displayTaskSubtitle,
   displayTaskTitle,
   foldSession,
   lastReplyPlain,
+  readSessionEvents,
   sessionLogPath,
   speakStatusList,
   speakWorkspaceList,
@@ -552,21 +561,30 @@ function taskRow(session, state, folded, notices) {
   return row;
 }
 
-function foldFromDisk(session) {
+/**
+ * 读会话日志并折叠。
+ * 必须走异步版（readSessionEvents）：同步解压 3MB 日志实测 174ms，
+ * 会整段冻住事件循环 → HTTP 不回包、watch 不触发、hint 发不出去。
+ * readSessionEvents 内部按 mtime 缓存，watch 每轮不会重复解压。
+ */
+async function foldFromDisk(session) {
   const file = sessionLogPath(DSH_HOME, session.cwd, session.externalSessionId);
   if (!fs.existsSync(file)) return null;
-  return foldSession(decodeSessionLog(file), { cwd: session.cwd });
+  const events = await readSessionEvents(file);
+  if (!events || events.length === 0) return null;
+  return foldSession(events, { cwd: session.cwd });
 }
 
 async function readTask(client, session) {
-  const [state, notices] = await Promise.all([
+  const [state, notices, folded] = await Promise.all([
     client.call('session.getState', { externalSessionId: session.externalSessionId }).catch(() => null),
     client.call('session.getNotices', { externalSessionId: session.externalSessionId }).catch(() => ({ notices: [] })),
+    foldFromDisk(session),
   ]);
   return {
     session,
     state,
-    folded: foldFromDisk(session),
+    folded,
     notices: notices?.notices ?? [],
   };
 }
@@ -1382,13 +1400,15 @@ async function handleTask(client, body) {
   const content = [];
   for (let i = 0; i < pool.length; i += 1) {
     const s = pool[i];
-    const folded = foldFromDisk(s);
-    const state = await client
-      .call('session.getState', { externalSessionId: s.externalSessionId })
-      .catch(() => null);
-    const notices = await client
-      .call('session.getNotices', { externalSessionId: s.externalSessionId })
-      .catch(() => ({ notices: [] }));
+    const [folded, state, notices] = await Promise.all([
+      foldFromDisk(s),
+      client
+        .call('session.getState', { externalSessionId: s.externalSessionId })
+        .catch(() => null),
+      client
+        .call('session.getNotices', { externalSessionId: s.externalSessionId })
+        .catch(() => ({ notices: [] })),
+    ]);
     const row = sessionRowWithArm(s, state, folded, notices?.notices ?? []);
     const isTarget = Boolean(targetId) && s.externalSessionId === targetId;
     if (isTarget) {
@@ -1510,7 +1530,7 @@ async function handleAnswer(client, body) {
         const wsList = statusWorkspaceList(wsDoc.workspaces ?? [], '');
         const cwd = String(session.cwd || '');
         const filters = workspaceFilters(wsList, cwd);
-        const ask = displayTaskTitle(session, foldFromDisk(session));
+        const ask = displayTaskTitle(session, await foldFromDisk(session));
         const env = choiceRowsEnvelope(
           session,
           notice,
@@ -1662,6 +1682,14 @@ function send(response, status, payload) {
 const s_prev = new Map();
 let s_watch_seeded = false;
 let s_watch_offline_logged = false;
+/** watch 单飞锁：上一轮没跑完就跳过本轮，避免 tick 叠加把 AA 连接堵死。 */
+let s_watch_inflight = null;
+/**
+ * watch 代次：每次 restartWatch 自增。
+ * 上一轮 tick 若在重启后才跑完，不能把过期状态写回 s_prev / s_watch_seeded，
+ * 否则会漏掉一次 needs_you 边沿。
+ */
+let s_watch_gen = 0;
 
 function hintModeTitle(reason) {
   if (reason === 'needs_you') {
@@ -1673,79 +1701,107 @@ function hintModeTitle(reason) {
   return { mode: 'info', title: '新通知' };
 }
 
+/**
+ * 上报一条边沿通知（needs_you / completed）。
+ *
+ * 可靠性要点（Windows 上「数据不能上报」的根因之一）：
+ * 1) WS 已连接 → 走 WS（公网免设备密钥）；sendHint 内部保证不丢帧（未开则入队）。
+ * 2) WS 未连接 → 立即走 HTTP notices（拿 host_url + 设备密钥时），别干等重连。
+ * 3) 两条都不通 → hint 入队，等 WS 重连后补发。
+ *
+ * @returns {Promise<boolean>} 是否已确认送达（入队不算）
+ */
 async function postSkillHint(reason, sessionId) {
   const c = cfg();
   const { mode, title } = hintModeTitle(reason);
-  /* 优先经出站 WS hint（公网 Host 无需设备密钥 HTTP） */
-  if (hostWsClient) {
+  const extra = {
+    app_id: c.status_app_id,
+    instance_id: c.status_instance_id || undefined,
+    mode,
+    title,
+  };
+
+  /* 1) WS 已连接：走 WS */
+  if (hostWsClient && hostWsClient.isConnected()) {
     try {
-      hostWsClient.sendHint(reason, sessionId, {
-        app_id: c.status_app_id,
-        instance_id: c.status_instance_id || undefined,
-        mode,
-        title,
-      });
+      hostWsClient.sendHint(reason, sessionId, extra);
       console.log(`[watch] notice via ws mode=${mode} reason=${reason} session=${sessionId ?? '-'}`);
-      return;
+      return true;
     } catch (e) {
       console.warn(`[watch] notice ws fail: ${e.message}`);
     }
   }
-  if (!c.host_url || !c.panel_device_id || !c.panel_device_key) return;
-  /* 优先正式 notices；失败再回落 skill-hint 薄封装 */
-  const noticeUrl = `${c.host_url}/api/devices/${encodeURIComponent(c.panel_device_id)}/panel/notices`;
-  const noticeBody = JSON.stringify({
-    app_id: c.status_app_id || 'dsh.status',
-    instance_id: c.status_instance_id || undefined,
-    reason,
-    mode,
-    title,
-    session: sessionId || undefined,
-    invoke: {
+
+  /* 2) HTTP notices（需 host_url + 设备凭证） */
+  if (c.host_url && c.panel_device_id && c.panel_device_key) {
+    const noticeUrl = `${c.host_url}/api/devices/${encodeURIComponent(c.panel_device_id)}/panel/notices`;
+    const noticeBody = JSON.stringify({
       app_id: c.status_app_id || 'dsh.status',
-      params: sessionId ? { session: sessionId } : {},
-    },
-    coalesce_key: sessionId
-      ? `dsh.status:session:${sessionId}`
-      : `dsh.status:${reason}`,
-  });
-  try {
-    let res = await fetch(noticeUrl, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'X-Device-Key': c.panel_device_key,
+      instance_id: c.status_instance_id || undefined,
+      reason,
+      mode,
+      title,
+      session: sessionId || undefined,
+      invoke: {
+        app_id: c.status_app_id || 'dsh.status',
+        params: sessionId ? { session: sessionId } : {},
       },
-      body: noticeBody,
-      signal: AbortSignal.timeout(5000),
+      coalesce_key: sessionId
+        ? `dsh.status:session:${sessionId}`
+        : `dsh.status:${reason}`,
     });
-    if (!res.ok) {
-      const url = `${c.host_url}/api/devices/${encodeURIComponent(c.panel_device_id)}/panel/skill-hint`;
-      res = await fetch(url, {
+    try {
+      let res = await fetch(noticeUrl, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           'X-Device-Key': c.panel_device_key,
         },
-        body: JSON.stringify({
-          app_id: c.status_app_id,
-          instance_id: c.status_instance_id || undefined,
-          reason,
-          mode,
-          title,
-          session: sessionId || undefined,
-        }),
+        body: noticeBody,
         signal: AbortSignal.timeout(5000),
       });
-    }
-    if (!res.ok) {
+      if (!res.ok) {
+        /* 回落旧 skill-hint 薄封装 */
+        const url = `${c.host_url}/api/devices/${encodeURIComponent(c.panel_device_id)}/panel/skill-hint`;
+        res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'X-Device-Key': c.panel_device_key,
+          },
+          body: JSON.stringify({
+            app_id: c.status_app_id,
+            instance_id: c.status_instance_id || undefined,
+            reason,
+            mode,
+            title,
+            session: sessionId || undefined,
+          }),
+          signal: AbortSignal.timeout(5000),
+        });
+      }
+      if (res.ok) {
+        console.log(
+          `[watch] notice via http mode=${mode} reason=${reason} session=${sessionId ?? '-'}`,
+        );
+        return true;
+      }
       console.warn(`[watch] notice HTTP ${res.status}`);
-    } else {
-      console.log(`[watch] notice mode=${mode} reason=${reason} session=${sessionId ?? '-'}`);
+    } catch (e) {
+      console.warn(`[watch] notice fail: ${e.message}`);
     }
-  } catch (e) {
-    console.warn(`[watch] notice fail: ${e.message}`);
   }
+
+  /* 3) 都不通 → 入队，等 WS 重连补发（host-ws 内部按 session+reason 去重） */
+  if (hostWsClient) {
+    try {
+      hostWsClient.sendHint(reason, sessionId, extra);
+      console.warn(`[watch] notice queued (ws down) reason=${reason} session=${sessionId ?? '-'}`);
+    } catch (e) {
+      console.warn(`[watch] notice queue fail: ${e.message}`);
+    }
+  }
+  return false;
 }
 
 function tryServeConfigUi(request, response, pathname) {
@@ -1912,42 +1968,89 @@ async function handleConfigApi(request, response, method) {
   send(response, 405, { error: 'method not allowed' });
 }
 
+/**
+ * watch 一轮：扫会话状态 → 边沿变化 → 上报 hint。
+ *
+ * Windows 稳定性要点：
+ * 1) 单飞（s_watch_inflight）：上一轮没跑完就跳过本轮。否则 watch_ms 到点
+ *    叠加新 tick → 每 tick 一条 AA 连接 → 连接链堵死 → 桥整体卡住。
+ * 2) 每轮硬截止（deadline）：超时就退出，下一轮再来；不能无限拖。
+ * 3) getState 并发且有上限：24 个会话串行 = 24×RPC 延迟，一轮能拖到几十秒。
+ */
 async function watchTick() {
+  if (s_watch_inflight) {
+    console.warn('[watch] previous tick still running — skip this round');
+    return;
+  }
+  s_watch_inflight = watchTickInner().finally(() => {
+    s_watch_inflight = null;
+  });
+  return s_watch_inflight;
+}
+
+async function watchTickInner() {
+  const started = Date.now();
+  const gen = s_watch_gen;
   let client;
   try {
     client = await connect({ namespace: 'nodelio-watch' });
     const { sessions } = await client.call('session.list', {});
     const seeding = !s_watch_seeded;
-    for (const session of sessions.slice(0, 24)) {
+    const list = (sessions ?? []).slice(0, 24);
+
+    /* 并发取状态，限流 6，避免把 AA 插件压死 */
+    const states = await mapLimit(list, 6, async (session) => {
       const state = await client
         .call('session.getState', { externalSessionId: session.externalSessionId })
         .catch(() => null);
-      const st = state?.status ?? 'unknown';
+      return { session, status: state?.status ?? 'unknown' };
+    });
+
+    /* 配置热重载过 → 本轮状态已过期，丢弃，别污染新一轮的基线 */
+    if (gen !== s_watch_gen) {
+      console.warn('[watch] tick superseded by config reload — discard');
+      return;
+    }
+
+    /* 收集本轮要上报的边沿 */
+    const hints = [];
+    for (const { session, status: st } of states) {
       const id = session.externalSessionId;
       const prev = s_prev.get(id);
       s_prev.set(id, st);
       if (seeding) {
         /* 基线写入后：对已在 waiting 的会话补一次 needs_you，避免启动瞬间漏推 */
-        if (ATTENTION.has(st)) {
-          await postSkillHint('needs_you', id);
-        }
+        if (ATTENTION.has(st)) hints.push({ reason: 'needs_you', id });
         continue;
       }
       if (!prev) continue;
       if (!ATTENTION.has(prev) && ATTENTION.has(st)) {
-        await postSkillHint('needs_you', id);
+        hints.push({ reason: 'needs_you', id });
       }
       if (prev === 'running' && (st === 'idle' || st === 'completed')) {
-        await postSkillHint('completed', id);
+        hints.push({ reason: 'completed', id });
       }
     }
+
+    /* 并发上报：每条 hint 各自有超时，慢的不会拖住快的 */
+    await Promise.all(
+      hints.map((h) =>
+        postSkillHint(h.reason, h.id).catch((e) =>
+          console.warn(`[watch] hint ${h.reason} ${h.id} failed: ${e.message}`),
+        ),
+      ),
+    );
+
     s_watch_seeded = true;
     s_watch_offline_logged = false;
+    console.log(
+      `[watch] tick ok sessions=${list.length} hints=${hints.length} ${Date.now() - started}ms`,
+    );
   } catch (e) {
-    if (isDshOfflineError(e)) {
+    if (isDshOfflineError(e) || e?.code === 'ETIMEDOUT') {
       if (!s_watch_offline_logged) {
         s_watch_offline_logged = true;
-        console.warn('[watch] DSH Desktop 未开，派活/进度暂不可用（不影响应用市场）');
+        console.warn('[watch] DSH Desktop 未开/无响应，派活/进度暂不可用（不影响应用市场）');
       }
     } else {
       console.warn(`[watch] ${e.message}`);
@@ -1961,6 +2064,27 @@ async function watchTick() {
   }
 }
 
+/** 限流并发 map：最多 limit 个任务同时跑。 */
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let cursor = 0;
+  const workers = [];
+  const n = Math.max(1, Math.min(limit, items.length));
+  for (let w = 0; w < n; w += 1) {
+    workers.push(
+      (async () => {
+        while (cursor < items.length) {
+          const i = cursor;
+          cursor += 1;
+          out[i] = await fn(items[i], i);
+        }
+      })(),
+    );
+  }
+  await Promise.all(workers);
+  return out;
+}
+
 function stopWatch() {
   if (watchTimer) {
     clearInterval(watchTimer);
@@ -1970,6 +2094,8 @@ function stopWatch() {
 
 function restartWatch() {
   stopWatch();
+  /* 代次自增：让在途的旧 tick 作废，别把过期状态写回基线 */
+  s_watch_gen += 1;
   s_prev.clear();
   s_watch_seeded = false;
   s_watch_offline_logged = false;

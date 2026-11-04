@@ -8,4 +8,6 @@ _bridge_out.txt
 _bridge_err.txt
 _bridge_stdout.log
 _bridge_stderr.log
+_bridge_full.log
+_bridge_full.log.1
 

@@ -5,7 +5,7 @@
  * 常见坏态：DSH NEXT.exe 还在，但 Agents Anywhere 端点是旧 pid → ECONNREFUSED。
  * 此时必须清僵死 endpoint + 重启 GUI，否则会一直「电脑 DSH 没开」。
  */
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +14,71 @@ import { getConfig } from './bridge-config.mjs';
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * 异步跑一个外部命令：永不阻塞事件循环。
+ * 历史事故：execFileSync('taskkill' …) 的 timeout 是 15s —— 同步调用期间整个
+ * Node 事件循环被冻住，HTTP 不回包、watch 定时器不跑、WS 心跳停、hint 发不出去，
+ * 表现就是「命令行卡住 → 数据不能上报」。这里一律走异步。
+ *
+ * @returns {Promise<{ok:boolean, code:number|null, stdout:string, stderr:string, timedOut:boolean}>}
+ */
+function runProcess(cmd, args, { timeoutMs = 15000 } = {}) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(cmd, args, {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: false,
+      });
+    } catch (e) {
+      resolve({
+        ok: false,
+        code: null,
+        stdout: '',
+        stderr: String(e?.message || e),
+        timedOut: false,
+      });
+      return;
+    }
+
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+    let timer = null;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(result);
+    };
+
+    child.stdout?.on('data', (d) => {
+      stdout += d.toString('utf8');
+    });
+    child.stderr?.on('data', (d) => {
+      stderr += d.toString('utf8');
+    });
+    child.on('error', (e) => {
+      finish({ ok: false, code: null, stdout, stderr: stderr || String(e?.message || e), timedOut });
+    });
+    child.on('close', (code) => {
+      finish({ ok: code === 0 && !timedOut, code, stdout, stderr, timedOut });
+    });
+
+    timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill();
+      } catch {
+        /* ignore */
+      }
+    }, Math.max(1000, Number(timeoutMs) || 15000));
+  });
 }
 
 export async function isDshReachable() {
@@ -170,18 +235,30 @@ function resolveTarget() {
   return { kind: 'app', path: configured || 'DSH' };
 }
 
-function isDshProcessRunning() {
-  if (process.platform !== 'win32') return false;
-  try {
-    const out = execFileSync('tasklist', ['/FO', 'CSV', '/NH'], {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 5000,
-    });
-    return /dsh.*\.exe/i.test(out);
-  } catch {
-    return false;
+/**
+ * 本机 DSH 进程名快照（异步；勿用 tasklist 同步调用）。
+ * @returns {Promise<string[]>}
+ */
+async function listDshProcessNames() {
+  if (process.platform !== 'win32') return [];
+  const r = await runProcess('tasklist', ['/FO', 'CSV', '/NH'], { timeoutMs: 8000 });
+  if (!r.stdout) return [];
+  const names = [];
+  for (const line of r.stdout.split(/\r?\n/)) {
+    const m = line.match(/^"([^"]+\.exe)"/i);
+    if (m && /dsh/i.test(m[1])) names.push(m[1]);
   }
+  return names;
+}
+
+/**
+ * DSH 进程是否在跑（异步）。
+ * @returns {Promise<boolean>}
+ */
+async function isDshProcessRunning() {
+  if (process.platform !== 'win32') return false;
+  const names = await listDshProcessNames();
+  return names.length > 0;
 }
 
 /** 丢掉 bridge endpoint / manager-lock，避免连上已死端口。 */
@@ -236,7 +313,7 @@ function clearActiveRun() {
  * 恢复模式特征：active-run.clean===false 且 pid 仍活着。
  * 此时 GUI 已是「DSH 终端」恢复页，写不出 Agents Anywhere endpoint。
  */
-function isRecoveryUiUp() {
+async function isRecoveryUiUp() {
   const run = readActiveRun();
   if (!run || run.clean !== false) return false;
   if (run.pid == null) return isDshProcessRunning();
@@ -283,21 +360,19 @@ async function killDshProcesses(opts = {}) {
   const settleMs = Number(opts.settleMs) > 0 ? Number(opts.settleMs) : 6000;
   const images = ['DSH NEXT.exe', 'DSH Desktop.exe', 'DSH.exe'];
   for (const im of images) {
-    try {
-      execFileSync('taskkill', ['/IM', im, '/F', '/T'], {
-        encoding: 'utf8',
-        windowsHide: true,
-        timeout: 15000,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+    /* 异步 taskkill：同步版本会冻住事件循环最长 15s */
+    const r = await runProcess('taskkill', ['/IM', im, '/F', '/T'], { timeoutMs: 15000 });
+    if (r.ok) {
       console.log(`[dsh-launch] taskkill /IM ${im}`);
-    } catch {
+    } else if (!r.timedOut) {
       /* 没进程时 taskkill 非 0，忽略 */
+    } else {
+      console.warn(`[dsh-launch] taskkill /IM ${im} timed out`);
     }
   }
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
-    const left = listDshProcessNames();
+    const left = await listDshProcessNames();
     if (left.length === 0) {
       console.log('[dsh-launch] all DSH processes gone');
       break;
@@ -328,25 +403,7 @@ function spawnDetached(cmd, args, opts = {}) {
   return child.pid || 0;
 }
 
-/** 本机 DSH 进程名快照（调试用）。 */
-function listDshProcessNames() {
-  if (process.platform !== 'win32') return [];
-  try {
-    const out = execFileSync('tasklist', ['/FO', 'CSV', '/NH'], {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 5000,
-    });
-    const names = [];
-    for (const line of out.split(/\r?\n/)) {
-      const m = line.match(/^"([^"]+\.exe)"/i);
-      if (m && /dsh/i.test(m[1])) names.push(m[1]);
-    }
-    return names;
-  } catch {
-    return [];
-  }
-}
+/** 本机 DSH 进程名快照（调试用）——见上方异步实现。 */
 
 function endpointProbe() {
   const home = os.homedir();
@@ -438,7 +495,7 @@ async function waitUntilReachable(timeoutMs) {
       return true;
     }
     if (tick === 2 || tick === 6 || tick % 10 === 0) {
-      const procs = listDshProcessNames();
+      const procs = await listDshProcessNames();
       const eps = endpointProbe();
       console.log(
         `[dsh-launch] wait ${tick * 500}ms procs=${procs.length ? procs.join('|') : '(none)'} ` +
@@ -446,8 +503,9 @@ async function waitUntilReachable(timeoutMs) {
       );
     }
   }
+  const finalProcs = await listDshProcessNames();
   console.warn(
-    `[dsh-launch] timeout ${timeoutMs}ms procs=${listDshProcessNames().join('|') || '(none)'} ` +
+    `[dsh-launch] timeout ${timeoutMs}ms procs=${finalProcs.join('|') || '(none)'} ` +
       `endpoints=${JSON.stringify(endpointProbe())}`,
   );
   return false;
@@ -548,7 +606,7 @@ async function spawnAndWait(target, extraArgs, timeoutMs) {
   launchTarget(target, extraArgs);
   s_lastLaunchAt = Date.now();
   await sleep(2000);
-  const earlyProcs = listDshProcessNames();
+  const earlyProcs = await listDshProcessNames();
   console.log(
     `[dsh-launch] +2s procs=${earlyProcs.length ? earlyProcs.join('|') : '(none)'} ` +
       `endpoints=${endpointProbe().length}`,
@@ -556,7 +614,7 @@ async function spawnAndWait(target, extraArgs, timeoutMs) {
   if (earlyProcs.length === 0) return 'no_proc';
   /* 恢复模式也会留下进程，但 ~130ms 就 IPC 失败；多等一会看是否写出 endpoint */
   if (await waitUntilReachable(timeoutMs)) return 'ok';
-  if (isRecoveryUiUp()) return 'recovery';
+  if (await isRecoveryUiUp()) return 'recovery';
   return 'timeout';
 }
 
@@ -578,11 +636,14 @@ async function launchDshDesktopExclusive(opts = {}) {
     };
   }
 
-  const procsUp = isDshProcessRunning();
-  const recoveryUp = isRecoveryUiUp();
+  const [procsUp, recoveryUp, procNames] = await Promise.all([
+    isDshProcessRunning(),
+    isRecoveryUiUp(),
+    listDshProcessNames(),
+  ]);
   console.log(
     `[dsh-launch] before kind=${target.kind} path=${target.path} procsUp=${procsUp ? 1 : 0} ` +
-      `recovery=${recoveryUp ? 1 : 0} procs=${listDshProcessNames().join('|') || '(none)'} ` +
+      `recovery=${recoveryUp ? 1 : 0} procs=${procNames.join('|') || '(none)'} ` +
       `endpoints=${endpointProbe().length} activeRun=${JSON.stringify(readActiveRun())}`,
   );
 

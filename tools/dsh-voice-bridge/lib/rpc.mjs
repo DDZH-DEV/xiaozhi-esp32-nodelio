@@ -16,6 +16,15 @@ export const ENDPOINT_CANDIDATES = [
   path.join(os.homedir(), '.dsh', 'agents-anywhere', 'bridge', 'endpoint.json'),
 ];
 
+/**
+ * 单次 RPC 超时（ms）。默认 20s。
+ * 没有超时时，DSH Desktop 一旦半死（不回包也不断链），pending 永远挂着 →
+ * 连接/槽位被占死 → 后续 health/watch/task 全部排队 → 表现为「卡住，数据不上报」。
+ */
+export const RPC_CALL_TIMEOUT_MS = Number(process.env.DSH_BRIDGE_RPC_TIMEOUT_MS) > 0
+  ? Number(process.env.DSH_BRIDGE_RPC_TIMEOUT_MS)
+  : 20000;
+
 /** 串行化短连接：健康检查 / watch / status 叠 initialize 会 ECONNRESET（见诊断日志 10:23:53）。 */
 let s_aaChain = Promise.resolve();
 let s_aaActive = 0;
@@ -112,6 +121,7 @@ async function connectExclusive(options = {}) {
   const pending = new Map();
   const listeners = new Set();
   let closed = false;
+  let consecutiveTimeouts = 0;
   s_aaActive += 1;
 
   socket.setNoDelay(true);
@@ -127,6 +137,7 @@ async function connectExclusive(options = {}) {
     if (message.id !== undefined && pending.has(message.id)) {
       const { resolve, reject } = pending.get(message.id);
       pending.delete(message.id);
+      consecutiveTimeouts = 0;
       if (message.error) reject(new RpcError(message.error));
       else resolve(message.result);
       return;
@@ -161,15 +172,49 @@ async function connectExclusive(options = {}) {
     pending.clear();
   });
 
-  const call = (method, params = {}) =>
+  const call = (method, params = {}, callOpts = {}) =>
     new Promise((resolve, reject) => {
       if (closed) {
         reject(new Error('DSH bridge connection closed'));
         return;
       }
       const id = nextId++;
-      pending.set(id, { resolve, reject });
-      socket.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+      const timeoutMs = Number(callOpts.timeoutMs) > 0 ? Number(callOpts.timeoutMs) : RPC_CALL_TIMEOUT_MS;
+      let timer = null;
+      const settle = (fn, arg) => {
+        if (timer) clearTimeout(timer);
+        pending.delete(id);
+        fn(arg);
+      };
+      pending.set(id, {
+        resolve: (v) => settle(resolve, v),
+        reject: (e) => settle(reject, e),
+      });
+      /* 硬超时：不回包也不能永远挂着，否则连接槽位被占死，整桥卡住 */
+      timer = setTimeout(() => {
+        consecutiveTimeouts += 1;
+        const err = new Error(
+          `DSH RPC ${method} timed out after ${timeoutMs}ms (DSH Desktop 未响应)`,
+        );
+        err.code = 'ETIMEDOUT';
+        err.method = method;
+        settle(reject, err);
+        /* 连续超时说明这条连接已经半死：关掉它，让下次 connect() 拿新连接 */
+        if (consecutiveTimeouts >= 2) {
+          consecutiveTimeouts = 0;
+          console.warn(`[rpc] ${method} timed out x2 — drop connection`);
+          try {
+            socket.destroy();
+          } catch {
+            /* ignore */
+          }
+        }
+      }, timeoutMs);
+      try {
+        socket.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+      } catch (e) {
+        settle(reject, e);
+      }
     });
 
   try {
@@ -178,12 +223,17 @@ async function connectExclusive(options = {}) {
       socket.once('error', reject);
     });
 
-    const identity = await call('initialize', {
-      authToken: endpoint.token,
-      protocolVersion: '1.0',
-      runtime: 'dsh',
-      sessionNamespace: namespace,
-    });
+    const identity = await call(
+      'initialize',
+      {
+        authToken: endpoint.token,
+        protocolVersion: '1.0',
+        runtime: 'dsh',
+        sessionNamespace: namespace,
+      },
+      /* initialize 卡住 = DSH 半死；短超时，别占着连接链拖死全桥 */
+      { timeoutMs: Math.min(RPC_CALL_TIMEOUT_MS, 10000) },
+    );
 
     return {
       identity,

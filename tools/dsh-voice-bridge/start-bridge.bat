@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-REM 关 QuickEdit：点选控制台会暂停输出缓冲，桥日志看起来像卡住
+REM Disable QuickEdit so a console selection does not pause the bridge log
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$sig='[DllImport(\"kernel32.dll\")]public static extern IntPtr GetStdHandle(int n);[DllImport(\"kernel32.dll\")]public static extern bool GetConsoleMode(IntPtr h,out uint m);[DllImport(\"kernel32.dll\")]public static extern bool SetConsoleMode(IntPtr h,uint m);';" ^
   "$t=Add-Type -MemberDefinition $sig -Name QE -Namespace Win32 -PassThru;" ^
@@ -34,9 +34,11 @@ if "%DSH_BRIDGE_HOST%"=="" set DSH_BRIDGE_HOST=0.0.0.0
 if "%DSH_BRIDGE_PORT%"=="" set DSH_BRIDGE_PORT=8790
 REM lan | host_ws | both (default both)
 if "%DSH_BRIDGE_MODE%"=="" set DSH_BRIDGE_MODE=both
+REM DSH RPC timeout in ms, default 20000. A dead DSH must not hold the slot.
+if "%DSH_BRIDGE_RPC_TIMEOUT_MS%"=="" set DSH_BRIDGE_RPC_TIMEOUT_MS=20000
 
 REM Code hot reload: Node --watch. Off: set DSH_BRIDGE_HOT=0
-REM skill_hint watch: 有 host_ws+token 或 host_url+设备凭证时默认开；关: set DSH_BRIDGE_WATCH=0
+REM skill_hint watch: on when host_ws+token or host_url+device creds exist. Off: set DSH_BRIDGE_WATCH=0
 REM Host WS: set NODELIO_HOST_WS=wss://host/ws/dsh-bridge
 REM          set BRIDGE_TOKEN=xxx
 REM Or edit via http://127.0.0.1:PORT/config after start

@@ -1,11 +1,17 @@
 // Local TTS for panel spoken → wav/mp3（NotifyPlayer 整文件进 PSRAM，上限 ~512KB）。
 // 默认：优先微软 Edge 神经音色（Xiaoxiao）；失败回退 Windows SAPI 中文声。
 // Fail soft: callers keep text-only spoken if this throws/returns null.
+//
+// Windows 硬约束：子进程一律异步 spawn，禁止 spawnSync / execSync。
+// 历史事故：spawnSync('powershell.exe' …) / spawnSync('edge-tts' …) 会冻住整个
+// Node 事件循环最长 45~60s —— 期间 HTTP 不回包、watch 定时器不触发、WS 心跳不
+// 发、hint 帧发不出去，表现为「命令行卡住 → 数据不能上报」。
+// 现在所有外部命令走 runProcess()：异步 + 硬超时 + 超时杀整棵进程树。
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync, execSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -17,7 +23,12 @@ const TTS_RATE = 3; /* SAPI -10..10 */
 const TTS_SAMPLE_HZ = 8000;
 const TTS_WAV_MAX = 320 * 1024;
 const EDGE_VOICE = process.env.DSH_TTS_VOICE || 'zh-CN-XiaoxiaoNeural';
-const CACHE_TAG = `v6-${TTS_SAMPLE_HZ}-${TTS_RATE}-${TTS_TEXT_MAX}-${EDGE_VOICE}`;
+const CACHE_TAG = `v7-${TTS_SAMPLE_HZ}-${TTS_RATE}-${TTS_TEXT_MAX}-${EDGE_VOICE}`;
+
+/* 外部命令超时（ms） */
+const EDGE_PROBE_TIMEOUT_MS = 8000;
+const EDGE_TTS_TIMEOUT_MS = 45000;
+const SAPI_TTS_TIMEOUT_MS = 30000;
 
 /** @type {'auto'|'edge'|'sapi'} */
 function ttsEngine() {
@@ -26,32 +37,115 @@ function ttsEngine() {
   return 'auto';
 }
 
-let edgeCmdCache = undefined; /* undefined=未测; null=无; string=命令前缀 */
+/**
+ * 杀掉子进程及其子孙（Windows 上 edge-tts.exe / powershell.exe 会再 fork 子进程，
+ * 只杀父进程会留下孤儿继续占着管道）。
+ */
+function killTree(child) {
+  if (!child || child.killed) return;
+  const pid = child.pid;
+  try {
+    child.kill();
+  } catch {
+    /* ignore */
+  }
+  if (process.platform === 'win32' && pid) {
+    try {
+      const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+        shell: false,
+      });
+      killer.on('error', () => {});
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
+ * 异步跑一个外部命令：永不阻塞事件循环。
+ * @returns {Promise<{ok:boolean, code:number|null, stdout:string, stderr:string, timedOut:boolean}>}
+ */
+function runProcess(cmd, args, { timeoutMs = 30000, cwd } = {}) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(cmd, args, {
+        cwd,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: false,
+      });
+    } catch (e) {
+      resolve({
+        ok: false,
+        code: null,
+        stdout: '',
+        stderr: String(e?.message || e),
+        timedOut: false,
+      });
+      return;
+    }
+
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+    let timer = null;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(result);
+    };
+
+    child.stdout?.on('data', (d) => {
+      stdout += d.toString('utf8');
+    });
+    child.stderr?.on('data', (d) => {
+      stderr += d.toString('utf8');
+    });
+    child.on('error', (e) => {
+      finish({
+        ok: false,
+        code: null,
+        stdout,
+        stderr: stderr || String(e?.message || e),
+        timedOut,
+      });
+    });
+    child.on('close', (code) => {
+      finish({ ok: code === 0 && !timedOut, code, stdout, stderr, timedOut });
+    });
+
+    timer = setTimeout(() => {
+      timedOut = true;
+      killTree(child);
+    }, Math.max(1000, Number(timeoutMs) || 30000));
+  });
+}
+
+/** 探测 edge-tts 可执行入口；结果缓存，探测本身也是异步的。 */
+let edgeCmdPromise = null;
 
 function resolveEdgeCmd() {
-  if (edgeCmdCache !== undefined) return edgeCmdCache;
-  try {
-    execSync('edge-tts --version', { stdio: 'ignore', timeout: 8000 });
-    edgeCmdCache = 'edge-tts';
-    return edgeCmdCache;
-  } catch {
-    /* fallthrough */
+  if (!edgeCmdPromise) {
+    edgeCmdPromise = (async () => {
+      const candidates = [
+        { cmd: 'edge-tts', args: ['--version'], prefix: 'edge-tts' },
+        { cmd: 'python', args: ['-m', 'edge_tts', '--version'], prefix: 'python -m edge_tts' },
+        { cmd: 'py', args: ['-m', 'edge_tts', '--version'], prefix: 'py -m edge_tts' },
+      ];
+      for (const c of candidates) {
+        const r = await runProcess(c.cmd, c.args, { timeoutMs: EDGE_PROBE_TIMEOUT_MS });
+        if (r.ok) return c.prefix;
+      }
+      return null;
+    })().catch(() => null);
   }
-  try {
-    execSync('python -m edge_tts --version', { stdio: 'ignore', timeout: 8000 });
-    edgeCmdCache = 'python -m edge_tts';
-    return edgeCmdCache;
-  } catch {
-    /* fallthrough */
-  }
-  try {
-    execSync('py -m edge_tts --version', { stdio: 'ignore', timeout: 8000 });
-    edgeCmdCache = 'py -m edge_tts';
-    return edgeCmdCache;
-  } catch {
-    edgeCmdCache = null;
-    return null;
-  }
+  return edgeCmdPromise;
 }
 
 function purgeOld() {
@@ -122,7 +216,7 @@ export function chunkSpokenText(text, maxChars = TTS_TEXT_MAX, maxChunks = 6) {
   return out.slice(0, maxChunks);
 }
 
-function synthSapiOnce(t) {
+async function synthSapiOnce(t) {
   const id = crypto.createHash('sha1').update(CACHE_TAG + '\nsapi\n' + t).digest('hex').slice(0, 16);
   const wavName = `${id}.wav`;
   const wavPath = path.join(TTS_DIR, wavName);
@@ -169,10 +263,10 @@ try {
 `;
   fs.writeFileSync(ps1, script, 'utf8');
 
-  const speak = spawnSync(
+  const speak = await runProcess(
     'powershell.exe',
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1],
-    { encoding: 'utf8', timeout: 45000 },
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1],
+    { timeoutMs: SAPI_TTS_TIMEOUT_MS },
   );
   try {
     fs.unlinkSync(ps1);
@@ -180,9 +274,11 @@ try {
   } catch {
     /* ignore */
   }
-  if (speak.status !== 0 || !fs.existsSync(wavPath) || fs.statSync(wavPath).size < 64) {
-    const err = (speak.stderr || speak.stdout || 'sapi failed').toString().slice(0, 200);
-    throw new Error(`sapi: ${err}`);
+  if (!speak.ok || !fs.existsSync(wavPath) || fs.statSync(wavPath).size < 64) {
+    const why = speak.timedOut ? 'timeout' : (speak.stderr || speak.stdout || 'sapi failed');
+    const err = new Error(`sapi: ${String(why).slice(0, 200)}`);
+    err.code = speak.timedOut ? 'SAPI_TIMEOUT' : 'SAPI_FAIL';
+    throw err;
   }
   const sz = fs.statSync(wavPath).size;
   if (sz > TTS_WAV_MAX) {
@@ -199,8 +295,8 @@ try {
   return { name: wavName, mime: 'audio/wav' };
 }
 
-function synthEdgeOnce(t) {
-  const cmd = resolveEdgeCmd();
+async function synthEdgeOnce(t) {
+  const cmd = await resolveEdgeCmd();
   if (!cmd) {
     const err = new Error('edge-tts not installed');
     err.code = 'NO_EDGE';
@@ -227,11 +323,11 @@ function synthEdgeOnce(t) {
     mp3Path,
   ]);
   const bin = args.shift();
-  const r = spawnSync(bin, args, { encoding: 'utf8', timeout: 60000 });
-  if (r.status !== 0 || !fs.existsSync(mp3Path) || fs.statSync(mp3Path).size < 64) {
-    const errMsg = (r.stderr || r.stdout || 'edge-tts failed').toString().slice(0, 200);
-    const err = new Error(`edge: ${errMsg}`);
-    err.code = 'EDGE_FAIL';
+  const r = await runProcess(bin, args, { timeoutMs: EDGE_TTS_TIMEOUT_MS });
+  if (!r.ok || !fs.existsSync(mp3Path) || fs.statSync(mp3Path).size < 64) {
+    const why = r.timedOut ? 'timeout' : (r.stderr || r.stdout || 'edge-tts failed');
+    const err = new Error(`edge: ${String(why).slice(0, 200)}`);
+    err.code = r.timedOut ? 'EDGE_TIMEOUT' : 'EDGE_FAIL';
     throw err;
   }
   const sz = fs.statSync(mp3Path).size;
@@ -243,6 +339,7 @@ function synthEdgeOnce(t) {
     }
     const err = new Error(`edge mp3 too large ${sz}`);
     err.code = 'WAV_TOO_LARGE';
+    err.size = sz;
     throw err;
   }
   return { name: mp3Name, mime: 'audio/mpeg' };
@@ -271,18 +368,20 @@ export async function synthesizeSpoken(text) {
     try {
       if (tryEdge) {
         try {
-          const r = synthEdgeOnce(t);
+          const r = await synthEdgeOnce(t);
           if (attempt === 0) console.log(`[tts] engine=edge voice=${EDGE_VOICE}`);
           return r;
         } catch (e) {
           if (engine === 'edge') throw e;
-          if (e?.code !== 'NO_EDGE' && e?.code !== 'EDGE_FAIL') throw e;
+          if (e?.code !== 'NO_EDGE' && e?.code !== 'EDGE_FAIL' && e?.code !== 'EDGE_TIMEOUT') {
+            throw e;
+          }
           if (attempt === 0) console.warn(`[tts] edge unavailable (${e.message}) → sapi`);
         }
       }
       if (trySapi) {
         if (attempt === 0) console.log('[tts] engine=sapi');
-        return synthSapiOnce(t);
+        return await synthSapiOnce(t);
       }
       return null;
     } catch (e) {

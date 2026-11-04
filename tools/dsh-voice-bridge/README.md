@@ -168,3 +168,40 @@ npm install --no-save ajv@8 ajv-formats@3
 node validate.mjs
 node negative.mjs
 ```
+
+桥自身的回归自检（含 Windows 卡死复现）：
+
+```bash
+cd tools/dsh-voice-bridge
+node selftest.mjs
+```
+
+## Windows 卡死 / 数据不上报（已修）
+
+> 症状：Windows 下命令行容易卡住，墙板收不到进度与审批提醒。
+
+根因是**事件循环被冻住**：Node 单线程，同步调用一卡，整个桥都不动 ——
+HTTP 不回包、watch 定时器不跑、WS 心跳停、hint 帧发不出去。
+
+| 根因 | 修法 | 位置 |
+|------|------|------|
+| TTS 用 `spawnSync('powershell.exe')` / `spawnSync('edge-tts')` 同步合成，单次冻住 **45~60s** | 全部改异步 `spawn` + 硬超时 + 超时杀进程树 | `lib/tts.mjs` |
+| 会话日志**同步**解压，3MB 文件实测 **174ms** 冻住循环 | 异步 `zstdDecompress` + 按 mtime 缓存（命中 0ms） | `lib/tasks.mjs` |
+| `execFileSync('taskkill')` / `tasklist` 超时 15s，同步阻塞 | 改异步 `runProcess` | `lib/dsh-launch.mjs` |
+| RPC **无超时**：DSH 半死时不回包也不断链 → pending 永久挂起、连接槽位占死 | 每调用 20s 硬超时（`ETIMEDOUT`），连续 2 次即弃连接 | `lib/rpc.mjs` |
+| `host-ws` 未连接时 `send()` **静默丢帧** → 桥以为已上报，Host 实际没收到 | 改为入队（按 session+reason 去重）+ 重连自动补发 | `lib/host-ws.mjs` |
+| watch tick 可叠加 → 每 tick 一条 AA 连接，连接链堵死 | 单飞锁 + 并发限流 6 | `marketplace/server.mjs` |
+| 控制台被点选（QuickEdit）或管道断开 → 写阻塞 / `EPIPE` 杀进程 | 日志双写文件；非 TTY 不写 stdout；stdout/stderr 挂 error 兜底 | `lib/logger.mjs` |
+
+生效后实测（3MB 会话日志 / 6 段 TTS 共 14s）：
+
+- watch 定时器在 TTS 合成期间**照常触发**（旧代码整段停摆）
+- 6 个并发 `/health` 在 TTS 期间全部 200
+- watch 一轮从「阻塞几十秒」降到 **~130ms**
+
+排障：桥日志在 `_bridge_full.log`（文件落盘，控制台卡住也能查）。
+
+```bash
+node -e "import('./lib/logger.mjs').then(m=>console.log(m.logTail(80).join('\n')))"
+```
+

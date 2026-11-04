@@ -37,7 +37,18 @@ export function startHostWs(opts) {
   } = opts;
   if (!wsUrl || !token) {
     console.warn('[host-ws] skip: need NODELIO_HOST_WS + BRIDGE_TOKEN');
-    return { stop() {} };
+    return {
+      stop() {},
+      isConnected() {
+        return false;
+      },
+      sendHint() {
+        return false;
+      },
+      pendingCount() {
+        return 0;
+      },
+    };
   }
 
   let ws;
@@ -46,14 +57,63 @@ export function startHostWs(opts) {
   let reconnectTimer;
   let backoffMs = 1000;
 
+  /**
+   * 待发队列（hint 为主）。
+   * 历史事故：send() 在 WS 未 OPEN 时**静默丢弃**帧 —— 桥以为「已上报」，
+   * 实际 Host 没收到，表现为「数据不能上报」。现在改为入队，重连后补发。
+   */
+  const outbox = [];
+  const OUTBOX_MAX = 64;
+
   /* 回环 Host 会让 TTS publicBase 误判；优先用 opts.publicUrl（配置 public_url） */
   const lanBase = (opts.publicUrl && String(opts.publicUrl).replace(/\/$/, '')) ||
     `http://127.0.0.1:${lanPort}`;
 
+  /**
+   * 发送一帧。
+   * @returns {boolean} true=已交给 socket；false=未连接（已入队或被丢弃）
+   */
   function send(obj) {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(obj));
+      try {
+        ws.send(JSON.stringify(obj));
+        return true;
+      } catch (e) {
+        console.warn(`[host-ws] send failed: ${e.message}`);
+      }
     }
+    return false;
+  }
+
+  /** hint 专用：未连接时入队，重连后补发（去重按 session+reason）。 */
+  function sendOrQueue(obj) {
+    if (send(obj)) return true;
+    const key = `${obj?.type}:${obj?.reason ?? ''}:${obj?.session ?? ''}`;
+    const dup = outbox.findIndex((m) => `${m.type}:${m.reason ?? ''}:${m.session ?? ''}` === key);
+    if (dup >= 0) {
+      outbox[dup] = obj; /* 覆盖旧的同键消息，保持最新状态 */
+    } else {
+      outbox.push(obj);
+      if (outbox.length > OUTBOX_MAX) outbox.shift();
+    }
+    console.warn(
+      `[host-ws] not connected — ${obj?.type} queued (pending=${outbox.length})` +
+        ` reason=${obj?.reason ?? '-'} session=${obj?.session ?? '-'}`,
+    );
+    return false;
+  }
+
+  /** 连接建立后补发队列。 */
+  function flushOutbox() {
+    if (outbox.length === 0) return;
+    const pending = outbox.splice(0, outbox.length);
+    let sent = 0;
+    for (const obj of pending) {
+      if (send(obj)) sent += 1;
+      else outbox.push(obj); /* 仍发不出去 → 放回队首 */
+    }
+    if (sent > 0) console.log(`[host-ws] outbox flushed ${sent}/${pending.length}`);
+    if (outbox.length > 0) console.warn(`[host-ws] outbox still pending ${outbox.length}`);
   }
 
   /**
@@ -216,6 +276,8 @@ export function startHostWs(opts) {
       clearInterval(pingTimer);
       pingTimer = setInterval(() => send({ type: 'ping' }), 25000);
       if (typeof onReady === 'function') onReady();
+      /* 重连后补发断线期间攒下的 hint */
+      flushOutbox();
     });
 
     ws.on('message', (data) => {
@@ -317,6 +379,10 @@ export function startHostWs(opts) {
   connect();
 
   return {
+    /** WS 当前是否真的连上了（不是「有 client 对象」） */
+    isConnected() {
+      return Boolean(ws && ws.readyState === WebSocket.OPEN);
+    },
     /** 经 WS 上报 Notice hint（Host 映射为 kind=notice；兼容旧 reason） */
     sendHint(reason, sessionId, extra = {}) {
       const mode =
@@ -329,7 +395,7 @@ export function startHostWs(opts) {
           : reason === 'completed'
             ? '有任务已完成'
             : undefined);
-      send({
+      const frame = {
         type: 'hint',
         app_id: extra.app_id || 'dsh.status',
         instance_id: extra.instance_id || undefined,
@@ -338,7 +404,13 @@ export function startHostWs(opts) {
         title,
         session: sessionId || undefined,
         panel_device_id: panelDeviceId || undefined,
-      });
+      };
+      /* 未连接时不丢：入队，重连后补发 */
+      return sendOrQueue(frame);
+    },
+    /** 待发队列长度（诊断用） */
+    pendingCount() {
+      return outbox.length;
     },
     stop() {
       stopped = true;
