@@ -47,7 +47,7 @@
   ],
   "display": {
     "card_type": "list",
-    "title": "DSH 任务",
+    "title": "deepseek工作台",
     "preferred_surface": "card",
     "density": "normal",
     "max_items": 10,

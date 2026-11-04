@@ -1257,6 +1257,9 @@ void nodelio_mcp_register_tools(void)
             }
             /* DSH 进度：同步 invoke，把 spoken 摘要交回模型播报 */
             const bool dsh_status = name.find("进度") != std::string::npos ||
+                                    name.find("工作台") != std::string::npos ||
+                                    name.find("deepseek") != std::string::npos ||
+                                    name.find("DeepSeek") != std::string::npos ||
                                     name.find("派活") != std::string::npos ||
                                     name.find("dsh.task") != std::string::npos ||
                                     name.find("dsh_task") != std::string::npos ||

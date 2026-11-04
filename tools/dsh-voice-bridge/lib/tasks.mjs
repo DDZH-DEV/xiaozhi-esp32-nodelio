@@ -317,6 +317,11 @@ export function displayTaskSubtitle(liveStatus, folded, needsYou) {
     const step = f.step > 0 ? ` · 第${f.step}步` : '';
     return clip(`${where}${step}`, 120);
   }
+  const turnFailed = Boolean(f.lastEndReason && FAILURE_REASONS.has(f.lastEndReason));
+  /* 本轮已完成且有最终回复：中途工具报错不是结果（例如推送重试前的 exit 1）。 */
+  if (!turnFailed && f.lastAssistantText) {
+    return clip(f.lastAssistantText, 120);
+  }
   const turnFailures = f.turnFailures ?? [];
   if (turnFailures.length) {
     const last = turnFailures[turnFailures.length - 1];

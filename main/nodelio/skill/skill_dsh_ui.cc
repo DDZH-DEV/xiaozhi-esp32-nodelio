@@ -968,6 +968,36 @@ void nodelio_skill_dsh_on_confirm_pending(const char *instruction)
     }
 }
 
+/** 续聊详情在新结果回来前，清掉上一轮正文和报错副标题。 */
+static void dsh_hold_detail_for_new_turn(const char *instruction)
+{
+    if (!s_have_env || !s_env || !s_env->detail_body || !s_env->detail_body[0] ||
+        strstr(s_env->app_id, "dsh") == nullptr || s_env->track_n <= 0) {
+        return;
+    }
+    char sess[80] = {0};
+    char ws[200] = {0};
+    dsh_extract_arm(&s_env->tracks[0], ws, sizeof(ws), sess, sizeof(sess));
+    if (s_dsh_focus_sess[0] && sess[0] && strcmp(sess, s_dsh_focus_sess) != 0) {
+        return;
+    }
+    static const char kWait[] = "本轮已发送，完成后显示结果。";
+    char *dup = static_cast<char *>(heap_caps_malloc(sizeof(kWait), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!dup) {
+        dup = static_cast<char *>(malloc(sizeof(kWait)));
+    }
+    if (!dup) {
+        return;
+    }
+    memcpy(dup, kWait, sizeof(kWait));
+    heap_caps_free(s_env->detail_body);
+    s_env->detail_body = dup;
+    snprintf(s_env->tracks[0].artist, sizeof(s_env->tracks[0].artist), "执行中");
+    if (instruction && instruction[0]) {
+        snprintf(s_env->tracks[0].title, sizeof(s_env->tracks[0].title), "%s", instruction);
+    }
+}
+
 void nodelio_skill_dsh_on_dispatched(const char *instruction)
 {
     if (s_dsh_phase == DSH_UI_IDLE && !s_dsh_focus_sess[0]) {
@@ -995,6 +1025,7 @@ void nodelio_skill_dsh_on_dispatched(const char *instruction)
             s_dsh_last_instr[36] = '\0';
         }
     }
+    dsh_hold_detail_for_new_turn(instruction);
     DisplayLockGuard lock(nl_ov_disp());
     if (!lock) {
         return;

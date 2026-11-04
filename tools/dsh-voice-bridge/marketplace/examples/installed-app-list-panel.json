@@ -51,7 +51,7 @@
       "market_name": "DSH 工作台",
       "app_id": "dsh.status",
       "version": "1.0.0",
-      "name": "DSH 进度",
+      "name": "deepseek工作台",
       "summary": "查任务跑到第几步、卡在哪个工具",
       "categories": ["tool"],
       "min_protocol": 1,
@@ -74,7 +74,7 @@
       },
       "config_present": true,
       "deprecated": false,
-      "ui": { "entry_title": "DSH 进度", "entry_icon": "activity" }
+      "ui": { "entry_title": "deepseek工作台", "entry_icon": "activity" }
     },
     {
       "instance_id": "inst_dsh_answer_01",

@@ -1165,6 +1165,8 @@ bool nl_ov_apps_open_by_query(const char *query)
                strstr(query, "任务列表") != nullptr || strstr(query, "任务详情") != nullptr ||
                strstr(query, "任务应用") != nullptr || strstr(query, "任务表情") != nullptr ||
                strstr(query, "dsh.status") != nullptr || strstr(query, "进度") != nullptr ||
+               strstr(query, "工作台") != nullptr || strstr(query, "deepseek") != nullptr ||
+               strstr(query, "DeepSeek") != nullptr ||
                strstr(query, "DSH") != nullptr || strstr(query, "dsh") != nullptr ||
                strstr(query, "任务") != nullptr) {
         /* 打开 DSH / 查看任务 / 派活 都进进度列表。带指令的投递走「让它…」。 */

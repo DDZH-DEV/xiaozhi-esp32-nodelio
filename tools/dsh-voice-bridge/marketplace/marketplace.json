@@ -36,10 +36,10 @@
     },
     {
       "app_id": "dsh.status",
-      "name": "DSH 进度",
+      "name": "deepseek工作台",
       "version": "1.0.0",
       "package_url": "/nodelio-dsh-market/packages/dsh.status/1.0.0.json",
-      "package_sha256": "9ac21edec942bfd45596d3df9bbcde121f8ccf8d28a5b758287ce1f282659c65",
+      "package_sha256": "eb0c8c682f2d8065b03f0ebec54344fed8e821b7b77a2580d0bbe15054e658d8",
       "summary": "查任务跑到第几步、卡在哪个工具",
       "categories": [
         "tool"

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "app_id": "dsh.status",
   "version": "1.0.0",
-  "name": "DSH 进度",
+  "name": "deepseek工作台",
   "description": "查询 DSH 任务进度：顶栏横滑工作区 + 当前区会话列表；可指定 workspace/session。返回 list + spoken。",
   "publisher": {
     "name": "NodeLio",
@@ -73,7 +73,7 @@
     "description": "Query DSH task progress by workspace or session"
   },
   "ui": {
-    "entry_title": "DSH 进度",
+    "entry_title": "deepseek工作台",
     "entry_icon": "activity"
   }
 }

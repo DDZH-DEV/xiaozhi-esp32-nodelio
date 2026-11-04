@@ -1029,7 +1029,7 @@ async function handleStatus(client, query, request, body = {}) {
       app_id: 'dsh.status',
       status: 'ok',
       content: [],
-      display: statusDisplay('DSH 任务', filters, 10),
+      display: statusDisplay('deepseek工作台', filters, 10),
       /* 进度卡禁止 spoken.audio：墙板 NotifyPlayer 会 Suspend MQTT，再唤醒易 hello 超时 */
       spoken: speak(speakWorkspaceList(wsList)),
     };
@@ -1060,14 +1060,18 @@ async function handleStatus(client, query, request, body = {}) {
         app_id: 'dsh.status',
         status: 'ok',
         content: [],
-        display: statusDisplay('DSH 任务', filters, 6),
+        display: statusDisplay('deepseek工作台', filters, 6),
         spoken: speak('没找到这个任务。'),
       };
     }
     const detailed = [await readTask(client, pool[0])];
     const t = detailed[0];
-    const notice = primaryNotice(t.notices);
-    const nKind = classifyNotice(notice);
+    const st = String(t.state?.status ?? '');
+    const needsYou = ATTENTION.has(st);
+    const running = st === 'running' || Boolean(t.folded?.running);
+    /* 只有会话仍在等确认时才用 notice。结束后残留的提问会盖住真正的末轮回复。 */
+    const notice = needsYou ? primaryNotice(t.notices) : null;
+    const nKind = needsYou ? classifyNotice(notice) : null;
     const ask = displayTaskTitle(t.session, t.folded);
 
     /* 可点选提问（含多题）：列表点「选择」；多题由桥草稿攒齐再 RPC */
@@ -1089,10 +1093,15 @@ async function handleStatus(client, query, request, body = {}) {
       }
     }
 
-    const row = sessionRowWithArm(t.session, t.state, t.folded, t.notices);
+    const row = sessionRowWithArm(t.session, t.state, t.folded, needsYou ? t.notices : []);
     let detailBody = '';
     let spokenText = '';
-    if (nKind === 'input_request') {
+    if (running && !needsYou) {
+      /* 新一轮已开始：上一轮助手正文还留在日志里，不能当成这次的结果。 */
+      detailBody = '本轮还在执行，完成后显示结果。';
+      spokenText = '已发送，正在执行。';
+      row.subtitle = displayTaskSubtitle(st || 'running', t.folded, false);
+    } else if (nKind === 'input_request') {
       detailBody = formatInputRequestPlain(notice);
       spokenText = inputRequestSpoken(notice);
     } else {
@@ -1125,7 +1134,7 @@ async function handleStatus(client, query, request, body = {}) {
       app_id: 'dsh.status',
       status: 'ok',
       content: [],
-      display: statusDisplay('DSH 任务', filters, 6),
+      display: statusDisplay('deepseek工作台', filters, 6),
       spoken: speak(`${leaf}没有任务。横滑换工作区，或说「让它…」派活。`),
     };
   }
@@ -1140,7 +1149,7 @@ async function handleStatus(client, query, request, body = {}) {
     app_id: 'dsh.status',
     status: 'ok',
     content: detailed.map((t) => sessionRowWithArm(t.session, t.state, t.folded, t.notices)),
-    display: statusDisplay('DSH 任务', filters, 10),
+    display: statusDisplay('deepseek工作台', filters, 10),
     spoken: speak(speakStatusList(detailed)),
   };
 }
@@ -1448,7 +1457,7 @@ async function handleTask(client, body) {
     app_id: 'dsh.status',
     status: 'ok',
     content,
-    display: statusDisplay(`DSH 任务`, filters, 10),
+    display: statusDisplay('deepseek工作台', filters, 10),
     spoken: speak(spokenText),
   };
 }
