@@ -647,6 +647,14 @@ function samePath(a, b) {
   return Boolean(na) && na === nb;
 }
 
+/** 空闲会话若没选模型，startTurn 会被 DSH 拒掉。 */
+function sessionHasModel(state) {
+  const sel = state?.metadata?.modelSelection;
+  if (!sel || typeof sel !== 'object') return false;
+  const id = sel.model || sel.selectionId || sel.id || '';
+  return String(id).trim() !== '';
+}
+
 /**
  * DSH JSON-RPC 常 resolve 业务失败体 `{ ok:false, code, message }`（不 throw）。
  * 返回可读失败信息；成功则 null。
@@ -666,7 +674,7 @@ function dshResultFail(result) {
 function mapCreateFailSpoken(message) {
   const m = String(message || '');
   if (/choose a model|select a model|选.*模型|permissions|Agent mode|agentPreset/i.test(m)) {
-    return '新建失败：请打开桥配置页选默认模型与权限，或把 APP 默认工作区改成已有空闲会话的目录。';
+    return '派活失败：这个会话没有选模型。请在电脑上选好模型，或到桥配置页设好默认模型。';
   }
   if (/INVALID_PARAMS/i.test(m)) {
     return '新建任务参数无效，请换工作区或检查 DSH 设置。';
@@ -1213,18 +1221,33 @@ async function handleTask(client, body) {
       return errorEnvelope('dsh.task', 'not_installed', '找不到该会话。', '找不到这个任务。');
     }
     workspace = target.cwd || workspace;
+    const pinnedState = await client
+      .call('session.getState', { externalSessionId: target.externalSessionId })
+      .catch(() => null);
+    const injectModel = pinnedState != null && !sessionHasModel(pinnedState);
     logTask('startTurn by session', {
       session: target.externalSessionId,
       cwd: target.cwd,
+      inject_model: injectModel,
     });
     let startResult;
     try {
-      startResult = await client.call('session.startTurn', {
+      const turnArgs = {
         sessionId: target.sessionId,
         externalSessionId: target.externalSessionId,
         content: instruction,
         clientMessageId: crypto.randomUUID(),
-      });
+      };
+      if (injectModel) {
+        const createOpts = await resolveCreateParams(client, cfg());
+        turnArgs.selections = createOpts.selections;
+        turnArgs.agentPreset = createOpts.agentPreset;
+        logTask('startTurn inject model', {
+          session: target.externalSessionId,
+          model: createOpts.resolved.model_title,
+        });
+      }
+      startResult = await client.call('session.startTurn', turnArgs);
     } catch (e) {
       logTask('startTurn throw', { err: e.message, code: e.code });
       if (isDshOfflineError(e)) {
@@ -1258,10 +1281,13 @@ async function handleTask(client, body) {
         const state = await client
           .call('session.getState', { externalSessionId: session.externalSessionId })
           .catch(() => null);
-        if (state?.status === 'idle') {
-          target = session;
-          break;
+        if (state?.status !== 'idle') continue;
+        if (!sessionHasModel(state)) {
+          logTask('skip idle without model', { session: session.externalSessionId });
+          continue;
         }
+        target = session;
+        break;
       }
     } else {
       logTask('force new session — skip idle reuse');

@@ -218,7 +218,13 @@ async function showTask(client, reference, flags) {
       const state = await client.call('session.getState', {
         externalSessionId: session.externalSessionId,
       });
-      if (state.status === 'idle') return { session, created: false };
+      if (state.status === 'idle') {
+        const sel = state.metadata?.modelSelection;
+        const modelId =
+          sel && typeof sel === 'object' ? sel.model || sel.selectionId || sel.id || '' : '';
+        if (!String(modelId).trim()) continue;
+        return { session, created: false };
+      }
     } catch {
       // fall through
     }
