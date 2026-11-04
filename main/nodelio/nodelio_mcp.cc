@@ -1239,7 +1239,7 @@ void nodelio_mcp_register_tools(void)
         "打开已装应用。听歌/曲库→name=曲库；电台/播客/新闻/天气同理。"
         "内存卡/TF卡/SD卡里的歌→name=内存卡（本机读卡，不走云端）。"
         "任务/DSH进度→name=查看任务（返回摘要请原文念）。禁云端 play_music。"
-        "name=曲库/内存卡/音乐/新闻/天气/电台/播客/空气/每日一篇/每日一句/DSH派活/查看任务 或 app_id。",
+        "name=曲库/内存卡/音乐/新闻/天气/电台/播客/空气/每日一篇/每日一句/查看任务 或 app_id。",
         PropertyList({Property("name", kPropertyTypeString)}),
         [](const PropertyList &properties) -> ToolResult {
             std::string name = properties["name"].value<std::string>();
@@ -1257,6 +1257,9 @@ void nodelio_mcp_register_tools(void)
             }
             /* DSH 进度：同步 invoke，把 spoken 摘要交回模型播报 */
             const bool dsh_status = name.find("进度") != std::string::npos ||
+                                    name.find("派活") != std::string::npos ||
+                                    name.find("dsh.task") != std::string::npos ||
+                                    name.find("dsh_task") != std::string::npos ||
                                     name.find("任务情况") != std::string::npos ||
                                     name.find("查看任务") != std::string::npos ||
                                     name.find("任务列表") != std::string::npos ||
@@ -1266,13 +1269,9 @@ void nodelio_mcp_register_tools(void)
                                     name.find("DSH任务") != std::string::npos ||
                                     name.find("dsh任务") != std::string::npos ||
                                     name.find("dsh.status") != std::string::npos ||
-                                    (name.find("任务") != std::string::npos &&
-                                     name.find("派活") == std::string::npos) ||
-                                    (name.find("DSH") != std::string::npos &&
-                                     name.find("派活") == std::string::npos) ||
-                                    (name.find("dsh") != std::string::npos &&
-                                     name.find("task") == std::string::npos &&
-                                     name.find("派活") == std::string::npos);
+                                    name.find("任务") != std::string::npos ||
+                                    name.find("DSH") != std::string::npos ||
+                                    name.find("dsh") != std::string::npos;
             ESP_LOGI(TAG, "MCP open_app dsh_status=%d", dsh_status ? 1 : 0);
             if (dsh_status) {
                 nodelio_nvs_config_t cfg{};
@@ -1453,7 +1452,7 @@ void nodelio_mcp_register_tools(void)
         "用户说换一首/下一首/切歌→next；上一首→prev。"
         "「播放第N首」→ op=play index=N（在当前列表里选，勿重新搜歌）。"
         "op=list=读出当前歌单曲名（回答「第一首是什么」前先看它）。"
-        "电台 live 无切台（prev/next 会失败）；换台请让用户点列表或说换台回列表。"
+        "电台/播客的 prev/next 在当前列表里换台或换集。直播流断开不会自动跳台。"
         "stop/close=停播并关掉技能弹窗（关闭电台/播客/曲库时用，勿只 goto_page）。"
         "随便放一首用 play，勿重新搜索。",
         PropertyList({

@@ -121,7 +121,7 @@ void nodelio_skill_news_sync_read_btn(void);
 /** 当前技能是否为 news_list 且卡/播放层仍在前台（语音「下一篇」仅此时命中）。 */
 bool nodelio_skill_news_ui_active(void);
 
-/** 当前 media_kind 为 live（电台）；切歌口令应失败，「换台」回列表。 */
+/** 当前是直播电台。手动上一台/下一台可用；流断开时不要自动跳台。 */
 bool nodelio_skill_is_live_radio(void);
 
 /** 展开当前 music_list 列表卡（换台）；无列表返回 false。 */

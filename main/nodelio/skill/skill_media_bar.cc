@@ -59,22 +59,14 @@ bool nodelio_skill_mini_fab_visible(void)
     return s_mini_fab && !lv_obj_has_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN);
 }
 
-/** 按 media_kind 刷新 now_playing 副文案与切台键可见性 */
+/** 按 media_kind 刷新 now_playing 副文案。上一首/下一首对曲库、电台、播客都保留。 */
 void apply_now_media_chrome(bool playing, bool paused, bool list_open)
 {
     if (s_now_prev_btn) {
-        if (env_media_is_live()) {
-            lv_obj_add_flag(s_now_prev_btn, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_clear_flag(s_now_prev_btn, LV_OBJ_FLAG_HIDDEN);
-        }
+        lv_obj_clear_flag(s_now_prev_btn, LV_OBJ_FLAG_HIDDEN);
     }
     if (s_now_next_btn) {
-        if (env_media_is_live()) {
-            lv_obj_add_flag(s_now_next_btn, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_clear_flag(s_now_next_btn, LV_OBJ_FLAG_HIDDEN);
-        }
+        lv_obj_clear_flag(s_now_next_btn, LV_OBJ_FLAG_HIDDEN);
     }
     if (!s_now_sub) {
         return;
@@ -309,9 +301,6 @@ void set_pause_btn_icon(bool playing)
 
 bool nodelio_skill_media_prev(void)
 {
-    if (env_media_is_live()) {
-        return false;
-    }
     int idx = neighbor_playable(s_play_idx, -1);
     if (idx < 0) {
         return false;
@@ -322,9 +311,6 @@ bool nodelio_skill_media_prev(void)
 
 bool nodelio_skill_media_next(void)
 {
-    if (env_media_is_live()) {
-        return false;
-    }
     int idx = neighbor_playable(s_play_idx, +1);
     if (idx < 0) {
         return false;
@@ -434,30 +420,36 @@ bool nodelio_skill_media_is_sd(void)
     return strncmp(s_env->tracks[0].playback_url, "sd://", 5) == 0;
 }
 
+static void anim_mini_spin(void *var, int32_t v)
+{
+    lv_obj_set_style_transform_rotation((lv_obj_t *)var, v, 0);
+}
+
 void stop_mini_pulse(void)
 {
-    if (s_mini_pulse_on && s_mini_fab) {
-        lv_anim_delete(s_mini_fab, anim_border_opa);
-        s_mini_pulse_on = false;
-        lv_obj_set_style_border_opa(s_mini_fab, SKILL_BORDER_OPA, 0);
+    if (s_mini_ic) {
+        lv_anim_delete(s_mini_ic, anim_mini_spin);
+        lv_obj_set_style_transform_rotation(s_mini_ic, 0, 0);
     }
+    s_mini_pulse_on = false;
 }
 
 void start_mini_pulse(void)
 {
-    if (!s_mini_fab) {
+    if (!s_mini_ic) {
         return;
     }
     stop_mini_pulse();
+    lv_obj_set_style_transform_pivot_x(s_mini_ic, LV_PCT(50), 0);
+    lv_obj_set_style_transform_pivot_y(s_mini_ic, LV_PCT(50), 0);
     lv_anim_t a;
     lv_anim_init(&a);
-    lv_anim_set_var(&a, s_mini_fab);
-    lv_anim_set_values(&a, 90, 240);
-    lv_anim_set_time(&a, 900);
-    lv_anim_set_playback_time(&a, 900);
+    lv_anim_set_var(&a, s_mini_ic);
+    lv_anim_set_values(&a, 0, 3600);
+    lv_anim_set_time(&a, 2400);
     lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-    lv_anim_set_exec_cb(&a, anim_border_opa);
+    lv_anim_set_path_cb(&a, lv_anim_path_linear);
+    lv_anim_set_exec_cb(&a, anim_mini_spin);
     lv_anim_start(&a);
     s_mini_pulse_on = true;
 }

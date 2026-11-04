@@ -79,10 +79,10 @@ static void with_builtin_daily(nl_app_item* items, int& n) {
     n = keep + 1;
 }
 
-/** 仅供进度卡「允许/拒绝」按钮 invoke，不进应用列表 / 语音打开。 */
+/** 进度卡内部动作：审批按钮与派活投递。不进应用列表 / 语音打开。 */
 static bool skill_is_button_only(const char *id)
 {
-    return id && strstr(id, "dsh.answer") != nullptr;
+    return id && (strstr(id, "dsh.answer") != nullptr || strstr(id, "dsh.task") != nullptr);
 }
 static int s_item_n;
 static bool s_loading;
@@ -202,9 +202,9 @@ static void open_app_at(int idx, bool reset_daily = true) {
         nl_ov_toast("本机暂不支持");
         return;
     }
-    /* 派活须带 instruction；点应用只提示口令 */
+    /* 派活无独立入口；误点则打开进度 */
     if (strstr(s_items[idx].id, "dsh.task") != nullptr) {
-        (void)nl_ov_apps_invoke_dsh_task(nullptr);
+        nl_ov_apps_invoke_dsh_status(nullptr, nullptr);
         return;
     }
     s_focus_idx = idx;
@@ -1157,24 +1157,17 @@ bool nl_ov_apps_open_by_query(const char *query)
         return true;
     }
 
-    /* 裸「派活」无 instruction → 只提示，避免 error 卡「缺少参数」 */
-    if (strcmp(query, "派活") == 0 || strcmp(query, "DSH派活") == 0 ||
-        strcmp(query, "dsh.task") == 0 || strcmp(query, "dsh_task") == 0) {
-        return nl_ov_apps_invoke_dsh_task(nullptr);
-    }
-
-    /* DSH 意图优先于模糊名匹配：裸「DSH」曾误开「DSH 派活」→ 缺 instruction 报错 */
+    /* DSH 意图优先于模糊名匹配。派活没有独立页，打开进度。 */
     const char *alias_id = nullptr;
-    if (strstr(query, "派活") != nullptr || strstr(query, "dsh.task") != nullptr) {
-        /* 「派活查一下…」少见；含派活且还有别的字 → 当进度？仍提示派活口令 */
-        return nl_ov_apps_invoke_dsh_task(nullptr);
-    } else if (strstr(query, "任务情况") != nullptr || strstr(query, "查看任务") != nullptr ||
+    if (strstr(query, "派活") != nullptr || strstr(query, "dsh.task") != nullptr ||
+        strstr(query, "dsh_task") != nullptr || strstr(query, "任务情况") != nullptr ||
+        strstr(query, "查看任务") != nullptr ||
                strstr(query, "任务列表") != nullptr || strstr(query, "任务详情") != nullptr ||
                strstr(query, "任务应用") != nullptr || strstr(query, "任务表情") != nullptr ||
                strstr(query, "dsh.status") != nullptr || strstr(query, "进度") != nullptr ||
                strstr(query, "DSH") != nullptr || strstr(query, "dsh") != nullptr ||
-               (strstr(query, "任务") != nullptr && strstr(query, "派活") == nullptr)) {
-        /* 含「打开DSH / 查看任务 / 任务应用」一律进度列表；派活须带「派活」 */
+               strstr(query, "任务") != nullptr) {
+        /* 打开 DSH / 查看任务 / 派活 都进进度列表。带指令的投递走「让它…」。 */
         alias_id = "dsh.status";
     } else if (strstr(query, "曲库") || strstr(query, "取库") || strstr(query, "去库") ||
                strstr(query, "趣库") || strstr(query, "音乐") || strstr(query, "music") ||

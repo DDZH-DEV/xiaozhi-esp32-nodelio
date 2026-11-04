@@ -1002,7 +1002,8 @@ void nodelio_media_on_playback_ended(bool success)
         s_playing = false;
         s_started_url[0] = '\0';
         s_retry_count = 0;
-        if (nodelio_skill_media_next()) {
+        /* 直播流断开不算播完，不要自动跳到下一台。播客单集和曲库仍切下一首。 */
+        if (!nodelio_skill_is_live_radio() && nodelio_skill_media_next()) {
             /* play_track 入队时已置 s_playing，供外层跳过 StopNotification */
             return;
         }

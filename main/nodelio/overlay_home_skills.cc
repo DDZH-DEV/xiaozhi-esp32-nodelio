@@ -668,7 +668,8 @@ void nl_ov_home_skills_ingest_skills_root(const cJSON *root)
             }
             nl_home_skill *row = &items[n];
             copy_json_field(row->id, sizeof(row->id), it, "skillId");
-            if (!row->id[0] || strstr(row->id, "dsh.answer") != nullptr) {
+            if (!row->id[0] || strstr(row->id, "dsh.answer") != nullptr ||
+                strstr(row->id, "dsh.task") != nullptr) {
                 continue;
             }
             copy_json_field(row->name, sizeof(row->name), it, "name");
@@ -770,8 +771,9 @@ void nl_ov_home_skills_ensure_fetched(void)
                         }
                         nl_home_skill *row = &items[n];
                         copy_json_field(row->id, sizeof(row->id), it, "skillId");
-                        /* dsh.answer 仅审批按钮，不进首页钉选条 */
-                        if (!row->id[0] || strstr(row->id, "dsh.answer") != nullptr) {
+                        /* dsh.answer / dsh.task 只给进度卡用，不进首页钉选条 */
+                        if (!row->id[0] || strstr(row->id, "dsh.answer") != nullptr ||
+                            strstr(row->id, "dsh.task") != nullptr) {
                             continue;
                         }
                         copy_json_field(row->name, sizeof(row->name), it, "name");

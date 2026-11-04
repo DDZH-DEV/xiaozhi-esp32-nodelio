@@ -2243,6 +2243,8 @@ static void ensure_card(void)
     lv_obj_set_style_text_font(s_mini_ic, &font_material_symbols_20_4, 0);
     lv_label_set_text(s_mini_ic, MATERIAL_SYMBOLS_MUSIC_NOTE);
     lv_obj_set_style_text_color(s_mini_ic, UI_ACCENT_SOFT, 0);
+    lv_obj_set_style_transform_pivot_x(s_mini_ic, LV_PCT(50), 0);
+    lv_obj_set_style_transform_pivot_y(s_mini_ic, LV_PCT(50), 0);
     lv_obj_center(s_mini_ic);
 
     ensure_chrome_order();
@@ -2320,8 +2322,6 @@ void apply_card_chrome(void)
     } else {
         lv_obj_set_height(s_card, hmax);
         lv_obj_set_style_max_height(s_card, hmax, 0);
-        /* 播放条叠在框底内侧，列表在这条垫高之上结束 */
-        lv_obj_set_style_pad_bottom(s_card, dock ? (SKILL_NOW_H + 18) : 12, 0);
         if (s_card_list) {
             lv_obj_set_flex_grow(s_card_list, 1);
         }
@@ -2329,6 +2329,10 @@ void apply_card_chrome(void)
     /* 日历用更紧的内边距，把省下来的高度全给网格。 */
     lv_obj_set_style_pad_all(s_card, s_hdr_minimal ? 8 : 12, 0);
     lv_obj_set_style_pad_row(s_card, s_hdr_minimal ? 0 : 8, 0);
+    /* pad_all 会清掉底边距。播放条叠在框底，列表要留出它的高度，最后几条才能滚上来。 */
+    if (dock) {
+        lv_obj_set_style_pad_bottom(s_card, SKILL_NOW_H + 18, 0);
+    }
 }
 
 void fill_list(void)
