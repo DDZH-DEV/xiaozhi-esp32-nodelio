@@ -2116,6 +2116,12 @@ void Application::ContinueListeningAfterLocalSkill()
         return;
     }
     ESP_LOGI(TAG, "re-arm SendStartListening after local skill");
+    /* 已在聆听：只补 listen.start。再走 StartListeningAudio 会 ResetDecoder，
+     * 和仍在解码的云端 TTS 叠在一起。 */
+    if (audio_service_.IsAudioProcessorRunning()) {
+        protocol_->SendStartListening(listening_mode_);
+        return;
+    }
     StartListeningAudio();
 }
 

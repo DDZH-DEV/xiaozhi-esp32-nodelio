@@ -643,7 +643,13 @@ void AudioService::OpusCodecTask() {
                     .len = (uint32_t)encoder_outbuf_size_,
                     .encoded_bytes = 0,
                 };
-                auto ret = esp_opus_enc_process(opus_encoder_, &in, &out);
+                /* 与 ResetDecoder 的 esp_opus_dec_reset 互斥。编/解码共用库内 scratch，
+                 * DSH 本地打断云端 TTS 时两边叠上会在 celt_preemphasis 里写穿。 */
+                esp_audio_err_t ret;
+                {
+                    std::lock_guard<std::mutex> decoder_lock(decoder_mutex_);
+                    ret = esp_opus_enc_process(opus_encoder_, &in, &out);
+                }
                 if (ret == ESP_AUDIO_ERR_OK) {
                     packet->payload.resize(out.encoded_bytes);
 
@@ -1018,8 +1024,9 @@ void AudioService::EnableVoiceProcessing(bool enable) {
         if (!InitializeAudioEngine()) {
             return;
         }
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-        /* 云端问候 UDP 可能已在队列/解码中；ResetDecoder 会 ++generation 丢掉在途 PCM → 有字无声 */
+#if CONFIG_NODELIO_PANEL
+        /* 云端 UDP 可能已在队列/解码中。ResetDecoder 会清在途 PCM，并和正在跑的
+         * opus 编码抢同一块库 scratch（P4 上表现为 celt_preemphasis 存储异常重启）。 */
         bool playback_busy = false;
         {
             std::lock_guard<std::mutex> lock(audio_queue_mutex_);
@@ -1027,7 +1034,7 @@ void AudioService::EnableVoiceProcessing(bool enable) {
                             decode_in_flight_ || output_in_flight_;
         }
         if (playback_busy) {
-            ESP_LOGW(TAG, "EnableVoiceProcessing: skip ResetDecoder (cloud TTS in flight)");
+            ESP_LOGW(TAG, "EnableVoiceProcessing: skip ResetDecoder (playback in flight)");
         } else {
             ResetDecoder();
         }
