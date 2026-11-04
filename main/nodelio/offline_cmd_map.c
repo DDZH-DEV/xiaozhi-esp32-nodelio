@@ -1900,9 +1900,9 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
         const bool keep_listen = nodelio_offline_query_keeps_listening(phrase);
         ESP_LOGI(TAG, "system phrase: named open hit keep_cloud=%d keep_listen=%d", keep_cloud ? 1 : 0,
                  keep_listen ? 1 : 0);
-        /* 媒体须退会话才能 HTTP 播；天气问内容 keep_cloud；新闻/每日一篇 keep_listen 追问要不要读 */
+        /* 先不退会话。应用不存在要留在聆听；媒体在 open 确认能打开后再退。 */
         if (end_session) {
-            *end_session = !keep_listen;
+            *end_session = false;
         }
         if (keep_cloud_tts) {
             *keep_cloud_tts = keep_cloud;
@@ -1919,7 +1919,7 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
         ESP_LOGI(TAG, "system phrase: intent open hit keep_cloud=%d keep_listen=%d",
                  keep_cloud ? 1 : 0, keep_listen ? 1 : 0);
         if (end_session) {
-            *end_session = !keep_listen;
+            *end_session = false;
         }
         if (keep_cloud_tts) {
             *keep_cloud_tts = keep_cloud;
@@ -1936,7 +1936,7 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
         ESP_LOGI(TAG, "system phrase: bare open hit keep_cloud=%d keep_listen=%d", keep_cloud ? 1 : 0,
                  keep_listen ? 1 : 0);
         if (end_session) {
-            *end_session = !keep_listen;
+            *end_session = false;
         }
         if (keep_cloud_tts) {
             *keep_cloud_tts = keep_cloud;

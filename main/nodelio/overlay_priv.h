@@ -326,6 +326,8 @@ void nl_ov_open_settings_detail(set_page_id_t page);
 /** 字号变更后重建设置列表；若子页开着则按原页重开。 */
 void nl_ov_settings_reapply_text_scale(void);
 void nl_ov_stop_sys_monitor(void);
+/** 按应用名/app_id 子串能否打开（不切页、不请求）。未命中返回 false */
+bool nl_ov_apps_query_resolves(const char *query);
 /** 按应用名/app_id 子串打开已装应用（语音）；未命中返回 false */
 bool nl_ov_apps_open_by_query(const char *query);
 

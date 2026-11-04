@@ -1173,7 +1173,7 @@ void Application::InitializeProtocol() {
                                  "stt local-route: system/open_app hit end_session=%d keep_cloud=%d",
                                  end_session ? 1 : 0, keep_cloud_tts ? 1 : 0);
                         if (end_session) {
-                            /* 关播放器/开曲库等：退会话；冷却期内丢弃云端「找不到应用」 */
+                            /* 重启/配网/切歌：退会话。打开应用不在这里退，打不开要留在聆听。 */
                             dsh_local_open_cooldown_until_us_ =
                                 esp_timer_get_time() + (int64_t)20000 * 1000;
                             EndVoiceSessionAfterLocalSkill();

@@ -1123,13 +1123,32 @@ bool nl_ov_apps_invoke_dsh_task(const char* instruction, const char* workspace,
     return true;
 }
 
-bool nl_ov_apps_open_by_query(const char *query)
+enum {
+    OPEN_PLAN_NONE = 0,
+    OPEN_PLAN_PAGE,
+    OPEN_PLAN_SD,
+    OPEN_PLAN_SKILL,
+};
+
+struct OpenPlan {
+    int kind;
+    char sid[72];
+};
+
+/** 只判断打不打得开，不切页、不请求。sid 拷进 plan，避免指向列表内部。 */
+static int plan_open_query(const char *query, OpenPlan *plan, bool log)
 {
+    plan->kind = OPEN_PLAN_NONE;
+    plan->sid[0] = '\0';
     if (!query || !query[0]) {
-        ESP_LOGW(TAG, "open_by_query: empty");
-        return false;
+        if (log) {
+            ESP_LOGW(TAG, "open_by_query: empty");
+        }
+        return OPEN_PLAN_NONE;
     }
-    ESP_LOGI(TAG, "open_by_query q='%s' installed=%d", query, s_item_n);
+    if (log) {
+        ESP_LOGI(TAG, "open_by_query q='%s' installed=%d", query, s_item_n);
+    }
 
     /* 「打开面板曲库」→ 口语「面板」前缀；「取库」≈「曲库」ASR */
     char qbuf[64];
@@ -1141,10 +1160,8 @@ bool nl_ov_apps_open_by_query(const char *query)
         snprintf(qbuf, sizeof(qbuf), "%s", "曲库");
     }
     if (strcmp(qbuf, "应用") == 0 || strcmp(qbuf, "面板应用") == 0) {
-        ESP_LOGI(TAG, "open_by_query: apps page intent q='%s'", query);
-        nl_ov_show_page(NL_TAB_APPS);
-        nl_ov_toast("应用");
-        return true;
+        plan->kind = OPEN_PLAN_PAGE;
+        return OPEN_PLAN_PAGE;
     }
     query = qbuf;
 
@@ -1152,9 +1169,8 @@ bool nl_ov_apps_open_by_query(const char *query)
     if (strstr(query, "内存卡") || strstr(query, "存储卡") || strstr(query, "SD卡") ||
         strstr(query, "sd卡") || strstr(query, "TF卡") || strstr(query, "tf卡") ||
         strstr(query, "本地音乐") || strstr(query, "本地曲库")) {
-        ESP_LOGI(TAG, "open_by_query: sd library");
-        nodelio_skill_request_sd_library(false);
-        return true;
+        plan->kind = OPEN_PLAN_SD;
+        return OPEN_PLAN_SD;
     }
 
     /* DSH 意图优先于模糊名匹配。派活没有独立页，打开进度。 */
@@ -1201,7 +1217,9 @@ bool nl_ov_apps_open_by_query(const char *query)
         if (!sid) {
             sid = alias_id;
         }
-        ESP_LOGI(TAG, "open_by_query alias=%s → sid=%s", alias_id, sid ? sid : "(null)");
+        if (log) {
+            ESP_LOGI(TAG, "open_by_query alias=%s → sid=%s", alias_id, sid ? sid : "(null)");
+        }
     } else {
         /* 单字/过短不 fuzzy：「电」会命中「网络电台」 */
         const size_t qn = strlen(query);
@@ -1233,22 +1251,55 @@ bool nl_ov_apps_open_by_query(const char *query)
                 }
             }
         }
-        ESP_LOGI(TAG, "open_by_query fuzzy sid=%s qchars=%d", sid ? sid : "(none)", qchars);
+        if (log) {
+            ESP_LOGI(TAG, "open_by_query fuzzy sid=%s qchars=%d", sid ? sid : "(none)", qchars);
+        }
     }
     if (!sid || !sid[0]) {
-        ESP_LOGW(TAG, "open_by_query FAIL q='%s'", query);
+        if (log) {
+            ESP_LOGW(TAG, "open_by_query FAIL q='%s'", query);
+        }
+        return OPEN_PLAN_NONE;
+    }
+    snprintf(plan->sid, sizeof(plan->sid), "%.*s", (int)sizeof(plan->sid) - 1, sid);
+    plan->kind = OPEN_PLAN_SKILL;
+    return OPEN_PLAN_SKILL;
+}
+
+bool nl_ov_apps_query_resolves(const char *query)
+{
+    OpenPlan plan;
+    return plan_open_query(query, &plan, false) != OPEN_PLAN_NONE;
+}
+
+bool nl_ov_apps_open_by_query(const char *query)
+{
+    OpenPlan plan;
+    const int kind = plan_open_query(query, &plan, true);
+    if (kind == OPEN_PLAN_PAGE) {
+        ESP_LOGI(TAG, "open_by_query: apps page intent q='%s'", query);
+        nl_ov_show_page(NL_TAB_APPS);
+        nl_ov_toast("应用");
+        return true;
+    }
+    if (kind == OPEN_PLAN_SD) {
+        ESP_LOGI(TAG, "open_by_query: sd library");
+        nodelio_skill_request_sd_library(false);
+        return true;
+    }
+    if (kind != OPEN_PLAN_SKILL || !plan.sid[0]) {
         return false;
     }
-    ESP_LOGI(TAG, "open_by_query invoke sid=%s", sid);
-    if (strcmp(sid, "builtin.daily") == 0) {
+    ESP_LOGI(TAG, "open_by_query invoke sid=%s", plan.sid);
+    if (strcmp(plan.sid, "builtin.daily") == 0) {
         for (int i = 0; i < s_item_n; ++i) {
-            if (strcmp(s_items[i].id, sid) == 0) {
+            if (strcmp(s_items[i].id, plan.sid) == 0) {
                 open_app_at(i);
                 return true;
             }
         }
     }
-    nl_ov_invoke_skill_async(sid, "{}");
+    nl_ov_invoke_skill_async(plan.sid, "{}");
     return true;
 }
 

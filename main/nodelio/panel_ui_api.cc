@@ -1442,8 +1442,17 @@ extern "C" bool nodelio_panel_ui_open_app(const char *name_or_id)
             free(q);
             return;
         }
-        /* 媒体须退会话才能 HTTP 播；新闻 keep_listening 追问要不要读；天气问内容 keep_cloud */
-        if (!nodelio_offline_query_keeps_listening(q)) {
+        /* 先确认打得开。没有这个应用就留在会话里，方便接着说。
+         * 媒体须退会话才能 HTTP 播，但要在确认能打开之后、真正 invoke 之前。 */
+        const bool keep_listen = nodelio_offline_query_keeps_listening(q);
+        bool found = false;
+        {
+            DisplayLockGuard lock(nl_ov_disp());
+            if (lock) {
+                found = nl_ov_apps_query_resolves(q);
+            }
+        }
+        if (found && !keep_listen) {
             auto st = Application::GetInstance().GetDeviceState();
             if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
                 st == kDeviceStateConnecting) {
@@ -1457,14 +1466,21 @@ extern "C" bool nodelio_panel_ui_open_app(const char *name_or_id)
                 nodelio_overlay_show(false);
             }
         }
-        DisplayLockGuard lock(nl_ov_disp());
-        if (lock) {
-            const bool ok = nl_ov_apps_open_by_query(q);
-            ESP_LOGI(TAG, "open_app run q='%s' ok=%d", q, ok ? 1 : 0);
-            if (!ok) {
-                nl_ov_toast("未找到应用");
+        bool opened = false;
+        {
+            DisplayLockGuard lock(nl_ov_disp());
+            if (lock) {
+                opened = nl_ov_apps_open_by_query(q);
+                ESP_LOGI(TAG, "open_app run q='%s' ok=%d", q, opened ? 1 : 0);
+                if (!opened) {
+                    nl_ov_toast("未找到应用");
+                }
+                nl_ov_restore_ai_drawer_if_session();
             }
-            nl_ov_restore_ai_drawer_if_session();
+        }
+        /* 没找到：通道还在，再补一次聆听，避免前面把小智送走。 */
+        if (!opened && !found) {
+            Application::GetInstance().ContinueListeningAfterLocalSkill();
         }
         free(q);
     });

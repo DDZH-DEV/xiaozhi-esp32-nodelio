@@ -113,11 +113,12 @@ esp_err_t nodelio_offline_try_phrase(const nodelio_nvs_config_t *cfg, const char
  * 重启 / 进入配网 / UI 导航 / 打开某应用。
  * 供小智 STT 旁路与 MCP 使用；未命中返回 false。
  * end_session：非空时写出是否应结束语音会话。
- * true：重启/配网/关播放器/开媒体应用（须 Idle 才能播）。
- * false：设置导航/开关/翻页/切歌/开信息卡（天气等）。
+ * true：重启/配网/切歌/开内存卡（须 Idle 才能播）。
+ * false：设置导航/开关/翻页/打开应用。应用是否存在要等打开结果；
+ * 打不开则继续聆听。媒体在确认能打开后再退会话。
  * keep_cloud_tts：非空时，仅「问天气/空气内容」写出 true（勿 Suppress，云端答同一句）。
  * 纯开卡（新闻/打开天气）为 false。
- * end_session：新闻开卡为 false（保持聆听以便追问「要不要读」）；媒体仍为 true。
+ * 新闻开卡保持聆听，以便追问「要不要读」。
  */
 bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bool *keep_cloud_tts);
 
