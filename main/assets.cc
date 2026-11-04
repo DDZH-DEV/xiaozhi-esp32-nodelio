@@ -296,6 +296,31 @@ bool Assets::LvglStrategy::Apply(Assets* assets, bool refresh_display_theme) {
         std::string fonts_text_file = font->valuestring;
         if (assets->GetAssetData(fonts_text_file, ptr, size)) {
             auto text_font = std::make_shared<LvglCBinFont>(ptr);
+            /* 已烧录的试验包把主题字换成了 30px（行高 46），顶栏只有 36px，字形会被裁掉。
+             * 包里若另有 text_font_base，改回与固件 TEXT_FONT_SIZE 一致的那套。 */
+            if (text_font->font() != nullptr &&
+                text_font->font()->line_height > TEXT_FONT_SIZE + 16) {
+                cJSON* base_name = cJSON_GetObjectItem(root.get(), "text_font_base");
+                void* base_ptr = nullptr;
+                size_t base_size = 0;
+                if (cJSON_IsString(base_name) &&
+                    assets->GetAssetData(base_name->valuestring, base_ptr, base_size)) {
+                    auto base_font = std::make_shared<LvglCBinFont>(base_ptr);
+                    if (base_font->font() != nullptr &&
+                        base_font->font()->line_height <= TEXT_FONT_SIZE + 16) {
+                        ESP_LOGW(TAG, "Skip oversized text font %s line %d, use %s",
+                                 fonts_text_file.c_str(), (int)text_font->font()->line_height,
+                                 base_name->valuestring);
+                        text_font = base_font;
+                        fonts_text_file = base_name->valuestring;
+                        cJSON* metadata = cJSON_GetObjectItem(root.get(), "text_font_meta");
+                        cJSON* font_size = cJSON_GetObjectItem(metadata, "size");
+                        if (cJSON_IsNumber(font_size)) {
+                            cJSON_SetNumberValue(font_size, TEXT_FONT_SIZE);
+                        }
+                    }
+                }
+            }
             auto display = Board::GetInstance().GetDisplay();
             if (text_font->font() == nullptr || display == nullptr ||
                 !display->SetTextFont(text_font)) {

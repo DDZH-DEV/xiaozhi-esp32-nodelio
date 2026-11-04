@@ -783,7 +783,7 @@ static const char *news_zoom_name(void)
 
 static const lv_font_t *news_body_font(void)
 {
-    return s_news_zoom == 0 ? nl_ov_ui_font_compact() : nl_ov_read_font();
+    return s_news_zoom == 0 ? nl_ov_ui_font() : nl_ov_read_font();
 }
 
 static int32_t news_body_line_space(void)

@@ -137,36 +137,50 @@ Display *nl_ov_disp()
     return Board::GetInstance().GetDisplay();
 }
 
+static const lv_font_t *ui_font_theme(void)
+{
+    Display *d = nl_ov_disp();
+    if (!d) {
+        return nullptr;
+    }
+    Theme *th = d->GetTheme();
+    if (!th) {
+        return nullptr;
+    }
+    std::shared_ptr<LvglFont> tf = th->GetTextFont();
+    if (!tf || tf->font() == nullptr) {
+        return nullptr;
+    }
+    return tf->font();
+}
+
 static const lv_font_t *ui_font_base(void)
 {
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62
+    /* 6.2" 约 220ppi，14px 普惠远读太小。标准档用主题字库，不另挂一套点阵。 */
+    if (const lv_font_t *theme = ui_font_theme()) {
+        return theme;
+    }
+#endif
     return &font_puhui_14_1;
 }
 
 const lv_font_t *nl_ov_ui_font_compact(void)
 {
-    return ui_font_base();
+    return &font_puhui_14_1;
 }
 
 static const lv_font_t *ui_font_large(void)
 {
-    Display *d = nl_ov_disp();
-    if (!d) {
-        return ui_font_base();
+    if (const lv_font_t *theme = ui_font_theme()) {
+        return theme;
     }
-    Theme *th = d->GetTheme();
-    if (!th) {
-        return ui_font_base();
-    }
-    std::shared_ptr<LvglFont> tf = th->GetTextFont();
-    if (!tf || tf->font() == nullptr) {
-        return ui_font_base();
-    }
-    return tf->font();
+    return ui_font_base();
 }
 
 const lv_font_t *nl_ov_ui_font(void)
 {
-    /* 0=14px 普惠；1/2=资源真字库（约 20px），禁止 transform 放大点阵 */
+    /* 方屏：0=14px 普惠，1=主题字库。宽屏两档都用主题字库（20px）。禁止 transform 放大点阵。 */
     return nodelio_text_scale() == 0 ? ui_font_base() : ui_font_large();
 }
 
@@ -303,9 +317,12 @@ void nodelio_overlay_apply_text_scale(void)
 void nl_ov_apply_text_scale(void)
 {
     static uint8_t s_last_applied_scale = 255;
+    static const lv_font_t *s_last_font = nullptr;
     const uint8_t cur_scale = (uint8_t)nodelio_text_scale();
-    const bool scale_changed = (cur_scale != s_last_applied_scale);
+    const lv_font_t *now = nl_ov_ui_font();
+    const bool scale_changed = cur_scale != s_last_applied_scale || now != s_last_font;
     s_last_applied_scale = cur_scale;
+    s_last_font = now;
 
     if (s_root) {
         lv_obj_set_style_text_font(s_root, nl_ov_ui_font(), 0);

@@ -3,27 +3,30 @@ setlocal EnableDelayedExpansion
 chcp 65001 >nul
 
 rem SILA P4C5 6.2" - P4 host flash only (does NOT program C5 slave)
-rem   nodelio-flash.bat                 COM8, 32m, build then flash+monitor
-rem   nodelio-flash.bat COM15
+rem   nodelio-flash.bat                 auto port, 32m; incremental build if sdkconfig already matches
+rem   nodelio-flash.bat COM15           force a port
 rem   nodelio-flash.bat --16m           Flash>=16MiB board (capacity must be confirmed)
 rem   nodelio-flash.bat --32m           default (W25Q256 / 32MB board)
 rem   nodelio-flash.bat --nofresh       skip build, flash existing build/
+rem   nodelio-flash.bat --rebuild       full scripts/build.py reconfigure
 rem   nodelio-flash.bat --quick         incremental build, app-flash only + monitor
 rem   nodelio-flash.bat COM15 --16m --nofresh
-rem   nodelio-flash.bat --quick COM8
+rem   nodelio-flash.bat --quick
 rem
 rem Do NOT use sila-86 nodelio-build.bat. Full flash via flash_args;
 rem never treat a lone xiaozhi.bin as a first-flash package.
 rem C5 slave: nodelio-flash-c5.bat COMx  (U14 UART; separate from this script)
 
-set "PORT=COM8"
+set "PORT="
 set "NOFRESH=0"
 set "QUICK=0"
+set "REBUILD=0"
 set "VARIANT=32m"
 rem NOTE: do not put SHIFT inside if (...); it does not affect %1 there -> infinite parse loop
 :parse
 if "%~1"=="" goto :parsed
 if /I "%~1"=="--nofresh" set "NOFRESH=1"& shift& goto :parse
+if /I "%~1"=="--rebuild" set "REBUILD=1"& shift& goto :parse
 if /I "%~1"=="--quick" set "QUICK=1"& shift& goto :parse
 if /I "%~1"=="--16m" set "VARIANT=16m"& shift& goto :parse
 if /I "%~1"=="--32m" set "VARIANT=32m"& shift& goto :parse
@@ -49,12 +52,35 @@ cd /d "!REPO!"
 if "!NOFRESH!"=="1" goto after_build
 if "!QUICK!"=="1" goto quick_build
 
+set "NEED_FULL=1"
+if "!REBUILD!"=="1" goto do_full_build
+if not exist sdkconfig goto do_full_build
+if not exist build\flash_args goto do_full_build
+findstr /b /c:"CONFIG_BOARD_TYPE_SILA_P4C5_62=y" sdkconfig >nul
+if errorlevel 1 goto do_full_build
+findstr /c:"nodelio-p4c5-!VARIANT!.csv" sdkconfig >nul
+if errorlevel 1 goto do_full_build
+set "NEED_FULL=0"
+goto do_incremental
+
+:do_full_build
+if "!NEED_FULL!"=="0" goto do_incremental
+goto run_full_build
+
+:do_incremental
+echo [p4c5-62] sdkconfig already !BUILD_NAME! - incremental idf.py build
+echo [p4c5-62] pass --rebuild to reconfigure, --nofresh to skip compile
+idf.py build
+if errorlevel 1 exit /b 1
+goto after_build
+
+:run_full_build
+
 echo [p4c5-62] idf.py --version
 idf.py --version
 if errorlevel 1 exit /b 1
 
-echo [p4c5-62] build !BOARD_DIR! --name !BUILD_NAME! ...
-echo [p4c5-62] full path reconfigures sdkconfig; UI-only changes: nodelio-flash.bat --quick
+echo [p4c5-62] full reconfigure !BOARD_DIR! --name !BUILD_NAME! ...
 python scripts\build.py !BOARD_DIR! --name !BUILD_NAME!
 if errorlevel 1 exit /b 1
 
@@ -96,6 +122,9 @@ if /i "!VARIANT!"=="32m" (
   )
 )
 
+call :resolve_port
+if errorlevel 1 exit /b 1
+call :free_port
 echo [p4c5-62] flash+monitor on !PORT! ^(P4 USB Serial/JTAG; variant=!VARIANT!; C5 NOT flashed^) ...
 idf.py -p !PORT! flash monitor
 exit /b %ERRORLEVEL%
@@ -115,8 +144,58 @@ if errorlevel 1 (
   echo [p4c5-62] sdkconfig partition is not !VARIANT! - run without --quick
   exit /b 1
 )
-echo [p4c5-62] incremental build + app-flash on !PORT! ^(!VARIANT!^) ...
+echo [p4c5-62] incremental build + app-flash ^(!VARIANT!^) ...
 idf.py build
 if errorlevel 1 exit /b 1
+call :resolve_port
+if errorlevel 1 exit /b 1
+call :free_port
+echo [p4c5-62] app-flash+monitor on !PORT! ...
 idf.py -p !PORT! app-flash monitor
 exit /b %ERRORLEVEL%
+
+:resolve_port
+if not "!PORT!"=="" exit /b 0
+echo [p4c5-62] scanning for P4 USB Serial/JTAG ^(VID_303A^) ...
+set "PORT_FILE=%TEMP%\nodelio-p4-port.txt"
+del /q "!PORT_FILE!" >nul 2>&1
+powershell -NoProfile -Command ^
+  "$devs = @(Get-PnpDevice -Class Ports -ErrorAction SilentlyContinue | Sort-Object FriendlyName);" ^
+  "if ($devs.Count -eq 0) { Write-Host '[p4c5-62] no Ports-class devices'; exit 3 }" ^
+  "$jtagOk = New-Object System.Collections.Generic.List[string];" ^
+  "foreach ($d in $devs) {" ^
+  "  if ($d.FriendlyName -notmatch '(COM\d+)') { continue }" ^
+  "  $com = $Matches[1];" ^
+  "  $line = '  ' + $com + '  [' + $d.Status + ']  ' + $d.FriendlyName;" ^
+  "  if ([string]$d.InstanceId -notmatch 'VID_303A') { Write-Host ($line + '  [skip]'); continue }" ^
+  "  if ($d.Status -eq 'OK') { Write-Host ($line + '  [P4 USB-JTAG]'); $jtagOk.Add($com) } else { Write-Host ($line + '  [P4 USB-JTAG stale]') }" ^
+  "}" ^
+  "$jtagOk = @($jtagOk | Select-Object -Unique);" ^
+  "if ($jtagOk.Count -eq 1) { Set-Content -Path $env:TEMP\nodelio-p4-port.txt -Value $jtagOk[0] -NoNewline; exit 0 }" ^
+  "if ($jtagOk.Count -gt 1) { Write-Host '[p4c5-62] multiple P4 ports; pass COMx explicitly'; exit 2 }" ^
+  "Write-Host '[p4c5-62] no live P4 USB-JTAG port. Plug in Type-C or pass COMx.'; exit 3"
+if errorlevel 1 (
+  echo [p4c5-62] auto port pick failed
+  exit /b 1
+)
+if not exist "!PORT_FILE!" (
+  echo [p4c5-62] auto port pick failed
+  exit /b 1
+)
+set /p PORT=<"!PORT_FILE!"
+del /q "!PORT_FILE!" >nul 2>&1
+if "!PORT!"=="" (
+  echo [p4c5-62] auto port pick failed
+  exit /b 1
+)
+echo [p4c5-62] auto port !PORT!
+exit /b 0
+
+:free_port
+rem Previous "flash monitor" keeps COM open after the window looks idle.
+powershell -NoProfile -Command ^
+  "$port = $env:PORT;" ^
+  "if (-not $port) { exit 0 }" ^
+  "$hits = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape($port) -and $_.CommandLine -match 'idf_monitor|esp_idf_monitor|idf.py' });" ^
+  "foreach ($p in $hits) { Write-Host ('[p4c5-62] stop ' + $p.ProcessId + ' ' + $p.Name + ' holding ' + $port); Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }"
+exit /b 0
