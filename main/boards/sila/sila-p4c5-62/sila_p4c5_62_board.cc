@@ -415,6 +415,25 @@ public:
     Display* GetDisplay() override { return display_; }
     Backlight* GetBacklight() override { return &backlight_; }
 
+    /* TF 卡 Slot0：仅供 NodeLio 曲库读取，Hosted 继续独占 Slot1。
+     * 引脚与 PWRn/CD 见 config.h；sd_library 负责挂载与掉电。 */
+    SdCardPins GetSdCardPins() override {
+        SdCardPins pins;
+        pins.clk = SD_CARD_CLK_PIN;
+        pins.cmd = SD_CARD_CMD_PIN;
+        pins.d0 = SD_CARD_D0_PIN;
+        pins.d1 = SD_CARD_D1_PIN;
+        pins.d2 = SD_CARD_D2_PIN;
+        pins.d3 = SD_CARD_D3_PIN;
+        pins.power_en = SD_CARD_PWR_PIN;
+        pins.power_active_low = SD_CARD_PWR_ACTIVE_LOW != 0;
+        pins.card_detect = SD_CARD_CD_PIN;
+        pins.cd_active_low = SD_CARD_CD_ACTIVE_LOW != 0;
+        pins.max_freq_khz = SD_CARD_MAX_FREQ_KHZ;
+        pins.four_bit = true;
+        return pins;
+    }
+
     AudioCodec* GetAudioCodec() override {
         // ES8389's configured serial output is MR (ADCL + internal DACR reference).
         // Two I2S slots do not imply two microphone channels.

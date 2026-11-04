@@ -2,6 +2,7 @@
 
 #include "media_player.h"
 #include "offline_cmd.h"
+#include "sd_library.h"
 #include "skill_result_ui.h"
 
 #include "board_info.h"
@@ -195,6 +196,7 @@ bool nodelio_offline_cmd_is_local(int command_id)
            command_id == NL_OC_PAGE_NEXT || command_id == NL_OC_PAGE_PREV ||
            command_id == NL_OC_SCROLL_DOWN || command_id == NL_OC_SCROLL_UP ||
            (command_id >= NL_OC_APP_MUSIC && command_id <= NL_OC_APP_QUOTE) ||
+           command_id == NL_OC_APP_SD ||
            command_id == NL_OC_SKILL_CLOSE || command_id == NL_OC_RADIO_SWAP ||
            (command_id >= NL_OC_BRIGHT_UP && command_id <= NL_OC_VOL_MIN);
 }
@@ -310,6 +312,8 @@ const char *nodelio_offline_cmd_zh(int command_id)
         return "声音最大";
     case NL_OC_VOL_MIN:
         return "声音最小";
+    case NL_OC_APP_SD:
+        return "打开内存卡";
     default:
         return "未知口令";
     }
@@ -351,6 +355,7 @@ static const nodelio_oc_catalog_entry_t k_oc_catalog[] = {
     {"播放", "继续播放"},
     {"播放", "换台 / 换个台（电台回列表）"},
     {"应用", "打开曲库 / 打开音乐"},
+    {"应用", "打开内存卡 / 放内存卡里的歌 / 听本地音乐"},
     {"应用", "打开新闻"},
     {"应用", "打开天气 / 再问天气 / 刷新天气"},
     {"应用", "打开电台"},
@@ -451,6 +456,15 @@ esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int comm
             return e;
         }
         nodelio_panel_ui_set_voice_hint(hint);
+        return ESP_OK;
+    }
+    if (command_id == NL_OC_APP_SD) {
+        if (!nodelio_sd_available()) {
+            nodelio_panel_ui_set_voice_hint("本机没有内存卡");
+            return ESP_ERR_NOT_SUPPORTED;
+        }
+        nodelio_panel_ui_set_voice_hint("正在读取内存卡");
+        nodelio_skill_request_sd_library(false);
         return ESP_OK;
     }
     if (command_id >= NL_OC_APP_MUSIC && command_id <= NL_OC_APP_QUOTE) {
@@ -934,6 +948,16 @@ static int phrase_to_cmd_id(const char *phrase)
         strstr(phrase, "音量低一点") || strstr(phrase, "小一点声") || strstr(phrase, "小声一点") ||
         strstr(phrase, "音量调小") || strstr(phrase, "声音调小") || strstr(phrase, "小点声")) {
         return NL_OC_VOL_DOWN;
+    }
+    /* 内存卡曲库：须在「打开…」泛化之前；「本地」单独不抢（易与「本地天气」混淆）。
+     * 「关闭内存卡」要留给收弹窗分支，别当成打开。 */
+    if (!strstr(phrase, "关闭") && !strstr(phrase, "关掉") && !strstr(phrase, "退出") &&
+        !strstr(phrase, "收起") &&
+        (strstr(phrase, "内存卡") || strstr(phrase, "存储卡") || strstr(phrase, "TF卡") ||
+         strstr(phrase, "tf卡") || strstr(phrase, "SD卡") || strstr(phrase, "sd卡") ||
+         strstr(phrase, "本地音乐") || strstr(phrase, "本地曲库") || strstr(phrase, "卡里的歌") ||
+         strstr(phrase, "卡里的音乐") || strstr(phrase, "卡里的歌曲"))) {
+        return NL_OC_APP_SD;
     }
     /* 换台 ≠ 换一首；须在切歌之前 */
     if (strstr(phrase, "换台") || strstr(phrase, "换个台") || strstr(phrase, "换个电台")) {
@@ -1436,6 +1460,8 @@ bool nodelio_offline_query_keeps_cloud_tts(const char *query)
         strstr(query, "美文") || strstr(query, "article") || strstr(query, "每日一文") ||
         strstr(query, "曲库") || strstr(query, "音乐") || strstr(query, "听歌") ||
         strstr(query, "放歌") || strstr(query, "爱音乐") || strstr(query, "music") ||
+        strstr(query, "内存卡") || strstr(query, "存储卡") || strstr(query, "TF卡") ||
+        strstr(query, "tf卡") || strstr(query, "SD卡") || strstr(query, "sd卡") ||
         strstr(query, "电台") || strstr(query, "radio") || strstr(query, "播客") ||
         strstr(query, "podcast")) {
         return false;
@@ -1676,7 +1702,7 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
         cmd == NL_OC_SCROLL_DOWN || cmd == NL_OC_SCROLL_UP ||
         cmd == NL_OC_MEDIA_PREV || cmd == NL_OC_MEDIA_NEXT ||
         cmd == NL_OC_MEDIA_PAUSE || cmd == NL_OC_MEDIA_RESUME ||
-        cmd == NL_OC_SKILL_CLOSE || cmd == NL_OC_RADIO_SWAP ||
+        cmd == NL_OC_SKILL_CLOSE || cmd == NL_OC_RADIO_SWAP || cmd == NL_OC_APP_SD ||
         cmd == NL_OC_APP_QUOTE || cmd == NL_OC_APP_WEATHER || cmd == NL_OC_APP_AIR ||
         (cmd >= NL_OC_BRIGHT_UP && cmd <= NL_OC_VOL_MIN)) {
         ESP_LOGI(TAG, "system phrase → %s", nodelio_offline_cmd_zh(cmd));
@@ -1684,12 +1710,13 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
             /* 默认保持会话：设置导航/开关/翻页可连说。
              * 切歌/继续播须退会话，否则 Listening 与 HTTP 播抢通道（re-arm 与 notifying 打架）。
              * 换台：已在播电台则只回列表；否则 open 电台须退会话。
+             * 开内存卡：读卡要等 FATFS，退会话让播放器独占通道。
              * 关应用：方屏退会话；宽屏只收面板，小智继续听。 */
             if (cmd == NL_OC_RADIO_SWAP) {
                 *end_session = !nodelio_skill_is_live_radio();
             } else {
                 *end_session =
-                    (cmd == NL_OC_REBOOT || cmd == NL_OC_WIFI_CONFIG ||
+                    (cmd == NL_OC_REBOOT || cmd == NL_OC_WIFI_CONFIG || cmd == NL_OC_APP_SD ||
                      cmd == NL_OC_MEDIA_PREV || cmd == NL_OC_MEDIA_NEXT ||
                      cmd == NL_OC_MEDIA_RESUME);
             }

@@ -490,6 +490,53 @@ static std::string list_controls_json()
     return out;
 }
 
+/** 「播放第一首 / 放第三首 / 来第2个」→ 1-based 序号；不是选条返回 0。
+ *  与 parse_ordinal_zh 不同，这里只认「在已有列表里选一条」的说法。 */
+static int music_keyword_ordinal(const char *kw)
+{
+    if (!kw || !kw[0]) {
+        return 0;
+    }
+    /* 「第」必须紧跟在播放动词之后或句首，避免把歌名里的「第一」当成序号 */
+    const char *p = strstr(kw, "第");
+    if (!p) {
+        /* 「放一首 / 来首 / 播放第一个」等 ASR 变体 */
+        if (strstr(kw, "第一个") || strstr(kw, "首个") || strstr(kw, "头一首")) {
+            return 1;
+        }
+        return 0;
+    }
+    /* 序号后须是「首/曲/个/条」，否则是歌名（如「第一次爱的人」） */
+    const char *q = p + strlen("第");
+    int n = 0;
+    if (*q >= '1' && *q <= '9') {
+        n = *q - '0';
+        q++;
+        if (*q >= '0' && *q <= '9') {
+            n = n * 10 + (*q - '0');
+            q++;
+        }
+    } else {
+        static const char *const kCn[] = {"一", "二", "两", "三", "四", "五",
+                                          "六", "七", "八", "九", "十"};
+        static const int kVal[] = {1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+        for (size_t i = 0; i < sizeof(kCn) / sizeof(kCn[0]); i++) {
+            if (strncmp(q, kCn[i], strlen(kCn[i])) == 0) {
+                n = kVal[i];
+                q += strlen(kCn[i]);
+                break;
+            }
+        }
+    }
+    if (n <= 0) {
+        return 0;
+    }
+    return (strncmp(q, "首", strlen("首")) == 0 || strncmp(q, "曲", strlen("曲")) == 0 ||
+            strncmp(q, "个", strlen("个")) == 0 || strncmp(q, "条", strlen("条")) == 0)
+               ? n
+               : 0;
+}
+
 /** 曲库 keyword：打开别名 → 空词点播；浏览口令保持原样。 */
 static bool music_keyword_is_browse(const char *kw)
 {
@@ -620,6 +667,56 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
     const bool music_app = nodelio_skill_id_is_music(skill_id.c_str());
     if (!music_app && nodelio_media_preempt_for_heavy_app()) {
         ESP_LOGI(TAG, "preempt media before skill '%s'", skill_id.c_str());
+    }
+
+    /* 列表已在屏上时，「播放第一首」绝不能再搜一次歌。
+     * 旧行为：模型每轮都重新 invoke music.search(keyword)，服务端换一批结果，
+     * 于是「第一首」变成了另一批的第一首，用户听到的是别的歌。
+     * 这里先按序号在现有列表里点播，命中就直接返回。 */
+    if (music_app) {
+        char kw_buf[NL_ENV_SPOKEN];
+        const char *kw = nullptr;
+        if (!params.empty() && params.front() != '{') {
+            kw = params.c_str();
+        } else if (!params.empty()) {
+            cJSON *root = cJSON_Parse(params.c_str());
+            if (root) {
+                const cJSON *j = cJSON_GetObjectItemCaseSensitive(root, "keyword");
+                if (!cJSON_IsString(j)) {
+                    j = cJSON_GetObjectItemCaseSensitive(root, "query");
+                }
+                if (!cJSON_IsString(j)) {
+                    j = cJSON_GetObjectItemCaseSensitive(root, "q");
+                }
+                if (cJSON_IsString(j) && j->valuestring) {
+                    snprintf(kw_buf, sizeof(kw_buf), "%s", j->valuestring);
+                    kw = kw_buf;
+                }
+                cJSON_Delete(root);
+            }
+        }
+        const int ord = kw ? music_keyword_ordinal(kw) : 0;
+        if (ord > 0) {
+            char title[NL_ENV_TITLE];
+            title[0] = '\0';
+            if (nodelio_skill_media_play_index(ord, title, sizeof(title))) {
+                ESP_LOGI(TAG, "music ordinal %d → list play '%s' (no re-search)", ord, title);
+                if (title[0]) {
+                    return std::string("正在播放列表第") + std::to_string(ord) + "首《" + title +
+                           "》，歌单保留可继续下一首";
+                }
+                return std::string("已从当前列表开播第") + std::to_string(ord) + "首";
+            }
+            /* 没有列表才回落到搜歌，并把序号原样交给服务端 */
+        }
+        /* 内存卡来源的「换一批/下一批」= 卡内下一批 24 首，不能落到云端重搜。 */
+        if (kw && nodelio_skill_media_is_sd() &&
+            (strstr(kw, "换一批") || strstr(kw, "下一批") || strstr(kw, "再来一批"))) {
+            if (nodelio_skill_sd_next_batch()) {
+                return std::string("已换到内存卡下一批曲目");
+            }
+            return std::unexpected(std::string("内存卡曲目不足一批，无法换批"));
+        }
     }
     char base[160];
     nl_url_strip_base(cfg->server_url, base, sizeof(base));
@@ -1140,14 +1237,23 @@ void nodelio_mcp_register_tools(void)
     mcp.AddTool(
         "self.nodelio.open_app",
         "打开已装应用。听歌/曲库→name=曲库；电台/播客/新闻/天气同理。"
+        "内存卡/TF卡/SD卡里的歌→name=内存卡（本机读卡，不走云端）。"
         "任务/DSH进度→name=查看任务（返回摘要请原文念）。禁云端 play_music。"
-        "name=曲库/音乐/新闻/天气/电台/播客/空气/每日一篇/每日一句/DSH派活/查看任务 或 app_id。",
+        "name=曲库/内存卡/音乐/新闻/天气/电台/播客/空气/每日一篇/每日一句/DSH派活/查看任务 或 app_id。",
         PropertyList({Property("name", kPropertyTypeString)}),
         [](const PropertyList &properties) -> ToolResult {
             std::string name = properties["name"].value<std::string>();
             ESP_LOGI(TAG, "MCP open_app name='%s'", name.c_str());
             if (name.empty()) {
                 return std::unexpected(std::string("name 不能为空"));
+            }
+            /* 内存卡：本地挂卡+扫描，不经服务端技能 */
+            if (name.find("内存卡") != std::string::npos || name.find("存储卡") != std::string::npos ||
+                name.find("SD卡") != std::string::npos || name.find("sd卡") != std::string::npos ||
+                name.find("TF卡") != std::string::npos || name.find("tf卡") != std::string::npos ||
+                name.find("本地音乐") != std::string::npos || name.find("本地曲库") != std::string::npos) {
+                nodelio_skill_request_sd_library(false);
+                return std::string("正在读取内存卡曲库");
             }
             /* DSH 进度：同步 invoke，把 spoken 摘要交回模型播报 */
             const bool dsh_status = name.find("进度") != std::string::npos ||
@@ -1345,14 +1451,26 @@ void nodelio_mcp_register_tools(void)
         "self.skill.transport",
         "面板当前歌单播控。op=prev|next|pause|resume|play|stop|close。"
         "用户说换一首/下一首/切歌→next；上一首→prev。"
+        "「播放第N首」→ op=play index=N（在当前列表里选，勿重新搜歌）。"
+        "op=list=读出当前歌单曲名（回答「第一首是什么」前先看它）。"
         "电台 live 无切台（prev/next 会失败）；换台请让用户点列表或说换台回列表。"
         "stop/close=停播并关掉技能弹窗（关闭电台/播客/曲库时用，勿只 goto_page）。"
         "随便放一首用 play，勿重新搜索。",
         PropertyList({
             Property("op", kPropertyTypeString, ""),
+            Property("index", kPropertyTypeInteger, 0),
         }),
         [](const PropertyList &properties) -> ToolResult {
             std::string op = properties["op"].value<std::string>();
+            const int index = properties["index"].value<int>();
+            if (op == "list") {
+                char buf[NL_ENV_SPOKEN];
+                const int n = nodelio_skill_media_list_titles(buf, sizeof(buf), 12);
+                if (n <= 0) {
+                    return std::unexpected(std::string("当前没有可播放的曲目列表，请先打开面板曲库"));
+                }
+                return std::string(buf);
+            }
             if (op == "prev") {
                 if (!nodelio_skill_media_prev()) {
                     return std::unexpected(std::string("没有上一首"));
@@ -1388,6 +1506,18 @@ void nodelio_mcp_register_tools(void)
             if (op == "play" || op == "random" || op == "any") {
                 char title[64];
                 title[0] = '\0';
+                /* 带 index 时按序号点播当前列表，绝不重新搜歌。 */
+                if (index > 0) {
+                    if (!nodelio_skill_media_play_index(index, title, sizeof(title))) {
+                        return std::unexpected(std::string("当前列表没有第") + std::to_string(index) +
+                                               "首，请先打开曲库看列表");
+                    }
+                    if (title[0]) {
+                        return std::string("正在播放列表第") + std::to_string(index) + "首《" + title +
+                               "》，歌单保留可继续下一首";
+                    }
+                    return std::string("已从当前列表开播");
+                }
                 if (!nodelio_skill_media_play_any(title, sizeof(title))) {
                     return std::unexpected(std::string("当前没有可播放的曲目列表，请先打开面板曲库"));
                 }
@@ -1400,7 +1530,8 @@ void nodelio_mcp_register_tools(void)
                 nodelio_skill_close_all();
                 return std::string("已关闭技能弹窗");
             }
-            return std::unexpected(std::string("op 须为 prev/next/pause/resume/play/stop/close"));
+            return std::unexpected(
+                std::string("op 须为 prev/next/pause/resume/play/stop/close/list"));
         });
 
     mcp.AddTool(

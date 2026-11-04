@@ -1219,6 +1219,17 @@ menu "NodeLio Panel"
             at most once per five seconds of activity. No extra timer or task.
             These are LVGL timings, not panel scan FPS or PPA hardware counters.
 
+    config NODELIO_SD_MUSIC
+        bool "TF/SD card music library (Slot0)"
+        depends on NODELIO_PANEL
+        default y if BOARD_TYPE_SILA_P4C5_62
+        default n
+        help
+            Read audio files from the board SD/TF slot and play them locally.
+            Only boards that declare SdCardPins can use it; the P4C5-62 panel
+            owns SDMMC Slot0 while Hosted keeps Slot1. Requires the board to
+            publish pins through Board::GetSdCardPins().
+
     config NODELIO_PANEL
         bool "Enable NodeLio register / layout / panel/command"
         default y

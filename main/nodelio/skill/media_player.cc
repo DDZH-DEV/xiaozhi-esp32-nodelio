@@ -7,6 +7,7 @@
 #include "nvs_config.h"
 #include "offline_cmd.h"
 #include "panel_ui.h"
+#include "sd_library.h"
 #include "skill_result_ui.h"
 #include "wake_dram.h"
 
@@ -400,6 +401,11 @@ static void resolve_url(const nodelio_nvs_config_t *cfg, const char *in, char *o
     if (!in || !in[0] || !out_len) {
         return;
     }
+    /* 内存卡曲目：保留 sd:// 原样，worker 走本地文件播放分支。 */
+    if (strncmp(in, "sd://", 5) == 0) {
+        (void)cat_url(out, out_len, in, nullptr);
+        return;
+    }
     if (strncmp(in, "http://", 7) == 0 || strncmp(in, "https://", 8) == 0) {
         (void)cat_url(out, out_len, in, nullptr);
         prefer_plain_http_live(out, out_len);
@@ -695,8 +701,13 @@ static void media_worker(void *arg)
                 }
                 return;
             }
-            if (!app.PlayHttpAudio(url, device_key)) {
-                ESP_LOGW(TAG, "PlayHttpAudio false left=%d state=%s busy=%d title=%s", left,
+            /* 内存卡曲目走本地文件播放器；网络曲目走 HTTP。两者共用 Notifying 播放槽。 */
+            char local_path[NL_ENV_URL];
+            const bool local = nodelio_sd_resolve_url(url.c_str(), local_path, sizeof(local_path));
+            const bool started = local ? app.PlayLocalAudioFile(local_path) : app.PlayHttpAudio(url, device_key);
+            if (!started) {
+                ESP_LOGW(TAG, "%s false left=%d state=%s busy=%d title=%s",
+                         local ? "PlayLocalAudioFile" : "PlayHttpAudio", left,
                          DeviceStateMachine::GetStateName(app.GetDeviceState()), (int)app.IsHttpAudioBusy(),
                          title.c_str());
                 if (left > 0) {

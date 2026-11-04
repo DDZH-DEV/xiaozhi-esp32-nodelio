@@ -78,6 +78,8 @@ enum {
     NL_OC_BRIGHT_MIN = 52,
     NL_OC_VOL_MAX = 53,
     NL_OC_VOL_MIN = 54,
+    /* 内存卡曲库：本机读卡，不走云端技能 */
+    NL_OC_APP_SD = 55,
 };
 
 /** 重启/退下等纯本机口令（不依赖 WiFi / layout）。 */

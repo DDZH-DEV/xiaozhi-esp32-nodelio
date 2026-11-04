@@ -122,6 +122,9 @@ Keep detailed or fast-changing information in those files, not here. Add a neste
 ### 技能 / Flash / UI
 
 - 技能走云清单；勿每 API fork 页面；控家 = layout + `panel/command`。
+- 曲库两来源：云端 `music.search` 与内存卡 `music.sd`（`main/nodelio/skill/sd_library.cc`，仅 `CONFIG_NODELIO_SD_MUSIC` 的板有卡）。
+  列表已在屏时「播放第 N 首」必须设备侧点播（`self.skill.transport op=play index=N`），
+  **禁止**重新 invoke music.search（服务端会换一批，用户听到别的歌）。细节见 `docs/nodelio-media-library.md`。
 - 分区：`partitions/v2/16m.csv`。86：`main/boards/sila/sila-86/nodelio-*.bat`。62：`main/boards/sila/sila-p4c5-62/nodelio-*.bat`，**勿套用 86 裁掉 es8389**。
 - 曜夜微晶 + Icon Pod；APP 与实机按 **display_profile** 1:1（480 方屏 vs 1280×452 侧轨）。
 

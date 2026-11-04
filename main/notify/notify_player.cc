@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -322,6 +324,56 @@ bool IsSupportedUrl(const std::string& url) {
     return url.compare(0, 7, "http://") == 0 || url.compare(0, 8, "https://") == 0;
 }
 
+/**
+ * 内存卡曲目：把本地文件包成 Http，复用同一套 MP3/M4A/WAV/Ogg 解码与喂队列逻辑。
+ * 只实现播放真正用到的 Open/Read/Close/GetStatusCode；其余接口保持空实现。
+ * Read 返回 0 表示 EOF（与 HttpClient 语义一致）。
+ */
+class LocalFileHttp final : public Http {
+public:
+    bool OpenPath(const std::string& path) {
+        file_ = fopen(path.c_str(), "rb");
+        if (file_ == nullptr) {
+            return false;
+        }
+        setvbuf(file_, nullptr, _IOFBF, 8 * 1024);
+        return true;
+    }
+    void SetTimeout(int) override {}
+    void SetHeader(const std::string&, const std::string&) override {}
+    void SetContent(std::string&&) override {}
+    void SetKeepAlive(bool) override {}
+    NetworkResult<> Open(const std::string&, const std::string&) override {
+        return std::unexpected(NetworkError::InvalidArgument());
+    }
+    void Close() override {
+        if (file_ != nullptr) {
+            fclose(file_);
+            file_ = nullptr;
+        }
+    }
+    NetworkResult<int> Read(char* buffer, size_t buffer_size) override {
+        if (file_ == nullptr) {
+            return 0;
+        }
+        const size_t got = fread(buffer, 1, buffer_size, file_);
+        if (got == 0 && ferror(file_)) {
+            return std::unexpected(NetworkError::ReceiveFailed(errno));
+        }
+        return static_cast<int>(got);
+    }
+    NetworkResult<int> Write(const char*, size_t) override {
+        return std::unexpected(NetworkError::InvalidArgument());
+    }
+    NetworkResult<int> GetStatusCode() override { return 200; }
+    std::string GetResponseHeader(const std::string&) const override { return {}; }
+    size_t GetBodyLength() override { return 0; }
+    std::string ReadAll() override { return {}; }
+
+private:
+    FILE* file_ = nullptr;
+};
+
 void EnsureM4aDecoderRegistered() {
     static bool once = false;
     if (!once) {
@@ -452,6 +504,8 @@ bool NotifyPlayer::Start(std::string audio_url, std::vector<NotifySubtitle> subt
             return false;
         }
         audio_url_ = std::move(audio_url);
+        /* HTTP 与本地文件互斥：上一次本地播放残留的路径必须清掉，否则 worker 会走文件分支。 */
+        local_path_.clear();
         device_key_ = std::move(device_key);
         subtitles_ = std::move(subtitles);
         displayed_text_.clear();
@@ -492,6 +546,62 @@ bool NotifyPlayer::Start(std::string audio_url, std::vector<NotifySubtitle> subt
         worker_running_ = false;
         cancelled_ = true;
         task_handle_ = nullptr;
+        return false;
+    }
+    return true;
+}
+
+bool NotifyPlayer::StartFile(std::string file_path, uint32_t playback_id,
+                             SubtitleCallback subtitle_callback,
+                             FinishedCallback finished_callback) {
+    if (playback_id == 0 || file_path.empty()) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (active_ || worker_running_) {
+            return false;
+        }
+        audio_url_.clear();
+        local_path_ = std::move(file_path);
+        device_key_.clear();
+        subtitles_.clear();
+        displayed_text_.clear();
+        subtitle_callback_ = std::move(subtitle_callback);
+        finished_callback_ = std::move(finished_callback);
+        playback_id_ = playback_id;
+        last_playback_position_ms_ = 0;
+        underrun_count_ = 0;
+        next_subtitle_index_ = 0;
+        active_ = true;
+        worker_running_ = true;
+        cancelled_ = false;
+        http_finished_ = false;
+        stream_started_ = false;
+        playback_started_ = false;
+        playback_drained_ = false;
+        completion_reported_ = false;
+    }
+    if (task_stack_ == nullptr) {
+        task_stack_ = static_cast<StackType_t*>(heap_caps_malloc(
+            kNotifyTaskStackSize * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        task_tcb_ = static_cast<StaticTask_t*>(
+            heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    }
+    if (task_stack_ != nullptr && task_tcb_ != nullptr) {
+        task_handle_ = xTaskCreateStaticPinnedToCore(WorkerEntry, "notify_sd", kNotifyTaskStackSize,
+                                                     this, kNotifyTaskPriority, task_stack_,
+                                                     task_tcb_, 1);
+    } else {
+        task_handle_ = nullptr;
+    }
+    if (task_handle_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create local playback task");
+        std::lock_guard<std::mutex> lock(mutex_);
+        active_ = false;
+        worker_running_ = false;
+        cancelled_ = true;
+        local_path_.clear();
         return false;
     }
     return true;
@@ -602,6 +712,13 @@ void NotifyPlayer::WorkerEntry(void* arg) {
 void NotifyPlayer::WorkerTask() {
     /* 每次播放重置 PSRAM 分配失败标志；播放中检测到即中止（emit/decode 路径）。 */
     s_psram_alloc_failed = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!local_path_.empty()) {
+            WorkerTaskLocal();
+            return;
+        }
+    }
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     dram_epoch_ = nodelio_offline_cmd_dram_epoch();
     const bool yielded = nodelio_offline_cmd_yield_slot();
@@ -788,6 +905,92 @@ void NotifyPlayer::WorkerTask() {
     if (callback) {
         callback(completed_playback_id, report_success);
     }
+}
+
+/**
+ * 内存卡本地文件：与 HTTP 路径同一套解码/喂队列逻辑，只是数据源换成 FILE*。
+ * 结束/失败的通知语义保持一致，Application 的 HandleNotificationFinished 无需区分来源。
+ */
+bool NotifyPlayer::WorkerTaskLocal() {
+    std::string path;
+    uint32_t playback_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        path = local_path_;
+        playback_id = playback_id_;
+    }
+    ESP_LOGI(TAG, "local play %s", path.c_str());
+
+    bool success = false;
+    {
+        LocalFileHttp file;
+        if (!file.OpenPath(path)) {
+            ESP_LOGE(TAG, "open local file failed: %s", path.c_str());
+        } else {
+            /* 与 HTTP 一样先嗅探容器：本地文件读不动就立刻失败，不要卡在解码循环里。 */
+            std::array<char, kHttpReadBufferSize> buffer;
+            PsramBytes head;
+            head.reserve(8192);
+            StreamKind kind = StreamKind::kUnknown;
+            while (!IsCancelled(playback_id) && head.size() < 8192 &&
+                   kind == StreamKind::kUnknown) {
+                const auto got = file.Read(buffer.data(), buffer.size());
+                if (!got) {
+                    break;
+                }
+                if (*got == 0) {
+                    break;
+                }
+                head.insert(head.end(), buffer.data(), buffer.data() + *got);
+                kind = SniffAudio(head.data(), head.size());
+            }
+            const char* kn = kind == StreamKind::kMp3    ? "mp3"
+                             : kind == StreamKind::kM4a  ? "m4a"
+                             : kind == StreamKind::kWav  ? "wav"
+                             : kind == StreamKind::kOgg  ? "ogg"
+                                                         : "unknown";
+            ESP_LOGI(TAG, "local kind=%s head=%u", kn, static_cast<unsigned>(head.size()));
+            if (!IsCancelled(playback_id)) {
+                if (kind == StreamKind::kMp3) {
+                    success = PlayMp3(&file, playback_id, head.data(), head.size(), nullptr);
+                } else if (kind == StreamKind::kM4a) {
+                    success = PlayM4a(&file, playback_id, head.data(), head.size());
+                } else if (kind == StreamKind::kWav) {
+                    /* 卡里的歌不能用整段进 PSRAM 的 TTS 路径，会 3 秒截断 */
+                    success = PlayFileWav(&file, playback_id, head.data(), head.size());
+                } else if (kind == StreamKind::kOgg) {
+                    success = PlayOgg(&file, playback_id, head.data(), head.size());
+                } else {
+                    ESP_LOGE(TAG, "unsupported local audio: %s", path.c_str());
+                }
+            }
+            file.Close();
+        }
+    }
+
+    FinishedCallback callback;
+    uint32_t completed_playback_id = 0;
+    bool report_success = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        worker_running_ = false;
+        task_handle_ = nullptr;
+        if (!cancelled_ && active_ && playback_id == playback_id_) {
+            if (!success) {
+                callback = CompleteLocked(completed_playback_id);
+            } else {
+                http_finished_ = true;
+                if (playback_drained_) {
+                    callback = CompleteLocked(completed_playback_id);
+                    report_success = true;
+                }
+            }
+        }
+    }
+    if (callback) {
+        callback(completed_playback_id, report_success);
+    }
+    return success;
 }
 
 bool NotifyPlayer::PlayOgg(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n) {
@@ -1041,6 +1244,219 @@ bool NotifyPlayer::PlayWav(Http* http, uint32_t playback_id, const uint8_t* firs
     }
     close_rs();
     ESP_LOGI(TAG, "WAV play done frames_out played=%d", played ? 1 : 0);
+    return played;
+}
+
+/**
+ * 内存卡 WAV：流式读 PCM，边转单声道/重采样边喂播放队列。
+ * 与 PlayWav 的区别是不把整段 PCM 留在 PSRAM，因此能放整首歌。
+ */
+bool NotifyPlayer::PlayFileWav(Http* http, uint32_t playback_id, const uint8_t* first,
+                               size_t first_n) {
+    PsramBytes buf;
+    if (first_n > 0) {
+        buf.assign(first, first + first_n);
+    }
+    std::array<char, kHttpReadBufferSize> read_buf;
+    /* 先把 WAV 头读全（fmt/data 一般在头 1KB 内，留 64KB 余量应付附加 chunk）。 */
+    while (!IsCancelled(playback_id) && buf.size() < 64 * 1024) {
+        if (buf.size() >= 44 && buf.size() >= 12) {
+            /* 找到 data chunk 即可停 */
+            size_t pos = 12;
+            bool found = false;
+            while (pos + 8 <= buf.size()) {
+                const uint32_t chunk_sz = static_cast<uint32_t>(buf[pos + 4]) |
+                                          (static_cast<uint32_t>(buf[pos + 5]) << 8) |
+                                          (static_cast<uint32_t>(buf[pos + 6]) << 16) |
+                                          (static_cast<uint32_t>(buf[pos + 7]) << 24);
+                if (std::memcmp(buf.data() + pos, "data", 4) == 0) {
+                    found = true;
+                    break;
+                }
+                pos += 8 + chunk_sz + (chunk_sz & 1);
+            }
+            if (found) {
+                break;
+            }
+        }
+        const auto got = http->Read(read_buf.data(), read_buf.size());
+        if (!got) {
+            ESP_LOGE(TAG, "WAV local read failed: %s", got.error().ToString().c_str());
+            return false;
+        }
+        if (*got == 0) {
+            break;
+        }
+        buf.insert(buf.end(), read_buf.data(), read_buf.data() + *got);
+    }
+
+    if (buf.size() < 44 || std::memcmp(buf.data(), "RIFF", 4) != 0 ||
+        std::memcmp(buf.data() + 8, "WAVE", 4) != 0) {
+        ESP_LOGE(TAG, "WAV local header invalid size=%u", (unsigned)buf.size());
+        return false;
+    }
+    uint16_t audio_format = 0;
+    uint16_t channels = 0;
+    uint32_t sample_rate = 0;
+    uint16_t bits = 0;
+    size_t data_off = 0;
+    size_t pos = 12;
+    while (pos + 8 <= buf.size()) {
+        const char* tag = reinterpret_cast<const char*>(buf.data() + pos);
+        const uint32_t chunk_sz = static_cast<uint32_t>(buf[pos + 4]) |
+                                  (static_cast<uint32_t>(buf[pos + 5]) << 8) |
+                                  (static_cast<uint32_t>(buf[pos + 6]) << 16) |
+                                  (static_cast<uint32_t>(buf[pos + 7]) << 24);
+        pos += 8;
+        if (pos + chunk_sz > buf.size()) {
+            break;
+        }
+        if (std::memcmp(tag, "fmt ", 4) == 0 && chunk_sz >= 16) {
+            audio_format = static_cast<uint16_t>(buf[pos] | (buf[pos + 1] << 8));
+            channels = static_cast<uint16_t>(buf[pos + 2] | (buf[pos + 3] << 8));
+            sample_rate = static_cast<uint32_t>(buf[pos + 4]) | (static_cast<uint32_t>(buf[pos + 5]) << 8) |
+                          (static_cast<uint32_t>(buf[pos + 6]) << 16) |
+                          (static_cast<uint32_t>(buf[pos + 7]) << 24);
+            bits = static_cast<uint16_t>(buf[pos + 14] | (buf[pos + 15] << 8));
+        } else if (std::memcmp(tag, "data", 4) == 0) {
+            data_off = pos;
+            break;
+        }
+        pos += chunk_sz + (chunk_sz & 1);
+    }
+    if (audio_format != 1 || (bits != 16 && bits != 8) || channels < 1 || channels > 2 ||
+        sample_rate < 8000 || sample_rate > 48000 || data_off == 0) {
+        ESP_LOGE(TAG, "WAV local unsupported fmt=%u ch=%u rate=%lu bits=%u", audio_format, channels,
+                 (unsigned long)sample_rate, bits);
+        return false;
+    }
+
+    const int out_rate = Board::GetInstance().GetAudioCodec()->output_sample_rate();
+    const size_t frame_bytes = static_cast<size_t>(channels) * (bits / 8);
+    if (frame_bytes == 0) {
+        return false;
+    }
+    esp_ae_rate_cvt_handle_t resampler = nullptr;
+    auto close_rs = [&]() {
+        if (resampler != nullptr) {
+            esp_ae_rate_cvt_close(resampler);
+            resampler = nullptr;
+        }
+    };
+    const size_t batch = static_cast<size_t>(out_rate) * 500 / 1000;
+    PsramSamples mono;
+    PsramSamples resampled;
+    mono.reserve(batch * 2);
+    resampled.reserve(batch * 4);
+    uint32_t pos_ms = 0;
+    bool played = false;
+    size_t off = data_off;
+    /* data 之前已预读的 PCM 先消费，之后按 8KB 继续读直到 EOF。 */
+    bool eos = false;
+    while (!IsCancelled(playback_id)) {
+        size_t avail = buf.size() > off ? buf.size() - off : 0;
+        if (avail < frame_bytes && !eos) {
+            if (off > 0) {
+                buf.erase(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(off));
+                off = 0;
+                avail = buf.size();
+            }
+            const auto got = http->Read(read_buf.data(), read_buf.size());
+            if (!got) {
+                ESP_LOGE(TAG, "WAV local read failed mid-stream");
+                close_rs();
+                return false;
+            }
+            if (*got == 0) {
+                eos = true;
+            } else {
+                buf.insert(buf.end(), read_buf.data(), read_buf.data() + *got);
+                avail = buf.size() - off;
+            }
+        }
+        const size_t frames = avail / frame_bytes;
+        if (frames == 0 && eos) {
+            break;
+        }
+        if (frames == 0) {
+            vTaskDelay(1);
+            continue;
+        }
+        mono.resize(frames);
+        for (size_t i = 0; i < frames; i++) {
+            const uint8_t* f = buf.data() + off + i * frame_bytes;
+            int32_t sum = 0;
+            for (uint16_t c = 0; c < channels; c++) {
+                int16_t s = 0;
+                if (bits == 16) {
+                    s = static_cast<int16_t>(f[c * 2] | (f[c * 2 + 1] << 8));
+                } else {
+                    s = static_cast<int16_t>((static_cast<int>(f[c]) - 128) << 8);
+                }
+                sum += s;
+            }
+            mono[i] = static_cast<int16_t>(sum / channels);
+        }
+        off += frames * frame_bytes;
+        const int16_t* play = mono.data();
+        size_t play_n = mono.size();
+        if (static_cast<int>(sample_rate) != out_rate) {
+            if (resampler == nullptr) {
+                esp_ae_rate_cvt_cfg_t cfg = {
+                    .src_rate = sample_rate,
+                    .dest_rate = static_cast<uint32_t>(out_rate),
+                    .channel = 1,
+                    .bits_per_sample = ESP_AUDIO_BIT16,
+                    .complexity = 2,
+                    .perf_type = ESP_AE_RATE_CVT_PERF_TYPE_SPEED,
+                };
+                if (esp_ae_rate_cvt_open(&cfg, &resampler) != ESP_AE_ERR_OK || resampler == nullptr) {
+                    ESP_LOGE(TAG, "WAV local resampler open failed");
+                    close_rs();
+                    return false;
+                }
+            }
+            uint32_t target = 0;
+            esp_ae_rate_cvt_get_max_out_sample_num(resampler, play_n, &target);
+            if (resampled.size() < target) {
+                resampled.resize(target);
+            }
+            uint32_t actual = target;
+            if (esp_ae_rate_cvt_process(resampler, reinterpret_cast<esp_ae_sample_t>(const_cast<int16_t*>(play)),
+                                        play_n, reinterpret_cast<esp_ae_sample_t>(resampled.data()),
+                                        &actual) != ESP_AE_ERR_OK) {
+                ESP_LOGE(TAG, "WAV local resample failed");
+                close_rs();
+                return false;
+            }
+            play = resampled.data();
+            play_n = actual;
+        }
+        /* 按 500ms 一批喂队列，队列没空位就等，避免一次性推入整首歌。 */
+        size_t done = 0;
+        while (done < play_n && !IsCancelled(playback_id)) {
+            const size_t take = std::min(batch, play_n - done);
+            std::vector<int16_t> chunk(play + done, play + done + take);
+            if (!audio_service_.EnqueuePlaybackPcm(std::move(chunk), playback_id, pos_ms)) {
+                close_rs();
+                return false;
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (cancelled_ || !active_ || playback_id != playback_id_) {
+                    close_rs();
+                    return false;
+                }
+                playback_drained_ = false;
+                stream_started_ = true;
+            }
+            done += take;
+            pos_ms += static_cast<uint32_t>(take * 1000 / static_cast<size_t>(out_rate));
+            played = true;
+        }
+    }
+    close_rs();
+    ESP_LOGI(TAG, "WAV local done pos_ms=%lu played=%d", (unsigned long)pos_ms, played ? 1 : 0);
     return played;
 }
 

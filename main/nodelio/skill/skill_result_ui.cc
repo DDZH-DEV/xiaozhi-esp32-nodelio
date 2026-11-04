@@ -3,6 +3,7 @@
 lv_obj_t *s_scrim = nullptr;
 lv_obj_t *s_card = nullptr;
 lv_obj_t *s_filter_bar = nullptr;
+lv_obj_t *s_src_bar = nullptr;
 lv_obj_t *s_card_list = nullptr;
 lv_obj_t *s_card_title = nullptr;
 lv_obj_t *s_card_sub = nullptr;
@@ -269,9 +270,14 @@ void nodelio_skill_result_reapply_appearance(void)
     }
     if (s_hdr_btns) {
         const uint32_t n = lv_obj_get_child_count(s_hdr_btns);
+        bool first_btn = true;
         for (uint32_t i = 0; i < n; i++) {
-            paint_round_btn(lv_obj_get_child(s_hdr_btns, i), UI_CAPSULE_OFF,
-                            i == 0 ? UI_ACCENT_SOFT : UI_TEXT_SUB);
+            lv_obj_t *ch = lv_obj_get_child(s_hdr_btns, i);
+            if (ch == s_src_bar || ch == s_news_zoom_bar) {
+                continue;
+            }
+            paint_round_btn(ch, UI_CAPSULE_OFF, first_btn ? UI_ACCENT_SOFT : UI_TEXT_SUB);
+            first_btn = false;
         }
     }
     if (s_now_bar) {
@@ -430,6 +436,9 @@ void restart_skill_ttl(void)
 
 static void request_reshuffle(void);
 
+/** 曲库来源：0=在线曲库 1=内存卡（定义在下方来源切换段）。 */
+static int s_library_source;
+
 /** track | live | episode；无 env 时按 track */
 const char *env_media_kind(void)
 {
@@ -521,6 +530,12 @@ static void on_reshuffle(lv_event_t *e)
         dsh_refresh_list();
         return;
     }
+    /* 内存卡曲库：刷新=重新扫卡（可能刚拷进新歌） */
+    if (s_have_env && s_env && strcmp(s_env->card_type, "music_list") == 0 &&
+        s_library_source == 1) {
+        nodelio_skill_request_sd_library(false);
+        return;
+    }
     request_reshuffle();
 }
 
@@ -605,7 +620,21 @@ void paint_music_mark(lv_obj_t *lbl, bool playing, int index)
 static int list_row_h(void)
 {
     if (list_use_comfortable()) {
-        return SKILL_LIST_ROW_H;
+        const bool dsh = s_env && s_env->app_id[0] && strstr(s_env->app_id, "dsh") != nullptr;
+        if (!dsh) {
+            return SKILL_LIST_ROW_H;
+        }
+        /* 标题一行 + 副文两行 + 上下 pad，固定 68 会把标题裁进圆角 */
+        const int font_h = nl_ov_ui_font_line_h();
+        int lsp = nl_ov_ui_line_box() - font_h;
+        if (lsp < 0) {
+            lsp = 0;
+        }
+        int h = 16 + font_h + 3 + (font_h * 2 + lsp) + 6;
+        if (h < SKILL_LIST_ROW_H) {
+            h = SKILL_LIST_ROW_H;
+        }
+        return h;
     }
     const int font_h = nl_ov_ui_font_line_h();
     int lsp = nl_ov_ui_line_box() - font_h;
@@ -733,6 +762,16 @@ static void on_hdr_mid(lv_event_t *e)
         dsh_refresh_list();
         return;
     }
+    /* 内存卡多批：中间钮=下一批（翻页对全量滚动的曲库无意义） */
+    if (strcmp(s_env->card_type, "music_list") == 0 && s_library_source == 1 &&
+        nodelio_sd_batch_count() > 1) {
+        if (!nodelio_skill_sd_next_batch()) {
+            nl_ov_toast("没有下一批");
+            return;
+        }
+        Board::GetInstance().NoteUserActivity();
+        return;
+    }
     const int pages = list_page_count();
     if (pages <= 1) {
         return;
@@ -817,6 +856,11 @@ static void reshuffle_worker(void* arg) {
 }
 
 static void request_reshuffle(void) {
+    /* 从内存卡来源切回在线曲库时，可能还没展示过任何云端信封 → s_skill_cfg 为空。
+     * 此时从 NVS 缓存补一次，否则「在线曲库」chip 会误报「未配置服务器」。 */
+    if (!s_skill_cfg.server_url[0] || !s_skill_cfg.device_id[0]) {
+        nl_ov_cfg_for_http(&s_skill_cfg);
+    }
     if (!s_skill_cfg.server_url[0] || !s_skill_cfg.device_id[0]) {
         nl_ov_toast("未配置服务器");
         return;
@@ -827,7 +871,13 @@ static void request_reshuffle(void) {
         return;
     }
     job->cfg = s_skill_cfg;
-    snprintf(job->skill_id, sizeof(job->skill_id), "%s", s_env ? s_env->app_id : "music.search");
+    /* 内存卡曲库的 app_id 是本地 music.sd，服务端没有这个技能：
+     * 从「内存卡」切回「在线曲库」时必须发 music.search。 */
+    const char *sid = s_env && s_env->app_id[0] ? s_env->app_id : "music.search";
+    if (strcmp(sid, "music.sd") == 0) {
+        sid = "music.search";
+    }
+    snprintf(job->skill_id, sizeof(job->skill_id), "%s", sid);
     if (!nodelio::SubmitPanelJob(
             nodelio::PanelJobLane::Interactive, reshuffle_worker, job, [](void* p) { free(p); },
             nodelio_panel_begin_skill_view(), "reshuffle")) {
@@ -1133,6 +1183,178 @@ static void on_filter_chip(lv_event_t *e)
     invoke_filter_workspace(f);
 }
 
+/* ---------------- 曲库来源：在线曲库 / 内存卡 ---------------- */
+
+static bool s_sd_busy = false;
+
+int nodelio_skill_library_source(void)
+{
+    return s_library_source;
+}
+
+/** 卡内曲目 → music_list 信封。调用方在 Job 线程里跑（会碰 FATFS，禁止在 LVGL 回调里做）。 */
+static nl_content_envelope_t *build_sd_envelope(bool auto_play)
+{
+    nl_content_envelope_t *env = static_cast<nl_content_envelope_t *>(
+        heap_caps_calloc(1, sizeof(nl_content_envelope_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!env) {
+        env = static_cast<nl_content_envelope_t *>(calloc(1, sizeof(nl_content_envelope_t)));
+    }
+    if (!env) {
+        return nullptr;
+    }
+    snprintf(env->status, sizeof(env->status), "ok");
+    snprintf(env->app_id, sizeof(env->app_id), "music.sd");
+    snprintf(env->card_type, sizeof(env->card_type), "music_list");
+    snprintf(env->display_title, sizeof(env->display_title), "内存卡曲库");
+    snprintf(env->media_kind, sizeof(env->media_kind), "track");
+    env->auto_play = auto_play;
+    int total = 0;
+    const int n = nodelio_sd_fill_envelope(env, &total);
+    if (n <= 0) {
+        snprintf(env->spoken, sizeof(env->spoken),
+                 total > 0 ? "内存卡曲目读取失败" : "内存卡里没有找到歌曲，请拷贝 MP3/WAV/M4A 到卡的任意文件夹");
+    } else if (total > n) {
+        /* 只报本批，避免模型以为整张卡只有这些 */
+        snprintf(env->spoken, sizeof(env->spoken), "内存卡共%d首，本批%d首，可说播放第几首", total, n);
+    } else {
+        snprintf(env->spoken, sizeof(env->spoken), "内存卡共%d首，可说播放第几首", n);
+    }
+    return env;
+}
+
+static void sd_open_worker(void *p)
+{
+    const bool auto_play = (reinterpret_cast<intptr_t>(p) != 0);
+    nodelio_sd_mount();
+    if (nodelio_sd_is_mounted()) {
+        (void)nodelio_sd_rescan();
+    }
+    if (!nodelio_sd_is_mounted()) {
+        s_sd_busy = false;
+        nodelio_panel_ui_toast_defer("未检测到内存卡");
+        return;
+    }
+    nl_content_envelope_t *env = build_sd_envelope(auto_play);
+    s_sd_busy = false;
+    if (!env) {
+        nodelio_panel_ui_toast_defer("内存不足");
+        return;
+    }
+    /* 来源以信封信源为准（show() 会按 app_id 回填 s_library_source） */
+    nodelio_skill_result_show(nullptr, env, auto_play);
+}
+
+void nodelio_skill_request_sd_library(bool auto_play)
+{
+    if (!nodelio_sd_available()) {
+        nl_ov_toast("本机没有内存卡");
+        return;
+    }
+    if (s_sd_busy) {
+        nl_ov_toast("正在读取内存卡…");
+        return;
+    }
+    if (nodelio_media_is_playing() || nodelio_media_is_paused()) {
+        /* 换来源=换歌单：先停播，避免播放条指向上一批 */
+        nodelio_media_stop();
+    }
+    s_sd_busy = true;
+    nl_ov_toast("正在读取内存卡…");
+    /* discard：任务被更新的技能视图顶掉时也要解锁，否则「正在读取内存卡…」会一直卡住 */
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Interactive, sd_open_worker,
+            reinterpret_cast<void *>(auto_play ? 1 : 0),
+            [](void *) { s_sd_busy = false; }, nodelio_panel_begin_skill_view(), "sd_library")) {
+        s_sd_busy = false;
+        nl_ov_toast("内存卡读取失败");
+    }
+}
+
+bool nodelio_skill_sd_next_batch(void)
+{
+    if (s_library_source != 1 || nodelio_sd_batch_count() <= 1) {
+        return false;
+    }
+    nodelio_sd_next_batch();
+    nl_content_envelope_t *env = build_sd_envelope(false);
+    if (!env) {
+        return false;
+    }
+    nodelio_skill_result_show(nullptr, env, false);
+    return true;
+}
+
+static void on_src_chip(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    const int want = (int)(intptr_t)lv_event_get_user_data(e);
+    if (want == s_library_source) {
+        return;
+    }
+    Board::GetInstance().NoteUserActivity();
+    restart_skill_ttl();
+    if (want == 1) {
+        nodelio_skill_request_sd_library(false);
+        return;
+    }
+    /* 回在线曲库：重新 invoke 云端 music.search（与「打开曲库」同一路径）。
+     * 来源标记等回包到达后由 show() 按 app_id 更新，失败时仍停在内存卡，不会错标。 */
+    request_reshuffle();
+}
+
+/** 曲库卡顶部的来源切换：在线曲库 / 内存卡。仅 music_list 显示。 */
+static void fill_source_bar(void)
+{
+    if (!s_src_bar) {
+        return;
+    }
+    lv_obj_clean(s_src_bar);
+    const bool music = s_env && strcmp(s_env->card_type, "music_list") == 0;
+    if (!music || !nodelio_sd_available()) {
+        lv_obj_add_flag(s_src_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_height(s_src_bar, 0);
+        return;
+    }
+    lv_obj_clear_flag(s_src_bar, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_width(s_src_bar, LV_SIZE_CONTENT);
+    lv_obj_set_height(s_src_bar, 40);
+    lv_obj_move_to_index(s_src_bar, 0);
+    static const char *const kNames[2] = {"在线曲库", "内存卡"};
+    for (int i = 0; i < 2; i++) {
+        const bool selected = (i == s_library_source);
+        lv_obj_t *chip = lv_obj_create(s_src_bar);
+        lv_obj_remove_style_all(chip);
+        lv_obj_set_height(chip, 34);
+        lv_obj_set_width(chip, LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_hor(chip, 16, 0);
+        lv_obj_set_style_radius(chip, 17, 0);
+        lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(chip, 1, 0);
+        lv_obj_set_flex_flow(chip, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(chip, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        if (selected) {
+            lv_obj_set_style_bg_color(chip, UI_CAPSULE_ON, 0);
+            lv_obj_set_style_border_color(chip, UI_ACCENT_SOFT, 0);
+            lv_obj_set_style_border_opa(chip, LV_OPA_80, 0);
+        } else {
+            lv_obj_set_style_bg_color(chip, UI_CAPSULE_OFF, 0);
+            lv_obj_set_style_border_color(chip, UI_TILE_OFF_BORDER, 0);
+            lv_obj_set_style_border_opa(chip, LV_OPA_60, 0);
+        }
+        lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(chip, 6);
+        lv_obj_add_event_cb(chip, on_src_chip, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_t *lbl = lv_label_create(chip);
+        nl_ov_set_font(lbl);
+        lv_label_set_text(lbl, kNames[i]);
+        lv_obj_set_style_text_color(lbl, selected ? UI_TEXT : UI_TEXT_SUB, 0);
+    }
+}
+
 static void fill_filters(void)
 {
     if (!s_filter_bar) {
@@ -1176,6 +1398,57 @@ static void fill_filters(void)
         lv_obj_set_style_text_color(lbl, f->selected ? UI_TEXT : UI_TEXT_SUB, 0);
     }
     /* 不在此处 scroll_to_view：会强制整树 layout，语音/主循环路径易触发 task_wdt */
+}
+
+/**
+ * 曲库卡前台：「播放第一首 / 放第三首 / 来第2首」→ 在当前列表里点播。
+ * 必须本机处理：交云端会重新 invoke music.search，返回的是另一批结果，
+ * 「第一首」就不再是用户看到的那一首（用户报告的「又请求一次」问题）。
+ */
+bool nodelio_skill_try_music_pick_phrase(const char *text)
+{
+    if (!text || !text[0] || !s_have_env || !s_env) {
+        return false;
+    }
+    if (strcmp(s_env->card_type, "music_list") != 0) {
+        return false;
+    }
+    /* 点歌说法里必须有「首/曲」，否则「第一个」可能是在选应用/工作区 */
+    if (strstr(text, "首") == nullptr && strstr(text, "曲") == nullptr &&
+        strstr(text, "歌") == nullptr) {
+        return false;
+    }
+    int ord = parse_ordinal_zh(text);
+    if (ord <= 0) {
+        if (strstr(text, "第一首") || strstr(text, "头一首") || strstr(text, "首个")) {
+            ord = 1;
+        } else if (strstr(text, "最后一首") || strstr(text, "最后那首")) {
+            ord = s_env->track_n;
+        }
+    }
+    if (ord <= 0) {
+        return false;
+    }
+    char title[NL_ENV_TITLE];
+    title[0] = '\0';
+    {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (!lock || !nodelio_skill_media_play_index(ord, title, sizeof(title))) {
+            char tip[48];
+            snprintf(tip, sizeof(tip), "列表只有 %d 首", s_env ? s_env->track_n : 0);
+            nodelio_panel_ui_toast_defer(tip);
+            nodelio_panel_ui_set_voice_hint("没有这个序号");
+            return true; /* 已处理：不要让云端再搜一次歌 */
+        }
+    }
+    ESP_LOGI(TAG, "music pick ord=%d title=%s", ord, title);
+    {
+        char tip[NL_ENV_TITLE + 16];
+        snprintf(tip, sizeof(tip), "%s", title[0] ? title : "已点播");
+        nodelio_panel_ui_toast_defer(tip);
+        nodelio_panel_ui_set_voice_hint(title[0] ? title : "已点播");
+    }
+    return true;
 }
 
 bool nodelio_skill_try_pick_phrase(const char *text)
@@ -1694,8 +1967,20 @@ static void ensure_card(void)
     lv_obj_remove_style_all(s_hdr_btns);
     lv_obj_set_size(s_hdr_btns, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(s_hdr_btns, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_hdr_btns, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(s_hdr_btns, 6, 0);
     lv_obj_clear_flag(s_hdr_btns, LV_OBJ_FLAG_CLICKABLE);
+
+    /* 来源芯片插在刷新左侧；非曲库时隐藏，不占位 */
+    s_src_bar = lv_obj_create(s_hdr_btns);
+    lv_obj_remove_style_all(s_src_bar);
+    lv_obj_set_width(s_src_bar, LV_SIZE_CONTENT);
+    lv_obj_set_height(s_src_bar, 0);
+    lv_obj_set_flex_flow(s_src_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_src_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(s_src_bar, 8, 0);
+    lv_obj_clear_flag(s_src_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_src_bar, LV_OBJ_FLAG_HIDDEN);
 
     make_play_ctrl_btn(s_hdr_btns, UI_CAPSULE_OFF, UI_ACCENT_SOFT, MATERIAL_SYMBOLS_REFRESH, on_reshuffle);
     /* 曲库为下一页；新闻在 fill_news 里改回下箭头收起 */
@@ -1853,6 +2138,7 @@ static void ensure_card(void)
         lv_obj_set_style_border_opa(s_now_bar, LV_OPA_80, 0);
         ui_style_card(s_now_bar);
         lv_obj_set_style_pad_hor(s_now_bar, 10, 0);
+        lv_obj_set_style_pad_ver(s_now_bar, 8, 0);
         lv_obj_set_style_pad_column(s_now_bar, 8, 0);
         lv_obj_set_flex_flow(s_now_bar, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(s_now_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1923,9 +2209,9 @@ static void ensure_card(void)
             make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_SKIP_PREVIOUS, on_prev_now);
         s_now_pause_btn =
             make_play_ctrl_btn(s_now_btns, UI_ACCENT, UI_ON_TILE, MATERIAL_SYMBOLS_PAUSE, on_pause_now);
-        make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_STOP, on_stop_now);
         s_now_next_btn =
             make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_SKIP_NEXT, on_next_now);
+        make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_STOP, on_stop_now);
         make_icon_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT_SUB, MATERIAL_SYMBOLS_KEYBOARD_ARROW_DOWN,
                       on_minimize);
         if (!wide) {
@@ -1969,8 +2255,9 @@ void apply_card_chrome(void)
     const bool daily = strcmp(s_env->card_type, "calendar_weather") == 0;
     const bool dsh_detail =
         s_env->detail_body && s_env->detail_body[0] && strstr(s_env->app_id, "dsh") != nullptr;
-    /* 曲库改全量滚动后不再占分页钮；新闻中间钮=收起 */
-    const bool mid_btn = news || list_page_count() > 1;
+    /* 曲库改全量滚动后不再占分页钮；新闻中间钮=收起；内存卡多批时中间钮=下一批 */
+    const bool mid_btn = news || list_page_count() > 1 ||
+                         (s_library_source == 1 && nodelio_sd_batch_count() > 1);
     const bool compact = !music && !news && !daily &&
                          !mid_btn && !dsh_detail && s_env->filter_n == 0 && s_env->track_n <= 4;
     /* 字号条仅新闻详情；切到其它卡或列表时收起 */
@@ -2050,6 +2337,7 @@ void fill_list(void)
         return;
     }
     fill_filters(); /* news 等无 filters 时收起横条 */
+    fill_source_bar();
     if (strcmp(s_env->card_type, "calendar_weather") == 0) {
         stop_dsh_detail_poll();
         stop_dsh_status_anims();
@@ -2118,7 +2406,16 @@ void fill_list(void)
                 s_list_page = 0;
             }
             if (music_card) {
-                if (pages > 1) {
+                const bool sd = s_library_source == 1;
+                if (sd) {
+                    const int batches = nodelio_sd_batch_count();
+                    if (batches > 1) {
+                        snprintf(sub, sizeof(sub), "内存卡 %d 首 · 第 %d/%d 批", nodelio_sd_track_count(),
+                                 nodelio_sd_batch() + 1, batches);
+                    } else {
+                        snprintf(sub, sizeof(sub), "内存卡 %d 首 · 点播或说第几首", nodelio_sd_track_count());
+                    }
+                } else if (pages > 1) {
                     snprintf(sub, sizeof(sub), "共 %d 首 · %d/%d", s_env->track_n, s_list_page + 1, pages);
                 } else {
                     snprintf(sub, sizeof(sub), "共 %d 首 · 点播或说歌名", s_env->track_n);
@@ -2607,6 +2904,11 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
     }
     s_env = env;
     s_have_env = true;
+    /* 来源跟随信封：内存卡曲库 app_id=music.sd；其余音乐列表一律回在线曲库，
+     * 否则切到电台/新闻后回来，「换一批」会误走本地批次。 */
+    if (strcmp(s_env->card_type, "music_list") == 0) {
+        s_library_source = strcmp(s_env->app_id, "music.sd") == 0 ? 1 : 0;
+    }
     /* DSH：勿无清 DISPATCHED/ARMED；远端已 running/attention 或超时再清 */
     const bool is_dsh = strstr(s_env->app_id, "dsh") != nullptr;
     bool clear_dsh_ui = false;

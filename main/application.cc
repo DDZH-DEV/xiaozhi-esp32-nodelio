@@ -1149,6 +1149,14 @@ void Application::InitializeProtocol() {
                         ESP_LOGI(TAG, "stt local-route: confirm→news read");
                         return;
                     }
+                    /* 曲库「播放第N首」：必须本机命中，否则云端会重新搜歌换一批结果 */
+                    if (nodelio_skill_try_music_pick_phrase(message.c_str())) {
+                        ESP_LOGI(TAG, "stt local-route: music pick");
+                        SuppressCloudTts(3000);
+                        /* 开播要独占通道：结束本轮会话，让媒体拿到 Idle */
+                        EndVoiceSessionAfterLocalSkill();
+                        return;
+                    }
                     /* DSH 卡选条须先于 open_app：「打开第一个」否则被当成应用名并 suppress 云端 */
                     if (nodelio_skill_try_pick_phrase(message.c_str())) {
                         ESP_LOGI(TAG, "stt local-route: dsh pick");
@@ -3220,6 +3228,50 @@ bool Application::PlayHttpAudio(std::string audio_url, std::string device_key) {
 }
 
 void Application::StopHttpAudio() { StopNotification(); }
+
+bool Application::PlayLocalAudioFile(std::string file_path) {
+    if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy()) {
+        ESP_LOGW(TAG, "PlayLocalAudioFile ignored while busy");
+        return false;
+    }
+    auto& board = Board::GetInstance();
+    board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+    while (audio_service_.PopPacketFromSendQueue()) {
+        /* 丢掉上一轮对话残留的上行音频，理由同 StartNotification。 */
+    }
+    if (!SetDeviceState(kDeviceStateNotifying)) {
+        board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        return false;
+    }
+    audio_service_.ResetDecoder();
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    MarkTransportSuspended(true);
+    SuspendTransport();
+    audio_service_.ResetDecoder();
+#endif
+    uint32_t playback_id = ++notification_playback_id_;
+    if (playback_id == 0) {
+        playback_id = ++notification_playback_id_;
+    }
+    const bool started = notify_player_.StartFile(
+        std::move(file_path), playback_id,
+        [this](uint32_t id, const std::string& text) {
+            Schedule([this, id, text]() {
+                if (GetDeviceState() == kDeviceStateNotifying && notification_playback_id_ == id) {
+                    Board::GetInstance().GetDisplay()->SetChatMessage("assistant", text.c_str());
+                }
+            });
+        },
+        [this](uint32_t id, bool success) {
+            Schedule([this, id, success]() { HandleNotificationFinished(id, success); });
+        });
+    if (!started) {
+        ESP_LOGE(TAG, "Failed to start local file playback");
+        StopNotification();
+        return false;
+    }
+    return GetDeviceState() == kDeviceStateNotifying;
+}
 #endif
 
 void Application::ResetProtocol() {

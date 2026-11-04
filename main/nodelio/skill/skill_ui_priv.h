@@ -7,6 +7,7 @@
 #include "device_caps.h"
 #include "lunar_date.h"
 #include "media_player.h"
+#include "sd_library.h"
 #include "nl_url_util.h"
 #include "nodelio_http.h"
 #include "nodelio_overlay.h"
@@ -49,7 +50,7 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 /* result_max_height 仍按「顶栏占位」算。顶栏现已透明且空闲隐藏，开面板时把这段高度加回去。
  * 有 now_playing 条时须再扣 SKILL_NOW_H+SKILL_GAP，否则卡底会画出屏外。 */
 #define SKILL_CARD_H_MAX (nodelio_display_profile()->result_max_height + NL_UI_STATUS_H)
-#define SKILL_NOW_H 64
+#define SKILL_NOW_H 88
 #define SKILL_GAP 12
 /** 顶栏不占位，面板从屏顶留白起排。 */
 static inline int skill_top_y(void)
@@ -97,6 +98,8 @@ enum dsh_ui_phase_t : uint8_t { DSH_UI_IDLE = 0, DSH_UI_ARMED, DSH_UI_DISPATCHED
 extern lv_obj_t *s_scrim;
 extern lv_obj_t *s_card;
 extern lv_obj_t *s_filter_bar;
+/** 曲库来源切换：在线曲库 / 内存卡，排在顶栏刷新钮左侧；非曲库卡时收起。 */
+extern lv_obj_t *s_src_bar;
 extern lv_obj_t *s_dsh_status;      /* 续聊/执行中状态条：EQ + 文案 */
 extern lv_obj_t *s_dsh_status_lbl;
 extern lv_obj_t *s_dsh_eq[3];
@@ -197,6 +200,8 @@ void anim_show_obj(lv_obj_t *obj, bool from_below);
 void reset_obj_anim_style(lv_obj_t *obj);
 void dismiss_library_and_player(void);
 void fill_list(void);
+
+/* Library sources (skill_result_ui.cc + sd_library.c) */
 
 /* Media bar & FAB (skill_media_bar.cc) */
 void style_now_bar(bool docked);

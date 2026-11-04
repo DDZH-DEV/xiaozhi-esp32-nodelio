@@ -60,6 +60,41 @@ bool nodelio_skill_media_next(void);
  *  成功时 title_out 写入曲名（可空）；无列表返回 false。 */
 bool nodelio_skill_media_play_any(char *title_out, size_t title_out_len);
 
+/**
+ * 语音/MCP：按 1-based 序号播放当前列表里的曲目。
+ * 「播放第一首」必须走这里——重新 invoke music.search 会换成新一批搜索结果。
+ * 越界或无列表返回 false。
+ */
+bool nodelio_skill_media_play_index(int ordinal, char *title_out, size_t title_out_len);
+
+/**
+ * 当前列表的曲名清单（每行「序号. 曲名」，最多 max 条）。
+ * 供模型在「第一首是什么 / 播放第三首」前回忆列表，避免重复请求。
+ * 返回写入条数；无列表返回 0。
+ */
+int nodelio_skill_media_list_titles(char *out, size_t out_len, int max);
+
+/** 当前曲库是否来自内存卡（决定「换一批」走本地批次还是重新搜歌）。 */
+bool nodelio_skill_media_is_sd(void);
+
+/**
+ * 打开内存卡曲库（异步：挂卡→扫描→上屏）。
+ * 语音「放内存卡里的歌」/MCP open_app(内存卡)/曲库来源切换都走这里。
+ */
+void nodelio_skill_request_sd_library(bool auto_play);
+
+/** 曲库来源：0=在线曲库 1=内存卡（当前曲库卡显示的那一栏）。 */
+int nodelio_skill_library_source(void);
+
+/** 内存卡来源的「换一批」：切到下一批并重绘；不适用返回 false。 */
+bool nodelio_skill_sd_next_batch(void);
+
+/**
+ * 曲库卡前台：「播放第一首 / 放第三首」→ 在当前列表里点播，不再重新搜歌。
+ * 已处理返回 true（含越界提示）。
+ */
+bool nodelio_skill_try_music_pick_phrase(const char *text);
+
 /** 语音/MCP：新闻。
  *  op: "prev"|"next"|"read"|"continue"|"mark_read"|"skip"|"close"
  *  成功时 out 写入短回包（分段正文，避免 MQTT 超长被掐断）。

@@ -36,7 +36,7 @@ S3 专用的硬件 AES、DRAM 占位、断网休眠及音频规避没有整体�
 | C5 SDIO | Slot1，CLK18、CMD19、D0..3=14..17 | 4bit、40MHz 起步，实际稳定速率待测 |
 | C5 EN/BOOT | 54/53 | Hosted 独占 EN/reset；P4 BOOT GPIO设输入上拉，正常启动释放 strap |
 | BOOT button | 35 | 短按切换对话；息屏短按只唤醒；长按进入现有 Wi-Fi 配网 |
-| SD Slot0 | CLK43、CMD44、D0..3=39..42，PWRn51、CD52 | 首期不初始化、不占用/卸载 SDMMC host |
+| SD Slot0 | CLK43、CMD44、D0..3=39..42，PWRn51、CD52 | 曲库读卡（`CONFIG_NODELIO_SD_MUSIC`）；Hosted 占 Slot1 |
 
 C5 模组图上 D0=IO8、D1=IO7、D2=IO14、D3=IO13、CLK=IO9、CMD=IO10、BOOT=IO28。
 U14 引出其 UART/EN/BOOT。**COM8 的 ROM 探测仅识别 P4；本次应用日志已确认 C5 运行 Hosted 2.12.0。**
@@ -120,7 +120,24 @@ AXP2101 先做地址 ACK，再读芯片 ID（`0x03 == 0x4A`）。电池在位（
 图中 DCDC1=3.3V，ALDO2/3/4 为摄像头相关 C1V8/C1V5/C3V3；电池容量、充电限制与
 实际贴装仍需确认。首期保持硬件电源默认配置，不初始化摄像头、陀螺仪和 TF 卡。
 
-## 构建（在装有 IDF 的电脑执行）
+## 内存卡曲库（SD/TF）
+
+面板曲库在原来的云端曲库之外，增加「内存卡」来源，两者共用同一张曲库卡与播放器：
+
+- 来源切换：曲库卡顶部两个 chip「在线曲库 / 内存卡」；也可说「打开内存卡 / 放内存卡里的歌」，
+  或让云端调 `self.nodelio.open_app(name=内存卡)`。`换一批`/顶部中键在内存卡来源下切到下一批 24 首。
+- 读卡策略：**按需挂载**（进入内存卡来源时才 `esp_vfs_fat_sdmmc_mount`），
+  未挂载时把 `PWRn51` 拉回无效电平省电；`CD52` 只做提示，挂载失败按「未检测到内存卡」处理，
+  失败会给出提示而不是 abort。挂载绝不格式化用户卡（`format_if_mount_failed=false`）。
+- 只列真能播的扩展名：`mp3 / wav / m4a`。卡内文件按路径排序、分批（每批 `NL_ENV_TRACK_MAX`=24 首），
+  避免一次把整张卡的曲名塞进 PSRAM。
+- 播放走本地文件链路：`sd://` URL → `Application::PlayLocalAudioFile()` → `NotifyPlayer` 文件分支，
+  复用同一套 MP3/M4A 解码与 PCM 喂队列逻辑；WAV 用流式实现（旧 TTS 路径会把 WAV 截到 512KB）。
+- 音量/息屏/唤醒策略与在线曲库完全一致（Notifying 播放槽、播中可息屏、唤醒暂停再续播）。
+
+未验证项：PWRn51 的有效电平与 CD52 极性按原理图「PWRn/低有效」实现，
+首次上机需确认卡的供电与热插拔提示；SDMMC Slot0 与 Hosted 的 Slot1 是否互不干扰也需实测。
+Hosted 仍独占 Slot1，曲库不触碰 C5 的 SDIO 配置。
 
 优先 ESP-IDF `release/v6.1`，最低 v6.0.1；记录实际 IDF SHA。
 本次按用户要求**未执行 IDF 编译、未烧录**。不要使用 SILA-86 的 `nodelio-build.bat`。

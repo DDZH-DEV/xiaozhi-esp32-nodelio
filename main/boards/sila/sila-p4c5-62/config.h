@@ -32,3 +32,20 @@
 #define DISPLAY_PHYSICAL_HEIGHT 1280
 #define DISPLAY_WIDTH 1280
 #define DISPLAY_HEIGHT 452
+
+/* TF/SD Slot0（SCH_P4X sheet 1）：4-bit + PWRn + CD。
+ * Hosted 独占 SDMMC Slot1，Slot0 归本板曲库/内存卡播放使用。
+ * PWRn 低有效：上电后由 sd_library 拉高使能，未挂载时断电。 */
+#define SD_CARD_CLK_PIN GPIO_NUM_43
+#define SD_CARD_CMD_PIN GPIO_NUM_44
+#define SD_CARD_D0_PIN GPIO_NUM_39
+#define SD_CARD_D1_PIN GPIO_NUM_40
+#define SD_CARD_D2_PIN GPIO_NUM_41
+#define SD_CARD_D3_PIN GPIO_NUM_42
+#define SD_CARD_PWR_PIN GPIO_NUM_51
+#define SD_CARD_CD_PIN GPIO_NUM_52
+#define SD_CARD_MAX_FREQ_KHZ 20000
+/* 原理图写作 PWRn/CD，按低有效实现；若上机发现卡不上电/误判未插卡，
+ * 只改这两行即可，无需动 sd_library 与板级逻辑。 */
+#define SD_CARD_PWR_ACTIVE_LOW 1
+#define SD_CARD_CD_ACTIVE_LOW 1

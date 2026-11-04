@@ -1148,6 +1148,15 @@ bool nl_ov_apps_open_by_query(const char *query)
     }
     query = qbuf;
 
+    /* 内存卡曲库：本机读卡，不经服务端已装技能；未接卡时给出明确提示。 */
+    if (strstr(query, "内存卡") || strstr(query, "存储卡") || strstr(query, "SD卡") ||
+        strstr(query, "sd卡") || strstr(query, "TF卡") || strstr(query, "tf卡") ||
+        strstr(query, "本地音乐") || strstr(query, "本地曲库")) {
+        ESP_LOGI(TAG, "open_by_query: sd library");
+        nodelio_skill_request_sd_library(false);
+        return true;
+    }
+
     /* 裸「派活」无 instruction → 只提示，避免 error 卡「缺少参数」 */
     if (strcmp(query, "派活") == 0 || strcmp(query, "DSH派活") == 0 ||
         strcmp(query, "dsh.task") == 0 || strcmp(query, "dsh_task") == 0) {

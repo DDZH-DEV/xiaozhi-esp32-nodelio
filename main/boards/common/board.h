@@ -39,6 +39,27 @@ enum class PowerSaveLevel {
     PERFORMANCE,  // No power saving (maximum power consumption / full performance)
 };
 
+/**
+ * Optional SD/TF slot wiring, exposed by boards that can mount a card.
+ * Core code never includes a board config.h; it asks the Board for this.
+ * Any pin left at -1 means "not wired". Power enable is usually active-low
+ * (PWRn), and is driven high (off) whenever the card is not mounted.
+ */
+struct SdCardPins {
+    int clk = -1;
+    int cmd = -1;
+    int d0 = -1;
+    int d1 = -1;
+    int d2 = -1;
+    int d3 = -1;
+    int power_en = -1;
+    bool power_active_low = true;
+    int card_detect = -1;
+    bool cd_active_low = true;
+    int max_freq_khz = 20000;
+    bool four_bit = true;
+};
+
 // Network event callback type (event, data)
 // data contains additional info like SSID for Connecting/Connected events
 using NetworkEventCallback = std::function<void(NetworkEvent event, const std::string& data)>;
@@ -92,6 +113,8 @@ public:
     virtual void SetPowerSaveEnabled(bool enabled) { (void)enabled; }
     /** 对话通道关闭后的短延迟息屏（墙板）；默认空。勿在开机激活路径调用。 */
     virtual void RequestGoodbyeSleep() {}
+    /** 板级 SD/TF 卡接线；未接卡的板保持默认（全部 -1）即可。 */
+    virtual SdCardPins GetSdCardPins() { return SdCardPins{}; }
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
 };

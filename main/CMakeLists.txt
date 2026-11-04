@@ -987,6 +987,7 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/skill/device_caps.c"
         "nodelio/skill/content_envelope.c"
         "nodelio/skill/lunar_date.c"
+        "nodelio/skill/sd_library.cc"
         "nodelio/skill/skill_runtime.c"
         "nodelio/skill/skill_result_ui.cc"
         "nodelio/skill/skill_news_ui.cc"
@@ -1207,6 +1208,13 @@ if(CONFIG_BOARD_TYPE_ESP_VOCAT AND IDF_VERSION_MAJOR LESS 6)
     )
 endif()
 if(CONFIG_BOARD_TYPE_ESP32_P4_FUNCTION_EV_BOARD)
+    list(APPEND MAIN_PRIV_REQUIRES_EXTRA
+        esp_driver_sdmmc
+        sdmmc
+    )
+endif()
+# SILA P4C5-62：Slot0 TF 卡曲库（Hosted 独占 Slot1）
+if(CONFIG_NODELIO_SD_MUSIC)
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA
         esp_driver_sdmmc
         sdmmc

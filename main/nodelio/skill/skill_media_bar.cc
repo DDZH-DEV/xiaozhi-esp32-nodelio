@@ -363,6 +363,77 @@ bool nodelio_skill_media_play_any(char *title_out, size_t title_out_len)
     return true;
 }
 
+/** 1-based 序号 → 当前列表下标。跳过没有 URL 的条目，与播报序号保持一致。 */
+static int playable_index_at(int ordinal)
+{
+    if (!s_have_env || !s_env || ordinal <= 0) {
+        return -1;
+    }
+    int seen = 0;
+    for (int i = 0; i < s_env->track_n; i++) {
+        if (!s_env->tracks[i].playback_url[0]) {
+            continue;
+        }
+        seen++;
+        if (seen == ordinal) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool nodelio_skill_media_play_index(int ordinal, char *title_out, size_t title_out_len)
+{
+    if (title_out && title_out_len > 0) {
+        title_out[0] = '\0';
+    }
+    const int pick = playable_index_at(ordinal);
+    if (pick < 0) {
+        return false;
+    }
+    play_at(pick);
+    if (title_out && title_out_len > 0) {
+        snprintf(title_out, title_out_len, "%s", s_env->tracks[pick].title);
+    }
+    return true;
+}
+
+int nodelio_skill_media_list_titles(char *out, size_t out_len, int max)
+{
+    if (!out || out_len == 0 || max <= 0) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (!s_have_env || !s_env || s_env->track_n <= 0) {
+        return 0;
+    }
+    size_t off = 0;
+    int n = 0;
+    int seen = 0;
+    for (int i = 0; i < s_env->track_n && n < max; i++) {
+        if (!s_env->tracks[i].playback_url[0]) {
+            continue;
+        }
+        seen++;
+        const int w = snprintf(out + off, out_len - off, "%s%d. %s", off ? "\n" : "", seen,
+                               s_env->tracks[i].title);
+        if (w <= 0 || (size_t)w >= out_len - off) {
+            break;
+        }
+        off += (size_t)w;
+        n++;
+    }
+    return n;
+}
+
+bool nodelio_skill_media_is_sd(void)
+{
+    if (!s_have_env || !s_env || s_env->track_n <= 0) {
+        return false;
+    }
+    return strncmp(s_env->tracks[0].playback_url, "sd://", 5) == 0;
+}
+
 void stop_mini_pulse(void)
 {
     if (s_mini_pulse_on && s_mini_fab) {

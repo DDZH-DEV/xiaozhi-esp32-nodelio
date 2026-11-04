@@ -38,6 +38,9 @@ public:
     bool Start(std::string audio_url, std::vector<NotifySubtitle> subtitles, uint32_t playback_id,
                SubtitleCallback subtitle_callback, FinishedCallback finished_callback,
                std::string device_key = {});
+    /** 本地文件播放（内存卡）。file_path 为 VFS 路径；与 Start 共用同一播放槽。 */
+    bool StartFile(std::string file_path, uint32_t playback_id, SubtitleCallback subtitle_callback,
+                   FinishedCallback finished_callback);
     void Stop();
     void OnPlaybackProgress(uint32_t playback_id, uint32_t media_position_ms);
     void OnPlaybackDrained();
@@ -49,6 +52,8 @@ private:
     AudioService& audio_service_;
     mutable std::mutex mutex_;
     std::string audio_url_;
+    /** 本地文件播放时非空；URL 播放为空。二者互斥。 */
+    std::string local_path_;
     std::string device_key_;
     std::vector<NotifySubtitle> subtitles_;
     std::string displayed_text_;
@@ -73,11 +78,18 @@ private:
 
     static void WorkerEntry(void* arg);
     void WorkerTask();
+    /** 本地文件：一次打开、边读边解，复用 HTTP 路径的 MP3/M4A/WAV 解码循环。 */
+    bool WorkerTaskLocal();
     bool PlayOgg(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n);
     bool PlayMp3(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n,
                  NotifyIcyState* icy = nullptr);
     bool PlayM4a(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n);
     bool PlayWav(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n);
+    /**
+     * 内存卡 WAV 流式播放：PlayWav 会把整段 PCM 读进 PSRAM（上限 512KB），
+     * 只适合短 TTS；卡里的歌必须边读边推队列，否则 3 秒就被截断。
+     */
+    bool PlayFileWav(Http* http, uint32_t playback_id, const uint8_t* first, size_t first_n);
     bool IsCancelled(uint32_t playback_id) const;
     FinishedCallback CompleteLocked(uint32_t& playback_id);
 };
