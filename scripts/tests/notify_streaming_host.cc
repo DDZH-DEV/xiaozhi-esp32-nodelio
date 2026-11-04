@@ -9,6 +9,7 @@
 #include <vector>
 
 #define ESP_LOGI(...) ((void)0)
+#define ESP_LOGW(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
 using PsramBytes = std::vector<uint8_t>;
 using PsramSamples = std::vector<int16_t>;
@@ -205,6 +206,7 @@ HttpAppendResult HttpAppend(Http* http, PsramBytes& pending,
 size_t FindNextMp3Sync(const uint8_t*, size_t n, size_t from) {
     return from < n ? from : n;
 }
+size_t Mp3FrameLength(const uint8_t*, size_t) { return 0; }
 struct NotifySubtitle {
     uint32_t start_ms;
     std::string text;

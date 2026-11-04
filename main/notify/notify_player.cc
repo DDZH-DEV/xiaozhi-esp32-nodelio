@@ -388,7 +388,7 @@ enum class HttpAppendResult { kOk, kEos, kFail };
 
 using IcyState = NotifyIcyState;
 
-/** 找下一个 MP3 帧同步字；优先「本帧长合法且下一帧也像同步」；找不到则保留尾部 ≤3 字节。 */
+/** 找下一个 MP3 帧同步字；优先「本帧长合法且下一帧也像同步」。找不到时最多前跳一个重同步窗。 */
 size_t FindNextMp3Sync(const uint8_t* p, size_t n, size_t from)
 {
     if (!p || n < 4 || from >= n) {
@@ -414,7 +414,9 @@ size_t FindNextMp3Sync(const uint8_t* p, size_t n, size_t from)
     if (weak < n) {
         return weak;
     }
-    return n >= 3 ? n - 3 : n;
+    /* 确认不了下一帧时最多丢掉一个重同步窗。直接跳到缓冲末尾会把还没解的结尾一起剪掉。 */
+    const size_t step = from + kMp3ResyncMinAvail;
+    return step < n ? step : n;
 }
 
 int ParseIcyMetaint(const std::string& raw)
@@ -1503,6 +1505,7 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
     bool primed = false;
     bool played = false;
     bool failed = false;
+    uint32_t stream_bitrate = 0;
 
     auto close_all = [&]() {
         if (resampler != nullptr) {
@@ -1736,6 +1739,9 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
                 const size_t avail = pending.size() - pending_off;
                 pending_off += raw.consumed < avail ? raw.consumed : avail;
             }
+            if (info.bitrate > 0) {
+                stream_bitrate = info.bitrate;
+            }
             if (frame.decoded_size < sizeof(int16_t) || info.channel == 0) {
                 continue;
             }
@@ -1794,6 +1800,70 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
         }
     }
 
+    /* minimp3 要看到下一帧头才输出当前帧。文件末尾没有下一帧时，整段缓冲会停在
+     * DATA_LACK 上，旧逻辑当成垃圾丢掉，听感就是每首歌结尾被掐掉再切下一首。
+     * 卡死时按帧长只喂这一帧（长度恰好等于帧长就不再要求下一帧头）。 */
+    auto decode_exact_frame = [&]() -> bool {
+        size_t at = pending_off;
+        size_t flen = 0;
+        const size_t scan_end = pending.size();
+        const size_t scan_limit = pending_off + kMp3ResyncMinAvail < scan_end
+                                      ? pending_off + kMp3ResyncMinAvail
+                                      : scan_end;
+        for (size_t i = pending_off; i + 4 <= scan_limit; ++i) {
+            const size_t len = Mp3FrameLength(pending.data() + i, scan_end - i);
+            if (len >= 24 && i + len <= scan_end) {
+                at = i;
+                flen = len;
+                break;
+            }
+        }
+        if (flen < 24) {
+            return false;
+        }
+        pending_off = at;
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            esp_audio_dec_in_raw_t raw = {
+                .buffer = pending.data() + pending_off,
+                .len = static_cast<uint32_t>(flen),
+                .consumed = 0,
+                .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE,
+            };
+            esp_audio_dec_out_frame_t frame = {
+                .buffer = pcm_buf.data(),
+                .len = static_cast<uint32_t>(pcm_buf.size()),
+                .needed_size = 0,
+                .decoded_size = 0,
+            };
+            esp_audio_dec_info_t info = {};
+            const esp_audio_err_t ret = esp_mp3_dec_decode(decoder, &raw, &frame, &info);
+            if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
+                const uint32_t need = frame.needed_size > 0 ? frame.needed_size : pcm_buf.size() * 2;
+                pcm_buf.resize(need);
+                continue;
+            }
+            if (ret != ESP_AUDIO_ERR_OK || raw.consumed == 0) {
+                return false;
+            }
+            const size_t avail = pending.size() - pending_off;
+            pending_off += raw.consumed < avail ? static_cast<size_t>(raw.consumed) : avail;
+            if (info.bitrate > 0) {
+                stream_bitrate = info.bitrate;
+            }
+            if (frame.decoded_size < sizeof(int16_t) || info.channel == 0) {
+                return true;
+            }
+            const size_t sample_n = frame.decoded_size / sizeof(int16_t);
+            if (!emit(reinterpret_cast<const int16_t*>(frame.buffer), sample_n, info.channel,
+                      static_cast<int>(info.sample_rate))) {
+                failed = true;
+                return false;
+            }
+            return true;
+        }
+        return false;
+    };
+
     if (!failed && !IsCancelled(playback_id)) {
         /* EOS 收尾必须循环到「pending 解光 + stage 清空」：旧版只跑一轮，
          * decode_pending 撞到 stage 上限即返回，低码率（~48kbps）曲子结尾
@@ -1813,9 +1883,30 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
                 break;
             }
             /* 无进展=本轮 pending 没消费且 stage 没被清走；stage 被清空说明有进展，继续解。 */
-            if (pending_off == off_before && stage_len() == stage_before) {
-                break; /* 尾部解不动的垃圾，勿空转 */
+            if (pending_off != off_before || stage_len() != stage_before) {
+                continue;
             }
+            if (!decode_exact_frame()) {
+                if (!failed && pending_len() > 32) {
+                    const unsigned ms = stream_bitrate > 0
+                                            ? static_cast<unsigned>(pending_len() * 8u / stream_bitrate)
+                                            : 0;
+                    ESP_LOGW(TAG, "MP3 eos drop %u bytes (~%u ms) pos=%lu",
+                             static_cast<unsigned>(pending_len()), ms,
+                             static_cast<unsigned long>(media_position_ms));
+                }
+                break;
+            }
+        }
+        /* 重采样有滤波延迟，不冲掉的话最后几毫秒留在转换器里。 */
+        if (!failed && resampler != nullptr && resampler_src > 0) {
+            int16_t zeros[128] = {};
+            if (!emit(zeros, 128, 1, resampler_src)) {
+                failed = true;
+            }
+        }
+        if (!failed && !flush_stage(true)) {
+            failed = true;
         }
     }
 
