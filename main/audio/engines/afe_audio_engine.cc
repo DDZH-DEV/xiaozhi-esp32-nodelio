@@ -287,39 +287,7 @@ void AfeAudioEngine::Feed(std::vector<int16_t>&& data) {
         return;
     }
 #endif
-#if CONFIG_BOARD_TYPE_SILA_P4C5_62 && CONFIG_NODELIO_PANEL
-    if (codec_ != nullptr && codec_->input_channels() >= 2 && data.size() >= 2) {
-        static int peak_mic = 0;
-        static int peak_ref = 0;
-        static uint32_t last_log_ms = 0;
-        const int channels = codec_->input_channels();
-        for (size_t i = 0; i + 1 < data.size(); i += channels) {
-            int mic = data[i];
-            int ref = data[i + 1];
-            if (mic < 0) {
-                mic = -mic;
-            }
-            if (ref < 0) {
-                ref = -ref;
-            }
-            if (mic > peak_mic) {
-                peak_mic = mic;
-            }
-            if (ref > peak_ref) {
-                peak_ref = ref;
-            }
-        }
-        const uint32_t now_ms = esp_log_timestamp();
-        if (now_ms - last_log_ms >= 2000) {
-            ESP_LOGI(TAG, "cap peak mic=%d ref=%d afe=%d wake=%d playing=%d", peak_mic, peak_ref,
-                     (bits & kAfeActive) ? 1 : 0, (bits & kWakeWordEnabled) ? 1 : 0,
-                     nodelio_media_is_playing() ? 1 : 0);
-            peak_mic = 0;
-            peak_ref = 0;
-            last_log_ms = now_ms;
-        }
-    }
-#endif
+
     if (afe_data_ == nullptr || (bits & kAfeActive) == 0) {
         return;
     }
