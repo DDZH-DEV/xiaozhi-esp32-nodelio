@@ -809,6 +809,42 @@ void nl_ov_open_settings_detail(set_page_id_t page)
             lv_label_set_text(ps_hint, "此板当前只关闭背光并降低刷新，保持 Hosted 网络连接");
         }
 
+        lv_obj_t *w_row = lv_obj_create(ps_card);
+        lv_obj_remove_style_all(w_row);
+        lv_obj_set_width(w_row, lv_pct(100));
+        lv_obj_set_height(w_row, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(w_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(w_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(w_row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *w_lab = lv_label_create(w_row);
+        lv_label_set_text(w_lab, "息屏语音唤醒");
+        nl_ov_set_font(w_lab);
+        lv_obj_set_style_text_color(w_lab, UI_TEXT, 0);
+
+        lv_obj_t *w_sw = lv_switch_create(w_row);
+        ui_style_switch(w_sw);
+        if (s_cfg.wake_on_sleep) {
+            lv_obj_add_state(w_sw, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(w_sw, LV_STATE_CHECKED);
+        }
+        lv_obj_add_event_cb(
+            w_sw,
+            [](lv_event_t *e) {
+                bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+                (void)nodelio_panel_ui_set_pref("wake_on_sleep", on ? "on" : "off", nullptr, 0);
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+
+        lv_obj_t *w_hint = lv_label_create(ps_card);
+        lv_label_set_text(w_hint, "开：息屏可随时语音唤醒(较耗电)；关：息屏停麦克风，触屏/按键唤醒(最省电)");
+        nl_ov_set_font(w_hint);
+        lv_obj_set_style_text_color(w_hint, UI_TEXT_TIP, 0);
+        lv_label_set_long_mode(w_hint, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(w_hint, lv_pct(100));
+
         char sec[16];
         std::snprintf(sec, sizeof(sec), "%ds", (int)s_cfg.idle_sleep_s);
         lv_obj_t *idle_band = audio_ctrl_band(body, "空闲息屏", sec, &s_idle_slp_lbl);

@@ -163,15 +163,11 @@ public:
             return;
         }
         if (gate) {
-            if (lvgl_port_lock(200)) {
-                (void)lvgl_port_stop();
-                lvgl_port_unlock();
-            }
             p4_dpi_set_scan(panel_, false);
         } else {
             p4_dpi_set_scan(panel_, true);
             if (lvgl_port_lock(200)) {
-                (void)lvgl_port_resume();
+                lv_refr_now(display_);
                 lvgl_port_unlock();
             }
         }
@@ -369,8 +365,9 @@ private:
                     }
                 }
                 const bool hold_gate = asleep_.load() && idle && !playing;
+                const bool allow_mic_gate = hold_gate && !nodelio_wake_on_sleep_enabled();
                 if (hold_gate) {
-                    if (!mic_paused_) {
+                    if (allow_mic_gate && !mic_paused_) {
                         if (auto* codec = GetAudioCodec()) {
                             codec->EnableOutput(false);
                         }
@@ -532,6 +529,19 @@ public:
         goodbye_sleep_at_.store(0);
         last_activity_.store(xTaskGetTickCount());
         if (asleep_.load() || net_asleep_.load()) {
+            if (asleep_.exchange(false)) {
+                backlight_.RestoreBrightness();
+                if (display_) {
+                    display_->SetScanGated(false);
+                    display_->SetIdleRefresh(false);
+                }
+#if CONFIG_NODELIO_PANEL
+                DisplayLockGuard lock(display_);
+                if (lock) {
+                    nodelio_panel_ui_notify_screen(true);
+                }
+#endif
+            }
             ScheduleIdlePoll();
         }
     }

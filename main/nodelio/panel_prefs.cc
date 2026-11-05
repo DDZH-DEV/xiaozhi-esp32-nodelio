@@ -499,6 +499,17 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         nl_ov_toast(on ? "已开启空闲断网" : "已关闭空闲断网 · 息屏仍有效");
         return ESP_OK;
     }
+    if (strcasecmp(key, "wake_on_sleep") == 0) {
+        bool on = false;
+        if (!parse_on_off(value, &on, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.wake_on_sleep = on ? 1 : 0;
+        nl_ov_persist_cfg_async();
+        Board::GetInstance().NoteUserActivity();
+        nl_ov_toast(on ? "已开启息屏语音唤醒" : "已关闭息屏语音唤醒 · 触摸/按键唤醒");
+        return ESP_OK;
+    }
     if (strcasecmp(key, "idle_sleep_s") == 0) {
         int v = 0;
         if (!parse_int_range(value, NODELIO_IDLE_SLEEP_MIN, NODELIO_IDLE_SLEEP_MAX, &v, err,

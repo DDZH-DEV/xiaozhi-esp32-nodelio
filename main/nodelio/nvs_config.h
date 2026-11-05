@@ -30,6 +30,7 @@ typedef struct {
     uint8_t xiaozhi_en; /* 1=启用小智云对话（默认）；0=关闭 */
     uint8_t local_cmd_en; /* 已废弃：固件不再编 MultiNet，读写恒为 0 */
     uint8_t power_save_en; /* 1=允许空闲断网（默认）；0=不断 WiFi；息屏仍走 idle_sleep */
+    uint8_t wake_on_sleep; /* 1=息屏保留语音唤醒；0=息屏停麦克风与唤醒词（省电默认） */
     uint8_t controls_en;   /* 1=允许控家模块（默认）；0=首页不渲染控家，语音/MCP 降级提示 */
     uint8_t media_sleep_en; /* 1=播放中可息屏不停播（默认）；0=播放中常亮 */
     uint16_t idle_sleep_s;    /* 空闲息屏秒数，默认 60，范围 15–180 */
@@ -130,6 +131,8 @@ esp_err_t nodelio_local_cmd_set_enabled(bool on);
 /** 空闲断网开关（不影响息屏）；读 RAM 镜像，缺省开启。 */
 bool nodelio_power_save_enabled(void);
 esp_err_t nodelio_power_save_set_enabled(bool on);
+bool nodelio_wake_on_sleep_enabled(void);
+esp_err_t nodelio_wake_on_sleep_set_enabled(bool on);
 /** 控家模块；读 RAM 镜像，缺省开启。 */
 bool nodelio_controls_enabled(void);
 esp_err_t nodelio_controls_set_enabled(bool on);

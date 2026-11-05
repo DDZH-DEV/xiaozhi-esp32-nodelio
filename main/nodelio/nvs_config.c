@@ -107,6 +107,7 @@ void nodelio_nvs_cache_get(nodelio_nvs_config_t *out)
     out->xiaozhi_en = 1;
     out->local_cmd_en = 0;
     out->power_save_en = 1;
+    out->wake_on_sleep = 0;
     out->controls_en = 1;
     out->media_sleep_en = 1;
     out->idle_sleep_s = NODELIO_IDLE_SLEEP_DEFAULT;
@@ -175,6 +176,9 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     }
     if (out->power_save_en > 1) {
         out->power_save_en = 1;
+    }
+    if (out->wake_on_sleep > 1) {
+        out->wake_on_sleep = 0;
     }
     if (out->controls_en > 1) {
         out->controls_en = 1;
@@ -262,6 +266,9 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     if (out->power_save_en > 1) {
         out->power_save_en = 1;
     }
+    if (out->wake_on_sleep > 1) {
+        out->wake_on_sleep = 0;
+    }
     if (out->controls_en > 1) {
         out->controls_en = 1;
     }
@@ -329,6 +336,7 @@ static esp_err_t load_config_impl(void *ctx) {
     out->xiaozhi_en = 1;
     out->local_cmd_en = 0;
     out->power_save_en = 1;
+    out->wake_on_sleep = 0;
     out->controls_en = 1;
     out->media_sleep_en = 1;
     out->idle_sleep_s = NODELIO_IDLE_SLEEP_DEFAULT;
@@ -385,6 +393,12 @@ static esp_err_t load_config_impl(void *ctx) {
             out->power_save_en = v ? 1 : 0;
         } else {
             out->power_save_en = 1;
+        }
+        v = 0;
+        if (nvs_get_u8(h, "w_slp", &v) == ESP_OK) {
+            out->wake_on_sleep = v ? 1 : 0;
+        } else {
+            out->wake_on_sleep = 0;
         }
         v = 1;
         if (nvs_get_u8(h, "ctrl_en", &v) == ESP_OK) {
@@ -550,6 +564,7 @@ static esp_err_t save_config_impl(void *ctx) {
     NL_ACCUM(nvs_set_u8(h, "xz_en", tmp->xiaozhi_en ? 1 : 0));
     NL_ACCUM(nvs_set_u8(h, "lc_en", tmp->local_cmd_en ? 1 : 0));
     NL_ACCUM(nvs_set_u8(h, "ps_en", tmp->power_save_en ? 1 : 0));
+    NL_ACCUM(nvs_set_u8(h, "w_slp", tmp->wake_on_sleep ? 1 : 0));
     NL_ACCUM(nvs_set_u8(h, "ctrl_en", tmp->controls_en ? 1 : 0));
     NL_ACCUM(nvs_set_u8(h, "md_slp", tmp->media_sleep_en ? 1 : 0));
     NL_ACCUM(nvs_set_u16(h, "idle_slp", tmp->idle_sleep_s));
@@ -775,6 +790,25 @@ esp_err_t nodelio_power_save_set_enabled(bool on)
         return err;
     }
     cfg.power_save_en = on ? 1 : 0;
+    return nodelio_nvs_save_preferences(&cfg);
+}
+
+bool nodelio_wake_on_sleep_enabled(void)
+{
+    if (!s_ram_ok) {
+        return false;
+    }
+    return s_ram.wake_on_sleep != 0;
+}
+
+esp_err_t nodelio_wake_on_sleep_set_enabled(bool on)
+{
+    nodelio_nvs_config_t cfg;
+    esp_err_t err = nodelio_nvs_load(&cfg);
+    if (err != ESP_OK) {
+        return err;
+    }
+    cfg.wake_on_sleep = on ? 1 : 0;
     return nodelio_nvs_save_preferences(&cfg);
 }
 
