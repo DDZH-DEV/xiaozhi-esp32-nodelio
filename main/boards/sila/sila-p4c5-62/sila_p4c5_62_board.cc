@@ -6,7 +6,6 @@
 #include "button.h"
 #include "config.h"
 #include "display/lcd_display.h"
-#include "p4_dpi_gate.h"
 #include "ppa_fill.h"
 #include "wifi_board.h"
 #if CONFIG_NODELIO_PANEL
@@ -156,27 +155,7 @@ public:
         return true;
     }
 
-    bool ScanGated() const { return scan_gated_; }
-
-    void SetScanGated(bool gate) {
-        if (gate == scan_gated_) {
-            return;
-        }
-        if (gate) {
-            p4_dpi_set_scan(panel_, false);
-        } else {
-            p4_dpi_set_scan(panel_, true);
-            if (lvgl_port_lock(200)) {
-                lv_refr_now(display_);
-                lvgl_port_unlock();
-            }
-        }
-        scan_gated_ = gate;
-    }
-
 private:
-    bool scan_gated_ = false;
-
 #if CONFIG_NODELIO_P4_RENDER_STATS
     // All fields are owned by the LVGL task/display lock. No sampling task or
     // forced invalidations: a static or sleeping screen stays quiet.
@@ -256,8 +235,6 @@ private:
     esp_timer_handle_t idle_timer_ = nullptr;
     std::atomic<TickType_t> last_activity_{0};
     std::atomic<bool> asleep_{false};
-    bool mic_paused_ = false;
-    bool wake_resume_ = false;
     std::atomic<bool> poll_pending_{false};
     std::atomic<int> idle_seconds_{60};
     std::atomic<int> idle_wifi_seconds_{60};
@@ -339,65 +316,22 @@ private:
                 const bool timeout = elapsed >= pdMS_TO_TICKS(idle_seconds_.load() * 1000) ||
                                      (goodbye_at > 0 && esp_timer_get_time() >= goodbye_at);
                 const bool idle = timeout && Application::GetInstance().CanEnterSleepMode();
+                if (idle != asleep_.load() && display_->SetIdleRefresh(idle)) {
+                    asleep_.store(idle);
+                    if (idle) {
+                        backlight_.SetBrightness(0);
+                    } else {
+                        backlight_.RestoreBrightness();
+                    }
+#if CONFIG_NODELIO_PANEL
+                    DisplayLockGuard lock(display_);
+                    if (lock) {
+                        nodelio_panel_ui_notify_screen(!idle);
+                    }
+#endif
+                }
 #if CONFIG_NODELIO_PANEL
                 const bool playing = nodelio_media_is_playing();
-#else
-                const bool playing = false;
-#endif
-                if (idle != asleep_.load()) {
-                    if (!idle) {
-                        ESP_LOGI(kTag, "idle wake");
-                        asleep_.store(false);
-                        backlight_.RestoreBrightness();
-                        display_->SetScanGated(false);
-                    }
-                    if (display_->SetIdleRefresh(idle)) {
-                        if (idle) {
-                            asleep_.store(true);
-                            backlight_.SetBrightness(0);
-                        }
-#if CONFIG_NODELIO_PANEL
-                        DisplayLockGuard lock(display_);
-                        if (lock) {
-                            nodelio_panel_ui_notify_screen(!idle);
-                        }
-#endif
-                    }
-                }
-                const bool hold_gate = asleep_.load() && idle && !playing;
-                const bool allow_mic_gate = hold_gate && !nodelio_wake_on_sleep_enabled();
-                if (hold_gate) {
-                    if (allow_mic_gate && !mic_paused_) {
-                        if (auto* codec = GetAudioCodec()) {
-                            codec->EnableOutput(false);
-                        }
-                        auto& audio = Application::GetInstance().GetAudioService();
-                        wake_resume_ = audio.IsWakeWordRunning();
-                        if (wake_resume_) {
-                            audio.EnableWakeWordDetection(false);
-                            vTaskDelay(pdMS_TO_TICKS(100));
-                        }
-                        if (auto* codec = GetAudioCodec()) {
-                            codec->EnableInput(false);
-                        }
-                        mic_paused_ = true;
-                        ESP_LOGI(kTag, "idle gate: mic and wake paused");
-                    }
-                    display_->SetScanGated(true);
-                } else {
-                    if (display_->ScanGated()) {
-                        display_->SetScanGated(false);
-                    }
-                    if (mic_paused_) {
-                        mic_paused_ = false;
-                        if (wake_resume_) {
-                            wake_resume_ = false;
-                            Application::GetInstance().GetAudioService().EnableWakeWordDetection(true);
-                        }
-                        ESP_LOGI(kTag, "idle gate: wake resumed");
-                    }
-                }
-#if CONFIG_NODELIO_PANEL
                 const bool want_net = net_save_.load() && !playing &&
                                       elapsed >= pdMS_TO_TICKS(idle_wifi_seconds_.load() * 1000) &&
                                       Application::GetInstance().CanEnterSleepMode();
@@ -529,19 +463,6 @@ public:
         goodbye_sleep_at_.store(0);
         last_activity_.store(xTaskGetTickCount());
         if (asleep_.load() || net_asleep_.load()) {
-            if (asleep_.exchange(false)) {
-                backlight_.RestoreBrightness();
-                if (display_) {
-                    display_->SetScanGated(false);
-                    display_->SetIdleRefresh(false);
-                }
-#if CONFIG_NODELIO_PANEL
-                DisplayLockGuard lock(display_);
-                if (lock) {
-                    nodelio_panel_ui_notify_screen(true);
-                }
-#endif
-            }
             ScheduleIdlePoll();
         }
     }
