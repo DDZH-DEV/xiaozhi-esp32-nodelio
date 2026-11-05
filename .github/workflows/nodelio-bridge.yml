@@ -1,0 +1,48 @@
+name: NodeLio Bridge
+
+on:
+  push:
+    paths: ['tools/nodelio-bridge/**', '.github/workflows/nodelio-bridge.yml']
+  pull_request:
+    paths: ['tools/nodelio-bridge/**', '.github/workflows/nodelio-bridge.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: tools/nodelio-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/nodelio-bridge/go.mod
+          cache-dependency-path: tools/nodelio-bridge/go.sum
+      - run: go test ./... -timeout 90s
+      - run: go vet ./...
+      - if: runner.os != 'Windows'
+        run: go test -race ./... -timeout 120s
+  package:
+    needs: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/nodelio-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/nodelio-bridge/go.mod
+          cache-dependency-path: tools/nodelio-bridge/go.sum
+      - run: go run ./cmd/package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodelio-bridge-portable
+          path: tools/nodelio-bridge/dist/*
