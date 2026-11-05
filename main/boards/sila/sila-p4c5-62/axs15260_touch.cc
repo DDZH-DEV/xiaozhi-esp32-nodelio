@@ -129,6 +129,8 @@ void SilaAxs15260Touch::Run() {
                                            y < DISPLAY_PHYSICAL_HEIGHT));
         if (err != ESP_OK || (!empty && !valid)) {
             consecutive_errors++;
+            /* 息屏后读数可能失败，这一下仍然要能把屏幕唤醒。 */
+            (void)on_activity_();
             if (!reported_error) {
                 ESP_LOGW(kTag, "Touch read/frame error (%s); keep last point",
                          esp_err_to_name(err));
@@ -157,8 +159,11 @@ void SilaAxs15260Touch::Run() {
                 suppress_gesture_ = on_activity_() || suppress_gesture_;
             }
             const bool report = pressed && !suppress_gesture_;
+            /* 息屏第一下只用来唤醒。此时扫描还没恢复，不能把点交给 LVGL。 */
+            if (report || was_pressed) {
+                Publish(report, last_x, last_y);
+            }
             was_pressed = report;
-            Publish(report, last_x, last_y);
             if (!pressed) {
                 suppress_gesture_ = false;
                 was_pressed = false;

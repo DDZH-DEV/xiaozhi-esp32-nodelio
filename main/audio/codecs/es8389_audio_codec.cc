@@ -163,6 +163,15 @@ void Es8389AudioCodec::EnableInput(bool enable) {
         };
         ESP_ERROR_CHECK(esp_codec_dev_open(input_dev_, &fs));
         ESP_ERROR_CHECK(esp_codec_dev_set_in_gain(input_dev_, input_gain_));
+        int pga_l = 0;
+        int pga_r = 0;
+        esp_codec_dev_read_reg(input_dev_, 0x72, &pga_l);
+        esp_codec_dev_read_reg(input_dev_, 0x73, &pga_r);
+        ESP_LOGI(TAG,
+                 "mic open req_db=%.1f channels=%d reference=%d PGA72=0x%02x PGA73=0x%02x "
+                 "mux L=%d R=%d gain_nibble L=%d R=%d (14=36.5dB max)",
+                 input_gain_, input_channels_, input_reference_ ? 1 : 0, pga_l & 0xff, pga_r & 0xff,
+                 (pga_l >> 4) & 7, (pga_r >> 4) & 7, pga_l & 0x0f, pga_r & 0x0f);
     } else {
         ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
     }

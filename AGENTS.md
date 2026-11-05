@@ -112,9 +112,9 @@ Keep detailed or fast-changing information in those files, not here. Add a neste
 
 | 优先级 | 耗电大户 | 要求 |
 |--------|----------|------|
-| P0 | 屏 + 背光 | 息屏关背光；触摸唤醒；禁常亮调试背光 |
+| P0 | 屏 + 背光 | 息屏关背光；P4 未播放时再停 DPI 扫描、麦克风和唤醒；触摸后再开唤醒；禁常亮调试背光 |
 | P1 | WiFi / Hosted / TLS | layout **开机+手动+MQTT**；未联网跳过 HTTP |
-| P2 | LVGL | 息屏降刷新 |
+| P2 | LVGL | 息屏降刷新；P4 未播放时停 LVGL 任务 |
 | P3 | AFE | 与 TLS/OTA 互斥；会话结束释放 |
 
 禁止 deep sleep 冒充关机。新常驻任务写 `hw-constraints.md`（P4 含 DSI+Hosted 并发）。
@@ -141,5 +141,6 @@ Keep detailed or fast-changing information in those files, not here. Add a neste
 全文：`NodeLio/.codex/rules/esp32-idf-panel.md` §11；86 排障：`docs/nodelio-sila86.md`。
 
 - **86** 关硬件 AES；**P4 勿盲抄**，以实测为准。PSRAM ≠ DMA。
+- **P4 原理图**先读 `main/boards/sila/sila-p4c5-62/SCH_P4X_2026-10-13.md`，禁止再解析同目录 PDF。图上两路差分麦；固件采集仍是 MR（左麦 + DAC 参考）。PGA `40` 已是 36.5 dB 最高档。GPIO 以该板 `config.h` 为准。
 - MCP 只认 `tools/call`；UDP 60ms 静音预热；新闻续段禁 abort；DSH 硬约束。
 

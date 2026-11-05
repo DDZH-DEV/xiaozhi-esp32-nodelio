@@ -1250,6 +1250,14 @@ idf_component_register(SRCS ${SOURCES}
                         ${MAIN_PRIV_REQUIRES_EXTRA}
                     )
 
+# P4 息屏停 DPI：要用 DSI 私有头和 DW_GDMA。只加给这块板。
+if(CONFIG_BOARD_TYPE_SILA_P4C5_62 AND NOT CMAKE_BUILD_EARLY_EXPANSION)
+    target_include_directories(${COMPONENT_LIB} PRIVATE
+        "${IDF_PATH}/components/esp_lcd/dsi"
+        "${IDF_PATH}/components/esp_lcd/interface")
+    target_link_libraries(${COMPONENT_LIB} PRIVATE idf::esp_driver_dma)
+endif()
+
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
     if(NOT PYTHON)
         set(PYTHON python)
