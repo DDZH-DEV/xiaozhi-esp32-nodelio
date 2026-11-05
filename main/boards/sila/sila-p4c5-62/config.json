@@ -8,7 +8,7 @@
             "sdkconfig_append": [
                 "CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n",
                 "CONFIG_ESP32P4_REV_MIN_301=y",
-                "CONFIG_FIRMWARE_OTA_ENABLED=n",
+                "CONFIG_FIRMWARE_OTA_ENABLED=y",
                 "CONFIG_SPIRAM_MEMTEST=y",
                 "CONFIG_SLAVE_IDF_TARGET_ESP32C6=n",
                 "CONFIG_SLAVE_IDF_TARGET_ESP32C5=y",
@@ -63,7 +63,7 @@
             "sdkconfig_append": [
                 "CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n",
                 "CONFIG_ESP32P4_REV_MIN_301=y",
-                "CONFIG_FIRMWARE_OTA_ENABLED=n",
+                "CONFIG_FIRMWARE_OTA_ENABLED=y",
                 "CONFIG_SPIRAM_MEMTEST=y",
                 "CONFIG_SLAVE_IDF_TARGET_ESP32C6=n",
                 "CONFIG_SLAVE_IDF_TARGET_ESP32C5=y",
@@ -120,7 +120,7 @@
             "sdkconfig_append": [
                 "CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n",
                 "CONFIG_ESP32P4_REV_MIN_301=y",
-                "CONFIG_FIRMWARE_OTA_ENABLED=n",
+                "CONFIG_FIRMWARE_OTA_ENABLED=y",
                 "CONFIG_SPIRAM_MEMTEST=y",
                 "CONFIG_SLAVE_IDF_TARGET_ESP32C6=n",
                 "CONFIG_SLAVE_IDF_TARGET_ESP32C5=y",
@@ -177,7 +177,7 @@
             "sdkconfig_append": [
                 "CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n",
                 "CONFIG_ESP32P4_REV_MIN_301=y",
-                "CONFIG_FIRMWARE_OTA_ENABLED=n",
+                "CONFIG_FIRMWARE_OTA_ENABLED=y",
                 "CONFIG_SPIRAM_MEMTEST=y",
                 "CONFIG_SLAVE_IDF_TARGET_ESP32C6=n",
                 "CONFIG_SLAVE_IDF_TARGET_ESP32C5=y",
@@ -234,7 +234,7 @@
             "sdkconfig_append": [
                 "CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n",
                 "CONFIG_ESP32P4_REV_MIN_301=y",
-                "CONFIG_FIRMWARE_OTA_ENABLED=n",
+                "CONFIG_FIRMWARE_OTA_ENABLED=y",
                 "CONFIG_SPIRAM_MEMTEST=y",
                 "CONFIG_SLAVE_IDF_TARGET_ESP32C6=n",
                 "CONFIG_SLAVE_IDF_TARGET_ESP32C5=y",

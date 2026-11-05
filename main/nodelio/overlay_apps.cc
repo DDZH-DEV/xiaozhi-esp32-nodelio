@@ -472,10 +472,14 @@ static void render_list(void)
             lv_obj_set_width(view.subtitle, lv_pct(100));
         }
         const bool focused = s_split && i == s_focus_idx;
-        if (created || s_force_paint || view.focused != focused) {
+        const bool paint_chrome = created || s_force_paint || view.focused != focused;
+        if (paint_chrome) {
             ui_style_card(view.card);
-            lv_obj_set_style_bg_color(view.card, focused ? UI_SELECTION : UI_SURFACE, 0);
-            lv_obj_set_style_border_width(view.card, focused ? 1 : 0, 0);
+            /* 浅色：未选中白底；点中实心绿配白字。曜夜仍用原来的选中底。 */
+            const bool light = ui_palette_is_dark() == 0;
+            lv_obj_set_style_bg_color(view.card,
+                                      focused ? (light ? UI_ACCENT : UI_SELECTION) : UI_SURFACE, 0);
+            lv_obj_set_style_border_width(view.card, focused && !light ? 1 : 0, 0);
             lv_obj_set_style_border_color(view.card, focused ? UI_ACCENT : UI_TILE_OFF_BORDER, 0);
             lv_obj_set_style_border_opa(view.card, focused ? LV_OPA_COVER : LV_OPA_80, 0);
             view.focused = focused;
@@ -484,21 +488,33 @@ static void render_list(void)
                              strcmp(view.item.name, item.name) ||
                              strcmp(view.item.desc, item.desc) || view.item.enabled != item.enabled;
         const char* desc = !item.enabled ? "不可用" : (item.desc[0] ? item.desc : "点按打开");
-        if (changed) {
+        if (changed || paint_chrome) {
             if (item.enabled) {
                 lv_obj_add_flag(view.card, LV_OBJ_FLAG_CLICKABLE);
             } else {
                 lv_obj_clear_flag(view.card, LV_OBJ_FLAG_CLICKABLE);
             }
-            lv_obj_set_style_bg_color(view.pod, item.enabled ? UI_ACCENT : UI_CAPSULE_OFF, 0);
+            const bool light = ui_palette_is_dark() == 0;
+            const bool light_on = light && focused && item.enabled;
+            lv_obj_set_style_bg_color(view.pod,
+                                      light_on ? UI_SURFACE
+                                               : (item.enabled ? UI_ACCENT : UI_CAPSULE_OFF),
+                                      0);
             lv_obj_set_style_bg_opa(view.pod, LV_OPA_COVER, 0);
             lv_label_set_text(view.icon, apps_glyph_for(item.id));
-            lv_obj_set_style_text_color(view.icon, item.enabled ? UI_ON_TILE : UI_TEXT_MUTED, 0);
+            lv_obj_set_style_text_color(view.icon,
+                                        light_on ? UI_ACCENT
+                                                 : (item.enabled ? UI_ON_TILE : UI_TEXT_MUTED),
+                                        0);
             lv_label_set_text(view.title, item.name[0] ? item.name : item.id);
             lv_label_set_text(view.subtitle, desc);
-            lv_obj_set_style_text_color(view.title, item.enabled ? UI_TEXT : UI_TEXT_MUTED, 0);
-            lv_obj_set_style_text_color(view.subtitle, item.enabled ? UI_TEXT_DIM : UI_TEXT_MUTED,
+            lv_obj_set_style_text_color(view.title,
+                                        light_on ? UI_ON_TILE
+                                                 : (item.enabled ? UI_TEXT : UI_TEXT_MUTED),
                                         0);
+            lv_obj_set_style_text_color(
+                view.subtitle,
+                light_on ? UI_ON_TILE : (item.enabled ? UI_TEXT_DIM : UI_TEXT_MUTED), 0);
             view.item = item;
         }
         if (created || changed || view.width != card_w || view.height != card_h ||

@@ -47,7 +47,13 @@ if "!QUICK!"=="1" goto quick_build
 echo [p4c5-62] build !BOARD_DIR! --name !BUILD_NAME! ...
 echo [p4c5-62] full path reconfigures sdkconfig; UI-only changes: nodelio-build.bat --quick
 python scripts\build.py !BOARD_DIR! --name !BUILD_NAME!
-exit /b %ERRORLEVEL%
+if errorlevel 1 exit /b 1
+echo [p4c5-62] sync panel OTA manifest + bin to Z-Y ...
+python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --board sila_p4c5_62
+if errorlevel 1 (
+  echo [p4c5-62] WARN panel OTA sync failed ^(build ok^)
+)
+exit /b 0
 
 :quick_build
 if not exist sdkconfig (
@@ -66,4 +72,10 @@ if errorlevel 1 (
 )
 echo [p4c5-62] incremental idf.py build ^(!VARIANT!^; no reconfigure^) ...
 idf.py build
-exit /b %ERRORLEVEL%
+if errorlevel 1 exit /b 1
+echo [p4c5-62] sync panel OTA manifest + bin to Z-Y ...
+python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --board sila_p4c5_62
+if errorlevel 1 (
+  echo [p4c5-62] WARN panel OTA sync failed ^(build ok^)
+)
+exit /b 0

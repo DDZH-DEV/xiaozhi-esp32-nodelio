@@ -6,13 +6,11 @@ config OTA_URL
     help
         The application will access this URL to check for new firmwares and server address.
 
-config FIRMWARE_OTA_ENABLED
+    config FIRMWARE_OTA_ENABLED
     bool "Allow firmware installation over the network"
-    default n if BOARD_TYPE_SILA_P4C5_62
     default y
     help
-        Disable during board bring-up until the firmware channel checks the
-        board identity, flash layout and companion firmware compatibility.
+        SILA panels install only the xiaozhi.bin listed for their board_id.
         Activation and retrieval of voice server settings remain available.
 
 choice
@@ -1288,13 +1286,14 @@ menu "NodeLio Panel"
         default ""
 
     config NODELIO_PANEL_OTA_URL
-        string "SILA-86 panel OTA manifest URL"
+        string "SILA panel OTA manifest URL"
         depends on NODELIO_PANEL
-        default "http://z-y.site/works/esp32s3-slia-86-update.json" if BOARD_TYPE_SILA_86
-        default ""
+        default "http://z-y.site/works/sila-panel-update.json"
         help
-            Static JSON: { "firmware": { "version": "YYYYMMDD.NNN", "url": "https://..." } }.
+            Static JSON boards.sila_86 / boards.sila_p4c5_62, each with
+            firmware.version (YYYYMMDD.NNN) and firmware.url.
             Compared against NODELIO_BUILD_STAMP (not Xiaozhi PROJECT_VER).
+            A board only installs its own entry.
 endmenu
 
 endmenu

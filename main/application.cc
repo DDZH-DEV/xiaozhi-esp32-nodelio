@@ -487,7 +487,7 @@ void Application::HandleActivationDoneEvent() {
     SystemInfo::PrintHeapStats();
     SetDeviceState(kDeviceStateIdle);
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
     /* 墙板跳过开机 OTA，server_time 不再来自 CheckVersion；SNTP 异步补上，见 nl_time.c */
     has_server_time_ = nodelio_time_valid();
 #else
@@ -544,11 +544,11 @@ void Application::ActivationTask() {
     // Check for new assets version
     CheckAssetsVersion();
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
     /*
      * 墙板开机不做 OTA 检查（省电/省时）。设置页「检查更新」手工触发
-     * RequestManualFirmwareCheck：拉 http://z-y.site/works/esp32s3-slia-86-update.json，
-     * 用构建号 YYYYMMDD.NNN 比较后按清单 url 下载 xiaozhi.bin。
+     * RequestManualFirmwareCheck：拉 http://z-y.site/works/sila-panel-update.json，
+     * 只取本板 board_id 的条目，用构建号 YYYYMMDD.NNN 比较后下载 xiaozhi.bin。
      *
      * 但 MarkCurrentVersionValid 不能一起跳过：CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
      * 时，刚 OTA 上来的镜像处于 PENDING_VERIFY，不确认就会在下次重启回滚。

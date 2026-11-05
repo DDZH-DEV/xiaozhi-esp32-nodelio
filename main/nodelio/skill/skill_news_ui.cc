@@ -1294,7 +1294,7 @@ void fill_news(void)
         lv_obj_remove_style_all(row);
         lv_obj_set_width(row, lv_pct(100));
         lv_obj_set_height(row, 82);
-        lv_obj_set_style_bg_color(row, UI_FIELD, 0);
+        lv_obj_set_style_bg_color(row, ui_palette_is_dark() ? UI_FIELD : UI_SURFACE, 0);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(row, 14, 0);
         lv_obj_set_style_border_width(row, 1, 0);

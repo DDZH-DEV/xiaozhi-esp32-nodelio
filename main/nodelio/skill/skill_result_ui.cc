@@ -138,6 +138,7 @@ void style_skill_frame(void)
         return;
     }
     lv_obj_set_style_bg_color(s_card, UI_SURFACE, 0);
+    lv_obj_set_style_bg_opa(s_card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_card, 20, 0);
     lv_obj_set_style_border_width(s_card, ui_palette_is_dark() ? 1 : 0, 0);
     lv_obj_set_style_border_color(s_card, UI_BORDER, 0);
@@ -1351,7 +1352,7 @@ static void fill_source_bar(void)
         lv_obj_t *lbl = lv_label_create(chip);
         nl_ov_set_font(lbl);
         lv_label_set_text(lbl, kNames[i]);
-        lv_obj_set_style_text_color(lbl, selected ? UI_TEXT : UI_TEXT_SUB, 0);
+        lv_obj_set_style_text_color(lbl, selected ? UI_ON_TILE : UI_TEXT_SUB, 0);
     }
 }
 
@@ -1395,7 +1396,7 @@ static void fill_filters(void)
         lv_obj_t *lbl = lv_label_create(chip);
         nl_ov_set_font(lbl);
         lv_label_set_text(lbl, f->title[0] ? f->title : "?");
-        lv_obj_set_style_text_color(lbl, f->selected ? UI_TEXT : UI_TEXT_SUB, 0);
+        lv_obj_set_style_text_color(lbl, f->selected ? UI_ON_TILE : UI_TEXT_SUB, 0);
     }
     /* 不在此处 scroll_to_view：会强制整树 layout，语音/主循环路径易触发 task_wdt */
 }
@@ -2499,7 +2500,7 @@ void fill_list(void)
             lv_obj_set_flex_grow(row, 1);
             lv_obj_set_height(row, row_h);
             lv_obj_set_style_min_width(row, 0, 0);
-            lv_obj_set_style_bg_color(row, UI_FIELD, 0);
+            lv_obj_set_style_bg_color(row, ui_palette_is_dark() ? UI_FIELD : UI_SURFACE, 0);
             lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
             lv_obj_set_style_radius(row, 12, 0);
             lv_obj_set_style_border_width(row, 1, 0);

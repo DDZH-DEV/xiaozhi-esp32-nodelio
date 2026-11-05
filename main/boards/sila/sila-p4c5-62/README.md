@@ -178,9 +178,8 @@ NodeLio 产品身份为 `board_id=sila_p4c5_62`、`type_code=WALL_PANEL`，注�
 将来切换要按对应构建产物的 `flash_args` 完整处理，并先保留需要的用户配置。
 勿仅复制一个 `xiaozhi.bin` 就当成完整首烧包。
 
-网络固件安装由 `FIRMWARE_OTA_ENABLED=n` 关闭，自动更新、直接安装入口和 MCP 升级工具均受控；
-激活/语音服务器配置获取不受影响。待板型、分区、资源和 P4/C5 版本校验落实后才能重新启用。
-它不等于已经实现可靠 OTA/回滚，也不修改安全 eFuse。
+在线升级读 `sila-panel-update.json` 的 `boards.sila_p4c5_62`，只写本板 `xiaozhi.bin`，开机不自动刷。
+不更新 C5 从机固件，也不在 16m / 32m 槽之间互刷。它不修改安全 eFuse。
 
 本板在 `main/idf_component.yml` 固定 LVGL **9.5.0**、esp_lvgl_port **2.9.0**，
 通过板型 Kconfig 条件选择；其它板仍使用原来的 ~9.5.0 / ~2.9.0。

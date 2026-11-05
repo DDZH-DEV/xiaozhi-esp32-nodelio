@@ -2,7 +2,7 @@
 #include "system_info.h"
 #include "settings.h"
 #include "assets/lang_config.h"
-#if defined(CONFIG_BOARD_TYPE_SILA_86) && defined(CONFIG_NODELIO_PANEL)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
 #if __has_include("nodelio_build_stamp.h")
 #include "nodelio_build_stamp.h"
 #endif
@@ -40,7 +40,7 @@ static constexpr int kOtaHttpTimeoutMs = 15000;
 
 Ota::Ota() {
     /* 墙板开机跳过 CheckVersion，current_version_ 只能在这里取，供「版本」提示用。 */
-#if defined(CONFIG_BOARD_TYPE_SILA_86) && defined(CONFIG_NODELIO_PANEL)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
     /* 升级比较以构建号 YYYYMMDD.NNN 为准（改代码才涨）；小智 PROJECT_VER 仍在 app_desc 里不动。 */
     current_version_ = NODELIO_BUILD_STAMP;
 #else
@@ -78,13 +78,18 @@ std::string Ota::GetCheckVersionUrl() {
     Settings settings("wifi", false);
     std::string url = settings.GetString("ota_url");
     if (url.empty()) {
-#if defined(CONFIG_BOARD_TYPE_SILA_86) && defined(CONFIG_NODELIO_PANEL)
-        /* 墙板走自建清单，不走 api.tenclass.net */
-#ifdef CONFIG_NODELIO_PANEL_OTA_URL
-        url = CONFIG_NODELIO_PANEL_OTA_URL;
-#else
-        url = "http://z-y.site/works/esp32s3-slia-86-update.json";
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+        /* 墙板走自建清单，不走 api.tenclass.net。按 board_id 取自己的包。
+         * 已写入 sdkconfig 的旧文件名改指向现用清单，避免增量编译仍请求 86 专用地址。 */
+#if defined(CONFIG_NODELIO_PANEL_OTA_URL)
+        if (CONFIG_NODELIO_PANEL_OTA_URL[0] != '\0' &&
+            std::strstr(CONFIG_NODELIO_PANEL_OTA_URL, "esp32s3-slia-86-update.json") == nullptr) {
+            url = CONFIG_NODELIO_PANEL_OTA_URL;
+        }
 #endif
+        if (url.empty()) {
+            url = "http://z-y.site/works/sila-panel-update.json";
+        }
 #else
         url = CONFIG_OTA_URL;
 #endif
@@ -127,7 +132,7 @@ NetworkResult<> Ota::CheckVersion() {
     auto app_desc = esp_app_get_description();
 
     // Check if there is a new firmware version available
-#if defined(CONFIG_BOARD_TYPE_SILA_86) && defined(CONFIG_NODELIO_PANEL)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
     current_version_ = NODELIO_BUILD_STAMP;
     ESP_LOGI(TAG, "Current build stamp: %s (app_desc=%s)", current_version_.c_str(),
              app_desc ? app_desc->version : "?");
@@ -145,7 +150,7 @@ NetworkResult<> Ota::CheckVersion() {
     auto http = SetupHttp();
     std::string data;
 
-#if defined(CONFIG_BOARD_TYPE_SILA_86) && defined(CONFIG_NODELIO_PANEL)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
     /* 静态清单：只 GET JSON，不 POST 小智系统信息 */
     ESP_LOGI(TAG, "Panel OTA manifest: %s", url.c_str());
     if (auto opened = http->Open("GET", url); !opened) {
@@ -188,15 +193,32 @@ NetworkResult<> Ota::CheckVersion() {
         return std::unexpected(NetworkError::ProtocolError());
     }
 
-#if defined(CONFIG_BOARD_TYPE_SILA_86) && defined(CONFIG_NODELIO_PANEL)
-    /* 墙板清单只关心 firmware.version / url；忽略小智 mqtt/activation 段 */
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+    /* 只读 boards.<board_id>.firmware。86 旧清单没有 boards 时才回退顶层 firmware。 */
     has_activation_code_ = false;
     has_activation_challenge_ = false;
     has_mqtt_config_ = false;
     has_websocket_config_ = false;
     has_server_time_ = false;
     has_new_version_ = false;
-    cJSON *firmware = cJSON_GetObjectItem(root, "firmware");
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62
+    const char* board_id = "sila_p4c5_62";
+#else
+    const char* board_id = "sila_86";
+#endif
+    cJSON *firmware = nullptr;
+    cJSON *boards = cJSON_GetObjectItem(root, "boards");
+    if (cJSON_IsObject(boards)) {
+        cJSON *mine = cJSON_GetObjectItem(boards, board_id);
+        if (cJSON_IsObject(mine)) {
+            firmware = cJSON_GetObjectItem(mine, "firmware");
+        } else {
+            ESP_LOGW(TAG, "Panel OTA manifest has no boards.%s", board_id);
+        }
+    }
+    if (!cJSON_IsObject(firmware) && strcmp(board_id, "sila_86") == 0) {
+        firmware = cJSON_GetObjectItem(root, "firmware");
+    }
     if (cJSON_IsObject(firmware)) {
         cJSON *version = cJSON_GetObjectItem(firmware, "version");
         cJSON *fw_url = cJSON_GetObjectItem(firmware, "url");
@@ -212,13 +234,14 @@ NetworkResult<> Ota::CheckVersion() {
             if (cJSON_IsNumber(force) && force->valueint == 1) {
                 has_new_version_ = true;
             }
-            ESP_LOGI(TAG, "manifest version=%s current=%s newer=%d url=%s", firmware_version_.c_str(),
-                     current_version_.c_str(), has_new_version_ ? 1 : 0, firmware_url_.c_str());
+            ESP_LOGI(TAG, "manifest board=%s version=%s current=%s newer=%d url=%s", board_id,
+                     firmware_version_.c_str(), current_version_.c_str(), has_new_version_ ? 1 : 0,
+                     firmware_url_.c_str());
         } else {
             ESP_LOGW(TAG, "Panel OTA manifest missing firmware.version/url");
         }
     } else {
-        ESP_LOGW(TAG, "Panel OTA manifest has no firmware object");
+        ESP_LOGW(TAG, "Panel OTA manifest has no firmware for %s", board_id);
     }
     cJSON_Delete(root);
     return {};
