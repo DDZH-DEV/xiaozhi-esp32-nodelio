@@ -175,8 +175,8 @@ bool nl_ov_invoke_skill_async(const char* skill_id, const char* body) {
             [](void* p) {
                 auto *a = static_cast<invoke_arg *>(p);
                 const bool music_app = nodelio_skill_id_is_music(a->id);
-                const bool dsh_app = strstr(a->id, "dsh") != nullptr;
-                const bool dsh_mutation = strstr(a->id, "dsh.task") || strstr(a->id, "dsh.answer");
+                const bool dsh_app = nl_workbench_app(a->id);
+                const bool dsh_mutation = nl_workbench_mutation(a->id, a->body);
                 /* 仅媒体退会话；天气等保留云端 TTS */
                 if (music_app) {
                     Application::GetInstance().Schedule([]() {
@@ -219,7 +219,7 @@ bool nl_ov_invoke_skill_async(const char* skill_id, const char* body) {
                         spoken[0] = '\0';
                         nodelio_skill_deliver_json(&a->cfg, resp, false, spoken, sizeof(spoken));
                         /* 续聊武装中勿 TTS：会掐麦；且叠 MQTT hello 易超时 */
-                        if (strstr(a->id, "dsh") != nullptr && spoken[0] &&
+                        if (nl_workbench_app(a->id) && spoken[0] &&
                             !nodelio_panel_ui_dsh_is_armed()) {
                             nodelio_panel_ui_announce_spoken(spoken);
                         }
@@ -668,8 +668,7 @@ void nl_ov_home_skills_ingest_skills_root(const cJSON *root)
             }
             nl_home_skill *row = &items[n];
             copy_json_field(row->id, sizeof(row->id), it, "skillId");
-            if (!row->id[0] || strstr(row->id, "dsh.answer") != nullptr ||
-                strstr(row->id, "dsh.task") != nullptr) {
+            if (!row->id[0] || nl_workbench_helper(row->id)) {
                 continue;
             }
             copy_json_field(row->name, sizeof(row->name), it, "name");
@@ -772,8 +771,7 @@ void nl_ov_home_skills_ensure_fetched(void)
                         nl_home_skill *row = &items[n];
                         copy_json_field(row->id, sizeof(row->id), it, "skillId");
                         /* dsh.answer / dsh.task 只给进度卡用，不进首页钉选条 */
-                        if (!row->id[0] || strstr(row->id, "dsh.answer") != nullptr ||
-                            strstr(row->id, "dsh.task") != nullptr) {
+                        if (!row->id[0] || nl_workbench_helper(row->id)) {
                             continue;
                         }
                         copy_json_field(row->name, sizeof(row->name), it, "name");

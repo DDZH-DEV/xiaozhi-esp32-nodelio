@@ -9,6 +9,8 @@ import (
 )
 
 type Request struct {
+	Operation        string         `json:"operation,omitempty"`
+	Arm              bool           `json:"arm,omitempty"`
 	RequestID        string         `json:"request_id,omitempty"`
 	Provider         string         `json:"provider,omitempty"`
 	Session          string         `json:"session,omitempty"`

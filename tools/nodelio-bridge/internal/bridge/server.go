@@ -169,6 +169,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			b, ok := marketLookup(s.Host.files, r.URL.Path)
+			if r.URL.Path == MarketPrefix+"marketplace.json" || r.URL.Path == MarketPrefix {
+				probe, done := context.WithTimeout(r.Context(), 6*time.Second)
+				b = s.Engine.MarketIndex(probe)
+				done()
+			}
 			if !ok {
 				http.NotFound(w, r)
 				return

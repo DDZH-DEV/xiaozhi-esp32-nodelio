@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/gorilla/websocket"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -116,7 +117,10 @@ func (h *Host) connection(parent context.Context, s Settings) bool {
 		}
 		return write(b)
 	}
-	if send(map[string]any{"type": "register", "bridge_id": s.Config.BridgeID, "version": Version, "panel_device_id": s.Config.PanelID}) != nil {
+	probe, done := context.WithTimeout(ctx, 5*time.Second)
+	states := h.e.Health(probe)
+	done()
+	if send(map[string]any{"type": "register", "bridge_id": s.Config.BridgeID, "version": Version, "panel_device_id": s.Config.PanelID, "default_provider": s.Config.DefaultProvider, "providers": states}) != nil {
 		return false
 	}
 	frames := make(chan []byte, 16)
@@ -211,6 +215,11 @@ func (h *Host) connection(parent context.Context, s Settings) bool {
 					defer func() { <-workers }()
 					if f.Type == "fetch" {
 						body, ok := marketLookup(h.files, f.Path)
+						if f.Path == MarketPrefix+"marketplace.json" || f.Path == MarketPrefix || f.Path == strings.TrimSuffix(MarketPrefix, "/") {
+							probe, done := context.WithTimeout(ctx, 6*time.Second)
+							body = h.e.MarketIndex(probe)
+							done()
+						}
 						if !ok {
 							_ = send(map[string]any{"type": "result", "request_id": f.RequestID, "status_code": 404, "body": map[string]string{"error": "not_found"}})
 							return
@@ -234,7 +243,9 @@ func (h *Host) connection(parent context.Context, s Settings) bool {
 					if len(params) > 0 && json.Unmarshal(params, &r) != nil {
 						result = errorEnvelope(f.AppID, fmt.Errorf("invalid invoke parameters"))
 					} else {
-						r.RequestID = f.RequestID
+						if r.RequestID == "" {
+							r.RequestID = f.RequestID
+						}
 						timeout := 22 * time.Second
 						if f.Timeout > 0 && f.Timeout < 22000 {
 							timeout = time.Duration(f.Timeout) * time.Millisecond

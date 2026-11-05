@@ -304,6 +304,7 @@ void nodelio_panel_ui_dsh_get_pending_send(char *dst, size_t dst_len);
 
 /** 列表「派活/续聊」：武装下次「让它…」或武装直说（可空）。 */
 void nodelio_panel_ui_arm_dsh(const char *workspace, const char *session);
+void nodelio_panel_ui_arm_workbench(const char* app, const char* workspace, const char* session);
 void nodelio_panel_ui_clear_dsh_arm(void);
 /** 是否已武装工作区或会话（续聊后下一句可直接派活）。 */
 bool nodelio_panel_ui_dsh_is_armed(void);

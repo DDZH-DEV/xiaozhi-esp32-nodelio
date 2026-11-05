@@ -1,4 +1,6 @@
 #include "nodelio_http.h"
+#include <esp_random.h>
+#include "workbench.h"
 
 #include "nodelio_bridge.h"
 #include "wifi_provision.h"
@@ -704,9 +706,43 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
     SkillInvokePace invoke_pace(url);
     esp_err_t last = ESP_FAIL;
     /* 派活/审批可能已执行但响应丢失，没有幂等键时不能自动重发。 */
-    const bool dsh_mutation = strcmp(method, "POST") == 0 &&
-                              strstr(url, "/panel/skills/") != nullptr &&
-                              (strstr(url, "dsh.task") || strstr(url, "dsh.answer"));
+    char app[96] = {0};
+    const char* skill_path = strstr(url, "/panel/skills/");
+    if (skill_path) {
+        skill_path += strlen("/panel/skills/");
+        const char* end = strstr(skill_path, "/invoke");
+        if (end && static_cast<size_t>(end - skill_path) < sizeof(app)) {
+            snprintf(app, sizeof(app), "%.*s", static_cast<int>(end - skill_path), skill_path);
+        }
+    }
+    const bool dsh_mutation = strcmp(method, "POST") == 0 && nl_workbench_mutation(app, body);
+    std::string keyed_body;
+    if (dsh_mutation) {
+        cJSON* params = cJSON_Parse(body ? body : "{}");
+        if (!cJSON_IsObject(params)) {
+            cJSON_Delete(params);
+            return ESP_ERR_INVALID_ARG;
+        }
+        const cJSON* key = cJSON_GetObjectItemCaseSensitive(params, "request_id");
+        if (!cJSON_IsString(key) || !key->valuestring[0]) {
+            char request_id[40];
+            snprintf(request_id, sizeof(request_id), "panel-%08lx%08lx%08lx%08lx",
+                     (unsigned long)esp_random(), (unsigned long)esp_random(),
+                     (unsigned long)esp_random(), (unsigned long)esp_random());
+            cJSON_DeleteItemFromObjectCaseSensitive(params, "request_id");
+            if (!cJSON_AddStringToObject(params, "request_id", request_id)) {
+                cJSON_Delete(params);
+                return ESP_ERR_NO_MEM;
+            }
+        }
+        char* encoded = cJSON_PrintUnformatted(params);
+        cJSON_Delete(params);
+        if (!encoded)
+            return ESP_ERR_NO_MEM;
+        keyed_body = encoded;
+        cJSON_free(encoded);
+        body = keyed_body.c_str();
+    }
     const int kMaxAttempts = dsh_mutation ? 1 : 3;
     for (int attempt = 0; attempt < kMaxAttempts; attempt++) {
         if (attempt > 0) {

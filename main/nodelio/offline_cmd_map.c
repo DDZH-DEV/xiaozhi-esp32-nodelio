@@ -8,6 +8,7 @@
 #include "board_info.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
+#include "workbench.h"
 
 #include <esp_log.h>
 #include <stdio.h>
@@ -1358,8 +1359,8 @@ static bool try_open_named_app(const char *phrase)
     /* 「打开任务应用 / 打开DSH」：即使名不完全在白名单也开进度 */
     if (strstr(name, "任务") != NULL || strstr(name, "DSH") != NULL || strstr(name, "dsh") != NULL) {
         if (strstr(name, "派活") == NULL) {
-            ESP_LOGI(TAG, "open app (task alias) query='%s' → 查看任务", name);
-            return nodelio_panel_ui_open_app("查看任务");
+            ESP_LOGI(TAG, "open app (task alias) query='%s'", name);
+            return nodelio_panel_ui_open_app(name);
         }
     }
     /* 「打开新闻阅读第一篇」→ 只开新闻（阅读留给卡内旁路） */
@@ -1615,8 +1616,9 @@ bool nodelio_offline_query_keeps_listening(const char *query)
         return false;
     }
     /* 新闻/每日一篇追问、DSH 序号导航和续聊都需要继续聆听。 */
-    if (phrase_wants_news_read_offer(query) || strstr(query, "任务") || strstr(query, "DSH") ||
-        strstr(query, "dsh") || strstr(query, "派活")) {
+    if (nl_workbench_named_app(query) || phrase_wants_news_read_offer(query) ||
+        strstr(query, "任务") || strstr(query, "DSH") || strstr(query, "dsh") ||
+        strstr(query, "派活")) {
         return true;
     }
     return nodelio_offline_query_keeps_cloud_tts(query);
@@ -1695,7 +1697,7 @@ static bool try_open_bare_known_app(const char *phrase)
                                                                                    误识 */
         "派活",
     };
-    bool hit = false;
+    bool hit = nl_workbench_named_app(name) != NULL;
     for (size_t i = 0; i < sizeof(kKnown) / sizeof(kKnown[0]); i++) {
         if (strcmp(name, kKnown[i]) == 0) {
             hit = true;

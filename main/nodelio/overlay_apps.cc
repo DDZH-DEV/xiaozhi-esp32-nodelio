@@ -80,10 +80,7 @@ static void with_builtin_daily(nl_app_item* items, int& n) {
 }
 
 /** 进度卡内部动作：审批按钮与派活投递。不进应用列表 / 语音打开。 */
-static bool skill_is_button_only(const char *id)
-{
-    return id && (strstr(id, "dsh.answer") != nullptr || strstr(id, "dsh.task") != nullptr);
-}
+static bool skill_is_button_only(const char* id) { return nl_workbench_helper(id); }
 static int s_item_n;
 static bool s_loading;
 static bool s_daily_loading;
@@ -322,7 +319,7 @@ static void open_app_at(int idx, bool reset_daily = true) {
                             char spoken[NL_ENV_SPOKEN];
                             spoken[0] = '\0';
                             nodelio_skill_deliver_json(a->cfg, resp, false, spoken, sizeof(spoken));
-                            if (strstr(a->id, "dsh") != nullptr && spoken[0]) {
+                            if (nl_workbench_app(a->id) && spoken[0]) {
                                 const char* au = nodelio_skill_last_spoken_audio_url();
                                 nodelio_panel_ui_announce_spoken_ex(spoken, au);
                             }
@@ -1076,7 +1073,7 @@ static const char *find_installed_app_id(const char *app_key, bool prefer_status
         const char *id = s_items[i].id;
         const char *tail = strstr(id, "::");
         const char *key = tail ? tail + 2 : id;
-        if (strcmp(key, app_key) != 0 && strstr(id, app_key) == nullptr) {
+        if (strcmp(id, app_key) != 0 && strcmp(key, app_key) != 0) {
             continue;
         }
         if (prefer_status && strstr(id, "dsh.status") != nullptr) {
@@ -1098,6 +1095,8 @@ static bool invoke_dsh(const char* skill, const char* instruction, const char* w
         return false;
     }
     const bool valid =
+        (!instruction || !strstr(nl_workbench_key(skill), ".status") ||
+         cJSON_AddStringToObject(params, "operation", "task")) &&
         (!instruction || cJSON_AddStringToObject(params, "instruction", instruction)) &&
         (!workspace || !workspace[0] || cJSON_AddStringToObject(params, "workspace", workspace)) &&
         (!session || !session[0] || cJSON_AddStringToObject(params, "session", session));
@@ -1119,6 +1118,19 @@ void nl_ov_apps_invoke_dsh_status(const char *workspace, const char *session)
         sid = "com.nodelio.dsh::dsh.status";
     }
     (void)invoke_dsh(sid, nullptr, workspace, session);
+}
+
+bool nl_ov_apps_invoke_workbench_task(const char* app, const char* instruction,
+                                      const char* workspace, const char* session) {
+    if (!nl_workbench_app(app) || !instruction || !instruction[0]) {
+        nl_ov_toast("请选择工作台并输入指令");
+        return false;
+    }
+    const char* installed = find_installed_app_id(app, false);
+    if (!invoke_dsh(installed ? installed : app, instruction, workspace, session))
+        return false;
+    nodelio_skill_dsh_on_dispatched(instruction);
+    return true;
 }
 
 bool nl_ov_apps_invoke_dsh_task(const char* instruction, const char* workspace,
@@ -1189,20 +1201,27 @@ static int plan_open_query(const char *query, OpenPlan *plan, bool log)
         return OPEN_PLAN_SD;
     }
 
-    /* DSH 意图优先于模糊名匹配。派活没有独立页，打开进度。 */
-    const char *alias_id = nullptr;
-    if (strstr(query, "派活") != nullptr || strstr(query, "dsh.task") != nullptr ||
-        strstr(query, "dsh_task") != nullptr || strstr(query, "任务情况") != nullptr ||
-        strstr(query, "查看任务") != nullptr ||
-               strstr(query, "任务列表") != nullptr || strstr(query, "任务详情") != nullptr ||
-               strstr(query, "任务应用") != nullptr || strstr(query, "任务表情") != nullptr ||
-               strstr(query, "dsh.status") != nullptr || strstr(query, "进度") != nullptr ||
-               strstr(query, "工作台") != nullptr || strstr(query, "deepseek") != nullptr ||
-               strstr(query, "DeepSeek") != nullptr ||
+    /* 明确平台优先；泛称工作台使用已装默认入口，兼容仅安装 DSH 的旧配置。 */
+    const char* alias_id = nl_workbench_named_app(query);
+    char explicit_status[72] = {0};
+    if (nl_workbench_app(query)) {
+        nl_workbench_status_id(query, explicit_status, sizeof(explicit_status));
+        alias_id = explicit_status;
+    }
+    if (alias_id) {
+        // Explicit platform selection is already resolved.
+    } else if (strstr(query, "派活") != nullptr || strstr(query, "dsh.task") != nullptr ||
+               strstr(query, "dsh_task") != nullptr || strstr(query, "任务情况") != nullptr ||
+               strstr(query, "查看任务") != nullptr || strstr(query, "任务列表") != nullptr ||
+               strstr(query, "任务详情") != nullptr || strstr(query, "任务应用") != nullptr ||
+               strstr(query, "任务表情") != nullptr || strstr(query, "dsh.status") != nullptr ||
+               strstr(query, "进度") != nullptr || strstr(query, "工作台") != nullptr ||
+               strstr(query, "deepseek") != nullptr || strstr(query, "DeepSeek") != nullptr ||
                strstr(query, "DSH") != nullptr || strstr(query, "dsh") != nullptr ||
                strstr(query, "任务") != nullptr) {
         /* 打开 DSH / 查看任务 / 派活 都进进度列表。带指令的投递走「让它…」。 */
-        alias_id = "dsh.status";
+        alias_id =
+            find_installed_app_id("workbench.status", false) ? "workbench.status" : "dsh.status";
     } else if (strstr(query, "曲库") || strstr(query, "取库") || strstr(query, "去库") ||
                strstr(query, "趣库") || strstr(query, "音乐") || strstr(query, "music") ||
                strstr(query, "听歌") || strstr(query, "放歌") || strstr(query, "爱音乐")) {

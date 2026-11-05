@@ -33,7 +33,7 @@ void stop_dsh_detail_poll(void)
 bool dsh_is_detail_view(void)
 {
     return s_have_env && s_env && s_env->detail_body && s_env->detail_body[0] &&
-           strstr(s_env->app_id, "dsh") != nullptr && s_card &&
+           nl_workbench_app(s_env->app_id) && s_card &&
            !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN) && !s_minimized;
 }
 
@@ -387,7 +387,7 @@ void dsh_enter_armed(const char *ws, const char *sess)
     }
     /* 勿同步 fill_list：语音回调在 main 上，整表重建 + scroll_to_view 会撑爆 IDLE0 WDT */
     dsh_paint_status_strip();
-    if (s_card_sub && s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr) {
+    if (s_card_sub && s_have_env && s_env && nl_workbench_app(s_env->app_id)) {
         lv_label_set_text(s_card_sub, "续聊中 · 直接说指令");
     }
 }
@@ -442,6 +442,7 @@ void dsh_refresh_list(void)
     s_dsh_detail_sess[0] = '\0';
     struct refresh_arg {
         nodelio_nvs_config_t cfg;
+        char app[72];
         char ws[200];
     };
     auto *arg = static_cast<refresh_arg *>(malloc(sizeof(refresh_arg)));
@@ -450,6 +451,7 @@ void dsh_refresh_list(void)
         return;
     }
     arg->cfg = s_skill_cfg;
+    nl_workbench_status_id(s_env ? s_env->app_id : "dsh.status", arg->app, sizeof(arg->app));
     snprintf(arg->ws, sizeof(arg->ws), "%s", ws);
     nl_ov_toast("刷新…");
     if (!nodelio::SubmitPanelJob(
@@ -459,8 +461,8 @@ void dsh_refresh_list(void)
                 char base[160];
                 nl_url_strip_base(a->cfg.server_url, base, sizeof(base));
                 char url[400];
-                snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/dsh.status/invoke", base,
-                         a->cfg.device_id);
+                snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/%s/invoke", base,
+                         a->cfg.device_id, a->app);
                 char ws_esc[400];
                 json_escape_str(ws_esc, sizeof(ws_esc), a->ws);
                 char body[440];
@@ -519,6 +521,7 @@ void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
     }
     struct detail_arg {
         nodelio_nvs_config_t cfg;
+        char app[72];
         char ws[200];
         char sess[80];
         bool silent;
@@ -531,6 +534,7 @@ void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
         return;
     }
     arg->cfg = s_skill_cfg;
+    nl_workbench_status_id(s_env ? s_env->app_id : "dsh.status", arg->app, sizeof(arg->app));
     snprintf(arg->ws, sizeof(arg->ws), "%s", ws ? ws : "");
     snprintf(arg->sess, sizeof(arg->sess), "%s", sess);
     arg->silent = silent;
@@ -547,8 +551,8 @@ void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
                 char base[160];
                 nl_url_strip_base(a->cfg.server_url, base, sizeof(base));
                 char url[480];
-                snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/dsh.status/invoke", base,
-                         a->cfg.device_id);
+                snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/%s/invoke", base,
+                         a->cfg.device_id, a->app);
                 /* ws≤199 转义≤398；sess≤79 转义≤158；外壳约 34 → body≥591 */
                 char ws_esc[400];
                 char sess_esc[160];
@@ -669,7 +673,7 @@ void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
                         }
                     } else if (!a->silent) {
                         if (err != ESP_OK || status == 0 || !resp[0]) {
-                            nl_ov_toast_invoke_unreachable("dsh.status");
+                            nl_ov_toast_invoke_unreachable(a->app);
                         } else {
                             nodelio_panel_ui_toast_defer("加载失败");
                         }
@@ -697,6 +701,12 @@ void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
 void dsh_fetch_session_detail(int track_idx)
 {
     if (!s_have_env || !s_env || track_idx < 0 || track_idx >= s_env->track_n) {
+        return;
+    }
+    if (strcmp(s_env->tracks[track_idx].id, "__new__") == 0) {
+        if (s_env->tracks[track_idx].invoke_n > 0) {
+            run_invoke_action(&s_env->tracks[track_idx].invokes[0]);
+        }
         return;
     }
     char ws[200] = {0};
@@ -961,7 +971,7 @@ void nodelio_skill_dsh_on_confirm_pending(const char *instruction)
     }
     const bool card_open =
         s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN) && s_skill_ui_active;
-    if (card_open && s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr && s_card_list) {
+    if (card_open && s_have_env && s_env && nl_workbench_app(s_env->app_id) && s_card_list) {
         fill_list();
     } else {
         dsh_paint_status_strip();
@@ -972,7 +982,7 @@ void nodelio_skill_dsh_on_confirm_pending(const char *instruction)
 static void dsh_hold_detail_for_new_turn(const char *instruction)
 {
     if (!s_have_env || !s_env || !s_env->detail_body || !s_env->detail_body[0] ||
-        strstr(s_env->app_id, "dsh") == nullptr || s_env->track_n <= 0) {
+        !nl_workbench_app(s_env->app_id) || s_env->track_n <= 0) {
         return;
     }
     char sess[80] = {0};
@@ -1033,7 +1043,7 @@ void nodelio_skill_dsh_on_dispatched(const char *instruction)
     nl_ov_toast("正在发送，请等待结果…");
     const bool card_open =
         s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN) && s_skill_ui_active;
-    if (card_open && s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr && s_card_list) {
+    if (card_open && s_have_env && s_env && nl_workbench_app(s_env->app_id) && s_card_list) {
         fill_list(); /* 列表或详情都会重画底栏/状态条 */
     } else if (card_open) {
         dsh_paint_status_strip();
@@ -1051,12 +1061,13 @@ void nodelio_skill_dsh_on_arm_cleared(void)
         return;
     }
     dsh_clear_ui_phase();
-    if (s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr && s_card_list &&
-        s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
+    if (s_have_env && s_env && nl_workbench_app(s_env->app_id) && s_card_list && s_card &&
+        !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN)) {
         fill_list();
     }
 }
 
+static char s_dsh_arm_app[72];
 static char s_dsh_arm_ws[200];
 static char s_dsh_arm_sess[80];
 static char s_dsh_pending_instr[200];
@@ -1167,17 +1178,24 @@ static void dsh_arm_timer_restart(void)
     esp_timer_start_once(s_dsh_arm_timer, 60 * 1000000ULL);
 }
 
-extern "C" void nodelio_panel_ui_arm_dsh(const char *workspace, const char *session)
-{
+extern "C" void nodelio_panel_ui_arm_dsh(const char* workspace, const char* session) {
+    nodelio_panel_ui_arm_workbench("dsh.task", workspace, session);
+}
+
+extern "C" void nodelio_panel_ui_arm_workbench(const char* app, const char* workspace,
+                                               const char* session) {
     dsh_pending_clear();
+    s_dsh_arm_app[0] = '\0';
     s_dsh_arm_ws[0] = '\0';
     s_dsh_arm_sess[0] = '\0';
-    if ((workspace && strlen(workspace) >= sizeof(s_dsh_arm_ws)) ||
+    if (!nl_workbench_app(app) || strlen(app) >= sizeof(s_dsh_arm_app) ||
+        (workspace && strlen(workspace) >= sizeof(s_dsh_arm_ws)) ||
         (session && strlen(session) >= sizeof(s_dsh_arm_sess))) {
         dsh_arm_timer_stop();
         nodelio_panel_ui_toast_defer("工作区或会话标识过长，无法续聊");
         return;
     }
+    snprintf(s_dsh_arm_app, sizeof(s_dsh_arm_app), "%s", app);
     if (workspace && workspace[0]) {
         snprintf(s_dsh_arm_ws, sizeof(s_dsh_arm_ws), "%s", workspace);
     }
@@ -1191,15 +1209,13 @@ extern "C" void nodelio_panel_ui_arm_dsh(const char *workspace, const char *sess
 extern "C" void nodelio_panel_ui_clear_dsh_arm(void)
 {
     dsh_arm_timer_stop();
+    s_dsh_arm_app[0] = '\0';
     s_dsh_arm_ws[0] = '\0';
     s_dsh_arm_sess[0] = '\0';
     dsh_pending_clear();
 }
 
-extern "C" bool nodelio_panel_ui_dsh_is_armed(void)
-{
-    return s_dsh_arm_ws[0] != '\0' || s_dsh_arm_sess[0] != '\0';
-}
+extern "C" bool nodelio_panel_ui_dsh_is_armed(void) { return s_dsh_arm_app[0] != '\0'; }
 
 extern "C" void nodelio_panel_ui_get_dsh_arm(char *workspace, size_t ws_len, char *session,
                                             size_t sess_len)
@@ -1240,16 +1256,22 @@ extern "C" bool nodelio_panel_ui_dsh_task(const char *instruction)
             return true;
         }
     }
+    const std::string app(s_dsh_arm_app);
     const std::string workspace(s_dsh_arm_ws);
     const std::string session(s_dsh_arm_sess);
     if (copy) {
         nodelio_panel_ui_clear_dsh_arm();
     }
-    Application::GetInstance().Schedule([copy, workspace, session]() {
+    Application::GetInstance().Schedule([copy, app, workspace, session]() {
         if (!nodelio_overlay_visible()) {
             nodelio_overlay_show(false);
         }
-        (void)nl_ov_apps_invoke_dsh_task(copy, workspace.c_str(), session.c_str());
+        if (app.empty()) {
+            (void)nl_ov_apps_invoke_dsh_task(copy, workspace.c_str(), session.c_str());
+        } else {
+            (void)nl_ov_apps_invoke_workbench_task(app.c_str(), copy, workspace.c_str(),
+                                                   session.c_str());
+        }
         free(copy);
     });
     return true;

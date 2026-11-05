@@ -2,7 +2,7 @@
 
 Go 实现的跨平台工作台连接桥。单个程序内含配置网页、DSH / OpenAI / WorkBuddy 连接器和 NodeLio 出站 WebSocket。用户分别启用需要的连接器。
 
-这是 **0.1.0 迁移预览版**：旧 `../dsh-voice-bridge` 保留，不自动替换、停止旧桥或注册启动项。正式发布的代码签名、公证和真实账号/墙板联调尚需完成。
+这是 **0.2.0 联调预览版**：旧 `../dsh-voice-bridge` 保留，不自动替换、停止旧桥或注册启动项。正式发布的代码签名、公证和真实账号/墙板联调尚需完成。
 
 ## 支持范围
 
@@ -41,7 +41,7 @@ Windows 源码构建建议使用 `go build -o nodelio-bridge.exe ./cmd/nodelio-b
 3. DSH 新建任务需填写有效的默认工作区及明确的权限预设；不会自动回退到更高权限。
 4. OpenAI 填写账号可用的模型 ID 与 API Key。
 5. WorkBuddy 填写开放平台已授权的 Access Token，选择 local/cloud。**尚未提供一键 OAuth 登录和令牌自动刷新**；过期后在此更新。应用 client_secret 不应嵌入发行包。
-6. 使用“试用工作台”验证派活和续聊，再在 NodeLio APP 添加现有“家里 DSH”市场源并安装对应工作台技能。
+6. 使用“试用工作台”验证派活和续聊，再在 NodeLio APP 添加“电脑工作台”市场源（旧“家里 DSH”地址仍兼容），安装所需平台的主应用。桥及平台不可用时先完成配置，再刷新市场安装。
 7. 程序放入固定目录后，在配置页选择“登录电脑后自动启动”。
 
 应用和令牌的具体权限由平台决定；文档：https://developers.openai.com/api/docs/guides/conversation-state 、https://open.workbuddy.cn/docs/openapi 。
@@ -100,9 +100,9 @@ nodelio-bridge import-legacy --legacy-config /path/to/dsh-voice-bridge/bridge-co
 
 导入 Host WS、桥凭证、面板 ID、DSH 模型/权限/Agent 预设；不覆盖旧文件，不继承旧 LAN 暴露、自动拉起桌面、热重载或外部 TTS 依赖。端点和数据目录默认自动发现。
 
-当前 Host 的 `DshBridgeHub` 按 owner 保留最近一条桥连接，**同账号不要让旧桥和新桥同时连接 Host**。多电脑按 bridge_id 路由需要后续 Host 协议升级，本次未修改其他仓库。
+当前 Host 的 `DshBridgeHub` 按 owner 保留最近一条桥连接，**同账号不要让旧桥和新桥同时连接 Host**。多电脑按 bridge_id 路由尚未实现。配套 SERVER 0.4.81、APP 1.0.39 已接入连接状态与新版市场；完整使用还需部署配套墙板源码。
 
-市场继续沿用 `com.nodelio.dsh` 和 `nodelio-dsh://` 来源，提供 dsh/openai/workbuddy/workbench 的 status/task/answer 技能。新技能声明 outbound_bridge，不要求 Host 访问本机 LAN。`workbench.*` 根据显式 provider、已绑定会话或默认平台路由。
+市场继续沿用 `com.nodelio.dsh` 和 `nodelio-dsh://` 来源，市场展示 dsh/openai/workbuddy/workbench 四个 `.status` 主应用，包版本 2.1.0。每个主应用内完成查看、派活、续聊与确认；不必单独安装 task/answer。旧 helper 调用继续兼容。新技能声明 outbound_bridge，不要求 Host 访问本机 LAN。`workbench.*` 根据显式 provider、已绑定会话或默认平台路由。
 
 迁移预览版与旧桥尚有以下差异，不能直接视为等价替换：
 
@@ -110,7 +110,7 @@ nodelio-bridge import-legacy --legacy-config /path/to/dsh-voice-bridge/bridge-co
 - DSH 复杂多题提问提示回桌面回答；二元审批按实时 notice/action 校验。暂未搬入旧桥的逐题答案草稿 UI。
 - DSH 暂无后台状态监视通知，需手动刷新；OpenAI/WorkBuddy 云任务由执行通道推送完成/审批通知。
 - 暂不提供旧版 Edge/SAPI 本地 TTS，Envelope 保留文字 spoken。
-- 旧墙板的部分自由语音续聊仍固定 dsh.*；新工作台可通过技能调用和本机配置页操作，多平台语音目标选择需要后续固件/Host 联调。
+- 配套墙板源码已按应用绑定语音续聊、详情刷新和确认目标；旧固件仍可能固定 dsh.*。三平台墙板交互尚需 ESP-IDF 编译及实机联调。
 - 本机 HTTP 兼容路由要求管理令牌；旧版未经认证的 LAN 模式不直接兼容，推荐既有出站 WS 模式。
 
 回退时退出 Go 桥、关闭它的登录启动，再重新运行旧桥。旧配置不变，新桥数据保留在独立目录。
@@ -126,4 +126,4 @@ go run ./cmd/package
 
 测试使用本地模拟上游，不调用真实账号、不创建收费 API 请求、不注册启动项。覆盖凭证/CSRF/Host 检查、跨平台会话拒绝、OpenAI 异步续聊、WorkBuddy ACP、DSH 精确会话/陈旧审批、串接 zstd 日志、Host 原样包哈希和单实例锁。
 
-GitHub Actions 配置三系统原生测试及六目标打包。配置工作流不代表已经执行 CI。真实账号、macOS/Linux 启动、ARM 实机和墙板操作仍需验证；仅桌面桥改动无需编译或烧录 ESP32。
+GitHub Actions 配置三系统原生测试及六目标打包。配置工作流不代表已经执行 CI。真实账号、macOS/Linux 启动、ARM 实机和墙板操作仍需验证；使用新版墙板入口需要自行编译并更新固件。

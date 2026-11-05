@@ -37,8 +37,8 @@ $('startup').onchange=async()=>{const enabled=$('startup').checked;$('startup').
 function render(doc){
   if(doc.status==='error')throw new Error(doc.error.message);
   const selected=val('test-session');$('tasks').replaceChildren();$('test-session').replaceChildren(new Option('新建／默认',''));
-  for(const row of doc.content||[]) {if(row.type!=='list_item')continue;$('test-session').add(new Option(row.title,row.id));const card=document.createElement('article');card.className='task';const title=document.createElement('h3');title.textContent=row.title;const sub=document.createElement('small');sub.textContent=row.subtitle;const body=document.createElement('pre');body.textContent=row.body||'';card.append(title,sub,body);
-    for(const action of row.actions||[]){const b=document.createElement('button');b.textContent=action.title;b.onclick=async()=>{b.disabled=true;try{render(await api('/api/invoke','POST',{app_id:action.invoke.app_id,params:action.invoke.params}));}catch(e){message(e.message,true);}finally{b.disabled=false;}};card.append(b);}
+  for(const row of doc.content||[]) {if(row.type!=='list_item')continue;if(row.id!=='__new__')$('test-session').add(new Option(row.title,row.id));const card=document.createElement('article');card.className='task';const title=document.createElement('h3');title.textContent=row.title;const sub=document.createElement('small');sub.textContent=row.subtitle;const body=document.createElement('pre');body.textContent=row.body||'';card.append(title,sub,body);
+    for(const action of row.actions||[]){const b=document.createElement('button');b.textContent=action.title;b.onclick=async()=>{if(action.invoke.params?.arm){$('test-session').value=action.invoke.params.session||'';$('instruction').focus();message('请输入指令，确认后点击发送。');return;}b.disabled=true;try{render(await api('/api/invoke','POST',{app_id:action.invoke.app_id,params:action.invoke.params}));}catch(e){message(e.message,true);}finally{b.disabled=false;}};card.append(b);}
     $('tasks').append(card);
   }
   if([...$('test-session').options].some(o=>o.value===selected))$('test-session').value=selected;

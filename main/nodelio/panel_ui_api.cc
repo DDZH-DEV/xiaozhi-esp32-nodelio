@@ -741,10 +741,20 @@ static void notice_do_invoke(const nodelio_panel_notice_t *n)
     if (!sid || !sid[0]) {
         return;
     }
-    /* DSH 兼容：有 session 时走专用 status 详情 */
-    if (strstr(sid, "dsh.status") != nullptr ||
-        (strstr(sid, "dsh") != nullptr && n->session[0])) {
-        nl_ov_apps_invoke_dsh_status(nullptr, n->session[0] ? n->session : nullptr);
+    if (nl_workbench_app(sid) && n->session[0]) {
+        char status_app[72];
+        nl_workbench_status_id(sid, status_app, sizeof(status_app));
+        cJSON* params = cJSON_CreateObject();
+        if (!params)
+            return;
+        if (cJSON_AddStringToObject(params, "session", n->session)) {
+            char* encoded = cJSON_PrintUnformatted(params);
+            if (encoded) {
+                nl_ov_invoke_skill_async(status_app, encoded);
+                cJSON_free(encoded);
+            }
+        }
+        cJSON_Delete(params);
         return;
     }
     const char *body = n->invoke_params[0] ? n->invoke_params : "{}";

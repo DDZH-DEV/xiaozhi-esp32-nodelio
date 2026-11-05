@@ -423,7 +423,7 @@ void restart_skill_ttl(void)
         return;
     }
     int ttl = s_env->ttl_sec;
-    if (ttl <= 0 && strstr(s_env->app_id, "dsh") != nullptr) {
+    if (ttl <= 0 && nl_workbench_app(s_env->app_id)) {
         ttl = DSH_IDLE_TTL_SEC_DEFAULT;
     }
     if (ttl <= 0) {
@@ -527,7 +527,7 @@ static void on_reshuffle(lv_event_t *e)
         return;
     }
     /* DSH：刷新按钮回到/重拉进度列表（详情页也走这里） */
-    if (s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr) {
+    if (s_have_env && s_env && nl_workbench_app(s_env->app_id)) {
         dsh_refresh_list();
         return;
     }
@@ -621,7 +621,7 @@ void paint_music_mark(lv_obj_t *lbl, bool playing, int index)
 static int list_row_h(void)
 {
     if (list_use_comfortable()) {
-        const bool dsh = s_env && s_env->app_id[0] && strstr(s_env->app_id, "dsh") != nullptr;
+        const bool dsh = s_env && s_env->app_id[0] && nl_workbench_app(s_env->app_id);
         if (!dsh) {
             return SKILL_LIST_ROW_H;
         }
@@ -759,7 +759,7 @@ static void on_hdr_mid(lv_event_t *e)
         return;
     }
     /* DSH 详情：顶栏中间钮已隐藏；若仍点到则回列表 */
-    if (s_env->detail_body && s_env->detail_body[0] && strstr(s_env->app_id, "dsh") != nullptr) {
+    if (s_env->detail_body && s_env->detail_body[0] && nl_workbench_app(s_env->app_id)) {
         dsh_refresh_list();
         return;
     }
@@ -896,10 +896,14 @@ static void on_play_row(lv_event_t *e)
     }
     const int idx = (int)(intptr_t)lv_event_get_user_data(e);
     /* DSH 列表：点行看末轮全文；有播放 URL 的仍走点播 */
-    if (s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr &&
+    if (s_have_env && s_env && nl_workbench_app(s_env->app_id) &&
         strcmp(s_env->card_type, "music_list") != 0) {
         if (idx >= 0 && idx < s_env->track_n && !s_env->tracks[idx].playback_url[0]) {
-            dsh_fetch_session_detail(idx);
+            if (strcmp(s_env->tracks[idx].id, "__new__") == 0 && s_env->tracks[idx].invoke_n > 0) {
+                run_invoke_action(&s_env->tracks[idx].invokes[0]);
+            } else {
+                dsh_fetch_session_detail(idx);
+            }
             return;
         }
     }
@@ -944,6 +948,11 @@ void run_invoke_action(const nl_env_invoke_action_t *ia)
         char ws_buf[200] = {0};
         char sess_buf[80] = {0};
         cJSON *root = cJSON_Parse(ia->params_json);
+        if (!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "arm"))) {
+            cJSON_Delete(root);
+            nl_ov_toast("无效的续聊操作");
+            return;
+        }
         if (root) {
             const cJSON *jw = cJSON_GetObjectItemCaseSensitive(root, "workspace");
             const cJSON *js = cJSON_GetObjectItemCaseSensitive(root, "session");
@@ -968,7 +977,7 @@ void run_invoke_action(const nl_env_invoke_action_t *ia)
             dsh_clear_ui_phase();
             nl_ov_toast("已取消续聊");
             dsh_paint_status_strip();
-            if (s_card_sub && s_have_env && s_env && strstr(s_env->app_id, "dsh") != nullptr &&
+            if (s_card_sub && s_have_env && s_env && nl_workbench_app(s_env->app_id) &&
                 s_env->track_n > 0) {
                 char sub[72];
                 snprintf(sub, sizeof(sub), "共 %d 条 · 点卡片看回复 · 「续聊」开麦", s_env->track_n);
@@ -976,7 +985,9 @@ void run_invoke_action(const nl_env_invoke_action_t *ia)
             }
             return;
         }
-        nodelio_panel_ui_arm_dsh(ws_buf[0] ? ws_buf : nullptr, sess_buf[0] ? sess_buf : nullptr);
+        nodelio_panel_ui_arm_workbench(ia->instance_id[0] ? ia->instance_id : ia->app_id,
+                                       ws_buf[0] ? ws_buf : nullptr,
+                                       sess_buf[0] ? sess_buf : nullptr);
         if (!nodelio_panel_ui_dsh_is_armed()) {
             nl_ov_toast("缺少工作区或会话，无法续聊");
             return;
@@ -994,6 +1005,7 @@ void run_invoke_action(const nl_env_invoke_action_t *ia)
             dsh_enter_armed(ws_buf, nullptr);
         } else {
             nl_ov_toast("请说指令，发送前会确认");
+            dsh_enter_armed(nullptr, nullptr);
         }
         /* 续聊下发任务 = 自由说 → 必须云端 ASR（STT 再走本地 armed→dsh.task）。
          * 本地 MultiNet 只有固定口令，听不懂「帮我提交版本」这类指令。
@@ -1053,8 +1065,7 @@ void run_invoke_action(const nl_env_invoke_action_t *ia)
                 } else {
                     resp[0] = '\0';
                     int status = 0;
-                    const int io_ms =
-                        strstr(a->skill_id, "dsh") != nullptr ? DSH_HTTP_IO_MS : 10000;
+                    const int io_ms = nl_workbench_app(a->skill_id) ? DSH_HTTP_IO_MS : 10000;
                     esp_err_t err =
                         nodelio_http_post_json_ms(url, a->cfg.device_key, a->body, &status, resp, cap - 1, io_ms);
                     if (err == ESP_OK && resp[0] &&
@@ -1063,11 +1074,11 @@ void run_invoke_action(const nl_env_invoke_action_t *ia)
                         char spoken[NL_ENV_SPOKEN];
                         spoken[0] = '\0';
                         nodelio_skill_deliver_json(&a->cfg, resp, false, spoken, sizeof(spoken));
-                        if (strstr(a->skill_id, "dsh") != nullptr && spoken[0]) {
+                        if (nl_workbench_app(a->skill_id) && spoken[0]) {
                             nodelio_panel_ui_announce_spoken(spoken);
                         }
                     } else if (err != ESP_OK || status == 0 || !resp[0]) {
-                        if (strstr(a->skill_id, "dsh.task") || strstr(a->skill_id, "dsh.answer")) {
+                        if (nl_workbench_mutation(a->skill_id, a->body)) {
                             nodelio_panel_ui_toast_defer("结果未确认，请先查看任务，勿重复发送");
                         } else {
                             nl_ov_toast_invoke_unreachable(a->skill_id);
@@ -1458,7 +1469,7 @@ bool nodelio_skill_try_pick_phrase(const char *text)
     if (!lock || !text || !text[0] || !skill_ui_is_up() || !s_env) {
         return false;
     }
-    if (strstr(s_env->app_id, "dsh") == nullptr) {
+    if (!nl_workbench_app(s_env->app_id)) {
         return false;
     }
     bool resume = false;
@@ -1489,7 +1500,8 @@ bool nodelio_skill_try_pick_phrase(const char *text)
     int selectable[24];
     int n = 0;
     for (int i = 0; i < s_env->track_n && n < 24; i++) {
-        if (strcmp(s_env->tracks[i].id, "__workspaces__") == 0) {
+        if (strcmp(s_env->tracks[i].id, "__workspaces__") == 0 ||
+            strcmp(s_env->tracks[i].id, "__new__") == 0) {
             continue;
         }
         selectable[n++] = i;
@@ -2257,7 +2269,7 @@ void apply_card_chrome(void)
     const bool news = strcmp(s_env->card_type, "news_list") == 0;
     const bool daily = strcmp(s_env->card_type, "calendar_weather") == 0;
     const bool dsh_detail =
-        s_env->detail_body && s_env->detail_body[0] && strstr(s_env->app_id, "dsh") != nullptr;
+        s_env->detail_body && s_env->detail_body[0] && nl_workbench_app(s_env->app_id);
     /* 曲库改全量滚动后不再占分页钮；新闻中间钮=收起；内存卡多批时中间钮=下一批 */
     const bool mid_btn = news || list_page_count() > 1 ||
                          (s_library_source == 1 && nodelio_sd_batch_count() > 1);
@@ -2371,7 +2383,7 @@ void fill_list(void)
         return;
     }
     /* 带 body 的 DSH 详情卡 */
-    if (s_env->detail_body && s_env->detail_body[0] && strstr(s_env->app_id, "dsh") != nullptr) {
+    if (s_env->detail_body && s_env->detail_body[0] && nl_workbench_app(s_env->app_id)) {
         fill_dsh_detail();
         return;
     }
@@ -2428,7 +2440,7 @@ void fill_list(void)
             } else if (pages > 1) {
                 snprintf(sub, sizeof(sub), "共 %d 条 · %d/%d · 语音说指令派活", s_env->track_n,
                          s_list_page + 1, pages);
-            } else if (strstr(s_env->app_id, "dsh") != nullptr) {
+            } else if (nl_workbench_app(s_env->app_id)) {
                 if (s_dsh_phase == DSH_UI_ARMED) {
                     snprintf(sub, sizeof(sub), "续聊中 · 直接说指令");
                 } else if (s_dsh_phase == DSH_UI_DISPATCHED) {
@@ -2440,7 +2452,7 @@ void fill_list(void)
                 snprintf(sub, sizeof(sub), "共 %d 条", s_env->track_n);
             }
             lv_label_set_text(s_card_sub, sub);
-        } else if (s_env->filter_n > 0 && strstr(s_env->app_id, "dsh") != nullptr) {
+        } else if (s_env->filter_n > 0 && nl_workbench_app(s_env->app_id)) {
             lv_label_set_text(s_card_sub, "横滑选工作区 · 再说「让它…」");
         } else {
             lv_label_set_text(s_card_sub, "点关闭或点遮罩收起");
@@ -2515,8 +2527,7 @@ void fill_list(void)
             lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
             /* 曲库：有 URL 点播；DSH：点行拉末轮全文/最新进度（无 playback_url 也要可点） */
             const bool dsh_detail_row =
-                strstr(s_env->app_id, "dsh") != nullptr && !music_card &&
-                !s_env->tracks[i].playback_url[0];
+                nl_workbench_app(s_env->app_id) && !music_card && !s_env->tracks[i].playback_url[0];
             if ((can_play && s_env->tracks[i].playback_url[0]) || dsh_detail_row) {
                 lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
                 lv_obj_add_event_cb(row, on_play_row, LV_EVENT_CLICKED, (void *)(intptr_t)i);
@@ -2593,7 +2604,7 @@ void fill_list(void)
             /* 简介按真实行数定高。预留两行空盒会把字顶到播放钮上方。 */
             lv_label_set_long_mode(a, LV_LABEL_LONG_DOT);
             const bool sub_two_lines =
-                comfortable && s_env->app_id[0] && strstr(s_env->app_id, "dsh") != nullptr;
+                comfortable && s_env->app_id[0] && nl_workbench_app(s_env->app_id);
             int cell_w = skill_panel_w();
             if (cols > 1) {
                 cell_w = (cell_w - 6 * (cols - 1)) / cols;
@@ -2658,7 +2669,7 @@ void fill_list(void)
             lv_obj_clear_flag(pad, LV_OBJ_FLAG_CLICKABLE);
         }
     }
-    if (strstr(s_env->app_id, "dsh") != nullptr) {
+    if (nl_workbench_app(s_env->app_id)) {
         dsh_paint_status_strip();
     } else if (s_dsh_phase != DSH_UI_IDLE) {
         dsh_clear_ui_phase();
@@ -2903,6 +2914,17 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
         s_env->tracks[s_play_idx].playback_url[0]) {
         snprintf(keep_url, sizeof(keep_url), "%s", s_env->tracks[s_play_idx].playback_url);
     }
+    // Switching applications must not retain the previous platform's armed voice target.
+    if (s_env && nl_workbench_app(s_env->app_id)) {
+        char previous[72], next[72];
+        nl_workbench_status_id(s_env->app_id, previous, sizeof(previous));
+        nl_workbench_status_id(env->app_id, next, sizeof(next));
+        if (!nl_workbench_app(env->app_id) || strcmp(previous, next) != 0) {
+            nodelio_panel_ui_clear_dsh_arm();
+            dsh_clear_ui_phase();
+            stop_dsh_detail_poll();
+        }
+    }
     /* 接管堆信封：先摘掉旧指针再挂新的，峰值只保留一份 ~54KB */
     if (s_env && s_env != env) {
         free_skill_env();
@@ -2915,7 +2937,7 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
         s_library_source = strcmp(s_env->app_id, "music.sd") == 0 ? 1 : 0;
     }
     /* DSH：勿无清 DISPATCHED/ARMED；远端已 running/attention 或超时再清 */
-    const bool is_dsh = strstr(s_env->app_id, "dsh") != nullptr;
+    const bool is_dsh = nl_workbench_app(s_env->app_id);
     bool clear_dsh_ui = false;
     if (is_dsh) {
         if (s_dsh_phase == DSH_UI_ARMED) {

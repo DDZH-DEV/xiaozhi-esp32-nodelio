@@ -1,5 +1,6 @@
 #include "nodelio_mcp.h"
 #include "application.h"
+#include "workbench.h"
 
 #include "content_envelope.h"
 #include "device_caps.h"
@@ -641,6 +642,12 @@ static std::string normalize_skill_id_alias(const std::string &raw)
         canon = "quote.daily";
     } else if (low == "dsh" || low == "dsh.status" || low == "dsh_status" || low == "tasks") {
         canon = "dsh.status";
+    } else if (low == "chatgpt" || low == "openai") {
+        canon = "openai.status";
+    } else if (low == "workbuddy") {
+        canon = "workbuddy.status";
+    } else if (low == "workbench") {
+        canon = "workbench.status";
     } else if (low == "dsh.task" || low == "dsh_task") {
         canon = "dsh.task";
     }
@@ -661,9 +668,8 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
         return std::unexpected(std::string("skill_id 不能为空"));
     }
     const std::string skill_id = normalize_skill_id_alias(skill_id_in);
-    const bool dsh_app = skill_id.find("dsh") != std::string::npos;
-    const bool dsh_mutation = skill_id.find("dsh.task") != std::string::npos ||
-                              skill_id.find("dsh.answer") != std::string::npos;
+    const bool dsh_app = nl_workbench_app(skill_id.c_str());
+    const bool dsh_mutation = nl_workbench_mutation(skill_id.c_str(), params.c_str());
     const bool music_app = nodelio_skill_id_is_music(skill_id.c_str());
     if (!music_app && nodelio_media_preempt_for_heavy_app()) {
         ESP_LOGI(TAG, "preempt media before skill '%s'", skill_id.c_str());
@@ -1238,10 +1244,10 @@ void nodelio_mcp_register_tools(void)
         "self.nodelio.open_app",
         "打开已装应用。听歌/曲库→name=曲库；电台/播客/新闻/天气同理。"
         "内存卡/TF卡/SD卡里的歌→name=内存卡（本机读卡，不走云端）。"
-        "任务/DSH进度→name=查看任务（返回摘要请原文念）。禁云端 play_music。"
+        "工作台可指定 DeepSeek/ChatGPT/WorkBuddy；查看任务打开默认入口。禁云端 play_music。"
         "name=曲库/内存卡/音乐/新闻/天气/电台/播客/空气/每日一篇/每日一句/查看任务 或 app_id。",
         PropertyList({Property("name", kPropertyTypeString)}),
-        [](const PropertyList &properties) -> ToolResult {
+        [](const PropertyList& properties) -> ToolResult {
             std::string name = properties["name"].value<std::string>();
             ESP_LOGI(TAG, "MCP open_app name='%s'", name.c_str());
             if (name.empty()) {
@@ -1255,34 +1261,19 @@ void nodelio_mcp_register_tools(void)
                 nodelio_skill_request_sd_library(false);
                 return std::string("正在读取内存卡曲库");
             }
-            /* DSH 进度：同步 invoke，把 spoken 摘要交回模型播报 */
-            const bool dsh_status = name.find("进度") != std::string::npos ||
-                                    name.find("工作台") != std::string::npos ||
-                                    name.find("deepseek") != std::string::npos ||
-                                    name.find("DeepSeek") != std::string::npos ||
-                                    name.find("派活") != std::string::npos ||
-                                    name.find("dsh.task") != std::string::npos ||
-                                    name.find("dsh_task") != std::string::npos ||
-                                    name.find("任务情况") != std::string::npos ||
-                                    name.find("查看任务") != std::string::npos ||
-                                    name.find("任务列表") != std::string::npos ||
-                                    name.find("任务详情") != std::string::npos ||
-                                    name.find("任务应用") != std::string::npos ||
-                                    name.find("任务表情") != std::string::npos ||
-                                    name.find("DSH任务") != std::string::npos ||
-                                    name.find("dsh任务") != std::string::npos ||
-                                    name.find("dsh.status") != std::string::npos ||
-                                    name.find("任务") != std::string::npos ||
-                                    name.find("DSH") != std::string::npos ||
-                                    name.find("dsh") != std::string::npos;
-            ESP_LOGI(TAG, "MCP open_app dsh_status=%d", dsh_status ? 1 : 0);
-            if (dsh_status) {
+            /* 明确平台同步查询；泛称工作台由已装入口解析默认平台。 */
+            const char* workbench = nl_workbench_named_app(name.c_str());
+            char selected[72] = {0};
+            if (nl_workbench_app(name.c_str())) {
+                nl_workbench_status_id(name.c_str(), selected, sizeof(selected));
+                workbench = selected;
+            }
+            if (workbench) {
                 nodelio_nvs_config_t cfg{};
                 if (!load_cfg(&cfg)) {
-                    ESP_LOGW(TAG, "MCP open_app dsh: no cfg");
                     return std::unexpected(std::string("未绑定 NodeLio 服务"));
                 }
-                return invoke_skill(&cfg, "dsh.status", "{}");
+                return invoke_skill(&cfg, workbench, "{}");
             }
             if (!nodelio_panel_ui_open_app(name.c_str())) {
                 ESP_LOGW(TAG, "MCP open_app fail name='%s'", name.c_str());
@@ -1432,14 +1423,16 @@ void nodelio_mcp_register_tools(void)
     mcp.AddTool(
         "self.skill.invoke",
         "调技能。skill_id=music.search|radio.stations|podcast.latest|news.latest|"
-        "weather.today|air.now|quote.daily|dsh.status|dsh.task（短写会归一）。"
-        "听歌须 open_app(曲库)；任务进度→dsh.status；派活→dsh.task+instruction；"
+        "weather.today|air.now|quote.daily|dsh.status|openai.status|workbuddy.status|workbench."
+        "status。"
+        "工作台查询用对应 .status；派活 params 含 operation=task 和 instruction，续聊保留 session。"
+        "听歌须 open_app(曲库)；旧 dsh.task 仍兼容；"
         "列表已开随便放→transport play。",
         PropertyList({
             Property("skill_id", kPropertyTypeString, ""),
             Property("params", kPropertyTypeString, ""),
         }),
-        [](const PropertyList &properties) -> ToolResult {
+        [](const PropertyList& properties) -> ToolResult {
             nodelio_nvs_config_t cfg{};
             if (!load_cfg(&cfg)) {
                 return std::unexpected(std::string("未绑定 NodeLio 服务"));
