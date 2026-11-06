@@ -14,7 +14,7 @@ import (
 	"sync"
 )
 
-const Version = "0.2.2"
+const Version = "0.3.0"
 
 type ProviderConfig struct {
 	Enabled      bool   `json:"enabled"`
@@ -31,6 +31,7 @@ type ProviderConfig struct {
 type Config struct {
 	SchemaVersion   int                       `json:"schema_version"`
 	BridgeID        string                    `json:"bridge_id"`
+	Name            string                    `json:"name"`
 	Listen          string                    `json:"listen"`
 	HostWS          string                    `json:"host_ws"`
 	PanelID         string                    `json:"panel_device_id"`
@@ -66,7 +67,8 @@ func NewID() string {
 }
 
 func DefaultConfig() Config {
-	return Config{SchemaVersion: 1, BridgeID: "pc-" + NewID(), Listen: "127.0.0.1:8791", DefaultProvider: "dsh",
+	name, _ := os.Hostname()
+	return Config{Name: name, SchemaVersion: 1, BridgeID: "pc-" + NewID(), Listen: "127.0.0.1:8791", DefaultProvider: "dsh",
 		Providers: map[string]ProviderConfig{
 			"dsh":       {Enabled: false, AgentPreset: "standard"},
 			"openai":    {Enabled: false, BaseURL: "https://api.openai.com/v1"},
@@ -158,6 +160,9 @@ func (s *ConfigStore) Update(u ConfigUpdate) error {
 }
 
 func ValidateConfig(c Config) error {
+	if len([]rune(c.Name)) > 40 || strings.ContainsAny(c.Name, "\r\n\t") {
+		return errors.New("电脑名称最多40个字符，不能包含换行")
+	}
 	if c.SchemaVersion != 1 {
 		return errors.New("unsupported settings schema")
 	}

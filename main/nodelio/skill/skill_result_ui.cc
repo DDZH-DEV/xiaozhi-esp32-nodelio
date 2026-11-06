@@ -754,6 +754,17 @@ static void on_hdr_mid(lv_event_t *e)
     if (!s_env) {
         return;
     }
+    if (nl_workbench_app(s_env->app_id)) {
+        nl_env_invoke_action_t action = {};
+        nl_workbench_status_id(s_env->app_id, action.app_id, sizeof(action.app_id));
+        snprintf(action.title, sizeof(action.title), "选择电脑");
+        snprintf(action.params_json, sizeof(action.params_json), "{\"select_computer\":true}");
+        nodelio_panel_ui_clear_dsh_arm();
+        dsh_clear_ui_phase();
+        stop_dsh_detail_poll();
+        run_invoke_action(&action);
+        return;
+    }
     if (strcmp(s_env->card_type, "news_list") == 0) {
         minimize_to_fab();
         return;
@@ -801,7 +812,10 @@ void reopen_list(void)
     hide_mini_fab();
     s_have_env = true;
     const char *title = s_env->display_title[0] ? s_env->display_title : "搜索结果";
-    lv_label_set_text(s_card_title, title);
+    if (s_env->bridge_name[0])
+        lv_label_set_text_fmt(s_card_title, "%s · %s", s_env->bridge_name, title);
+    else
+        lv_label_set_text(s_card_title, title);
     fill_list();
     set_drawer_for_skill(true);
     if (s_scrim) {
@@ -947,6 +961,7 @@ void run_invoke_action(const nl_env_invoke_action_t *ia)
     if (ia->params_json[0] && strstr(ia->params_json, "\"arm\"")) {
         char ws_buf[200] = {0};
         char sess_buf[80] = {0};
+        char bridge_buf[64] = {}, provider_buf[16] = {};
         cJSON *root = cJSON_Parse(ia->params_json);
         if (!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "arm"))) {
             cJSON_Delete(root);
@@ -956,6 +971,20 @@ void run_invoke_action(const nl_env_invoke_action_t *ia)
         if (root) {
             const cJSON *jw = cJSON_GetObjectItemCaseSensitive(root, "workspace");
             const cJSON *js = cJSON_GetObjectItemCaseSensitive(root, "session");
+            const cJSON* jb = cJSON_GetObjectItemCaseSensitive(root, "bridge_id");
+            const cJSON* jp = cJSON_GetObjectItemCaseSensitive(root, "provider");
+            if ((cJSON_IsString(jb) && strlen(jb->valuestring) >= sizeof(bridge_buf)) ||
+                (cJSON_IsString(jp) && strlen(jp->valuestring) >= sizeof(provider_buf))) {
+                cJSON_Delete(root);
+                nl_ov_toast("电脑标识过长，未发送");
+                return;
+            }
+            snprintf(bridge_buf, sizeof(bridge_buf), "%s",
+                     cJSON_IsString(jb) ? jb->valuestring : "");
+            snprintf(
+                provider_buf, sizeof(provider_buf), "%s",
+                cJSON_IsString(jp) ? jp->valuestring : (s_env ? s_env->workbench_provider : ""));
+
             if ((cJSON_IsString(jw) && strlen(jw->valuestring) >= sizeof(ws_buf)) ||
                 (cJSON_IsString(js) && strlen(js->valuestring) >= sizeof(sess_buf))) {
                 cJSON_Delete(root);
@@ -985,9 +1014,9 @@ void run_invoke_action(const nl_env_invoke_action_t *ia)
             }
             return;
         }
-        nodelio_panel_ui_arm_workbench(ia->instance_id[0] ? ia->instance_id : ia->app_id,
-                                       ws_buf[0] ? ws_buf : nullptr,
-                                       sess_buf[0] ? sess_buf : nullptr);
+        nodelio_panel_ui_arm_workbench_target(
+            ia->instance_id[0] ? ia->instance_id : ia->app_id, ws_buf[0] ? ws_buf : nullptr,
+            sess_buf[0] ? sess_buf : nullptr, bridge_buf, provider_buf);
         if (!nodelio_panel_ui_dsh_is_armed()) {
             nl_ov_toast("缺少工作区或会话，无法续聊");
             return;
@@ -1160,6 +1189,8 @@ void invoke_filter_workspace(const nl_env_filter_t *f)
     cJSON* params = cJSON_CreateObject();
     const bool valid =
         params && cJSON_AddStringToObject(params, "workspace", f->workspace) &&
+        cJSON_AddStringToObject(params, "bridge_id", s_env->bridge_id) &&
+        cJSON_AddStringToObject(params, "provider", s_env->workbench_provider) &&
         cJSON_PrintPreallocated(params, ia.params_json, sizeof(ia.params_json), false);
     cJSON_Delete(params);
     if (!valid) {
@@ -1515,6 +1546,10 @@ bool nodelio_skill_try_pick_phrase(const char *text)
         return true;
     }
     const int ti = selectable[ord - 1];
+    if (s_env->workbench_picker) {
+        dsh_fetch_session_detail(ti);
+        return true;
+    }
     if (resume) {
         const auto& track = s_env->tracks[ti];
         for (int ai = 0; ai < track.invoke_n; ++ai) {
@@ -2280,13 +2315,25 @@ void apply_card_chrome(void)
         set_news_zoom_hdr_visible(false);
     }
     if (s_hdr_mid_btn) {
-        /* DSH 详情：中间钮与左侧刷新易混，改用底栏「返回列表」 */
-        if (dsh_detail) {
-            lv_obj_add_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
-        } else if (mid_btn) {
-            lv_obj_clear_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
+        const bool workbench = nl_workbench_app(s_env->app_id);
+        lv_obj_t* label = lv_obj_get_child(s_hdr_mid_btn, 0);
+        if (workbench) {
+            nl_ov_set_font(label);
+            lv_label_set_text(label, "换电脑");
+            lv_obj_set_width(s_hdr_mid_btn, nl_ov_ui_font_line_h() * 3 + 16);
+            lv_obj_set_height(s_hdr_mid_btn, 48);
+            lv_obj_center(label);
+            if (s_env->workbench_picker && !s_env->bridge_id[0])
+                lv_obj_add_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
+            else
+                lv_obj_clear_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
         } else {
-            lv_obj_add_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_text_font(label, &font_material_symbols_30_4, 0);
+            lv_obj_set_size(s_hdr_mid_btn, SKILL_PLAY_CTRL_SZ, SKILL_PLAY_CTRL_SZ);
+            if (dsh_detail || !mid_btn)
+                lv_obj_add_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
+            else
+                lv_obj_clear_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
         }
     }
 
@@ -2459,8 +2506,15 @@ void fill_list(void)
         }
     }
 
+    if (s_card_sub && s_env->workbench_picker) {
+        if (s_env->bridge_id[0])
+            lv_label_set_text(s_card_sub, "选择平台 · 点整行进入");
+        else
+            lv_label_set_text_fmt(s_card_sub, "选择电脑 · 上下滑动 · 第 %d 页",
+                                  s_env->workbench_page + 1);
+    }
     if (strcmp(s_env->status, "ok") != 0) {
-        lv_obj_t *err = lv_label_create(s_card_list);
+        lv_obj_t* err = lv_label_create(s_card_list);
         nl_ov_set_font(err);
         lv_label_set_text(err, s_env->error_message[0] ? s_env->error_message : "技能失败");
         lv_obj_set_width(err, lv_pct(100));
@@ -2526,13 +2580,19 @@ void fill_list(void)
             lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
             lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
             /* 曲库：有 URL 点播；DSH：点行拉末轮全文/最新进度（无 playback_url 也要可点） */
-            const bool dsh_detail_row =
-                nl_workbench_app(s_env->app_id) && !music_card && !s_env->tracks[i].playback_url[0];
+            const bool dsh_detail_row = nl_workbench_app(s_env->app_id) && !music_card &&
+                                        !s_env->tracks[i].playback_url[0] &&
+                                        (!s_env->workbench_picker || s_env->tracks[i].invoke_n > 0);
             if ((can_play && s_env->tracks[i].playback_url[0]) || dsh_detail_row) {
                 lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
                 lv_obj_add_event_cb(row, on_play_row, LV_EVENT_CLICKED, (void *)(intptr_t)i);
                 lv_obj_set_style_bg_color(row, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
                 lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
+            }
+
+            if (s_env->workbench_picker && s_env->tracks[i].invoke_n == 0) {
+                lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
+                lv_obj_add_state(row, LV_STATE_DISABLED);
             }
 
             const int mark = music_card ? music_end_sz() : (comfortable ? 26 : 22);
@@ -2659,7 +2719,8 @@ void fill_list(void)
                     lv_obj_set_style_bg_color(ab, btn_bg, 0);
                 }
             }
-            dsh_style_list_row(row, i, idx_pod, a, s_env->tracks[i].artist);
+            if (!s_env->workbench_picker)
+                dsh_style_list_row(row, i, idx_pod, a, s_env->tracks[i].artist);
         }
         if (ncell < cols) {
             lv_obj_t *pad = lv_obj_create(line);
@@ -2919,7 +2980,10 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
         char previous[72], next[72];
         nl_workbench_status_id(s_env->app_id, previous, sizeof(previous));
         nl_workbench_status_id(env->app_id, next, sizeof(next));
-        if (!nl_workbench_app(env->app_id) || strcmp(previous, next) != 0) {
+        if (!nl_workbench_app(env->app_id) || strcmp(previous, next) != 0 ||
+            strcmp(s_env->bridge_id, env->bridge_id) != 0 ||
+            strcmp(s_env->workbench_provider, env->workbench_provider) != 0 ||
+            env->workbench_picker) {
             nodelio_panel_ui_clear_dsh_arm();
             dsh_clear_ui_phase();
             stop_dsh_detail_poll();
@@ -3037,7 +3101,10 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
         s_minimized = false;
         hide_mini_fab();
     }
-    lv_label_set_text(s_card_title, title);
+    if (s_env->bridge_name[0])
+        lv_label_set_text_fmt(s_card_title, "%s · %s", s_env->bridge_name, title);
+    else
+        lv_label_set_text(s_card_title, title);
     fill_list();
 
     s_minimized = false;

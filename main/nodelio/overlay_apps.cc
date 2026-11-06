@@ -1088,7 +1088,8 @@ static const char *find_installed_app_id(const char *app_key, bool prefer_status
 
 /* cJSON 保留指令、路径和会话 ID 中的引号/反斜杠；队列拒绝超长 JSON，绝不截断。 */
 static bool invoke_dsh(const char* skill, const char* instruction, const char* workspace,
-                       const char* session) {
+                       const char* session, const char* bridge = nullptr,
+                       const char* provider = nullptr) {
     cJSON* params = cJSON_CreateObject();
     if (!params) {
         nl_ov_toast("内存不足，未发送");
@@ -1099,7 +1100,9 @@ static bool invoke_dsh(const char* skill, const char* instruction, const char* w
          cJSON_AddStringToObject(params, "operation", "task")) &&
         (!instruction || cJSON_AddStringToObject(params, "instruction", instruction)) &&
         (!workspace || !workspace[0] || cJSON_AddStringToObject(params, "workspace", workspace)) &&
-        (!session || !session[0] || cJSON_AddStringToObject(params, "session", session));
+        (!session || !session[0] || cJSON_AddStringToObject(params, "session", session)) &&
+        (!bridge || !bridge[0] || cJSON_AddStringToObject(params, "bridge_id", bridge)) &&
+        (!provider || !provider[0] || cJSON_AddStringToObject(params, "provider", provider));
     char* body = valid ? cJSON_PrintUnformatted(params) : nullptr;
     cJSON_Delete(params);
     if (!body) {
@@ -1121,13 +1124,14 @@ void nl_ov_apps_invoke_dsh_status(const char *workspace, const char *session)
 }
 
 bool nl_ov_apps_invoke_workbench_task(const char* app, const char* instruction,
-                                      const char* workspace, const char* session) {
+                                      const char* workspace, const char* session,
+                                      const char* bridge, const char* provider) {
     if (!nl_workbench_app(app) || !instruction || !instruction[0]) {
         nl_ov_toast("请选择工作台并输入指令");
         return false;
     }
     const char* installed = find_installed_app_id(app, false);
-    if (!invoke_dsh(installed ? installed : app, instruction, workspace, session))
+    if (!invoke_dsh(installed ? installed : app, instruction, workspace, session, bridge, provider))
         return false;
     nodelio_skill_dsh_on_dispatched(instruction);
     return true;

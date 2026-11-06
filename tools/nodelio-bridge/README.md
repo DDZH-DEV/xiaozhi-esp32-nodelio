@@ -100,9 +100,9 @@ nodelio-bridge import-legacy --legacy-config /path/to/dsh-voice-bridge/bridge-co
 
 导入 Host WS、桥凭证、面板 ID、DSH 模型/权限/Agent 预设；不覆盖旧文件，不继承旧 LAN 暴露、自动拉起桌面、热重载或外部 TTS 依赖。端点和数据目录默认自动发现。
 
-当前 Host 的 `DshBridgeHub` 按 owner 保留最近一条桥连接，**同账号不要让旧桥和新桥同时连接 Host**。多电脑按 bridge_id 路由尚未实现。配套 SERVER 0.4.81、APP 1.0.39 已接入连接状态与新版市场；完整使用还需部署配套墙板源码。
+SERVER 0.4.85、APP 1.0.42 与 Bridge 0.3.0 支持同账号多电脑：在 APP 为每台电脑单独添加凭据，勿复制同一份凭据或 settings.json 给另一台电脑。墙板先选择电脑与平台，已有任务、续聊和审批固定回到原电脑；离线时不会自动转交。APP 可设置每块墙板的默认电脑、访问范围和通知接收墙板，重置或移除只影响指定电脑。旧桥可继续使用独立凭据接入；完整交互需部署配套墙板源码。
 
-市场继续沿用 `com.nodelio.dsh` 和 `nodelio-dsh://` 来源，市场展示 dsh/openai/workbuddy/workbench 四个 `.status` 主应用，包版本 2.1.0。每个主应用内完成查看、派活、续聊与确认；不必单独安装 task/answer。旧 helper 调用继续兼容。新技能声明 outbound_bridge，不要求 Host 访问本机 LAN。`workbench.*` 根据显式 provider、已绑定会话或默认平台路由。
+市场继续沿用 `com.nodelio.dsh` 和 `nodelio-dsh://` 来源，市场展示 dsh/openai/workbuddy/workbench 四个 `.status` 主应用，包版本 2.2.0。每个主应用内完成查看、派活、续聊与确认；不必单独安装 task/answer。旧 helper 调用继续兼容。新技能声明 outbound_bridge，不要求 Host 访问本机 LAN。`workbench.*` 根据显式 provider、已绑定会话或默认平台路由。
 
 迁移预览版与旧桥尚有以下差异，不能直接视为等价替换：
 

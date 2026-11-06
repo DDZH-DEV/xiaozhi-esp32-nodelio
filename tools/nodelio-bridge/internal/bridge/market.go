@@ -9,7 +9,7 @@ import (
 )
 
 const MarketPrefix = "/nodelio-dsh-market/"
-const PackageVersion = "2.1.0"
+const PackageVersion = "2.2.0"
 
 // Immutable, embedded-in-binary packages. The exact bytes hashed here are also sent via WS.
 func MarketFiles() map[string][]byte {
@@ -36,6 +36,10 @@ func MarketFiles() map[string][]byte {
 				properties["notice_id"] = map[string]any{"type": "string"}
 				properties["action"] = map[string]any{"type": "string"}
 			}
+			properties["bridge_id"] = map[string]any{"type": "string", "maxLength": 63}
+			properties["computer"] = map[string]any{"type": "string", "maxLength": 40}
+			properties["select_computer"] = map[string]any{"type": "boolean"}
+			properties["computer_page"] = map[string]any{"type": "integer", "minimum": 0, "maximum": 4}
 			input := map[string]any{"type": "object", "properties": properties, "required": []string{}}
 			if op == "task" {
 				input["required"] = []string{"instruction"}

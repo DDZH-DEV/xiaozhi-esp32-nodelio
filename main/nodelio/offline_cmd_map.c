@@ -1512,10 +1512,12 @@ int nodelio_offline_dsh_selection(const char* phrase, bool* resume) {
     if (ordinal <= 0) {
         return 0;
     }
-    if (strncmp(p, "个", strlen("个")) == 0 || strncmp(p, "条", strlen("条")) == 0) {
+    if (strncmp(p, "个", strlen("个")) == 0 || strncmp(p, "条", strlen("条")) == 0 ||
+        strncmp(p, "台", strlen("台")) == 0) {
         p += strlen("个");
     }
-    return (!*p || strcmp(p, "工作区") == 0 || strcmp(p, "会话") == 0 || strcmp(p, "任务") == 0)
+    return (!*p || strcmp(p, "工作区") == 0 || strcmp(p, "会话") == 0 || strcmp(p, "任务") == 0 ||
+            strcmp(p, "电脑") == 0 || strcmp(p, "平台") == 0 || strcmp(p, "工作台") == 0)
                ? ordinal
                : 0;
 }

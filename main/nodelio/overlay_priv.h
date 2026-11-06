@@ -338,7 +338,8 @@ bool nl_ov_apps_invoke_dsh_task(const char* instruction, const char* workspace =
 /** 拉 dsh.status；session 非空则直开详情，否则刷新进度列表（workspace 可空） */
 void nl_ov_apps_invoke_dsh_status(const char *workspace, const char *session);
 bool nl_ov_apps_invoke_workbench_task(const char* app, const char* instruction,
-                                      const char* workspace, const char* session);
+                                      const char* workspace, const char* session,
+                                      const char* bridge = nullptr, const char* provider = nullptr);
 
 /** 已装清单声明 invoke.transport=outbound_bridge（勿用 app_id 前缀猜）。 */
 bool nl_ov_skill_needs_outbound_bridge(const char *skill_id);

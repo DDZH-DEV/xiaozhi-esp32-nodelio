@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/gorilla/websocket"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -120,7 +121,7 @@ func (h *Host) connection(parent context.Context, s Settings) bool {
 	probe, done := context.WithTimeout(ctx, 5*time.Second)
 	states := h.e.Health(probe)
 	done()
-	if send(map[string]any{"type": "register", "bridge_id": s.Config.BridgeID, "version": Version, "panel_device_id": s.Config.PanelID, "default_provider": s.Config.DefaultProvider, "providers": states}) != nil {
+	if send(map[string]any{"type": "register", "bridge_id": s.Config.BridgeID, "name": s.Config.Name, "platform": runtime.GOOS, "version": Version, "panel_device_id": s.Config.PanelID, "default_provider": s.Config.DefaultProvider, "providers": states}) != nil {
 		return false
 	}
 	frames := make(chan []byte, 16)

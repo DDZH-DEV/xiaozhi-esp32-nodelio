@@ -657,9 +657,9 @@ static std::string normalize_skill_id_alias(const std::string &raw)
     return out;
 }
 
-static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::string &skill_id_in,
-                               const std::string &params)
-{
+static ToolResult invoke_skill(const nodelio_nvs_config_t* cfg, const std::string& skill_id_in,
+                               const std::string& params_in) {
+    std::string params = params_in;
     if (skill_id_in.empty()) {
         return std::unexpected(std::string("skill_id 不能为空"));
     }
@@ -686,6 +686,29 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
         }
     }
     const bool dsh_app = nl_workbench_app(skill_id.c_str());
+    if (dsh_app) {
+        cJSON* body = cJSON_Parse(params.empty() ? "{}" : params.c_str());
+        if (cJSON_IsObject(body) && !cJSON_HasObjectItem(body, "bridge_id") &&
+            !cJSON_HasObjectItem(body, "computer") && !cJSON_HasObjectItem(body, "session") &&
+            !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(body, "select_computer"))) {
+            char bridge[64] = {}, provider[16] = {};
+            nodelio_panel_ui_workbench_context(skill_id.c_str(), bridge, sizeof(bridge), provider,
+                                               sizeof(provider));
+            if (bridge[0]) {
+                bool valid = cJSON_AddStringToObject(body, "bridge_id", bridge) != nullptr;
+                if (provider[0] && !cJSON_HasObjectItem(body, "provider"))
+                    valid = valid && cJSON_AddStringToObject(body, "provider", provider);
+                char* text = valid ? cJSON_PrintUnformatted(body) : nullptr;
+                if (!text) {
+                    cJSON_Delete(body);
+                    return std::unexpected(std::string("内存不足，未发送"));
+                }
+                params = text;
+                cJSON_free(text);
+            }
+        }
+        cJSON_Delete(body);
+    }
     const bool dsh_mutation = nl_workbench_mutation(skill_id.c_str(), params.c_str());
     const bool music_app = nodelio_skill_id_is_music(skill_id.c_str());
     if (!music_app && nodelio_media_preempt_for_heavy_app()) {
@@ -1442,7 +1465,8 @@ void nodelio_mcp_register_tools(void)
         "调技能。skill_id=music.search|radio.stations|podcast.latest|news.latest|"
         "article.daily|dsh.status|openai.status|workbuddy.status|workbench."
         "status。"
-        "工作台查询用对应 .status；派活 params 含 operation=task 和 instruction，续聊保留 session。"
+        "工作台查询用对应 .status；params 可带 computer=电脑名称，select_computer=true "
+        "选择电脑。派活含 operation=task 和 instruction；续聊保留返回的 session，不得改投电脑。"
         "听歌须 open_app(曲库)；旧 dsh.task 仍兼容；"
         "列表已开随便放→transport play。",
         PropertyList({

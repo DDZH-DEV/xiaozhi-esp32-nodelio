@@ -444,6 +444,10 @@ void dsh_refresh_list(void)
         nodelio_nvs_config_t cfg;
         char app[72];
         char ws[200];
+        char bridge[64];
+        char provider[16];
+        bool picker;
+        int page;
     };
     auto *arg = static_cast<refresh_arg *>(malloc(sizeof(refresh_arg)));
     if (!arg) {
@@ -453,6 +457,10 @@ void dsh_refresh_list(void)
     arg->cfg = s_skill_cfg;
     nl_workbench_status_id(s_env ? s_env->app_id : "dsh.status", arg->app, sizeof(arg->app));
     snprintf(arg->ws, sizeof(arg->ws), "%s", ws);
+    snprintf(arg->bridge, sizeof(arg->bridge), "%s", s_env ? s_env->bridge_id : "");
+    snprintf(arg->provider, sizeof(arg->provider), "%s", s_env ? s_env->workbench_provider : "");
+    arg->picker = s_env && s_env->workbench_picker && !s_env->bridge_id[0];
+    arg->page = s_env ? s_env->workbench_page : 0;
     nl_ov_toast("刷新…");
     if (!nodelio::SubmitPanelJob(
             nodelio::PanelJobLane::Interactive,
@@ -463,13 +471,19 @@ void dsh_refresh_list(void)
                 char url[400];
                 snprintf(url, sizeof(url), "%s/api/devices/%s/panel/skills/%s/invoke", base,
                          a->cfg.device_id, a->app);
-                char ws_esc[400];
-                json_escape_str(ws_esc, sizeof(ws_esc), a->ws);
-                char body[440];
-                if (ws_esc[0]) {
-                    snprintf(body, sizeof(body), "{\"workspace\":\"%s\"}", ws_esc);
-                } else {
-                    snprintf(body, sizeof(body), "{}");
+                char body[768];
+                cJSON* params = cJSON_CreateObject();
+                bool valid = params && cJSON_AddStringToObject(params, "workspace", a->ws) &&
+                             cJSON_AddStringToObject(params, "bridge_id", a->bridge) &&
+                             cJSON_AddStringToObject(params, "provider", a->provider) &&
+                             cJSON_AddBoolToObject(params, "select_computer", a->picker) &&
+                             cJSON_AddNumberToObject(params, "computer_page", a->page) &&
+                             cJSON_PrintPreallocated(params, body, sizeof(body), false);
+                cJSON_Delete(params);
+                if (!valid) {
+                    nodelio_panel_ui_toast_defer("刷新参数过长");
+                    free(a);
+                    return;
                 }
                 const int cap = nodelio_caps_max_content_bytes() + 512;
                 char *resp = static_cast<char *>(
@@ -701,6 +715,13 @@ void dsh_fetch_detail(const char *ws, const char *sess, bool silent)
 void dsh_fetch_session_detail(int track_idx)
 {
     if (!s_have_env || !s_env || track_idx < 0 || track_idx >= s_env->track_n) {
+        return;
+    }
+    if (s_env->workbench_picker) {
+        if (s_env->tracks[track_idx].invoke_n > 0)
+            run_invoke_action(&s_env->tracks[track_idx].invokes[0]);
+        else
+            nl_ov_toast("电脑离线，请先启动连接桥");
         return;
     }
     if (strcmp(s_env->tracks[track_idx].id, "__new__") == 0) {
@@ -1070,6 +1091,8 @@ void nodelio_skill_dsh_on_arm_cleared(void)
 static char s_dsh_arm_app[72];
 static char s_dsh_arm_ws[200];
 static char s_dsh_arm_sess[80];
+static char s_dsh_arm_bridge[64];
+static char s_dsh_arm_provider[16];
 static char s_dsh_pending_instr[200];
 static esp_timer_handle_t s_dsh_arm_timer;
 static int64_t s_dsh_arm_deadline_us;
@@ -1182,20 +1205,58 @@ extern "C" void nodelio_panel_ui_arm_dsh(const char* workspace, const char* sess
     nodelio_panel_ui_arm_workbench("dsh.task", workspace, session);
 }
 
+extern "C" void nodelio_panel_ui_workbench_context(const char* app, char* bridge, size_t bridge_len,
+                                                   char* provider, size_t provider_len) {
+    if (bridge && bridge_len)
+        bridge[0] = '\0';
+    if (provider && provider_len)
+        provider[0] = '\0';
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock || !s_have_env || !s_env || !s_card || s_minimized ||
+        lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN) || !nl_workbench_app(app) ||
+        !nl_workbench_app(s_env->app_id))
+        return;
+    char current[72], requested[72];
+    nl_workbench_status_id(app, requested, sizeof(requested));
+    nl_workbench_status_id(s_env->app_id, current, sizeof(current));
+    if (strcmp(nl_workbench_key(current), nl_workbench_key(requested)) != 0)
+        return;
+    if (bridge && bridge_len)
+        snprintf(bridge, bridge_len, "%s", s_env->bridge_id);
+    if (provider && provider_len)
+        snprintf(provider, provider_len, "%s", s_env->workbench_provider);
+}
+
 extern "C" void nodelio_panel_ui_arm_workbench(const char* app, const char* workspace,
                                                const char* session) {
+    char bridge[64] = {}, provider[16] = {};
+    // A scoped session carries its own target; do not attach an unrelated visible computer.
+    if (!session || !session[0])
+        nodelio_panel_ui_workbench_context(app, bridge, sizeof(bridge), provider, sizeof(provider));
+    nodelio_panel_ui_arm_workbench_target(app, workspace, session, bridge, provider);
+}
+
+extern "C" void nodelio_panel_ui_arm_workbench_target(const char* app, const char* workspace,
+                                                      const char* session, const char* bridge,
+                                                      const char* provider) {
     dsh_pending_clear();
     s_dsh_arm_app[0] = '\0';
     s_dsh_arm_ws[0] = '\0';
     s_dsh_arm_sess[0] = '\0';
+    s_dsh_arm_bridge[0] = '\0';
+    s_dsh_arm_provider[0] = '\0';
     if (!nl_workbench_app(app) || strlen(app) >= sizeof(s_dsh_arm_app) ||
         (workspace && strlen(workspace) >= sizeof(s_dsh_arm_ws)) ||
-        (session && strlen(session) >= sizeof(s_dsh_arm_sess))) {
+        (session && strlen(session) >= sizeof(s_dsh_arm_sess)) ||
+        (bridge && strlen(bridge) >= sizeof(s_dsh_arm_bridge)) ||
+        (provider && strlen(provider) >= sizeof(s_dsh_arm_provider))) {
         dsh_arm_timer_stop();
         nodelio_panel_ui_toast_defer("工作区或会话标识过长，无法续聊");
         return;
     }
     snprintf(s_dsh_arm_app, sizeof(s_dsh_arm_app), "%s", app);
+    snprintf(s_dsh_arm_bridge, sizeof(s_dsh_arm_bridge), "%s", bridge ? bridge : "");
+    snprintf(s_dsh_arm_provider, sizeof(s_dsh_arm_provider), "%s", provider ? provider : "");
     if (workspace && workspace[0]) {
         snprintf(s_dsh_arm_ws, sizeof(s_dsh_arm_ws), "%s", workspace);
     }
@@ -1212,6 +1273,8 @@ extern "C" void nodelio_panel_ui_clear_dsh_arm(void)
     s_dsh_arm_app[0] = '\0';
     s_dsh_arm_ws[0] = '\0';
     s_dsh_arm_sess[0] = '\0';
+    s_dsh_arm_bridge[0] = '\0';
+    s_dsh_arm_provider[0] = '\0';
     dsh_pending_clear();
 }
 
@@ -1259,10 +1322,11 @@ extern "C" bool nodelio_panel_ui_dsh_task(const char *instruction)
     const std::string app(s_dsh_arm_app);
     const std::string workspace(s_dsh_arm_ws);
     const std::string session(s_dsh_arm_sess);
+    const std::string bridge(s_dsh_arm_bridge), provider(s_dsh_arm_provider);
     if (copy) {
         nodelio_panel_ui_clear_dsh_arm();
     }
-    Application::GetInstance().Schedule([copy, app, workspace, session]() {
+    Application::GetInstance().Schedule([copy, app, workspace, session, bridge, provider]() {
         if (!nodelio_overlay_visible()) {
             nodelio_overlay_show(false);
         }
@@ -1270,7 +1334,8 @@ extern "C" bool nodelio_panel_ui_dsh_task(const char *instruction)
             (void)nl_ov_apps_invoke_dsh_task(copy, workspace.c_str(), session.c_str());
         } else {
             (void)nl_ov_apps_invoke_workbench_task(app.c_str(), copy, workspace.c_str(),
-                                                   session.c_str());
+                                                   session.c_str(), bridge.c_str(),
+                                                   provider.c_str());
         }
         free(copy);
     });

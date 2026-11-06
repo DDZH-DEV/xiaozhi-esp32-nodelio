@@ -256,6 +256,15 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
     if (cJSON_IsObject(display)) {
         copy_str(out->card_type, sizeof(out->card_type), display, "card_type");
         copy_str(out->display_title, sizeof(out->display_title), display, "title");
+        copy_str(out->bridge_id, sizeof(out->bridge_id), display, "bridge_id");
+        copy_str(out->bridge_name, sizeof(out->bridge_name), display, "bridge_name");
+        copy_str(out->workbench_provider, sizeof(out->workbench_provider), display,
+                 "workbench_provider");
+        out->workbench_picker =
+            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display, "workbench_picker"));
+        const cJSON* page = cJSON_GetObjectItemCaseSensitive(display, "workbench_page");
+        out->workbench_page =
+            cJSON_IsNumber(page) && page->valueint >= 0 && page->valueint < 5 ? page->valueint : 0;
         copy_str(out->preferred_surface, sizeof(out->preferred_surface), display, "preferred_surface");
         copy_str(out->density, sizeof(out->density), display, "density");
         copy_str(out->media_kind, sizeof(out->media_kind), display, "media_kind");

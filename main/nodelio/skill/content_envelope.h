@@ -90,6 +90,11 @@ typedef struct {
     char app_id[NL_ENV_STR];
     char card_type[32]; /* music_list / news_list / list / plain_result / error */
     char display_title[NL_ENV_STR];
+    char bridge_id[64];
+    char bridge_name[128];
+    char workbench_provider[16];
+    bool workbench_picker;
+    int workbench_page;
     char preferred_surface[24];
     char density[16]; /* compact | comfortable；缺省空=按 card_type */
     /** display.media_kind：track | live | episode；缺省按 app_id 回退 */
