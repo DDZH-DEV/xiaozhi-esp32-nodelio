@@ -4,9 +4,11 @@
 <header><div><span class="eyebrow">NODELIO · DESKTOP BRIDGE</span><h1>连接你的工作台</h1><p>一个连接桥，按需开启 DSH、OpenAI 和 WorkBuddy。</p></div><span id="host-state" class="badge">尚未连接</span></header>
 <div id="message" role="status" aria-live="polite"></div>
 <form id="settings">
-<section><div class="section-title"><h2>连接 NodeLio</h2><span>所有工作台共用</span></div><div class="grid">
-<label>Host WebSocket 地址<input id="host-ws" type="url" placeholder="wss://your-host/ws/dsh-bridge"></label>
-<label>桥凭证<input id="host-token" type="password" autocomplete="new-password" placeholder="留空保留已保存凭证"></label>
+<section><div class="section-title"><h2>电脑工作台桥 · 连接 NodeLio</h2><span>所有工作台共用</span></div>
+<details id="connection-import"><summary>从 APP 导入连接配置</summary><p>在 APP「账号偏好 → 电脑工作台桥」生成凭据并点击“复制连接配置”，将完整内容粘贴到这里。</p><label>连接配置<textarea id="connection-json" rows="3" maxlength="16384" spellcheck="false" autocomplete="off" placeholder="粘贴 APP 复制的连接配置"></textarea></label><button id="import-connection" type="button">填入配置</button><small>填入后点击“保存并应用”连接服务器。</small><p id="import-result" role="status" aria-live="polite"></p></details>
+<div class="grid">
+<label>服务器连接地址（WebSocket）<input id="host-ws" type="url" placeholder="wss://你的服务器/ws/workbench-bridge"><small>粘贴 APP 的“复制地址”内容，以 ws:// 或 wss:// 开头。</small></label>
+<label>桥凭据（Token）<input id="host-token" type="password" autocomplete="new-password" placeholder="粘贴 APP 的“复制凭据”内容"><small>这里只填凭据；留空保留已保存凭据。</small></label>
 <label>面板 ID（可选）<input id="panel-id"></label><label>未指定时使用<select id="default-provider"><option value="dsh">DSH</option><option value="openai">OpenAI</option><option value="workbuddy">WorkBuddy</option></select></label>
 </div></section>
 <div class="providers">

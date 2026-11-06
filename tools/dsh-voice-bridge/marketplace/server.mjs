@@ -1888,7 +1888,7 @@ function hostWsFromHttp(hostUrl) {
   try {
     const u = new URL(String(hostUrl || '').trim());
     const scheme = u.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${scheme}//${u.host}/ws/dsh-bridge`;
+    return `${scheme}//${u.host}/ws/workbench-bridge`;
   } catch {
     return '';
   }

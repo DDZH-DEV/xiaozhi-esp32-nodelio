@@ -289,7 +289,7 @@ export function ensureExample() {
   const example = {
     ...DEFAULTS,
     watch: true,
-    host_ws: 'wss://your-host.example/ws/dsh-bridge',
+    host_ws: 'wss://your-host.example/ws/workbench-bridge',
     bridge_token: '',
     panel_device_id: '',
     host_url: 'http://127.0.0.1:8080',

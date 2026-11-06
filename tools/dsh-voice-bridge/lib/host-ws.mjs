@@ -1,5 +1,5 @@
 /**
- * 出站连公网 Host：/ws/dsh-bridge
+ * 出站连公网 Host：/ws/workbench-bridge
  * invoke 回环本机 LAN HTTP（task/status/answer），避免复制业务逻辑。
  * fetch 读本机 marketplace/（供云 Host 装包，不必进家里 LAN）。
  */
@@ -12,7 +12,7 @@ const MARKET_PREFIX = '/nodelio-dsh-market';
 
 /**
  * @param {object} opts
- * @param {string} opts.wsUrl  wss://host/ws/dsh-bridge 或 ws://...
+ * @param {string} opts.wsUrl  wss://host/ws/workbench-bridge 或 ws://...
  * @param {string} opts.token  BRIDGE_TOKEN
  * @param {number} opts.lanPort 本机桥 HTTP 端口
  * @param {string} [opts.publicUrl] 面板可达基址（TTS URL / 回环改走 LAN）

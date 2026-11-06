@@ -14,7 +14,7 @@ import (
 	"sync"
 )
 
-const Version = "0.2.0"
+const Version = "0.2.2"
 
 type ProviderConfig struct {
 	Enabled      bool   `json:"enabled"`

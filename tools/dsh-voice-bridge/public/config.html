@@ -163,12 +163,12 @@
       <div class="card">
         <h2>公网 Host 出站 WebSocket</h2>
         <label>host_ws（NodeLio 服务端地址，不是本桥）</label>
-        <input name="host_ws" placeholder="ws://192.168.2.241:8899/ws/dsh-bridge" />
+        <input name="host_ws" placeholder="ws://192.168.2.241:8899/ws/workbench-bridge" />
         <p class="hint">
           填<strong>跑 nodelio-server 的那台</strong>（APP 里配置的服务器），路径必须是
-          <code>/ws/dsh-bridge</code>（前面<strong>不要</strong>加 <code>/api</code>）。
+          <code>/ws/workbench-bridge</code>（前面<strong>不要</strong>加 <code>/api</code>）。
           例：服务端 <code>http://192.168.2.241:8899</code> →
-          <code>ws://192.168.2.241:8899/ws/dsh-bridge</code>。
+          <code>ws://192.168.2.241:8899/ws/workbench-bridge</code>。
           本机只跑桥时不要填 127.0.0.1:8790。
         </p>
         <label>bridge_token</label>

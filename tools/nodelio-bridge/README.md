@@ -15,7 +15,7 @@ Go 实现的跨平台工作台连接桥。单个程序内含配置网页、DSH /
 | WorkBuddy 云端 | 创建任务、ACP SSE/JSON-RPC、续聊、流式文本、带原始选项的工具审批；以 prompt response 判断本轮结束 |
 | 配置 | 三个独立开关、默认平台、配置热应用；监听地址改变需重启 |
 | 登录自启 | Windows 用户计划任务、macOS LaunchAgent、Linux systemd 用户服务；配置页显式选择 |
-| Host | 兼容 `/ws/dsh-bridge` 的 register/invoke/fetch/hint；市场包逐字节传输并校验哈希 |
+| Host | 通过 `/ws/workbench-bridge` 使用 register/invoke/fetch/hint；市场包逐字节传输并校验哈希 |
 
 第三方桌面应用是否支持某个系统/架构由其发行方决定。Linux ARM64 可使用云 API，不能据此认定同机 DSH 可用。
 
@@ -36,7 +36,7 @@ Windows 源码构建建议使用 `go build -o nodelio-bridge.exe ./cmd/nodelio-b
 
 配置步骤：
 
-1. 填入现有 NodeLio Host 的 `/ws/dsh-bridge` 地址和桥凭证。
+1. 填入 NodeLio Host 的 `/ws/workbench-bridge` 地址和桥凭证（SERVER 0.4.82 起支持；原 `/ws/dsh-bridge` 地址继续兼容）。
 2. 打开需要的工作台开关，填写各自配置，保存并检查连接。
 3. DSH 新建任务需填写有效的默认工作区及明确的权限预设；不会自动回退到更高权限。
 4. OpenAI 填写账号可用的模型 ID 与 API Key。

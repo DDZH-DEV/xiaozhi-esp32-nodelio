@@ -39,7 +39,7 @@ if "%DSH_BRIDGE_RPC_TIMEOUT_MS%"=="" set DSH_BRIDGE_RPC_TIMEOUT_MS=20000
 
 REM Code hot reload: Node --watch. Off: set DSH_BRIDGE_HOT=0
 REM skill_hint watch: on when host_ws+token or host_url+device creds exist. Off: set DSH_BRIDGE_WATCH=0
-REM Host WS: set NODELIO_HOST_WS=wss://host/ws/dsh-bridge
+REM Host WS: set NODELIO_HOST_WS=wss://host/ws/workbench-bridge
 REM          set BRIDGE_TOKEN=xxx
 REM Or edit via http://127.0.0.1:PORT/config after start
 set "NODE_HOT="
