@@ -94,6 +94,7 @@ typedef struct {
     char bridge_name[128];
     char workbench_provider[16];
     bool workbench_picker;
+    char workbench_picker_kind[16];
     int workbench_page;
     char preferred_surface[24];
     char density[16]; /* compact | comfortable；缺省空=按 card_type */

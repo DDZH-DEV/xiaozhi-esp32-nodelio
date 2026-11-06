@@ -21,6 +21,8 @@ type Request struct {
 	NoticeID         string         `json:"notice_id,omitempty"`
 	Action           string         `json:"action,omitempty"`
 	Answers          map[string]any `json:"answers,omitempty"`
+	Cursor           string         `json:"cursor,omitempty"`
+	Page             int            `json:"page,omitempty"`
 }
 type Task struct {
 	ID               string   `json:"id"`

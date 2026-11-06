@@ -26,6 +26,7 @@ type Engine struct {
 func NewEngine(ctx context.Context, c *ConfigStore, s *State) *Engine {
 	e := &Engine{Config: c, State: s, ctx: ctx, jobs: make(chan struct{}, 8), Notice: make(chan Task, 64)}
 	e.Providers = map[string]Provider{"dsh": NewDSH(c), "openai": &OpenAI{e: e, http: newHTTPClient()}, "workbuddy": NewWorkBuddy(e)}
+	e.Providers["codex"] = NewCodex(e)
 	return e
 }
 func fingerprint(parts ...string) string {
@@ -104,7 +105,10 @@ func (e *Engine) Dispatch(ctx context.Context, operation string, r Request) ([]T
 	}
 	ledgerKey := ""
 	if operation != "status" && r.RequestID != "" && e.Ledger != nil {
-		identity := fingerprint(c.Providers[id].BaseURL, c.Providers[id].EndpointFile, c.Providers[id].Mode, snapshot.Secrets[map[string]string{"openai": "openai_key", "workbuddy": "workbuddy_token"}[id]])
+		identity := fingerprint(c.Providers[id].BaseURL, c.Providers[id].EndpointFile, c.Providers[id].Mode, c.Providers[id].Executable, c.Providers[id].CodexHome, snapshot.Secrets[map[string]string{"openai": "openai_key", "workbuddy": "workbuddy_token"}[id]])
+		if id == "codex" {
+			identity = fingerprint(codexHome(c.Providers[id]))
+		}
 		ledgerKey = id + ":" + identity + ":" + operation + ":" + r.RequestID
 		receipt, fresh, err := e.Ledger.Begin(ledgerKey, r)
 		if err != nil {

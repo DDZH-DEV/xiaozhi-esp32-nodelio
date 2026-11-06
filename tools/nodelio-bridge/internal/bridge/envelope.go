@@ -21,7 +21,7 @@ func (e *Engine) Invoke(ctx context.Context, app string, r Request) map[string]a
 		}
 		op = r.Operation
 	}
-	if id != "workbench" && id != "dsh" && id != "openai" && id != "workbuddy" {
+	if id != "workbench" && id != "dsh" && id != "openai" && id != "workbuddy" && id != "codex" {
 		return errorEnvelope(app, errors.New("unknown provider"))
 	}
 	if id != "workbench" {
@@ -34,6 +34,13 @@ func (e *Engine) Invoke(ctx context.Context, app string, r Request) map[string]a
 	legacy := id == "dsh"
 	if legacy && r.Session != "" && !strings.HasPrefix(r.Session, "dsh:") {
 		r.Session = sessionKey("dsh", r.Session)
+	}
+	provider := r.Provider
+	if provider == "" {
+		provider = e.Config.Snapshot().Config.DefaultProvider
+	}
+	if op == "status" && r.Session == "" && provider == "codex" {
+		return e.Providers["codex"].(*Codex).Browse(ctx, app, r)
 	}
 	tasks, err := e.Dispatch(ctx, op, r)
 	if err != nil {
@@ -74,7 +81,7 @@ func (e *Engine) Invoke(ctx context.Context, app string, r Request) map[string]a
 				actions = append(actions, map[string]any{"id": opt.ID, "title": opt.Title, "run": "invoke", "invoke": map[string]any{"app_id": id + ".status", "params": map[string]any{"operation": "answer", "provider": t.Provider, "session": key, "notice_id": n.ID, "action": opt.ID, "request_id": "answer-" + fingerprint(t.ID, n.ID, opt.ID)}}})
 			}
 		}
-		if len(t.Notices) == 0 && t.Status != "running" && t.Status != "unknown" {
+		if len(t.Notices) == 0 && t.Status != "running" && t.Status != "unknown" && t.Status != "queued" && t.Status != "readonly" {
 			actions = append(actions, map[string]any{"id": "resume", "title": "续聊", "run": "invoke", "invoke": map[string]any{"app_id": id + ".status", "params": map[string]any{"arm": true, "session": key}}})
 		}
 		if len(actions) > 0 {
@@ -88,12 +95,27 @@ func (e *Engine) Invoke(ctx context.Context, app string, r Request) map[string]a
 		}
 		items = append(items, map[string]any{"type": "list_item", "id": "__new__", "title": "开始新任务", "subtitle": "说出指令，确认后发送", "actions": []any{map[string]any{"id": "new", "title": "开始", "run": "invoke", "invoke": map[string]any{"app_id": id + ".status", "params": map[string]any{"arm": true}}}}})
 	}
-	title := map[string]string{"dsh": "DeepSeek 工作台", "openai": "ChatGPT（独立 API）", "workbuddy": "WorkBuddy", "workbench": "默认工作台"}[id]
+	title := map[string]string{"codex": "Codex 桌面", "dsh": "DeepSeek 工作台", "openai": "OpenAI API 独立会话", "workbuddy": "WorkBuddy", "workbench": "默认工作台"}[id]
+	display := map[string]any{"card_type": "list", "title": title, "preferred_surface": "card", "max_items": 8, "ttl_sec": 120}
+	spoken := map[bool]string{true: "指令已提交，可查看任务进度。", false: "任务列表已更新。"}[op == "task"]
+	if len(tasks) > 0 && tasks[0].Provider == "codex" {
+		display["filters"] = codexFilters(tasks[0].Workspace)
+		display["workbench_provider"] = "codex"
+		if op == "task" {
+			spoken = "已排队，等待桌面处理。"
+		}
+	}
 	return map[string]any{"schema_version": 1, "request_id": NewID(), "app_id": app, "status": "ok", "content": items,
-		"display": map[string]any{"card_type": "list", "title": title, "preferred_surface": "card", "max_items": 8, "ttl_sec": 120},
-		"spoken":  map[string]any{"text": map[bool]string{true: "指令已提交，可查看任务进度。", false: "任务列表已更新。"}[op == "task"], "language": "zh-CN"}}
+		"display": display,
+		"spoken":  map[string]any{"text": spoken, "language": "zh-CN"}}
 }
 func statusLabel(s string) string {
+	if s == "readonly" {
+		return "只读会话"
+	}
+	if s == "queued" {
+		return "已排队"
+	}
 	if label, ok := map[string]string{"running": "执行中", "completed": "已完成", "idle": "空闲", "waiting": "等你确认", "waiting_approval": "等你确认", "pending": "等你确认", "unknown": "结果待核实", "failed": "失败", "submitted": "已投递", "history": "消息历史", "cancelled": "已取消", "incomplete": "未完整结束"}[s]; ok {
 		return label
 	}
