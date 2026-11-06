@@ -506,6 +506,60 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         nl_ov_set_font(hint);
         lv_obj_set_style_text_color(hint, UI_TEXT_TIP, 0);
 
+        auto *codec = Board::GetInstance().GetAudioCodec();
+        if (codec && codec->output_channels() > 1) {
+            static const char *k_route[] = {"左右一起", "仅左", "仅右"};
+            const int route = codec->output_route();
+            const char *route_name =
+                route >= 0 && route < 3 ? k_route[route] : k_route[0];
+            lv_obj_t *route_band = audio_ctrl_band(body, "扬声器输出", route_name, nullptr);
+            lv_obj_t *route_row = lv_obj_create(route_band);
+            lv_obj_remove_style_all(route_row);
+            lv_obj_set_width(route_row, lv_pct(100));
+            lv_obj_set_height(route_row, 44);
+            lv_obj_set_flex_flow(route_row, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(route_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                                  LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_column(route_row, 8, 0);
+            lv_obj_clear_flag(route_row, LV_OBJ_FLAG_SCROLLABLE);
+            for (int i = 0; i < 3; i++) {
+                const bool on = route == i;
+                lv_obj_t *chip = lv_obj_create(route_row);
+                lv_obj_remove_style_all(chip);
+                lv_obj_set_flex_grow(chip, 1);
+                lv_obj_set_height(chip, 44);
+                lv_obj_set_style_radius(chip, 12, 0);
+                lv_obj_set_style_bg_color(chip, on ? UI_ACCENT : UI_CAPSULE_OFF, 0);
+                lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+                lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+                lv_obj_add_event_cb(
+                    chip,
+                    [](lv_event_t *e) {
+                        if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+                            return;
+                        }
+                        const int want = (int)(intptr_t)lv_event_get_user_data(e);
+                        auto *c = Board::GetInstance().GetAudioCodec();
+                        if (c) {
+                            c->SetOutputRoute(want);
+                        }
+                        Board::GetInstance().NoteUserActivity();
+                        nl_ov_toast(want == 1 ? "仅左扬声器" : (want == 2 ? "仅右扬声器" : "左右一起"));
+                        nl_ov_open_settings_detail(SET_PAGE_DISP);
+                    },
+                    LV_EVENT_CLICKED, (void *)(intptr_t)i);
+                lv_obj_t *lbl = lv_label_create(chip);
+                nl_ov_set_font(lbl);
+                lv_label_set_text(lbl, k_route[i]);
+                lv_obj_set_style_text_color(lbl, on ? UI_ON_TILE : UI_TEXT_SUB, 0);
+                lv_obj_center(lbl);
+            }
+            lv_obj_t *route_hint = lv_label_create(route_band);
+            lv_label_set_text(route_hint, "先在硬件自检分别试听左右，确认两只喇叭都有声后再用");
+            nl_ov_set_font(route_hint);
+            lv_obj_set_style_text_color(route_hint, UI_TEXT_TIP, 0);
+        }
+
         const uint8_t mode_cur = s_cfg.ui_mode == 1 ? 1 : 0;
         lv_obj_t *mode_band = audio_ctrl_band(body, "外观", nl_ov_ui_mode_name(mode_cur), nullptr);
         lv_obj_t *mode_row = lv_obj_create(mode_band);

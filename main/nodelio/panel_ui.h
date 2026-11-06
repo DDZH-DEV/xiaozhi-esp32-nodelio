@@ -30,6 +30,9 @@ esp_err_t nodelio_panel_ui_reserve_layout(void);
 /** 更新状态栏：wifi / cloud / 文案. */
 void nodelio_panel_ui_set_status(bool wifi_ok, bool cloud_ok, const char *msg);
 
+/** 立即重读电池并刷顶栏（板级 PMU 中断后调用；息屏时只更新缓存不点亮）. */
+void nodelio_panel_ui_refresh_battery(void);
+
 /** 有触摸/操作时调用，重置息屏计时. */
 void nodelio_panel_ui_note_activity(void);
 

@@ -1,6 +1,7 @@
 #include "overlay_priv.h"
 
 #include "application.h"
+#include "assets/lang_config.h"
 #include "audio_codec.h"
 #include "board.h"
 #include "board_info.h"
@@ -121,6 +122,31 @@ void nl_ov_build_diagnostics(lv_obj_t* body) {
         Application::GetInstance().Schedule(
             []() { Application::GetInstance().CancelPanelAudioTest(); });
     });
+    if (codec && codec->output_channels() > 1) {
+        Label(body, "分别试听左右扬声器。确认两只有声后，再到「显示与声音」选择输出。");
+        ui_make_text_btn(body, "试听左扬声器", 2, [](lv_event_t*) {
+            Application::GetInstance().Schedule([]() {
+                auto* c = Board::GetInstance().GetAudioCodec();
+                if (!c) {
+                    return;
+                }
+                c->SetOutputRoute(1);
+                Application::GetInstance().PlaySound(Lang::Sounds::OGG_POPUP);
+                nodelio_panel_ui_toast_defer("仅左声道 · 可在显示与声音改回");
+            });
+        });
+        ui_make_text_btn(body, "试听右扬声器", 2, [](lv_event_t*) {
+            Application::GetInstance().Schedule([]() {
+                auto* c = Board::GetInstance().GetAudioCodec();
+                if (!c) {
+                    return;
+                }
+                c->SetOutputRoute(2);
+                Application::GetInstance().PlaySound(Lang::Sounds::OGG_POPUP);
+                nodelio_panel_ui_toast_defer("仅右声道 · 可在显示与声音改回");
+            });
+        });
+    }
     state->timer = lv_timer_create(
         [](lv_timer_t* timer) {
             if (!nodelio_panel_ui_screen_on()) {

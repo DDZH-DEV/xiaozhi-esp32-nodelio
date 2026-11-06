@@ -8,6 +8,7 @@
 #include "lunar_date.h"
 #include "media_player.h"
 #include "sd_library.h"
+#include "sd_photo_ui.h"
 #include "nl_url_util.h"
 #include "nodelio_http.h"
 #include "nodelio_overlay.h"

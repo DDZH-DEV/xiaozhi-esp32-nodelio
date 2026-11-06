@@ -15,6 +15,7 @@
 #include "panel_ui.h"
 #endif
 
+#include <driver/gpio.h>
 #include <esp_chip_info.h>
 #include <esp_flash.h>
 #include <esp_heap_caps.h>
@@ -28,6 +29,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <memory>
 
 // Hosted streaming RX needs contiguous DMA buffers after display/audio startup.
@@ -231,6 +233,14 @@ private:
     bool batt_charging_ = false;
     bool batt_discharging_ = false;
     int64_t batt_cached_at_ = 0;
+    std::atomic<bool> pmu_irq_pending_{false};
+    bool pmu_irq_attached_ = false;
+    i2c_master_dev_handle_t accel_dev_ = nullptr;
+    bool accel_ready_ = false;
+    bool accel_have_sample_ = false;
+    bool accel_face_down_muted_ = false;
+    float accel_prev_mag_ = 0.f;
+    int64_t accel_last_sample_us_ = 0;
     SilaP4Display* display_ = nullptr;
     esp_timer_handle_t idle_timer_ = nullptr;
     std::atomic<TickType_t> last_activity_{0};
@@ -330,6 +340,8 @@ private:
                     }
 #endif
                 }
+                HandlePmuIrq();
+                SampleAccelerometer();
 #if CONFIG_NODELIO_PANEL
                 const bool playing = nodelio_media_is_playing();
                 const bool want_net = net_save_.load() && !playing &&
@@ -345,6 +357,187 @@ private:
 #endif
             });
         }
+    }
+
+    static void PmuIrqIsr(void* arg) {
+        // 仅置位；读 I2C / 刷新顶栏放在 1s idle 轮询里，ISR 不可拿 mutex。
+        static_cast<SilaP4C562Board*>(arg)->pmu_irq_pending_.store(true);
+    }
+
+    void HandlePmuIrq() {
+        if (!pmu_ready_ || !pmu_irq_pending_.exchange(false)) {
+            return;
+        }
+        // Clear AXP2101 IRQ status (write 1s). Registers: INTSTS1..3 = 0x48..0x4A.
+        WritePmuReg(0x48, 0xFF);
+        WritePmuReg(0x49, 0xFF);
+        WritePmuReg(0x4A, 0xFF);
+        batt_cached_at_ = 0;
+        int level = 0;
+        bool charging = false;
+        bool discharging = false;
+        (void)GetBatteryLevel(level, charging, discharging);
+#if CONFIG_NODELIO_PANEL
+        // 息屏只更新缓存，不点亮背光。
+        nodelio_panel_ui_refresh_battery();
+#endif
+    }
+
+    void EnablePmuIrq() {
+        if (!pmu_ready_ || pmu_irq_attached_) {
+            return;
+        }
+        // INTEN1 0x40: VBUS insert/remove + battery insert/remove
+        // INTEN2 0x41: enter/exit charge + charge done
+        WritePmuReg(0x40, 0x0F);
+        WritePmuReg(0x41, 0x07);
+        WritePmuReg(0x42, 0x00);
+        WritePmuReg(0x48, 0xFF);
+        WritePmuReg(0x49, 0xFF);
+        WritePmuReg(0x4A, 0xFF);
+
+        gpio_config_t irq = {};
+        irq.pin_bit_mask = 1ULL << PMU_IRQ_GPIO;
+        irq.mode = GPIO_MODE_INPUT;
+        irq.pull_up_en = GPIO_PULLUP_ENABLE;
+        irq.intr_type = GPIO_INTR_NEGEDGE;
+        if (gpio_config(&irq) != ESP_OK) {
+            ESP_LOGW(kTag, "PMU IRQ gpio config failed");
+            return;
+        }
+        esp_err_t err = gpio_install_isr_service(0);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(kTag, "PMU IRQ isr service: %s", esp_err_to_name(err));
+            return;
+        }
+        if (gpio_isr_handler_add(PMU_IRQ_GPIO, PmuIrqIsr, this) != ESP_OK) {
+            ESP_LOGW(kTag, "PMU IRQ handler add failed");
+            return;
+        }
+        pmu_irq_attached_ = true;
+        ESP_LOGI(kTag, "AXP2101 IRQ on GPIO%d", static_cast<int>(PMU_IRQ_GPIO));
+    }
+
+    bool ReadAccelReg(uint8_t reg, uint8_t* value) {
+        if (!accel_dev_ || !value) {
+            return false;
+        }
+        return i2c_master_transmit_receive(accel_dev_, &reg, 1, value, 1, 50) == ESP_OK;
+    }
+
+    bool WriteAccelReg(uint8_t reg, uint8_t value) {
+        if (!accel_dev_) {
+            return false;
+        }
+        const uint8_t buf[2] = {reg, value};
+        return i2c_master_transmit(accel_dev_, buf, sizeof(buf), 50) == ESP_OK;
+    }
+
+    void AttachAccelerometer() {
+        constexpr uint8_t kAddrs[] = {0x18, 0x19};
+        constexpr uint8_t kWhoAmI = 0x0F;
+        constexpr uint8_t kId = 0x11;
+        for (uint8_t addr : kAddrs) {
+            if (i2c_master_probe(peripheral_bus_, addr, 50) != ESP_OK) {
+                continue;
+            }
+            i2c_device_config_t device = {};
+            device.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+            device.device_address = addr;
+            device.scl_speed_hz = 100000;
+            i2c_master_dev_handle_t handle = nullptr;
+            if (i2c_master_bus_add_device(peripheral_bus_, &device, &handle) != ESP_OK) {
+                continue;
+            }
+            accel_dev_ = handle;
+            uint8_t id = 0;
+            if (!ReadAccelReg(kWhoAmI, &id) || id != kId) {
+                ESP_LOGW(kTag, "accel 0x%02X whoami=0x%02X (want 0x%02X); disabled", addr, id, kId);
+                i2c_master_bus_rm_device(accel_dev_);
+                accel_dev_ = nullptr;
+                continue;
+            }
+            // CTRL_REG1 100Hz XYZ; CTRL_REG4 ±2g
+            if (!WriteAccelReg(0x20, 0x57) || !WriteAccelReg(0x23, 0x00)) {
+                ESP_LOGW(kTag, "accel 0x%02X configure failed", addr);
+                i2c_master_bus_rm_device(accel_dev_);
+                accel_dev_ = nullptr;
+                continue;
+            }
+            accel_ready_ = true;
+            ESP_LOGI(kTag, "SC7A20 at 0x%02X", addr);
+            return;
+        }
+        ESP_LOGI(kTag, "SC7A20 not found; pick-up wake disabled");
+    }
+
+    bool ReadAccelAxes(float* x, float* y, float* z) {
+        if (!accel_ready_ || !x || !y || !z) {
+            return false;
+        }
+        // Auto-increment from OUT_X_L
+        uint8_t reg = 0x28 | 0x80;
+        uint8_t raw[6] = {};
+        if (i2c_master_transmit_receive(accel_dev_, &reg, 1, raw, 6, 50) != ESP_OK) {
+            return false;
+        }
+        const auto to_g = [](uint8_t lo, uint8_t hi) {
+            const int16_t v = static_cast<int16_t>((static_cast<uint16_t>(hi) << 8) | lo);
+            return static_cast<float>(v) / 16384.f;
+        };
+        *x = to_g(raw[0], raw[1]);
+        *y = to_g(raw[2], raw[3]);
+        *z = to_g(raw[4], raw[5]);
+        return true;
+    }
+
+    void SampleAccelerometer() {
+        if (!accel_ready_) {
+            return;
+        }
+        // 只在息屏采样：拿起亮屏 / 面朝下静音；亮屏沿用触摸与空闲计时。
+        if (!asleep_.load()) {
+            accel_have_sample_ = false;
+            return;
+        }
+#if CONFIG_NODELIO_PANEL
+        // 息屏语音唤醒开着时不采样，避免与唤醒/触摸抢 I2C。
+        if (nodelio_wake_on_sleep_enabled()) {
+            accel_have_sample_ = false;
+            return;
+        }
+#endif
+        const int64_t now = esp_timer_get_time();
+        if (now - accel_last_sample_us_ < 200000) {
+            return;
+        }
+        accel_last_sample_us_ = now;
+        float ax = 0, ay = 0, az = 0;
+        if (!ReadAccelAxes(&ax, &ay, &az)) {
+            return;
+        }
+        const float mag = std::sqrt(ax * ax + ay * ay + az * az);
+        const bool face_down = az < -0.7f && mag > 0.6f && mag < 1.4f;
+        if (face_down && !accel_face_down_muted_) {
+            accel_face_down_muted_ = true;
+            if (auto* codec = GetAudioCodec()) {
+                codec->SetOutputVolume(0);
+            }
+            ESP_LOGI(kTag, "face-down mute");
+        } else if (!face_down) {
+            accel_face_down_muted_ = false;
+        }
+        // 加速度突变或明显倾斜视为拿起 → 等同触摸唤醒；放下不另写睡眠。
+        if (accel_have_sample_) {
+            const float delta = std::fabs(mag - accel_prev_mag_);
+            const bool tilted = std::fabs(az) < 0.55f && mag > 0.7f;
+            if (delta > 0.35f || tilted) {
+                ESP_LOGI(kTag, "pick-up wake d=%.2f z=%.2f", delta, az);
+                NoteUserActivity();
+            }
+        }
+        accel_prev_mag_ = mag;
+        accel_have_sample_ = true;
     }
 
 public:
@@ -376,6 +569,7 @@ public:
         } else {
             ESP_LOGI(kTag, "PMU address 0x34 not responding; battery icon off");
         }
+        AttachAccelerometer();
         InitializeDisplay();
         touch_ = std::make_unique<SilaAxs15260Touch>();
         const esp_err_t touch_result = touch_->Start(peripheral_bus_, display_->Handle(), [this]() {
@@ -512,6 +706,7 @@ public:
         }
         pmu_ready_ = true;
         ConfigureAxpCharging();
+        EnablePmuIrq();
     }
 
     bool WritePmuReg(uint8_t reg, uint8_t value) {
@@ -561,7 +756,10 @@ public:
         if (!pmu_ready_) {
             return false;
         }
-        if (asleep_.load()) {
+        const int64_t now = esp_timer_get_time();
+        constexpr int64_t kFreshUs = 15LL * 1000 * 1000;
+        // 息屏用缓存；PMU 中断把 batt_cached_at_ 置 0 后允许再读一次，不点亮屏幕。
+        if (asleep_.load() && batt_cached_at_ != 0) {
             if (!batt_present_) {
                 return false;
             }
@@ -570,8 +768,6 @@ public:
             discharging = batt_discharging_;
             return true;
         }
-        const int64_t now = esp_timer_get_time();
-        constexpr int64_t kFreshUs = 15LL * 1000 * 1000;
         if (batt_cached_at_ != 0 && now - batt_cached_at_ < kFreshUs) {
             if (!batt_present_) {
                 return false;

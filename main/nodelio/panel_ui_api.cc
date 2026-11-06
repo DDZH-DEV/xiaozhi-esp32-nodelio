@@ -179,6 +179,14 @@ extern "C" void nodelio_panel_ui_set_status(bool wifi_ok, bool cloud_ok, const c
     nl_ov_refresh_status_icons(wifi_ok, cloud_ok, msg);
 }
 
+extern "C" void nodelio_panel_ui_refresh_battery(void)
+{
+    if (!s_ready) {
+        return;
+    }
+    nl_ov_refresh_battery();
+}
+
 extern "C" void nodelio_panel_ui_note_activity(void)
 {
     Board::GetInstance().NoteUserActivity();

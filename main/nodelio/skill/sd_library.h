@@ -52,6 +52,24 @@ void nodelio_sd_make_url(const char *path, char *url, size_t url_len);
 /** 曲库批次自增（「换一批」）；无曲目时保持 0。 */
 void nodelio_sd_next_batch(void);
 
+/**
+ * 重新扫描卡内 jpg/jpeg（与音频列表分开存放）。
+ * 须在面板 Job 里调用。成功返回 ESP_OK。
+ */
+esp_err_t nodelio_sd_rescan_photos(void);
+
+int nodelio_sd_photo_count(void);
+int nodelio_sd_photo_batch(void);
+void nodelio_sd_photo_set_batch(int batch);
+int nodelio_sd_photo_batch_count(void);
+void nodelio_sd_photo_next_batch(void);
+
+/** 当前批次填进 list 信封（id=photo 下标，title=文件名）。返回条数。 */
+int nodelio_sd_fill_photo_envelope(nl_content_envelope_t *env, int *total_out);
+
+/** 按下标取 VFS 路径；越界返回 false。 */
+bool nodelio_sd_photo_path(int index, char *path, size_t path_len);
+
 #ifdef __cplusplus
 }
 #endif

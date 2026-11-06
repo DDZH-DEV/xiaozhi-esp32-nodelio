@@ -678,10 +678,14 @@ static void sample_battery_cache(void)
     s_batt_charging = charging;
 #if CONFIG_NODELIO_NATIVE_SHELL
     static bool low_battery_warned = false;
-    const bool low = discharging && level <= 10;
-    if (low && !low_battery_warned)
+    /* 低于 5% 且正在放电：亮屏时只提示一次，不循环弹窗。 */
+    const bool low = discharging && !charging && level <= 5;
+    if (low && !low_battery_warned && s_screen_on)
         nl_ov_toast("电量低，请充电");
-    low_battery_warned = low;
+    if (!low)
+        low_battery_warned = false;
+    else
+        low_battery_warned = true;
 #else
     (void)discharging;
 #endif
@@ -705,6 +709,21 @@ static void refresh_battery_lbl(void)
     }
     lv_obj_set_style_text_color(s_batt_lbl, color, 0);
     lv_obj_remove_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN);
+}
+
+void nl_ov_refresh_battery(void)
+{
+    /* I2C 在显示锁之外；与 status_poll_cb 一致。 */
+    sample_battery_cache();
+    if (!s_ready || !s_screen_on) {
+        return;
+    }
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        return;
+    }
+    refresh_battery_lbl();
+    status_bar_relayout();
 }
 
 void nl_ov_refresh_status_icons(bool wifi_ok, bool cloud_ok, const char *msg)

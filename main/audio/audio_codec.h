@@ -35,6 +35,9 @@ public:
     virtual void SetInputGain(float gain);
     virtual void EnableInput(bool enable);
     virtual void EnableOutput(bool enable);
+    /** 双声道板：0=左右一起，1=仅左，2=仅右。单声道板忽略。 */
+    virtual void SetOutputRoute(int route);
+    virtual int output_route() const { return output_route_; }
 
     virtual void OutputData(std::vector<int16_t>& data);
     virtual bool InputData(std::vector<int16_t>& data);
@@ -64,6 +67,7 @@ protected:
     int input_channels_ = 1;
     int output_channels_ = 1;
     int output_volume_ = 70;
+    int output_route_ = 0;
     float input_gain_ = 0.0;
 
     virtual int Read(int16_t* dest, int samples) = 0;

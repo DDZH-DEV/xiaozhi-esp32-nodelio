@@ -83,7 +83,7 @@ bool nodelio_skill_media_is_sd(void);
  */
 void nodelio_skill_request_sd_library(bool auto_play);
 
-/** 曲库来源：0=在线曲库 1=内存卡（当前曲库卡显示的那一栏）。 */
+/** 曲库来源：0=在线曲库 1=内存卡曲库 2=内存卡相册。 */
 int nodelio_skill_library_source(void);
 
 /** 内存卡来源的「换一批」：切到下一批并重绘；不适用返回 false。 */

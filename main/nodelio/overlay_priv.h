@@ -176,6 +176,7 @@ static inline bool nl_ov_cfg_http_ready(nodelio_nvs_config_t *out, bool toast)
     return false;
 }
 void nl_ov_refresh_status_icons(bool wifi_ok, bool cloud_ok, const char *msg);
+void nl_ov_refresh_battery(void);
 void nl_ov_status_poll_set_period(bool awake);
 /** 亮屏时唤出顶栏；息屏时立刻收起。 */
 void nl_ov_status_bar_on_screen(bool on);

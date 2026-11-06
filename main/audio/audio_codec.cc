@@ -33,8 +33,22 @@ void AudioCodec::Start() {
         ESP_LOGW(TAG, "Output volume value (%d) is too small, setting to default (10)", output_volume_);
         output_volume_ = 10;
     }
+    output_route_ = settings.GetInt("output_route", 0);
+    if (output_route_ < 0 || output_route_ > 2) {
+        output_route_ = 0;
+    }
 
     ESP_LOGI(TAG, "Audio codec started");
+}
+
+void AudioCodec::SetOutputRoute(int route) {
+    if (route < 0 || route > 2) {
+        route = 0;
+    }
+    output_route_ = route;
+    ESP_LOGI(TAG, "Set output route to %d", output_route_);
+    Settings settings("audio", true);
+    settings.SetInt("output_route", output_route_);
 }
 
 void AudioCodec::SetOutputVolumeTransient(int volume) {

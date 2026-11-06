@@ -12,6 +12,8 @@
 #include "nodelio_http.h"
 #include "content_envelope.h"
 #include "panel_ui.h"
+#include "sd_library.h"
+#include "sd_photo_ui.h"
 #include "skill_result_ui.h"
 #include "skill_runtime.h"
 #include "wifi_provision.h"
@@ -33,7 +35,7 @@ LV_FONT_DECLARE(font_material_symbols_20_4);
 LV_FONT_DECLARE(font_material_symbols_30_4);
 
 #define TAG "nl_apps"
-#define APP_MAX 17 /* 16 cloud entries plus the built-in daily view. */
+#define APP_MAX 18 /* 16 cloud entries plus built-in daily and, on SD boards, files. */
 /* 8 个样例应用带 inputSchema 时整包 >7KB；旧 4KB 截断后 cJSON 失败 →「暂无已安装」。 */
 #define APP_LIST_BUF 24576
 
@@ -63,20 +65,31 @@ static void with_builtin_daily(nl_app_item* items, int& n) {
     for (int i = 0; i < n; ++i) {
         const char* bare = strstr(items[i].id, "::");
         bare = bare ? bare + 2 : items[i].id;
-        if (strcmp(bare, "builtin.daily") == 0 || strcmp(bare, "weather.today") == 0 ||
-            strcmp(bare, "air.now") == 0 || strcmp(bare, "quote.daily") == 0)
+        if (strcmp(bare, "builtin.daily") == 0 || strcmp(bare, "builtin.files") == 0 ||
+            strcmp(bare, "weather.today") == 0 || strcmp(bare, "air.now") == 0 ||
+            strcmp(bare, "quote.daily") == 0)
             continue;
         items[keep++] = items[i];
     }
-    if (keep >= APP_MAX)
-        keep = APP_MAX - 1;
-    memmove(items + 1, items, sizeof(*items) * (size_t)keep);
+    const bool files = nodelio_sd_available();
+    const int extra = files ? 2 : 1;
+    if (keep > APP_MAX - extra) {
+        keep = APP_MAX - extra;
+    }
+    memmove(items + extra, items, sizeof(*items) * (size_t)keep);
     items[0] = {};
     snprintf(items[0].id, sizeof(items[0].id), "builtin.daily");
     snprintf(items[0].name, sizeof(items[0].name), "日历与天气");
     snprintf(items[0].desc, sizeof(items[0].desc), "内置 · 月历 / 15 天天气 / 空气质量");
     items[0].enabled = true;
-    n = keep + 1;
+    if (files) {
+        items[1] = {};
+        snprintf(items[1].id, sizeof(items[1].id), "builtin.files");
+        snprintf(items[1].name, sizeof(items[1].name), "文件");
+        snprintf(items[1].desc, sizeof(items[1].desc), "内置 · 内存卡歌曲与照片");
+        items[1].enabled = true;
+    }
+    n = keep + extra;
 }
 
 /** 进度卡内部动作：审批按钮与派活投递。不进应用列表 / 语音打开。 */
@@ -205,6 +218,17 @@ static void open_app_at(int idx, bool reset_daily = true) {
         return;
     }
     s_focus_idx = idx;
+    if (strcmp(s_items[idx].id, "builtin.files") == 0) {
+        if (apps_wide()) {
+            if (s_split) {
+                render_list();
+            } else {
+                apps_set_split(true, true);
+            }
+        }
+        nodelio_skill_request_sd_library(false);
+        return;
+    }
     const bool daily = strcmp(s_items[idx].id, "builtin.daily") == 0;
     if (daily && s_daily_loading) {
         nl_ov_toast("天气正在更新，请稍候");
@@ -375,6 +399,9 @@ static const char *apps_glyph_for(const char *id)
 {
     if (id && (strstr(id, "radio.stations") != nullptr || strstr(id, "podcast.latest") != nullptr)) {
         return MATERIAL_SYMBOLS_VOLUME_UP;
+    }
+    if (id && strstr(id, "builtin.files") != nullptr) {
+        return MATERIAL_SYMBOLS_PHOTO_CAMERA;
     }
     if (id && nodelio_skill_id_is_music(id)) {
         return MATERIAL_SYMBOLS_MUSIC_NOTE;
@@ -1159,6 +1186,7 @@ enum {
     OPEN_PLAN_NONE = 0,
     OPEN_PLAN_PAGE,
     OPEN_PLAN_SD,
+    OPEN_PLAN_SD_PHOTO,
     OPEN_PLAN_SKILL,
 };
 
@@ -1197,6 +1225,18 @@ static int plan_open_query(const char *query, OpenPlan *plan, bool log)
     }
     query = qbuf;
 
+    /* 内置文件：不经技能市场。有卡时应用页常驻。 */
+    if (strcmp(query, "文件") == 0 || strstr(query, "文件管理") || strstr(query, "文件管理器") ||
+        strstr(query, "内存卡文件")) {
+        plan->kind = OPEN_PLAN_SD;
+        return OPEN_PLAN_SD;
+    }
+    /* 内存卡相册优先于曲库：本机读卡 jpg，不经服务端。 */
+    if (strstr(query, "内存卡相册") || strstr(query, "本地相册") || strstr(query, "卡相册") ||
+        strstr(query, "SD相册") || strstr(query, "sd相册")) {
+        plan->kind = OPEN_PLAN_SD_PHOTO;
+        return OPEN_PLAN_SD_PHOTO;
+    }
     /* 内存卡曲库：本机读卡，不经服务端已装技能；未接卡时给出明确提示。 */
     if (strstr(query, "内存卡") || strstr(query, "存储卡") || strstr(query, "SD卡") ||
         strstr(query, "sd卡") || strstr(query, "TF卡") || strstr(query, "tf卡") ||
@@ -1324,6 +1364,11 @@ bool nl_ov_apps_open_by_query(const char *query)
     if (kind == OPEN_PLAN_SD) {
         ESP_LOGI(TAG, "open_by_query: sd library");
         nodelio_skill_request_sd_library(false);
+        return true;
+    }
+    if (kind == OPEN_PLAN_SD_PHOTO) {
+        ESP_LOGI(TAG, "open_by_query: sd photos");
+        nodelio_skill_request_sd_photos();
         return true;
     }
     if (kind != OPEN_PLAN_SKILL || !plan.sid[0]) {

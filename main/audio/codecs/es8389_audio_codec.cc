@@ -250,9 +250,15 @@ int Es8389AudioCodec::Write(const int16_t* data, int samples) {
             while (written < samples) {
                 const int chunk = std::min(samples - written, 240);
                 for (int i = 0; i < chunk; ++i) {
+                    const int16_t sample = data[written + i];
                     for (int c = 0; c < output_channels_; ++c) {
-                        output_buffer_[static_cast<size_t>(i) * output_channels_ + c] =
-                            data[written + i];
+                        int16_t v = sample;
+                        if (output_route_ == 1 && c != 0) {
+                            v = 0;
+                        } else if (output_route_ == 2 && c != 1) {
+                            v = 0;
+                        }
+                        output_buffer_[static_cast<size_t>(i) * output_channels_ + c] = v;
                     }
                 }
                 const int result = esp_codec_dev_write(output_dev_, output_buffer_.data(),

@@ -43,6 +43,27 @@ extern "C" void nodelio_sd_make_url(const char *path, char *url, size_t url_len)
     }
 }
 extern "C" void nodelio_sd_next_batch(void) {}
+extern "C" esp_err_t nodelio_sd_rescan_photos(void) { return ESP_ERR_INVALID_STATE; }
+extern "C" int nodelio_sd_photo_count(void) { return 0; }
+extern "C" int nodelio_sd_photo_batch(void) { return 0; }
+extern "C" void nodelio_sd_photo_set_batch(int batch) { (void)batch; }
+extern "C" int nodelio_sd_photo_batch_count(void) { return 0; }
+extern "C" void nodelio_sd_photo_next_batch(void) {}
+extern "C" int nodelio_sd_fill_photo_envelope(nl_content_envelope_t *env, int *total_out)
+{
+    (void)env;
+    if (total_out) {
+        *total_out = 0;
+    }
+    return 0;
+}
+extern "C" bool nodelio_sd_photo_path(int index, char *path, size_t path_len)
+{
+    (void)index;
+    (void)path;
+    (void)path_len;
+    return false;
+}
 
 #else /* CONFIG_NODELIO_SD_MUSIC */
 
@@ -76,22 +97,25 @@ namespace {
 struct sd_state_t {
     bool mounted;
     bool scan_tried;
+    bool photo_scan_tried;
     int count;
     int batch;
+    int photo_count;
+    int photo_batch;
     char (*paths)[NL_SD_PATH_MAX];
+    char (*photos)[NL_SD_PATH_MAX];
 };
 
-sd_state_t s_sd = {false, false, 0, 0, nullptr};
+sd_state_t s_sd = {false, false, false, 0, 0, 0, 0, nullptr, nullptr};
 
-bool ext_supported(const char *name)
+bool lower_ext(const char *name, char *ext, size_t ext_len)
 {
     const char *dot = strrchr(name, '.');
-    if (!dot || !dot[1]) {
+    if (!dot || !dot[1] || !ext || ext_len == 0) {
         return false;
     }
-    char ext[8];
     size_t n = strlen(dot + 1);
-    if (n >= sizeof(ext)) {
+    if (n >= ext_len) {
         return false;
     }
     for (size_t i = 0; i < n; i++) {
@@ -99,10 +123,28 @@ bool ext_supported(const char *name)
         ext[i] = (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
     }
     ext[n] = '\0';
+    return true;
+}
+
+bool ext_supported(const char *name)
+{
+    char ext[8];
+    if (!lower_ext(name, ext, sizeof(ext))) {
+        return false;
+    }
     /* 只列解码链路真能放的容器：mp3 / m4a / wav。
      * 曲库列表一旦列出就必须能播，宁可少列也不要「点了没声」。
      * flac/aac/ogg 目前没有可用的分帧解析器，暂不列出。 */
     return strcmp(ext, "mp3") == 0 || strcmp(ext, "m4a") == 0 || strcmp(ext, "wav") == 0;
+}
+
+bool photo_ext_supported(const char *name)
+{
+    char ext[8];
+    if (!lower_ext(name, ext, sizeof(ext))) {
+        return false;
+    }
+    return strcmp(ext, "jpg") == 0 || strcmp(ext, "jpeg") == 0;
 }
 
 /** 「01 - 周杰伦 - 晴天.mp3」→「01 - 周杰伦 - 晴天」；标题由 UI 直接显示。 */
@@ -127,23 +169,27 @@ int cmp_path(const void *a, const void *b)
     return strcmp(static_cast<const char *>(a), static_cast<const char *>(b));
 }
 
-bool ensure_paths(void)
+bool ensure_table(char *(**table)[NL_SD_PATH_MAX])
 {
-    if (s_sd.paths) {
+    if (*table) {
         return true;
     }
-    s_sd.paths = static_cast<char (*)[NL_SD_PATH_MAX]>(
+    *table = static_cast<char (*)[NL_SD_PATH_MAX]>(
         heap_caps_calloc(NL_SD_MAX_FILES, NL_SD_PATH_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!s_sd.paths) {
-        s_sd.paths = static_cast<char (*)[NL_SD_PATH_MAX]>(
-            calloc(NL_SD_MAX_FILES, NL_SD_PATH_MAX));
+    if (!*table) {
+        *table = static_cast<char (*)[NL_SD_PATH_MAX]>(calloc(NL_SD_MAX_FILES, NL_SD_PATH_MAX));
     }
-    return s_sd.paths != nullptr;
+    return *table != nullptr;
 }
 
-void scan_dir(const char *dir, int depth)
+bool ensure_paths(void) { return ensure_table(&s_sd.paths); }
+bool ensure_photos(void) { return ensure_table(&s_sd.photos); }
+
+void scan_dir(const char *dir, int depth, bool photos)
 {
-    if (depth > NL_SD_SCAN_DEPTH || s_sd.count >= NL_SD_MAX_FILES) {
+    int *count = photos ? &s_sd.photo_count : &s_sd.count;
+    char (*table)[NL_SD_PATH_MAX] = photos ? s_sd.photos : s_sd.paths;
+    if (depth > NL_SD_SCAN_DEPTH || !table || *count >= NL_SD_MAX_FILES) {
         return;
     }
     DIR *d = opendir(dir);
@@ -151,7 +197,7 @@ void scan_dir(const char *dir, int depth)
         return;
     }
     struct dirent *ent = nullptr;
-    while ((ent = readdir(d)) != nullptr && s_sd.count < NL_SD_MAX_FILES) {
+    while ((ent = readdir(d)) != nullptr && *count < NL_SD_MAX_FILES) {
         if (ent->d_name[0] == '.') {
             continue;
         }
@@ -161,14 +207,14 @@ void scan_dir(const char *dir, int depth)
             continue;
         }
         if (ent->d_type == DT_DIR) {
-            scan_dir(full, depth + 1);
+            scan_dir(full, depth + 1, photos);
             continue;
         }
-        if (!ext_supported(ent->d_name)) {
+        if (photos ? !photo_ext_supported(ent->d_name) : !ext_supported(ent->d_name)) {
             continue;
         }
-        snprintf(s_sd.paths[s_sd.count], NL_SD_PATH_MAX, "%s", full);
-        s_sd.count++;
+        snprintf(table[*count], NL_SD_PATH_MAX, "%s", full);
+        (*count)++;
     }
     closedir(d);
 }
@@ -272,8 +318,11 @@ esp_err_t nodelio_sd_mount(void)
     }
     s_sd.mounted = true;
     s_sd.scan_tried = false;
+    s_sd.photo_scan_tried = false;
     s_sd.count = 0;
     s_sd.batch = 0;
+    s_sd.photo_count = 0;
+    s_sd.photo_batch = 0;
     if (card) {
         ESP_LOGI(TAG, "mounted %s name=%s size=%lluMB", NL_SD_MOUNT_POINT, card->cid.name,
                  static_cast<unsigned long long>(card->csd.capacity) *
@@ -291,7 +340,7 @@ esp_err_t nodelio_sd_rescan(void)
         return ESP_ERR_NO_MEM;
     }
     s_sd.count = 0;
-    scan_dir(NL_SD_MOUNT_POINT, 0);
+    scan_dir(NL_SD_MOUNT_POINT, 0, false);
     if (s_sd.count > 1) {
         qsort(s_sd.paths, static_cast<size_t>(s_sd.count), NL_SD_PATH_MAX, cmp_path);
     }
@@ -397,6 +446,105 @@ void nodelio_sd_make_url(const char *path, char *url, size_t url_len)
         return;
     }
     snprintf(url, url_len, "%s%s", NL_SD_URL_PREFIX, path);
+}
+
+esp_err_t nodelio_sd_rescan_photos(void)
+{
+    if (!s_sd.mounted) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!ensure_photos()) {
+        return ESP_ERR_NO_MEM;
+    }
+    s_sd.photo_count = 0;
+    scan_dir(NL_SD_MOUNT_POINT, 0, true);
+    if (s_sd.photo_count > 1) {
+        qsort(s_sd.photos, static_cast<size_t>(s_sd.photo_count), NL_SD_PATH_MAX, cmp_path);
+    }
+    s_sd.photo_scan_tried = true;
+    const int batches = nodelio_sd_photo_batch_count();
+    if (batches <= 0) {
+        s_sd.photo_batch = 0;
+    } else if (s_sd.photo_batch >= batches) {
+        s_sd.photo_batch = batches - 1;
+    }
+    ESP_LOGI(TAG, "scan photos %s: %d jpeg(s)", NL_SD_MOUNT_POINT, s_sd.photo_count);
+    return ESP_OK;
+}
+
+int nodelio_sd_photo_count(void)
+{
+    return s_sd.photo_scan_tried ? s_sd.photo_count : 0;
+}
+
+int nodelio_sd_photo_batch(void)
+{
+    return s_sd.photo_batch;
+}
+
+void nodelio_sd_photo_set_batch(int batch)
+{
+    s_sd.photo_batch = batch < 0 ? 0 : batch;
+}
+
+int nodelio_sd_photo_batch_count(void)
+{
+    if (s_sd.photo_count <= 0) {
+        return 0;
+    }
+    return (s_sd.photo_count + NL_SD_BATCH_MAX - 1) / NL_SD_BATCH_MAX;
+}
+
+void nodelio_sd_photo_next_batch(void)
+{
+    const int n = nodelio_sd_photo_batch_count();
+    if (n <= 1) {
+        return;
+    }
+    s_sd.photo_batch = (s_sd.photo_batch + 1) % n;
+}
+
+int nodelio_sd_fill_photo_envelope(nl_content_envelope_t *env, int *total_out)
+{
+    if (total_out) {
+        *total_out = s_sd.photo_count;
+    }
+    if (!env) {
+        return 0;
+    }
+    if (s_sd.photo_count <= 0 || !s_sd.photos) {
+        return 0;
+    }
+    const int batches = nodelio_sd_photo_batch_count();
+    if (batches > 0 && s_sd.photo_batch >= batches) {
+        s_sd.photo_batch = 0;
+    }
+    const int start = s_sd.photo_batch * NL_SD_BATCH_MAX;
+    int n = 0;
+    for (int i = start; i < s_sd.photo_count && n < NL_SD_BATCH_MAX; i++, n++) {
+        nl_env_track_t *tr = &env->tracks[n];
+        snprintf(tr->id, sizeof(tr->id), "%d", i);
+        path_to_title(s_sd.photos[i], tr->title, sizeof(tr->title));
+        snprintf(tr->artist, sizeof(tr->artist), "内存卡相册");
+        tr->has_play_action = false;
+        tr->invoke_n = 1;
+        snprintf(tr->invokes[0].id, sizeof(tr->invokes[0].id), "open");
+        snprintf(tr->invokes[0].title, sizeof(tr->invokes[0].title), "查看");
+        snprintf(tr->invokes[0].app_id, sizeof(tr->invokes[0].app_id), "photo.sd");
+        snprintf(tr->invokes[0].params_json, sizeof(tr->invokes[0].params_json),
+                 "{\"index\":%d}", i);
+    }
+    env->track_n = n;
+    return n;
+}
+
+bool nodelio_sd_photo_path(int index, char *path, size_t path_len)
+{
+    if (!path || path_len == 0 || index < 0 || index >= s_sd.photo_count || !s_sd.photos) {
+        return false;
+    }
+    snprintf(path, path_len, "%s", s_sd.photos[index]);
+    return true;
 }
 
 #endif /* CONFIG_NODELIO_SD_MUSIC */

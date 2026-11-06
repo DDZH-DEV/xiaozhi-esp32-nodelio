@@ -531,10 +531,15 @@ static void on_reshuffle(lv_event_t *e)
         dsh_refresh_list();
         return;
     }
-    /* 内存卡曲库：刷新=重新扫卡（可能刚拷进新歌） */
+    /* 内存卡曲库 / 相册：刷新=重新扫卡 */
     if (s_have_env && s_env && strcmp(s_env->card_type, "music_list") == 0 &&
         s_library_source == 1) {
         nodelio_skill_request_sd_library(false);
+        return;
+    }
+    if (s_have_env && s_env && strcmp(s_env->card_type, "music_list") == 0 &&
+        s_library_source == 2) {
+        nodelio_skill_request_sd_photos();
         return;
     }
     request_reshuffle();
@@ -774,9 +779,10 @@ static void on_hdr_mid(lv_event_t *e)
         dsh_refresh_list();
         return;
     }
-    /* 内存卡多批：中间钮=下一批（翻页对全量滚动的曲库无意义） */
-    if (strcmp(s_env->card_type, "music_list") == 0 && s_library_source == 1 &&
-        nodelio_sd_batch_count() > 1) {
+    /* 内存卡曲库 / 相册多批：中间钮=下一批 */
+    if (strcmp(s_env->card_type, "music_list") == 0 &&
+        ((s_library_source == 1 && nodelio_sd_batch_count() > 1) ||
+         (s_library_source == 2 && nodelio_sd_photo_batch_count() > 1))) {
         if (!nodelio_skill_sd_next_batch()) {
             nl_ov_toast("没有下一批");
             return;
@@ -886,10 +892,9 @@ static void request_reshuffle(void) {
         return;
     }
     job->cfg = s_skill_cfg;
-    /* 内存卡曲库的 app_id 是本地 music.sd，服务端没有这个技能：
-     * 从「内存卡」切回「在线曲库」时必须发 music.search。 */
+    /* 内存卡曲库 / 相册的 app_id 是本地，服务端没有：切回在线须发 music.search。 */
     const char *sid = s_env && s_env->app_id[0] ? s_env->app_id : "music.search";
-    if (strcmp(sid, "music.sd") == 0) {
+    if (strcmp(sid, "music.sd") == 0 || strcmp(sid, "photo.sd") == 0) {
         sid = "music.search";
     }
     snprintf(job->skill_id, sizeof(job->skill_id), "%s", sid);
@@ -909,6 +914,12 @@ static void on_play_row(lv_event_t *e)
         return;
     }
     const int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    /* 内存卡相册：点行打开查看器 */
+    if (s_have_env && s_env && s_library_source == 2 && idx >= 0 && idx < s_env->track_n &&
+        s_env->tracks[idx].invoke_n > 0) {
+        run_invoke_action(&s_env->tracks[idx].invokes[0]);
+        return;
+    }
     /* DSH 列表：点行看末轮全文；有播放 URL 的仍走点播 */
     if (s_have_env && s_env && nl_workbench_app(s_env->app_id) &&
         strcmp(s_env->card_type, "music_list") != 0) {
@@ -951,6 +962,18 @@ void json_escape_str(char *out, size_t out_len, const char *in)
 void run_invoke_action(const nl_env_invoke_action_t *ia)
 {
     if (!ia) {
+        return;
+    }
+    /* 内存卡相册：本地打开查看器，不经 Host invoke。 */
+    if (strcmp(ia->app_id, "photo.sd") == 0) {
+        int index = 0;
+        cJSON *root = cJSON_Parse(ia->params_json[0] ? ia->params_json : "{}");
+        const cJSON *ji = root ? cJSON_GetObjectItemCaseSensitive(root, "index") : nullptr;
+        if (cJSON_IsNumber(ji)) {
+            index = ji->valueint;
+        }
+        cJSON_Delete(root);
+        nodelio_skill_sd_photo_show(index);
         return;
     }
     if (ia->params_json[0] && strstr(ia->params_json, "\"dismiss\"")) {
@@ -1266,6 +1289,35 @@ static nl_content_envelope_t *build_sd_envelope(bool auto_play)
     return env;
 }
 
+static nl_content_envelope_t *build_sd_photo_envelope(void)
+{
+    nl_content_envelope_t *env = static_cast<nl_content_envelope_t *>(
+        heap_caps_calloc(1, sizeof(nl_content_envelope_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!env) {
+        env = static_cast<nl_content_envelope_t *>(calloc(1, sizeof(nl_content_envelope_t)));
+    }
+    if (!env) {
+        return nullptr;
+    }
+    snprintf(env->status, sizeof(env->status), "ok");
+    snprintf(env->app_id, sizeof(env->app_id), "photo.sd");
+    snprintf(env->card_type, sizeof(env->card_type), "music_list");
+    snprintf(env->display_title, sizeof(env->display_title), "内存卡相册");
+    snprintf(env->media_kind, sizeof(env->media_kind), "photo");
+    env->auto_play = false;
+    int total = 0;
+    const int n = nodelio_sd_fill_photo_envelope(env, &total);
+    if (n <= 0) {
+        snprintf(env->spoken, sizeof(env->spoken),
+                 total > 0 ? "内存卡照片读取失败" : "内存卡里没有 JPG 照片");
+    } else if (total > n) {
+        snprintf(env->spoken, sizeof(env->spoken), "内存卡共%d张照片，本批%d张", total, n);
+    } else {
+        snprintf(env->spoken, sizeof(env->spoken), "内存卡共%d张照片", n);
+    }
+    return env;
+}
+
 static void sd_open_worker(void *p)
 {
     const bool auto_play = (reinterpret_cast<intptr_t>(p) != 0);
@@ -1286,6 +1338,31 @@ static void sd_open_worker(void *p)
     }
     /* 来源以信封信源为准（show() 会按 app_id 回填 s_library_source） */
     nodelio_skill_result_show(nullptr, env, auto_play);
+}
+
+static void sd_photo_open_worker(void * /*p*/)
+{
+    nodelio_sd_mount();
+    if (nodelio_sd_is_mounted()) {
+        (void)nodelio_sd_rescan_photos();
+    }
+    if (!nodelio_sd_is_mounted()) {
+        s_sd_busy = false;
+        nodelio_panel_ui_toast_defer("未检测到内存卡");
+        return;
+    }
+    nl_content_envelope_t *env = build_sd_photo_envelope();
+    s_sd_busy = false;
+    if (!env) {
+        nodelio_panel_ui_toast_defer("内存不足");
+        return;
+    }
+    if (nodelio_sd_photo_count() <= 0) {
+        free_owned_env(env);
+        nodelio_panel_ui_toast_defer("内存卡里没有 JPG 照片");
+        return;
+    }
+    nodelio_skill_result_show(nullptr, env, false);
 }
 
 void nodelio_skill_request_sd_library(bool auto_play)
@@ -1314,8 +1391,45 @@ void nodelio_skill_request_sd_library(bool auto_play)
     }
 }
 
+void nodelio_skill_request_sd_photos(void)
+{
+    if (!nodelio_sd_available()) {
+        nl_ov_toast("本机没有内存卡");
+        return;
+    }
+    if (s_sd_busy) {
+        nl_ov_toast("正在读取内存卡…");
+        return;
+    }
+    if (nodelio_media_is_playing() || nodelio_media_is_paused()) {
+        /* 扫图不与播放抢挂载 */
+        nodelio_media_stop();
+    }
+    nodelio_skill_sd_photo_hide();
+    s_sd_busy = true;
+    nl_ov_toast("正在读取相册…");
+    if (!nodelio::SubmitPanelJob(nodelio::PanelJobLane::Interactive, sd_photo_open_worker, nullptr,
+                                 [](void *) { s_sd_busy = false; },
+                                 nodelio_panel_begin_skill_view(), "sd_photos")) {
+        s_sd_busy = false;
+        nl_ov_toast("相册读取失败");
+    }
+}
+
 bool nodelio_skill_sd_next_batch(void)
 {
+    if (s_library_source == 2) {
+        if (nodelio_sd_photo_batch_count() <= 1) {
+            return false;
+        }
+        nodelio_sd_photo_next_batch();
+        nl_content_envelope_t *env = build_sd_photo_envelope();
+        if (!env) {
+            return false;
+        }
+        nodelio_skill_result_show(nullptr, env, false);
+        return true;
+    }
     if (s_library_source != 1 || nodelio_sd_batch_count() <= 1) {
         return false;
     }
@@ -1343,6 +1457,10 @@ static void on_src_chip(lv_event_t *e)
         nodelio_skill_request_sd_library(false);
         return;
     }
+    if (want == 2) {
+        nodelio_skill_request_sd_photos();
+        return;
+    }
     /* 回在线曲库：重新 invoke 云端 music.search（与「打开曲库」同一路径）。
      * 来源标记等回包到达后由 show() 按 app_id 更新，失败时仍停在内存卡，不会错标。 */
     request_reshuffle();
@@ -1365,8 +1483,8 @@ static void fill_source_bar(void)
     lv_obj_set_width(s_src_bar, LV_SIZE_CONTENT);
     lv_obj_set_height(s_src_bar, 40);
     lv_obj_move_to_index(s_src_bar, 0);
-    static const char *const kNames[2] = {"在线曲库", "内存卡"};
-    for (int i = 0; i < 2; i++) {
+    static const char *const kNames[3] = {"在线曲库", "内存卡", "内存卡相册"};
+    for (int i = 0; i < 3; i++) {
         const bool selected = (i == s_library_source);
         lv_obj_t *chip = lv_obj_create(s_src_bar);
         lv_obj_remove_style_all(chip);
@@ -2307,7 +2425,8 @@ void apply_card_chrome(void)
         s_env->detail_body && s_env->detail_body[0] && nl_workbench_app(s_env->app_id);
     /* 曲库改全量滚动后不再占分页钮；新闻中间钮=收起；内存卡多批时中间钮=下一批 */
     const bool mid_btn = news || list_page_count() > 1 ||
-                         (s_library_source == 1 && nodelio_sd_batch_count() > 1);
+                         (s_library_source == 1 && nodelio_sd_batch_count() > 1) ||
+                         (s_library_source == 2 && nodelio_sd_photo_batch_count() > 1);
     const bool compact = !music && !news && !daily &&
                          !mid_btn && !dsh_detail && s_env->filter_n == 0 && s_env->track_n <= 4;
     /* 字号条仅新闻详情；切到其它卡或列表时收起 */
@@ -2470,14 +2589,21 @@ void fill_list(void)
                 s_list_page = 0;
             }
             if (music_card) {
-                const bool sd = s_library_source == 1;
-                if (sd) {
+                if (s_library_source == 1) {
                     const int batches = nodelio_sd_batch_count();
                     if (batches > 1) {
                         snprintf(sub, sizeof(sub), "内存卡 %d 首 · 第 %d/%d 批", nodelio_sd_track_count(),
                                  nodelio_sd_batch() + 1, batches);
                     } else {
                         snprintf(sub, sizeof(sub), "内存卡 %d 首 · 点播或说第几首", nodelio_sd_track_count());
+                    }
+                } else if (s_library_source == 2) {
+                    const int batches = nodelio_sd_photo_batch_count();
+                    if (batches > 1) {
+                        snprintf(sub, sizeof(sub), "相册 %d 张 · 第 %d/%d 批", nodelio_sd_photo_count(),
+                                 nodelio_sd_photo_batch() + 1, batches);
+                    } else {
+                        snprintf(sub, sizeof(sub), "相册 %d 张 · 点开查看", nodelio_sd_photo_count());
                     }
                 } else if (pages > 1) {
                     snprintf(sub, sizeof(sub), "共 %d 首 · %d/%d", s_env->track_n, s_list_page + 1, pages);
@@ -2583,11 +2709,12 @@ void fill_list(void)
             lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
             lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
             lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-            /* 曲库：有 URL 点播；DSH：点行拉末轮全文/最新进度（无 playback_url 也要可点） */
+            /* 曲库：有 URL 点播；相册：点行打开；DSH：点行拉详情 */
+            const bool photo_row = s_library_source == 2 && s_env->tracks[i].invoke_n > 0;
             const bool dsh_detail_row = nl_workbench_app(s_env->app_id) && !music_card &&
                                         !s_env->tracks[i].playback_url[0] &&
                                         (!s_env->workbench_picker || s_env->tracks[i].invoke_n > 0);
-            if ((can_play && s_env->tracks[i].playback_url[0]) || dsh_detail_row) {
+            if ((can_play && s_env->tracks[i].playback_url[0]) || dsh_detail_row || photo_row) {
                 lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
                 lv_obj_add_event_cb(row, on_play_row, LV_EVENT_CLICKED, (void *)(intptr_t)i);
                 lv_obj_set_style_bg_color(row, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
@@ -2811,6 +2938,7 @@ void nodelio_skill_close_all(void)
 {
     const bool stop_news = nodelio_skill_news_ui_active();
     nodelio_media_stop();
+    nodelio_skill_sd_photo_hide();
     DisplayLockGuard lock(nl_ov_disp());
     if (!lock) {
         return;
@@ -2999,10 +3127,15 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
     }
     s_env = env;
     s_have_env = true;
-    /* 来源跟随信封：内存卡曲库 app_id=music.sd；其余音乐列表一律回在线曲库，
-     * 否则切到电台/新闻后回来，「换一批」会误走本地批次。 */
+    /* 来源跟随信封：music.sd / photo.sd；其余音乐列表回在线曲库。 */
     if (strcmp(s_env->card_type, "music_list") == 0) {
-        s_library_source = strcmp(s_env->app_id, "music.sd") == 0 ? 1 : 0;
+        if (strcmp(s_env->app_id, "music.sd") == 0) {
+            s_library_source = 1;
+        } else if (strcmp(s_env->app_id, "photo.sd") == 0) {
+            s_library_source = 2;
+        } else {
+            s_library_source = 0;
+        }
     }
     /* DSH：勿无清 DISPATCHED/ARMED；远端已 running/attention 或超时再清 */
     const bool is_dsh = nl_workbench_app(s_env->app_id);

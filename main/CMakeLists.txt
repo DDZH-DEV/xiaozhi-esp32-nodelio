@@ -988,6 +988,7 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/skill/content_envelope.c"
         "nodelio/skill/lunar_date.c"
         "nodelio/skill/sd_library.cc"
+        "nodelio/skill/sd_photo_ui.cc"
         "nodelio/skill/skill_runtime.c"
         "nodelio/skill/skill_result_ui.cc"
         "nodelio/skill/skill_news_ui.cc"
