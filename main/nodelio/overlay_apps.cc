@@ -64,7 +64,7 @@ static void with_builtin_daily(nl_app_item* items, int& n) {
         const char* bare = strstr(items[i].id, "::");
         bare = bare ? bare + 2 : items[i].id;
         if (strcmp(bare, "builtin.daily") == 0 || strcmp(bare, "weather.today") == 0 ||
-            strcmp(bare, "air.now") == 0)
+            strcmp(bare, "air.now") == 0 || strcmp(bare, "quote.daily") == 0)
             continue;
         items[keep++] = items[i];
     }
@@ -1242,7 +1242,7 @@ static int plan_open_query(const char *query, OpenPlan *plan, bool log)
                strstr(query, "每日一文")) {
         alias_id = "article.daily";
     } else if (strstr(query, "一句") || strstr(query, "名言") || strstr(query, "quote")) {
-        alias_id = "quote.daily";
+        alias_id = "article.daily";
     }
 
     const char *sid = nullptr;

@@ -634,12 +634,8 @@ static std::string normalize_skill_id_alias(const std::string &raw)
         canon = "music.search";
     } else if (low == "news") {
         canon = "news.latest";
-    } else if (low == "weather") {
-        canon = "weather.today";
-    } else if (low == "air" || low == "aqi") {
-        canon = "air.now";
-    } else if (low == "quote" || low == "daily") {
-        canon = "quote.daily";
+    } else if (low == "quote" || low == "daily" || low == "quote.daily") {
+        canon = "article.daily";
     } else if (low == "dsh" || low == "dsh.status" || low == "dsh_status" || low == "tasks") {
         canon = "dsh.status";
     } else if (low == "chatgpt" || low == "openai") {
@@ -668,6 +664,27 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t *cfg, const std::strin
         return std::unexpected(std::string("skill_id 不能为空"));
     }
     const std::string skill_id = normalize_skill_id_alias(skill_id_in);
+    {
+        const char *bare = skill_id.c_str();
+        const char *colon = strrchr(bare, ':');
+        if (colon && colon > bare && colon[-1] == ':') {
+            bare = colon + 1;
+        }
+        if (strcmp(bare, "weather.today") == 0 || strcmp(bare, "air.now") == 0 ||
+            strcmp(bare, "builtin.daily") == 0) {
+            bool opened = false;
+            {
+                DisplayLockGuard lock(nl_ov_disp());
+                if (lock) {
+                    opened = nl_ov_apps_open_by_query("日历与天气");
+                }
+            }
+            if (!opened) {
+                return std::unexpected(std::string("打不开日历与天气"));
+            }
+            return std::string("已打开日历与天气");
+        }
+    }
     const bool dsh_app = nl_workbench_app(skill_id.c_str());
     const bool dsh_mutation = nl_workbench_mutation(skill_id.c_str(), params.c_str());
     const bool music_app = nodelio_skill_id_is_music(skill_id.c_str());
@@ -1245,7 +1262,7 @@ void nodelio_mcp_register_tools(void)
         "打开已装应用。听歌/曲库→name=曲库；电台/播客/新闻/天气同理。"
         "内存卡/TF卡/SD卡里的歌→name=内存卡（本机读卡，不走云端）。"
         "工作台可指定 DeepSeek/ChatGPT/WorkBuddy；查看任务打开默认入口。禁云端 play_music。"
-        "name=曲库/内存卡/音乐/新闻/天气/电台/播客/空气/每日一篇/每日一句/查看任务 或 app_id。",
+        "name=曲库/内存卡/音乐/新闻/天气/电台/播客/空气/每日一篇/查看任务 或 app_id。",
         PropertyList({Property("name", kPropertyTypeString)}),
         [](const PropertyList& properties) -> ToolResult {
             std::string name = properties["name"].value<std::string>();
@@ -1423,7 +1440,7 @@ void nodelio_mcp_register_tools(void)
     mcp.AddTool(
         "self.skill.invoke",
         "调技能。skill_id=music.search|radio.stations|podcast.latest|news.latest|"
-        "weather.today|air.now|quote.daily|dsh.status|openai.status|workbuddy.status|workbench."
+        "article.daily|dsh.status|openai.status|workbuddy.status|workbench."
         "status。"
         "工作台查询用对应 .status；派活 params 含 operation=task 和 instruction，续聊保留 session。"
         "听歌须 open_app(曲库)；旧 dsh.task 仍兼容；"
