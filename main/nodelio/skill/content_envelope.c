@@ -262,9 +262,12 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
                  "workbench_provider");
         out->workbench_picker =
             cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display, "workbench_picker"));
+        copy_str(out->workbench_picker_kind, sizeof(out->workbench_picker_kind), display,
+                 "workbench_picker_kind");
         const cJSON* page = cJSON_GetObjectItemCaseSensitive(display, "workbench_page");
-        out->workbench_page =
-            cJSON_IsNumber(page) && page->valueint >= 0 && page->valueint < 5 ? page->valueint : 0;
+        out->workbench_page = cJSON_IsNumber(page) && page->valueint >= 0 && page->valueint < 10000
+                                  ? page->valueint
+                                  : 0;
         copy_str(out->preferred_surface, sizeof(out->preferred_surface), display, "preferred_surface");
         copy_str(out->density, sizeof(out->density), display, "density");
         copy_str(out->media_kind, sizeof(out->media_kind), display, "media_kind");

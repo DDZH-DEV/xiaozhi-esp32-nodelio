@@ -14,18 +14,21 @@ import (
 	"sync"
 )
 
-const Version = "0.3.0"
+const Version = "0.4.0"
 
 type ProviderConfig struct {
-	Enabled      bool   `json:"enabled"`
-	BaseURL      string `json:"base_url,omitempty"`
-	Model        string `json:"model,omitempty"`
-	EndpointFile string `json:"endpoint_file,omitempty"`
-	DSHHome      string `json:"dsh_home,omitempty"`
-	Workspace    string `json:"workspace,omitempty"`
-	Permission   string `json:"permission,omitempty"`
-	AgentPreset  string `json:"agent_preset,omitempty"`
-	Mode         string `json:"mode,omitempty"`
+	Enabled       bool   `json:"enabled"`
+	BaseURL       string `json:"base_url,omitempty"`
+	Model         string `json:"model,omitempty"`
+	EndpointFile  string `json:"endpoint_file,omitempty"`
+	DSHHome       string `json:"dsh_home,omitempty"`
+	Workspace     string `json:"workspace,omitempty"`
+	Permission    string `json:"permission,omitempty"`
+	AgentPreset   string `json:"agent_preset,omitempty"`
+	Mode          string `json:"mode,omitempty"`
+	Executable    string `json:"executable,omitempty"`
+	CodexHome     string `json:"codex_home,omitempty"`
+	ControlSocket string `json:"control_socket,omitempty"`
 }
 
 type Config struct {
@@ -70,6 +73,7 @@ func DefaultConfig() Config {
 	name, _ := os.Hostname()
 	return Config{Name: name, SchemaVersion: 1, BridgeID: "pc-" + NewID(), Listen: "127.0.0.1:8791", DefaultProvider: "dsh",
 		Providers: map[string]ProviderConfig{
+			"codex":     {Enabled: false, Mode: "auto"},
 			"dsh":       {Enabled: false, AgentPreset: "standard"},
 			"openai":    {Enabled: false, BaseURL: "https://api.openai.com/v1"},
 			"workbuddy": {Enabled: false, BaseURL: "https://www.workbuddy.cn/openapi/v2", Mode: "local"},
@@ -131,6 +135,12 @@ func (s *ConfigStore) Update(u ConfigUpdate) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u.Config.BridgeID = s.s.Config.BridgeID
+	// Old management clients may still send the original three providers.
+	if u.Config.Providers != nil {
+		if _, ok := u.Config.Providers["codex"]; !ok {
+			u.Config.Providers["codex"] = s.s.Config.Providers["codex"]
+		}
+	}
 	if err := ValidateConfig(u.Config); err != nil {
 		return err
 	}
@@ -173,10 +183,10 @@ func ValidateConfig(c Config) error {
 	if _, err = net.LookupPort("tcp", port); err != nil {
 		return errors.New("invalid listen port")
 	}
-	if len(c.Providers) != 3 {
-		return errors.New("exactly dsh, openai, workbuddy providers are required")
+	if len(c.Providers) != 4 {
+		return errors.New("exactly codex, dsh, openai, workbuddy providers are required")
 	}
-	for _, id := range []string{"dsh", "openai", "workbuddy"} {
+	for _, id := range []string{"codex", "dsh", "openai", "workbuddy"} {
 		if _, ok := c.Providers[id]; !ok {
 			return fmt.Errorf("missing provider %s", id)
 		}
@@ -190,13 +200,23 @@ func ValidateConfig(c Config) error {
 		}
 	}
 	for id, p := range c.Providers {
-		if id != "dsh" {
+		if id != "dsh" && id != "codex" {
 			if err = validateURL(p.BaseURL, false); err != nil {
 				return fmt.Errorf("%s base URL: %w", id, err)
 			}
 		}
 		if id == "workbuddy" && p.Mode != "local" && p.Mode != "cloud" {
 			return errors.New("workbuddy mode must be local or cloud")
+		}
+		if id == "codex" {
+			if p.Mode != "" && p.Mode != "auto" && p.Mode != "history" {
+				return errors.New("codex mode must be auto or history")
+			}
+			for _, path := range []string{p.Executable, p.CodexHome, p.ControlSocket} {
+				if path != "" && (!filepath.IsAbs(path) || strings.ContainsAny(path, "\x00\r\n")) {
+					return errors.New("Codex 程序、数据目录及套接字必须使用本机绝对路径")
+				}
+			}
 		}
 	}
 	return nil

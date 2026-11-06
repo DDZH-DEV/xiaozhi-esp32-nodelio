@@ -20,7 +20,8 @@ static inline bool nl_workbench_app(const char* id) {
         return false;
     const size_t n = (size_t)(dot - key);
     const bool known =
-        (n == 3 && strncmp(key, "dsh", n) == 0) || (n == 6 && strncmp(key, "openai", n) == 0) ||
+        (n == 5 && strncmp(key, "codex", n) == 0) || (n == 3 && strncmp(key, "dsh", n) == 0) ||
+        (n == 6 && strncmp(key, "openai", n) == 0) ||
         (n == 9 && (strncmp(key, "workbuddy", n) == 0 || strncmp(key, "workbench", n) == 0));
     return known && (strcmp(dot, ".status") == 0 || strcmp(dot, ".task") == 0 ||
                      strcmp(dot, ".answer") == 0);
@@ -41,6 +42,8 @@ static inline const char* nl_workbench_named_app(const char* name) {
     }
     if (strstr(lower, "workbuddy"))
         return "workbuddy.status";
+    if (strstr(lower, "codex") || strstr(lower, "桌面工作台"))
+        return "codex.status";
     if (strstr(lower, "chatgpt") || strstr(lower, "openai"))
         return "openai.status";
     if (strstr(lower, "deepseek") || strstr(lower, "dsh"))

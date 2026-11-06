@@ -62,6 +62,17 @@ func (s *State) Put(t Task) error {
 	defer s.mu.Unlock()
 	return s.put(t)
 }
+
+// A history refresh must not clear a newer submission's receipt.
+func (s *State) PutIfRequest(t Task, requestID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.tasks[t.ID]
+	if !ok || requestID == "" || current.RequestID != requestID {
+		return errors.New("提交记录已变化，请刷新后重试")
+	}
+	return s.put(t)
+}
 func (s *State) put(t Task) error {
 	old, ok := s.tasks[t.ID]
 	if !ok && len(s.tasks) >= 1000 {

@@ -638,6 +638,8 @@ static std::string normalize_skill_id_alias(const std::string &raw)
         canon = "article.daily";
     } else if (low == "dsh" || low == "dsh.status" || low == "dsh_status" || low == "tasks") {
         canon = "dsh.status";
+    } else if (low == "codex" || low == "桌面工作台") {
+        canon = "codex.status";
     } else if (low == "chatgpt" || low == "openai") {
         canon = "openai.status";
     } else if (low == "workbuddy") {
@@ -1463,7 +1465,7 @@ void nodelio_mcp_register_tools(void)
     mcp.AddTool(
         "self.skill.invoke",
         "调技能。skill_id=music.search|radio.stations|podcast.latest|news.latest|"
-        "article.daily|dsh.status|openai.status|workbuddy.status|workbench."
+        "article.daily|codex.status|dsh.status|openai.status|workbuddy.status|workbench."
         "status。"
         "工作台查询用对应 .status；params 可带 computer=电脑名称，select_computer=true "
         "选择电脑。派活含 operation=task 和 instruction；续聊保留返回的 session，不得改投电脑。"

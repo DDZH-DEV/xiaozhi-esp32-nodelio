@@ -2507,7 +2507,11 @@ void fill_list(void)
     }
 
     if (s_card_sub && s_env->workbench_picker) {
-        if (s_env->bridge_id[0])
+        if (strcmp(s_env->workbench_picker_kind, "workspace") == 0)
+            lv_label_set_text_fmt(s_card_sub, "选择工作区 · 第 %d 页", s_env->workbench_page + 1);
+        else if (strcmp(s_env->workbench_picker_kind, "session") == 0)
+            lv_label_set_text_fmt(s_card_sub, "选择已有会话 · 第 %d 页", s_env->workbench_page + 1);
+        else if (s_env->bridge_id[0])
             lv_label_set_text(s_card_sub, "选择平台 · 点整行进入");
         else
             lv_label_set_text_fmt(s_card_sub, "选择电脑 · 上下滑动 · 第 %d 页",

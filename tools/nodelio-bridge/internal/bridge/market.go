@@ -9,18 +9,18 @@ import (
 )
 
 const MarketPrefix = "/nodelio-dsh-market/"
-const PackageVersion = "2.2.0"
+const PackageVersion = "2.3.0"
 
 // Immutable, embedded-in-binary packages. The exact bytes hashed here are also sent via WS.
 func MarketFiles() map[string][]byte {
 	files := map[string][]byte{}
 	apps := []any{}
-	for _, provider := range []string{"workbench", "dsh", "openai", "workbuddy"} {
-		name := map[string]string{"workbench": "默认工作台", "dsh": "DeepSeek 工作台", "openai": "ChatGPT（独立 API）", "workbuddy": "WorkBuddy"}[provider]
+	for _, provider := range []string{"workbench", "codex", "dsh", "openai", "workbuddy"} {
+		name := map[string]string{"codex": "Codex 桌面", "workbench": "默认工作台", "dsh": "DeepSeek 工作台", "openai": "OpenAI API 独立会话", "workbuddy": "WorkBuddy"}[provider]
 		for _, op := range []string{"status", "task", "answer"} {
 			app := provider + "." + op
 			title := name + map[string]string{"status": "进度", "task": "派活", "answer": "确认"}[op]
-			properties := map[string]any{"provider": map[string]any{"type": "string", "enum": []string{"dsh", "openai", "workbuddy"}}, "session": map[string]any{"type": "string", "maxLength": 256}, "workspace": map[string]any{"type": "string", "maxLength": 512}}
+			properties := map[string]any{"provider": map[string]any{"type": "string", "enum": []string{"codex", "dsh", "openai", "workbuddy"}}, "session": map[string]any{"type": "string", "maxLength": 256}, "workspace": map[string]any{"type": "string", "maxLength": 512}}
 			if op == "status" {
 				title = name
 				properties["operation"] = map[string]any{"type": "string", "enum": []string{"status", "task", "answer"}}
@@ -39,6 +39,8 @@ func MarketFiles() map[string][]byte {
 			properties["bridge_id"] = map[string]any{"type": "string", "maxLength": 63}
 			properties["computer"] = map[string]any{"type": "string", "maxLength": 40}
 			properties["select_computer"] = map[string]any{"type": "boolean"}
+			properties["cursor"] = map[string]any{"type": "string", "maxLength": 64}
+			properties["page"] = map[string]any{"type": "integer", "minimum": 0, "maximum": 40}
 			properties["computer_page"] = map[string]any{"type": "integer", "minimum": 0, "maximum": 4}
 			input := map[string]any{"type": "object", "properties": properties, "required": []string{}}
 			if op == "task" {
@@ -56,7 +58,7 @@ func MarketFiles() map[string][]byte {
 			}
 		}
 	}
-	index := map[string]any{"schema_version": 1, "market_id": "com.nodelio.dsh", "name": "NodeLio 工作台桥", "description": "DSH、OpenAI、WorkBuddy 统一连接桥", "updated_at": "2026-11-05T00:00:00Z", "publisher": map[string]any{"name": "NodeLio"}, "apps": apps}
+	index := map[string]any{"schema_version": 1, "market_id": "com.nodelio.dsh", "name": "NodeLio 工作台桥", "description": "Codex 桌面、DSH、OpenAI API、WorkBuddy 统一连接桥", "updated_at": "2026-11-06T00:00:00Z", "publisher": map[string]any{"name": "NodeLio"}, "apps": apps}
 	files[MarketPrefix+"marketplace.json"], _ = json.MarshalIndent(index, "", "  ")
 	return files
 }

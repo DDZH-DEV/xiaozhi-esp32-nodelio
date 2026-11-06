@@ -115,7 +115,7 @@ func TestMarketAdvertisesMainAppsAndLiveAvailability(t *testing.T) {
 		t.Fatal(err)
 	}
 	apps := arr(doc["apps"])
-	if len(apps) != 4 {
+	if len(apps) != 5 {
 		t.Fatalf("got %d visible apps", len(apps))
 	}
 	for _, raw := range apps {
