@@ -36,8 +36,8 @@ async function load() {
   const doc=await api('/api/config');config=doc.config; const p=config.providers;
   $('computer-name').value=config.name||'';$('host-ws').value=config.host_ws; $('panel-id').value=config.panel_device_id; $('default-provider').value=config.default_provider;
   for(const id of ['dsh','openai','workbuddy']) $(id+'-enabled').checked=p[id].enabled;
-  for(const [id,key] of [['dsh-workspace','workspace'],['dsh-model','model'],['dsh-permission','permission'],['dsh-endpoint','endpoint_file'],['dsh-home','dsh_home'],['dsh-agent','agent_preset']]) $(id).value=p.dsh[key]||'';
-  $('openai-model').value=p.openai.model||''; $('openai-base').value=p.openai.base_url;
+  for(const [id,key] of [['dsh-workspace','workspace'],['dsh-endpoint','endpoint_file'],['dsh-home','dsh_home']]) $(id).value=p.dsh[key]||'';
+  $('openai-base').value=p.openai.base_url;
   $('workbuddy-mode').value=p.workbuddy.mode; $('workbuddy-base').value=p.workbuddy.base_url;
   for(const [id,key] of [['host-token','host_token'],['openai-key','openai_key'],['workbuddy-token','workbuddy_token']]) {$(id).value='';$(id).placeholder=doc.secrets_set[key]?'已保存；留空保留':'尚未配置';}
   $('version').textContent='v'+doc.version; $('test-provider').value=config.default_provider;
@@ -54,7 +54,37 @@ $('settings').addEventListener('submit',async event=>{event.preventDefault();con
   await api('/api/config','PUT',{config,secrets:{host_token:val('host-token'),openai_key:val('openai-key'),workbuddy_token:val('workbuddy-token')},clear_secrets:[...clearSecrets]});clearSecrets.clear();await load();message('配置已保存。正在检查连接…');await health();message('配置已应用。');
 }catch(e){message(e.message,true);}finally{button.disabled=false;}});
 for(const b of document.querySelectorAll('[data-clear]')) b.onclick=()=>{clearSecrets.add(b.dataset.clear);message('已标记清除凭证，保存后生效。');};
-$('refresh').onclick=async()=>{try{await health();message('连接检查完成。');}catch(e){message(e.message,true);}};
+function fillSelect(id, options, current, placeholder) {
+  const el=$(id), keep=el.options.length ? el.value : (current||'');
+  el.replaceChildren();
+  if (placeholder) el.add(new Option(placeholder, ''));
+  const seen=new Set(['']);
+  for (const o of options||[]) {
+    const value=(o.value||'').trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    el.add(new Option(o.label||value, value));
+  }
+  if (keep && !seen.has(keep)) el.add(new Option(keep, keep));
+  el.value=[...el.options].some(o=>o.value===keep)?keep:'';
+}
+async function fillChoices() {
+  let doc={};
+  try { doc=await api('/api/choices'); } catch(e) { message(e.message,true); return; }
+  const d=doc.dsh||{}, o=doc.openai||{}, p=config.providers;
+  const list=$('dsh-workspace-list');
+  list.replaceChildren();
+  for (const item of d.workspaces||[]) {
+    const opt=document.createElement('option');
+    opt.value=item.value; opt.label=item.label||item.value;
+    list.append(opt);
+  }
+  fillSelect('dsh-model', d.models, p.dsh.model, '第一个可用模型');
+  fillSelect('dsh-permission', d.permissions, p.dsh.permission, (d.permissions||[]).length ? '请选择权限预设' : (d.error||'打开 DSH 后可选择'));
+  fillSelect('dsh-agent', (d.agents||[]).length?d.agents:[{value:'standard',label:'standard'}], p.dsh.agent_preset||'standard', '');
+  fillSelect('openai-model', o.models, p.openai.model, (o.models||[]).length ? '请选择模型' : (o.error||'保存 API Key 后可读取模型'));
+}
+$('refresh').onclick=async()=>{try{await Promise.all([health(),fillChoices()]);message('连接检查完成。');}catch(e){message(e.message,true);}};
 $('startup').onchange=async()=>{const enabled=$('startup').checked;$('startup').disabled=true;try{await api('/api/startup','PUT',{enabled});await startup();message(enabled?'已注册登录启动。当前程序请保持在固定目录。':'已取消下次登录启动，当前程序继续运行。');}catch(e){$('startup').checked=!enabled;message(e.message,true);}finally{$('startup').disabled=false;}};
 function render(doc){
   if(doc.status==='error')throw new Error(doc.error.message);
@@ -70,4 +100,4 @@ $('list').onclick=async()=>{try{render(await api('/api/invoke','POST',{app_id:va
 $('send').onclick=async()=>{const instruction=val('instruction');if(!instruction){message('请先输入指令。',true);return;}$('send').disabled=true;try{const session=val('test-session');const doc=await api('/api/invoke','POST',{app_id:val('test-provider')+'.task',params:{instruction,session,request_id:crypto.randomUUID()}});render(doc);if(doc.content?.[0]?.id)$('test-session').value=doc.content[0].id;$('instruction').value='';message('指令已提交。稍后刷新任务查看结果；不要重复发送。');}catch(e){message(e.message,true);}finally{$('send').disabled=false;}};
 $('logs').onclick=async()=>{try{$('log-output').textContent=(await api('/api/logs')).text;$('log-output').hidden=false;}catch(e){message(e.message,true);}};
 $('stop').onclick=async()=>{try{await api('/api/stop','POST',{});message('连接桥已退出。重新打开程序可继续使用。');for(const b of document.querySelectorAll('button'))b.disabled=true;}catch(e){message(e.message,true);}};
-(async()=>{try{await load();await Promise.all([health(),startup()]);}catch(e){message(e.message,true);}})();
+(async()=>{try{await load();await Promise.all([health(),startup(),fillChoices()]);}catch(e){message(e.message,true);}})();

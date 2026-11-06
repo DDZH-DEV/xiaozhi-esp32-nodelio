@@ -102,6 +102,22 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			s.json(w, 200, map[string]any{"ok": true, "restart_required": u.Config.Listen != s.Listen})
 			return
 		}
+	case "/api/choices":
+		if r.Method == "GET" {
+			ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+			defer cancel()
+			dsh, _ := s.Engine.Providers["dsh"].(*DSH)
+			oa, _ := s.Engine.Providers["openai"].(*OpenAI)
+			body := map[string]any{}
+			if dsh != nil {
+				body["dsh"] = dsh.Choices(ctx)
+			}
+			if oa != nil {
+				body["openai"] = oa.ModelChoices(ctx)
+			}
+			s.json(w, 200, body)
+			return
+		}
 	case "/api/health":
 		if r.Method == "GET" {
 			ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)

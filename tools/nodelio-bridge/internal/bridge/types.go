@@ -46,6 +46,10 @@ type Option struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 }
+type Choice struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
 type Health struct {
 	State        string   `json:"state"`
 	Message      string   `json:"message"`

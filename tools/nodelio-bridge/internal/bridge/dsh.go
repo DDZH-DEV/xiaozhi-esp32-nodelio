@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -419,6 +420,176 @@ func (p *DSH) Answer(ctx context.Context, r Request) error {
 	})
 }
 
+func (p *DSH) Choices(ctx context.Context) map[string]any {
+	cfg := p.config.Snapshot().Config.Providers["dsh"]
+	result := map[string]any{"workspaces": []Choice{}, "models": []Choice{}, "permissions": []Choice{}, "agents": defaultAgentChoices()}
+	var sessionPaths []string
+	err := p.with(ctx, func(c *dshRPC) error {
+		models, permissions, agents, paths, err := dshCatalog(c)
+		if err != nil {
+			return err
+		}
+		result["models"] = models
+		result["permissions"] = permissions
+		if len(agents) > 0 {
+			result["agents"] = agents
+		}
+		sessionPaths = paths
+		return nil
+	})
+	if err != nil {
+		result["error"] = err.Error()
+	}
+	result["workspaces"] = suggestWorkspaces(append([]string{cfg.Workspace}, sessionPaths...))
+	return result
+}
+func dshCatalog(c *dshRPC) (models, permissions, agents []Choice, paths []string, err error) {
+	var modelDoc struct {
+		Models []map[string]any `json:"models"`
+	}
+	var permDoc struct {
+		Permissions []map[string]any `json:"permissions"`
+	}
+	if err = c.call("catalog.listModels", map[string]any{"limit": 1000}, &modelDoc); err != nil {
+		return
+	}
+	if err = c.call("catalog.listPermissions", map[string]any{"limit": 100}, &permDoc); err != nil {
+		return
+	}
+	for _, m := range modelDoc.Models {
+		if m["enabled"] == false {
+			continue
+		}
+		meta := obj(m["metadata"])
+		value := strings.Trim(str(meta["provider"])+"/"+str(meta["model"]), "/")
+		if value == "" {
+			value = str(m["selectionId"])
+		}
+		if value == "" {
+			value = str(m["id"])
+		}
+		if value == "" {
+			continue
+		}
+		label := str(m["title"])
+		if label == "" {
+			label = value
+		}
+		models = append(models, Choice{Value: value, Label: label})
+	}
+	for _, m := range permDoc.Permissions {
+		if m["enabled"] == false {
+			continue
+		}
+		meta := obj(m["metadata"])
+		value := str(meta["preset"])
+		if value == "" {
+			value = str(m["selectionId"])
+		}
+		if value == "" {
+			value = str(m["id"])
+		}
+		if value == "" {
+			value = str(m["title"])
+		}
+		if value == "" {
+			continue
+		}
+		label := str(m["title"])
+		if label == "" || label == value {
+			label = value
+		} else {
+			label = value + " · " + label
+		}
+		permissions = append(permissions, Choice{Value: value, Label: label})
+	}
+	var presetDoc struct {
+		Presets []map[string]any `json:"presets"`
+	}
+	if c.call("catalog.listAgentPresets", map[string]any{}, &presetDoc) == nil {
+		for _, m := range presetDoc.Presets {
+			if m["enabled"] == false {
+				continue
+			}
+			id := str(m["id"])
+			if id == "" {
+				continue
+			}
+			name := str(m["name"])
+			if name == "" {
+				name = id
+			}
+			agents = append(agents, Choice{Value: id, Label: name})
+		}
+	}
+	if list, e := sessions(c); e == nil {
+		for _, s := range list {
+			if s.CWD != "" {
+				paths = append(paths, s.CWD)
+			}
+		}
+	}
+	return
+}
+func defaultAgentChoices() []Choice {
+	return []Choice{{Value: "standard", Label: "standard"}, {Value: "ptc", Label: "ptc"}, {Value: "minimal", Label: "minimal"}, {Value: "cordis", Label: "cordis"}}
+}
+func suggestWorkspaces(extra []string) []Choice {
+	seen := map[string]bool{}
+	out := []Choice{}
+	add := func(p string) {
+		if len(out) >= 40 || strings.TrimSpace(p) == "" {
+			return
+		}
+		p = filepath.Clean(p)
+		key := p
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(p)
+		}
+		if seen[key] {
+			return
+		}
+		info, err := os.Stat(p)
+		if err != nil || !info.IsDir() {
+			return
+		}
+		seen[key] = true
+		label := filepath.Base(p)
+		if label == "." || label == string(filepath.Separator) {
+			label = p
+		}
+		out = append(out, Choice{Value: p, Label: label})
+	}
+	for _, p := range extra {
+		add(p)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return out
+	}
+	for _, name := range []string{"Desktop", "Documents", "Downloads"} {
+		add(filepath.Join(home, name))
+	}
+	for _, name := range []string{"Projects", "Developer", "source", "code", "src", "repos"} {
+		root := filepath.Join(home, name)
+		info, err := os.Stat(root)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		add(root)
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || e.Name() == "node_modules" {
+				continue
+			}
+			add(filepath.Join(root, e.Name()))
+		}
+	}
+	return out
+}
 func textParts(v any) string {
 	if s, ok := v.(string); ok {
 		return s

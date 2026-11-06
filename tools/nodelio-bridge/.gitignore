@@ -2,3 +2,5 @@
 /nodelio-bridge
 /nodelio-bridge.exe
 /coverage.out
+/tmp/
+/build-errors.log

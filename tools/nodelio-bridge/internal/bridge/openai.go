@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -28,6 +29,48 @@ func (p *OpenAI) Health(ctx context.Context) Health {
 	h.State = "ready"
 	h.Message = "API 已连接；独立会话，不同步 ChatGPT 历史"
 	return h
+}
+func (p *OpenAI) ModelChoices(ctx context.Context) map[string]any {
+	s := p.e.Config.Snapshot()
+	c := s.Config.Providers["openai"]
+	key := s.Secrets["openai_key"]
+	out := map[string]any{"models": []Choice{}}
+	if key == "" {
+		out["error"] = "保存 API Key 后可读取模型"
+		return out
+	}
+	var doc struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := callJSON(ctx, p.http, "GET", strings.TrimRight(c.BaseURL, "/")+"/models", key, nil, &doc); err != nil {
+		out["error"] = err.Error()
+		return out
+	}
+	seen := map[string]bool{}
+	ids := []string{}
+	for _, m := range doc.Data {
+		id := strings.TrimSpace(m.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if len(ids) > 200 {
+		ids = ids[:200]
+	}
+	choices := make([]Choice, 0, len(ids))
+	for _, id := range ids {
+		choices = append(choices, Choice{Value: id, Label: id})
+	}
+	if len(choices) == 0 {
+		out["error"] = "账号未返回模型"
+	}
+	out["models"] = choices
+	return out
 }
 func (p *OpenAI) List(_ context.Context, r Request) ([]Task, error) {
 	s := p.e.Config.Snapshot()
