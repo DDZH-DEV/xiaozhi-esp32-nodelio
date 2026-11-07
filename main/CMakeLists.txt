@@ -987,6 +987,8 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/skill/device_caps.c"
         "nodelio/skill/content_envelope.c"
         "nodelio/skill/lunar_date.c"
+        "nodelio/skill/almanac.c"
+        "nodelio/skill/almanac_history.c"
         "nodelio/skill/sd_library.cc"
         "nodelio/skill/sd_photo_ui.cc"
         "nodelio/skill/skill_runtime.c"
@@ -994,8 +996,10 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/skill/skill_news_ui.cc"
         "nodelio/skill/skill_daily_ui.cc"
         "nodelio/skill/skill_dsh_ui.cc"
+        "nodelio/skill/skill_support_ui.cc"
         "nodelio/skill/skill_media_bar.cc"
         "nodelio/skill/media_player.cc"
+        "nodelio/skill/skill_lyrics.cc"
     )
     list(APPEND INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/nodelio

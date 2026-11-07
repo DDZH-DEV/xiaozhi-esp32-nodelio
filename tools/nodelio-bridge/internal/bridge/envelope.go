@@ -105,6 +105,12 @@ func (e *Engine) Invoke(ctx context.Context, app string, r Request) map[string]a
 			spoken = "已排队，等待桌面处理。"
 		}
 	}
+	if id == "dsh" && op == "status" && r.Session == "" {
+		if dsh, ok := e.Providers["dsh"].(*DSH); ok {
+			display["filters"] = dsh.WorkspaceFilters(ctx, r.Workspace, r.DefaultWorkspace)
+			display["workbench_provider"] = "dsh"
+		}
+	}
 	return map[string]any{"schema_version": 1, "request_id": NewID(), "app_id": app, "status": "ok", "content": items,
 		"display": display,
 		"spoken":  map[string]any{"text": spoken, "language": "zh-CN"}}

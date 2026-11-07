@@ -216,6 +216,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 				}
 				req.Session = r.URL.Query().Get("session")
 				req.Workspace = r.URL.Query().Get("workspace")
+				req.DefaultWorkspace = r.URL.Query().Get("default_workspace")
 			}
 			ctx, cancel := context.WithTimeout(r.Context(), 22*time.Second)
 			defer cancel()

@@ -235,7 +235,7 @@ func (p *DSH) List(ctx context.Context, r Request) ([]Task, error) {
 			if r.Session != "" && r.Session != s.External && r.Session != s.ID {
 				continue
 			}
-			if r.Session == "" && r.Workspace != "" && filepath.Clean(s.CWD) != filepath.Clean(r.Workspace) {
+			if r.Session == "" && workspaceSelected(r.Workspace) && !sameWorkspace(s.CWD, r.Workspace) {
 				continue
 			}
 			t, err := p.read(c, s)
@@ -534,6 +534,80 @@ func dshCatalog(c *dshRPC) (models, permissions, agents []Choice, paths []string
 func defaultAgentChoices() []Choice {
 	return []Choice{{Value: "standard", Label: "standard"}, {Value: "ptc", Label: "ptc"}, {Value: "minimal", Label: "minimal"}, {Value: "cordis", Label: "cordis"}}
 }
+func workspaceSelected(path string) bool {
+	path = strings.TrimSpace(path)
+	return path != "" && path != "__all__"
+}
+
+func sameWorkspace(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// WorkspaceFilters 是进度卡顶栏。全部会话始终在，点某个目录只看该工作区。
+func (p *DSH) WorkspaceFilters(ctx context.Context, selected, preferred string) []any {
+	paths := []string{}
+	_ = p.with(ctx, func(c *dshRPC) error {
+		list, err := sessions(c)
+		if err != nil {
+			return err
+		}
+		for _, s := range list {
+			if s.CWD != "" {
+				paths = append(paths, s.CWD)
+			}
+		}
+		return nil
+	})
+	cfg := p.config.Snapshot().Config.Providers["dsh"].Workspace
+	raw := append([]string{preferred, cfg, selected}, paths...)
+	seen := map[string]bool{}
+	ordered := []string{}
+	for _, pth := range raw {
+		if !workspaceSelected(pth) {
+			continue
+		}
+		pth = filepath.Clean(pth)
+		key := pth
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(pth)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		ordered = append(ordered, pth)
+		if len(ordered) >= 7 {
+			break
+		}
+	}
+	if len(ordered) == 0 {
+		return nil
+	}
+	bases := map[string]int{}
+	for _, pth := range ordered {
+		bases[strings.ToLower(filepath.Base(pth))]++
+	}
+	allSelected := !workspaceSelected(selected)
+	out := []any{map[string]any{"id": "__all__", "title": "全部", "workspace": "__all__", "selected": allSelected}}
+	for _, pth := range ordered {
+		label := filepath.Base(pth)
+		if bases[strings.ToLower(label)] > 1 {
+			parent := filepath.Base(filepath.Dir(pth))
+			if parent != "" && parent != "." && parent != string(filepath.Separator) {
+				label = parent + "/" + label
+			}
+		}
+		out = append(out, map[string]any{
+			"id": pth, "title": label, "workspace": pth, "selected": !allSelected && sameWorkspace(pth, selected),
+		})
+	}
+	return out
+}
+
 func suggestWorkspaces(extra []string) []Choice {
 	seen := map[string]bool{}
 	out := []Choice{}

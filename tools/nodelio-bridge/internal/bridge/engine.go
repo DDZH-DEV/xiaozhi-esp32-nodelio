@@ -88,7 +88,8 @@ func (e *Engine) Dispatch(ctx context.Context, operation string, r Request) ([]T
 	}
 	r.Provider = id
 	r.Instruction = strings.TrimSpace(r.Instruction)
-	if r.Workspace == "" {
+	// status 不把默认工作区当成过滤条件，列表保持全部会话，顶栏 chip 再切换。
+	if r.Workspace == "" && operation != "status" {
 		r.Workspace = r.DefaultWorkspace
 	}
 	if operation != "status" && operation != "task" && operation != "answer" {
