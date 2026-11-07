@@ -633,6 +633,14 @@ bool NotifyPlayer::HasPlaybackStarted() const {
     return active_ && playback_started_;
 }
 
+uint32_t NotifyPlayer::PlaybackPositionMs() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!active_) {
+        return 0;
+    }
+    return last_playback_position_ms_;
+}
+
 bool NotifyPlayer::IsCancelled(uint32_t playback_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return cancelled_ || !active_ || playback_id != playback_id_;

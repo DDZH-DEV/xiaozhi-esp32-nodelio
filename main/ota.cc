@@ -97,6 +97,158 @@ std::string Ota::GetCheckVersionUrl() {
     return url;
 }
 
+std::string Ota::GetVoiceOtaUrl() {
+    Settings settings("wifi", false);
+    std::string url = settings.GetString("ota_url");
+    if (url.empty()) {
+        url = CONFIG_OTA_URL;
+    }
+    return url;
+}
+
+void Ota::ClearVoiceTransportNvs() {
+    {
+        Settings mqtt("mqtt", true);
+        mqtt.EraseAll();
+    }
+    {
+        Settings websocket("websocket", true);
+        websocket.EraseAll();
+    }
+    has_mqtt_config_ = false;
+    has_websocket_config_ = false;
+}
+
+NetworkResult<> Ota::ParseVoiceServerResponse(cJSON* root) {
+    if (!root) {
+        return std::unexpected(NetworkError::ProtocolError());
+    }
+
+    has_activation_code_ = false;
+    has_activation_challenge_ = false;
+    activation_message_.clear();
+    activation_code_.clear();
+    activation_challenge_.clear();
+
+    cJSON* activation = cJSON_GetObjectItem(root, "activation");
+    if (cJSON_IsObject(activation)) {
+        cJSON* message = cJSON_GetObjectItem(activation, "message");
+        if (cJSON_IsString(message)) {
+            activation_message_ = message->valuestring;
+        }
+        cJSON* code = cJSON_GetObjectItem(activation, "code");
+        if (cJSON_IsString(code)) {
+            activation_code_ = code->valuestring;
+            has_activation_code_ = true;
+        }
+        cJSON* challenge = cJSON_GetObjectItem(activation, "challenge");
+        if (cJSON_IsString(challenge)) {
+            activation_challenge_ = challenge->valuestring;
+            has_activation_challenge_ = true;
+        }
+        cJSON* timeout_ms = cJSON_GetObjectItem(activation, "timeout_ms");
+        if (cJSON_IsNumber(timeout_ms)) {
+            activation_timeout_ms_ = timeout_ms->valueint;
+        }
+    }
+
+    has_mqtt_config_ = false;
+    cJSON* mqtt = cJSON_GetObjectItem(root, "mqtt");
+    if (cJSON_IsObject(mqtt)) {
+        Settings settings("mqtt", true);
+        cJSON* item = nullptr;
+        cJSON_ArrayForEach(item, mqtt) {
+            if (cJSON_IsString(item)) {
+                if (settings.GetString(item->string) != item->valuestring) {
+                    settings.SetString(item->string, item->valuestring);
+                }
+            } else if (cJSON_IsNumber(item)) {
+                if (settings.GetInt(item->string) != item->valueint) {
+                    settings.SetInt(item->string, item->valueint);
+                }
+            }
+        }
+        has_mqtt_config_ = true;
+    }
+
+    has_websocket_config_ = false;
+    cJSON* websocket = cJSON_GetObjectItem(root, "websocket");
+    if (cJSON_IsObject(websocket)) {
+        Settings settings("websocket", true);
+        cJSON* item = nullptr;
+        cJSON_ArrayForEach(item, websocket) {
+            if (cJSON_IsString(item)) {
+                if (settings.GetString(item->string) != item->valuestring) {
+                    settings.SetString(item->string, item->valuestring);
+                }
+            } else if (cJSON_IsNumber(item)) {
+                if (settings.GetInt(item->string) != item->valueint) {
+                    settings.SetInt(item->string, item->valueint);
+                }
+            }
+        }
+        has_websocket_config_ = true;
+    }
+
+    /* 故意忽略 firmware：墙板升级仍走 sila-panel-update.json */
+    return {};
+}
+
+NetworkResult<> Ota::FetchVoiceServer(const std::string& url_in) {
+    std::string url = url_in;
+    if (url.empty()) {
+        url = CONFIG_OTA_URL;
+    }
+    if (url.length() < 10) {
+        ESP_LOGE(TAG, "Voice OTA URL is not properly set");
+        return std::unexpected(NetworkError::InvalidArgument());
+    }
+
+    ClearVoiceTransportNvs();
+
+    auto http = SetupHttp();
+    auto& board = Board::GetInstance();
+    std::string data = board.GetSystemInfoJson();
+    http->SetContent(std::move(data));
+    ESP_LOGI(TAG, "Voice server fetch: %s", url.c_str());
+    if (auto opened = http->Open("POST", url); !opened) {
+        ESP_LOGE(TAG, "Failed to open voice OTA: %s", opened.error().ToString().c_str());
+        return opened;
+    }
+
+    auto status_code = http->GetStatusCode();
+    if (!status_code) {
+        ESP_LOGE(TAG, "Failed to read voice OTA status: %s", status_code.error().ToString().c_str());
+        return std::unexpected(status_code.error());
+    }
+    if (*status_code != 200) {
+        ESP_LOGE(TAG, "Voice OTA failed, status code: %d", *status_code);
+        return std::unexpected(NetworkError::HttpFailed(*status_code));
+    }
+
+    std::string body = http->ReadAll();
+    http->Close();
+
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (root == nullptr) {
+        ESP_LOGE(TAG, "Failed to parse voice OTA JSON");
+        return std::unexpected(NetworkError::ProtocolError());
+    }
+    auto parsed = ParseVoiceServerResponse(root);
+    cJSON_Delete(root);
+    if (!parsed) {
+        return parsed;
+    }
+    if (!has_mqtt_config_ && !has_websocket_config_ && !has_activation_code_ &&
+        !has_activation_challenge_) {
+        ESP_LOGW(TAG, "Voice OTA response has no mqtt/websocket/activation");
+        return std::unexpected(NetworkError::ProtocolError());
+    }
+    ESP_LOGI(TAG, "Voice server ok mqtt=%d ws=%d activation=%d", has_mqtt_config_ ? 1 : 0,
+             has_websocket_config_ ? 1 : 0, has_activation_code_ ? 1 : 0);
+    return {};
+}
+
 std::unique_ptr<Http> Ota::SetupHttp() {
     auto& board = Board::GetInstance();
     auto network = board.GetNetwork();
@@ -627,7 +779,12 @@ esp_err_t Ota::Activate() {
         return ESP_FAIL;
     }
 
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+    /* 墙板 GetCheckVersionUrl 指向固件清单；激活必须打语音 OTA。 */
+    std::string url = GetVoiceOtaUrl();
+#else
     std::string url = GetCheckVersionUrl();
+#endif
     if (url.back() != '/') {
         url += "/activate";
     } else {

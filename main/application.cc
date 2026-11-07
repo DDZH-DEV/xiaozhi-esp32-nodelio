@@ -768,11 +768,11 @@ void Application::InitializeProtocol() {
 
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
     /*
      * 墙板跳过开机 CheckVersion，ota_->HasMqttConfig()/HasWebsocketConfig() 恒为 false，
      * 继续用它们选协议会一律落到「默认 MQTT」。这两个配置本来就落在 NVS（mqtt/websocket
-     * 命名空间），直接读 NVS 判断，语义与 CheckVersion 解析后写入的一致。
+     * 命名空间），直接读 NVS 判断，语义与 FetchVoiceServer / 官方 OTA 写入的一致。
      */
     const bool has_mqtt_cfg = [] {
         Settings s("mqtt", false);
@@ -787,7 +787,7 @@ void Application::InitializeProtocol() {
     } else if (has_ws_cfg) {
         protocol_ = std::make_unique<WebsocketProtocol>();
     } else {
-        ESP_LOGW(TAG, "No protocol in NVS, using MQTT (manual fw check fills it)");
+        ESP_LOGW(TAG, "No protocol in NVS, using MQTT (settings → voice server fills it)");
         protocol_ = std::make_unique<MqttProtocol>();
     }
 #else
@@ -1119,6 +1119,13 @@ void Application::InitializeProtocol() {
                     news_awaiting_mcp_ = false;
                     news_detect_echo_.clear();
                     suppress_cloud_tts_until_us_ = 0;
+                    /* 客服气泡已开：这句话只生成待确认草稿，不当成家庭口令。 */
+                    if (nodelio_skill_try_support_voice_draft(message.c_str())) {
+                        ESP_LOGI(TAG, "stt local-route: support draft");
+                        SuppressCloudTts(5000);
+                        ContinueListeningAfterLocalSkill();
+                        return;
+                    }
                     /* 派活正文可能含「第一个」「重启」；不能被面板导航/新闻确认抢走。 */
                     if (nodelio_offline_try_dsh_phrase(message.c_str())) {
                         pending_confirm_open_dsh_ = false;
@@ -2990,6 +2997,118 @@ void Application::RequestManualFirmwareCheck() {
         nodelio_panel_ui_toast_defer("检查任务启动失败");
     }
 }
+
+void Application::RequestVoiceServerApply(bool official, std::string custom_url) {
+    static std::atomic<bool> busy{false};
+    if (busy.exchange(true)) {
+        nodelio_panel_ui_toast_defer("正在切换语音服务器…");
+        return;
+    }
+    if (GetDeviceState() != kDeviceStateIdle) {
+        busy = false;
+        nodelio_panel_ui_toast_defer("请先结束对话再切换");
+        return;
+    }
+
+    struct Args {
+        bool official;
+        std::string url;
+    };
+    auto* args = new Args{official, std::move(custom_url)};
+    nodelio_panel_ui_toast_defer(official ? "正在连接官方小智…" : "正在连接自定义服务器…");
+    BaseType_t ok = xTaskCreate(
+        [](void* arg) {
+            std::unique_ptr<Args> a(static_cast<Args*>(arg));
+            std::string fetch_url;
+            {
+                Settings wifi("wifi", true);
+                if (a->official) {
+                    wifi.EraseKey("ota_url");
+                    fetch_url = CONFIG_OTA_URL;
+                } else {
+                    fetch_url = a->url;
+                    wifi.SetString("ota_url", fetch_url);
+                }
+            }
+
+            Ota ota;
+            auto check = ota.FetchVoiceServer(fetch_url);
+            if (!check) {
+                ESP_LOGW(TAG, "voice server fetch failed: %s", check.error().ToString().c_str());
+                nodelio_panel_ui_toast_defer("连接失败，请检查地址");
+                busy = false;
+                vTaskDelete(nullptr);
+                return;
+            }
+
+            if (ota.HasActivationCode()) {
+                char tip[96];
+                snprintf(tip, sizeof(tip), "激活码 %s", ota.GetActivationCode().c_str());
+                nodelio_panel_ui_toast_defer(tip);
+                Application::GetInstance().Schedule(
+                    [msg = ota.GetActivationMessage(), code = ota.GetActivationCode()]() {
+                        char body[160];
+                        snprintf(body, sizeof(body), "%s\n%s", msg.c_str(), code.c_str());
+                        Application::GetInstance().Alert(Lang::Strings::ACTIVATION, body, "link",
+                                                         Lang::Sounds::OGG_ACTIVATION);
+                    });
+            }
+
+            if (ota.HasActivationChallenge()) {
+                bool activated = false;
+                for (int i = 0; i < 10; ++i) {
+                    esp_err_t err = ota.Activate();
+                    if (err == ESP_OK) {
+                        activated = true;
+                        break;
+                    }
+                    if (err == ESP_ERR_TIMEOUT) {
+                        vTaskDelay(pdMS_TO_TICKS(3000));
+                    } else {
+                        vTaskDelay(pdMS_TO_TICKS(5000));
+                    }
+                    if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle) {
+                        break;
+                    }
+                }
+                if (!activated) {
+                    nodelio_panel_ui_toast_defer("等待激活超时，请绑定后再试");
+                    busy = false;
+                    vTaskDelete(nullptr);
+                    return;
+                }
+                /* 激活后再拉一次，拿到 mqtt/websocket */
+                auto again = ota.FetchVoiceServer(fetch_url);
+                if (!again) {
+                    nodelio_panel_ui_toast_defer("激活成功但拉取配置失败");
+                    busy = false;
+                    vTaskDelete(nullptr);
+                    return;
+                }
+            }
+
+            if (!ota.HasMqttConfig() && !ota.HasWebsocketConfig()) {
+                nodelio_panel_ui_toast_defer("未拿到语音配置，请检查服务器");
+                busy = false;
+                vTaskDelete(nullptr);
+                return;
+            }
+
+            nodelio_panel_ui_toast_defer("已切换，即将重启");
+            Application::GetInstance().Schedule([]() {
+                vTaskDelay(pdMS_TO_TICKS(800));
+                Application::GetInstance().Reboot();
+            });
+            busy = false;
+            vTaskDelete(nullptr);
+        },
+        "xz_srv", 4096 * 4, args, 2, nullptr);
+    if (ok != pdPASS) {
+        delete args;
+        busy = false;
+        nodelio_panel_ui_toast_defer("切换任务启动失败");
+    }
+}
 #endif
 
 bool Application::UpgradeFirmware(const std::string& url, const std::string& version) {
@@ -3215,6 +3334,8 @@ bool Application::IsHttpAudioBusy() const { return notify_player_.IsBusy(); }
 bool Application::HasHttpAudioPlaybackStarted() const {
     return notify_player_.HasPlaybackStarted();
 }
+
+uint32_t Application::HttpAudioPositionMs() const { return notify_player_.PlaybackPositionMs(); }
 
 void Application::YieldVoiceForMedia() {
     if (protocol_ && protocol_->IsAudioChannelOpened()) {

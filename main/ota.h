@@ -17,6 +17,11 @@ public:
     ~Ota();
 
     NetworkResult<> CheckVersion();
+    /**
+     * 墙板：向小智语音 OTA 地址 POST 设备信息，只写入 mqtt/websocket（及激活信息）。
+     * 忽略响应里的 firmware；不碰墙板固件清单。url 空则用官方 CONFIG_OTA_URL。
+     */
+    NetworkResult<> FetchVoiceServer(const std::string& url = {});
     esp_err_t Activate();
     bool HasActivationChallenge() { return has_activation_challenge_; }
     bool HasNewVersion() {
@@ -40,8 +45,12 @@ public:
     const std::string& GetActivationMessage() const { return activation_message_; }
     const std::string& GetActivationCode() const { return activation_code_; }
     std::string GetCheckVersionUrl();
+    /** 语音云 OTA：wifi/ota_url，空则官方 CONFIG_OTA_URL（不是墙板固件清单）。 */
+    static std::string GetVoiceOtaUrl();
 
 private:
+    void ClearVoiceTransportNvs();
+    NetworkResult<> ParseVoiceServerResponse(cJSON* root);
     std::string activation_message_;
     std::string activation_code_;
     bool has_new_version_ = false;

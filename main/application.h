@@ -115,6 +115,11 @@ public:
 #if CONFIG_NODELIO_PANEL
     /** 设置页手工触发：查小智云固件版本，有新版则升级；后台任务，可重入挡. */
     void RequestManualFirmwareCheck();
+    /**
+     * 设置页：切官方或自定义小智语音服。official=true 擦掉 wifi/ota_url 后拉 CONFIG_OTA_URL；
+     * 否则写入 custom_url 再 POST。成功后重启；需激活码时 toast 提示，失败不重启。
+     */
+    void RequestVoiceServerApply(bool official, std::string custom_url = {});
 #endif
     bool CanEnterSleepMode();
     /** 须在主任务调用：息屏断网前挂起协议；亮屏后恢复. */
@@ -142,6 +147,8 @@ public:
     void StopHttpAudio();
     bool IsHttpAudioBusy() const;
     bool HasHttpAudioPlaybackStarted() const;
+    /** 本机 HTTP/本地文件播放进度（毫秒）。未在播时为 0。 */
+    uint32_t HttpAudioPositionMs() const;
     /**
      * 本地已处理口令（开 DSH/曲库等）：Abort + 短时丢弃云端否定 TTS。
      * 勿用过长窗口，否则会卡在 Listening、唤醒无响应。

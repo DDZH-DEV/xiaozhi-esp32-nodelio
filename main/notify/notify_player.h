@@ -47,6 +47,8 @@ public:
     bool IsActive(uint32_t playback_id = 0) const;
     bool IsBusy() const;
     bool HasPlaybackStarted() const;
+    /** 当前这首已送进播放器的媒体时间。未在播时为 0。 */
+    uint32_t PlaybackPositionMs() const;
 
 private:
     AudioService& audio_service_;
