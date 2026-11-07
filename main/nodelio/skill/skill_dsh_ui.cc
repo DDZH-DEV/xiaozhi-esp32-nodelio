@@ -817,13 +817,14 @@ void dsh_detail_paint_running(const char *subtitle)
     } else if (needs_you) {
         pill = UI_C_TILE_GPIO;
         bar = UI_C_WARN;
-        txt = subtitle && subtitle[0] ? subtitle : "等你确认";
+        /* 副标题含回复摘要，正文会再画一遍，顶条只留状态 */
+        txt = "等你确认";
     } else if (s_dsh_phase == DSH_UI_DISPATCHED && s_dsh_last_instr[0]) {
         static char buf[120];
         snprintf(buf, sizeof(buf), "已投递 · %s", s_dsh_last_instr);
         txt = buf;
     } else if (subtitle && subtitle[0] && dsh_subtitle_is_running(subtitle)) {
-        txt = subtitle;
+        txt = "执行中";
     }
     lv_obj_set_style_bg_color(s_dsh_status, lv_color_hex(pill), 0);
     for (int i = 0; i < 3; i++) {
@@ -892,10 +893,20 @@ void fill_dsh_detail(void)
         lv_obj_set_style_text_color(ttl, UI_TEXT, 0);
     }
     if (artist[0] && !dsh_subtitle_is_running(artist) && !dsh_subtitle_needs_you(artist)) {
-        /* 空闲字幕仍放正文上；执行中/待确认改走顶状态条，避免重复 */
+        /* 副标题是「状态 · 回复摘要」，摘要已在正文里，这里只留状态 */
+        const char *status_only = artist;
+        char status_buf[32];
+        if (const char *sep = strstr(artist, " · ")) {
+            const size_t n = (size_t)(sep - artist);
+            if (n > 0 && n < sizeof(status_buf)) {
+                memcpy(status_buf, artist, n);
+                status_buf[n] = '\0';
+                status_only = status_buf;
+            }
+        }
         lv_obj_t *sub = lv_label_create(s_card_list);
         nl_ov_set_font(sub);
-        lv_label_set_text(sub, artist);
+        lv_label_set_text(sub, status_only);
         lv_obj_set_width(sub, lv_pct(100));
         lv_label_set_long_mode(sub, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(sub, UI_TEXT_MUTED, 0);

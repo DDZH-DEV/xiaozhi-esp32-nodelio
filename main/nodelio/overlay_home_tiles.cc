@@ -181,7 +181,7 @@ static tile_kind_t tile_kind_of(const nl_widget_t *w)
         return TILE_PWM;
     }
     if (w->type == NL_WIDGET_SCENE_CHIP || w->type == NL_WIDGET_SCENE_GRID ||
-        w->bind.kind == NL_BIND_HOME_SCENARIO) {
+        w->bind.kind == NL_BIND_HOME_SCENARIO || w->bind.kind == NL_BIND_ACTION_BUTTON) {
         return TILE_SCENE;
     }
     if (w->type == NL_WIDGET_PIN_TOGGLE || w->bind.kind == NL_BIND_DEVICE_PIN) {
@@ -522,7 +522,8 @@ void nl_ov_style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
     }
     tile_kind_t kind = tile_kind_of(w);
     bool online = true;
-    if (w->bind.kind != NL_BIND_HOME_SCENARIO && w->bind.device_id[0]) {
+    if (w->bind.kind != NL_BIND_HOME_SCENARIO && w->bind.kind != NL_BIND_ACTION_BUTTON &&
+        w->bind.device_id[0]) {
         online = nodelio_panel_ui_device_online(w->bind.device_id);
     }
     const bool unknown = nl_ov_widget_state_unknown(w, kind);
@@ -570,7 +571,8 @@ void nl_ov_style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
             lv_obj_set_style_opa(tile, LV_OPA_60, 0);
         }
     } else {
-        ui_set_enabled(tile, online || kind == TILE_SCENE || w->bind.kind == NL_BIND_HOME_SCENARIO);
+        ui_set_enabled(tile, online || kind == TILE_SCENE || w->bind.kind == NL_BIND_HOME_SCENARIO ||
+                                   w->bind.kind == NL_BIND_ACTION_BUTTON);
         if (online) {
             lv_obj_set_style_opa(tile, LV_OPA_COVER, 0);
         }
@@ -778,12 +780,25 @@ void nl_ov_style_tile_visual(lv_obj_t *tile, const nl_widget_t *w)
     }
 }
 
+void nl_ov_home_flush_pending_state(void)
+{
+    if (!s_home_state_dirty) {
+        return;
+    }
+    nl_ov_refresh_home_tiles();
+}
+
 void nl_ov_refresh_home_tiles(void)
 {
     if (!s_home) {
         return;
     }
     if (s_home_structure_dirty || lv_obj_has_flag(s_home, LV_OBJ_FLAG_HIDDEN)) {
+        s_home_state_dirty = true;
+        return;
+    }
+    /* 设置详情盖住首页时不要跟着重绘磁贴，否则滚动和快照抢同一把 LVGL 锁。 */
+    if (s_settings_detail && !lv_obj_has_flag(s_settings_detail, LV_OBJ_FLAG_HIDDEN)) {
         s_home_state_dirty = true;
         return;
     }
@@ -877,7 +892,7 @@ static void on_btn(lv_event_t *e)
         return;
     }
     if (w->type == NL_WIDGET_SCENE_CHIP || w->type == NL_WIDGET_SCENE_GRID ||
-        w->bind.kind == NL_BIND_HOME_SCENARIO) {
+        w->bind.kind == NL_BIND_HOME_SCENARIO || w->bind.kind == NL_BIND_ACTION_BUTTON) {
         nl_ov_widget_cmd(w, w->bind.name);
         /* 轻反馈：边框闪 + 短弹 */
         if (tgt) {
@@ -888,8 +903,8 @@ static void on_btn(lv_event_t *e)
         return;
     }
     if (w && strcmp(w->skin, "momentary") == 0) {
-        if (w->bind.kind != NL_BIND_HOME_SCENARIO && w->bind.device_id[0] &&
-            !nodelio_panel_ui_device_online(w->bind.device_id)) {
+        if (w->bind.kind != NL_BIND_HOME_SCENARIO && w->bind.kind != NL_BIND_ACTION_BUTTON &&
+            w->bind.device_id[0] && !nodelio_panel_ui_device_online(w->bind.device_id)) {
             nl_ov_toast("设备未在线");
             return;
         }
@@ -907,8 +922,8 @@ static void on_btn(lv_event_t *e)
     }
     tile_kind_t kind = tile_kind_of(w);
     const char *want = nl_ov_widget_is_on(w, kind) ? "OFF" : "ON";
-    if (w->bind.kind != NL_BIND_HOME_SCENARIO && w->bind.device_id[0] &&
-        !nodelio_panel_ui_device_online(w->bind.device_id)) {
+    if (w->bind.kind != NL_BIND_HOME_SCENARIO && w->bind.kind != NL_BIND_ACTION_BUTTON &&
+        w->bind.device_id[0] && !nodelio_panel_ui_device_online(w->bind.device_id)) {
         nl_ov_toast("设备未在线");
         return;
     }

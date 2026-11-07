@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,6 +27,8 @@ void nodelio_skill_daily_update(const nodelio_nvs_config_t* cfg, nl_content_enve
                                 uint32_t generation);
 /** Reuse the shell clock tick; updates date highlighting only, never requests weather. */
 void nodelio_skill_daily_clock_tick(void);
+/** 提醒增删改后：若日历已开则重新拉圆点 / 当日列表。 */
+void nodelio_skill_daily_reminders_invalidate(void);
 
 /** 技能列表/结果卡是否仍显示（本地开应用后勿 goodbye 息屏）。 */
 bool nodelio_skill_result_is_visible(void);
@@ -156,6 +159,18 @@ void nodelio_skill_dsh_on_confirm_pending(const char *instruction);
 
 /** arm 超时/用户取消续聊：进度卡回 IDLE。 */
 void nodelio_skill_dsh_on_arm_cleared(void);
+
+/**
+ * 客服卡（support.inbox）打开时，从当前 Envelope 解析 conversation_id。
+ * 供语音 draft 注入；成功返回 true。
+ */
+bool nodelio_skill_support_conversation_id(uint64_t *out_id);
+
+/**
+ * 客服气泡页已打开时，把本轮识别原文转成 op=draft（不落库）。
+ * 已处理返回 true，调用方应抑制云端把这句话当成家庭口令。
+ */
+bool nodelio_skill_try_support_voice_draft(const char *text);
 
 #ifdef __cplusplus
 }

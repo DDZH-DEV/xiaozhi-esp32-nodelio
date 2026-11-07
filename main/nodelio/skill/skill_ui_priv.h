@@ -263,3 +263,6 @@ void fill_news(void);
 
 /* Daily UI (skill_daily_ui.cc) */
 void fill_calendar_weather(void);
+
+/* Support inbox / thread (skill_support_ui.cc) */
+void fill_support_thread(void);

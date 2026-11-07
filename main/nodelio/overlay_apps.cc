@@ -219,12 +219,9 @@ static void open_app_at(int idx, bool reset_daily = true) {
     }
     s_focus_idx = idx;
     if (strcmp(s_items[idx].id, "builtin.files") == 0) {
-        if (apps_wide()) {
-            if (s_split) {
-                render_list();
-            } else {
-                apps_set_split(true, true);
-            }
+        /* 已打开其它应用时只更新选中；没确认读到卡之前不收列表。 */
+        if (apps_wide() && s_split) {
+            render_list();
         }
         nodelio_skill_request_sd_library(false);
         return;
@@ -238,12 +235,9 @@ static void open_app_at(int idx, bool reset_daily = true) {
     const uint32_t daily_generation = daily ? nodelio_skill_daily_open(reset_daily) : 0;
     if (daily && !daily_generation)
         return;
-    if (apps_wide()) {
-        if (s_split) {
-            render_list();
-        } else {
-            apps_set_split(true, true);
-        }
+    /* 宽屏先不收列表。结果卡真正出现时再折叠；打不开则保持整列。 */
+    if (apps_wide() && s_split) {
+        render_list();
     }
     if (daily && !nodelio_wifi_is_connected()) {
         nl_ov_toast("当前离线，日历可用；联网后刷新天气");

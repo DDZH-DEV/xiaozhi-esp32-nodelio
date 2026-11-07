@@ -35,6 +35,11 @@ void free_skill_env(void)
         heap_caps_free(s_env->detail_body);
         s_env->detail_body = nullptr;
     }
+    if (s_env->chats) {
+        heap_caps_free(s_env->chats);
+        s_env->chats = nullptr;
+        s_env->chat_n = 0;
+    }
     heap_caps_free(s_env);
     s_env = nullptr;
     s_have_env = false;
@@ -48,6 +53,11 @@ void free_owned_env(nl_content_envelope_t *env)
     if (env->detail_body) {
         heap_caps_free(env->detail_body);
         env->detail_body = nullptr;
+    }
+    if (env->chats) {
+        heap_caps_free(env->chats);
+        env->chats = nullptr;
+        env->chat_n = 0;
     }
     heap_caps_free(env);
 }
@@ -626,8 +636,10 @@ void paint_music_mark(lv_obj_t *lbl, bool playing, int index)
 static int list_row_h(void)
 {
     if (list_use_comfortable()) {
-        const bool dsh = s_env && s_env->app_id[0] && nl_workbench_app(s_env->app_id);
-        if (!dsh) {
+        const bool tall_sub = s_env && s_env->app_id[0] &&
+                              (nl_workbench_app(s_env->app_id) ||
+                               strcmp(s_env->app_id, "support.inbox") == 0);
+        if (!tall_sub) {
             return SKILL_LIST_ROW_H;
         }
         /* 标题一行 + 副文两行 + 上下 pad，固定 68 会把标题裁进圆角 */
@@ -914,6 +926,12 @@ static void on_play_row(lv_event_t *e)
         return;
     }
     const int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    /* 客服进线：点整行 = 该行第一个 invoke（接管/发送） */
+    if (s_have_env && s_env && strcmp(s_env->app_id, "support.inbox") == 0 && idx >= 0 &&
+        idx < s_env->track_n && s_env->tracks[idx].invoke_n > 0) {
+        run_invoke_action(&s_env->tracks[idx].invokes[0]);
+        return;
+    }
     /* 内存卡相册：点行打开查看器 */
     if (s_have_env && s_env && s_library_source == 2 && idx >= 0 && idx < s_env->track_n &&
         s_env->tracks[idx].invoke_n > 0) {
@@ -933,6 +951,63 @@ static void on_play_row(lv_event_t *e)
         }
     }
     play_at(idx);
+}
+
+bool nodelio_skill_support_conversation_id(uint64_t *out_id)
+{
+    if (!out_id) {
+        return false;
+    }
+    *out_id = 0;
+    if (!s_have_env || !s_env || strcmp(s_env->app_id, "support.inbox") != 0) {
+        return false;
+    }
+    if (s_env->conversation_id > 0) {
+        *out_id = s_env->conversation_id;
+        return true;
+    }
+    for (int i = 0; i < s_env->chip_n; ++i) {
+        const char *pj = s_env->chips[i].params_json;
+        if (!pj || !pj[0]) {
+            continue;
+        }
+        cJSON *root = cJSON_Parse(pj);
+        const cJSON *jc = root ? cJSON_GetObjectItemCaseSensitive(root, "conversation_id") : nullptr;
+        uint64_t cid = 0;
+        if (cJSON_IsNumber(jc)) {
+            cid = (uint64_t)jc->valuedouble;
+        } else if (cJSON_IsString(jc) && jc->valuestring) {
+            cid = (uint64_t)strtoull(jc->valuestring, nullptr, 10);
+        }
+        cJSON_Delete(root);
+        if (cid > 0) {
+            *out_id = cid;
+            return true;
+        }
+    }
+    for (int i = 0; i < s_env->track_n; ++i) {
+        for (int ai = 0; ai < s_env->tracks[i].invoke_n; ++ai) {
+            const char *pj = s_env->tracks[i].invokes[ai].params_json;
+            if (!pj || !pj[0]) {
+                continue;
+            }
+            cJSON *root = cJSON_Parse(pj);
+            const cJSON *jc =
+                root ? cJSON_GetObjectItemCaseSensitive(root, "conversation_id") : nullptr;
+            uint64_t cid = 0;
+            if (cJSON_IsNumber(jc)) {
+                cid = (uint64_t)jc->valuedouble;
+            } else if (cJSON_IsString(jc) && jc->valuestring) {
+                cid = (uint64_t)strtoull(jc->valuestring, nullptr, 10);
+            }
+            cJSON_Delete(root);
+            if (cid > 0) {
+                *out_id = cid;
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 /** JSON 字符串转义（路径反斜杠）；out 须大于 in*2。 */
@@ -1318,6 +1393,17 @@ static nl_content_envelope_t *build_sd_photo_envelope(void)
     return env;
 }
 
+static void release_apps_rail_if_idle(void)
+{
+    Application::GetInstance().Schedule([]() {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (!lock || nodelio_skill_result_card_visible()) {
+            return;
+        }
+        nl_ov_apps_notify_skill_open(false);
+    });
+}
+
 static void sd_open_worker(void *p)
 {
     const bool auto_play = (reinterpret_cast<intptr_t>(p) != 0);
@@ -1328,12 +1414,14 @@ static void sd_open_worker(void *p)
     if (!nodelio_sd_is_mounted()) {
         s_sd_busy = false;
         nodelio_panel_ui_toast_defer("未检测到内存卡");
+        release_apps_rail_if_idle();
         return;
     }
     nl_content_envelope_t *env = build_sd_envelope(auto_play);
     s_sd_busy = false;
     if (!env) {
         nodelio_panel_ui_toast_defer("内存不足");
+        release_apps_rail_if_idle();
         return;
     }
     /* 来源以信封信源为准（show() 会按 app_id 回填 s_library_source） */
@@ -1349,17 +1437,20 @@ static void sd_photo_open_worker(void * /*p*/)
     if (!nodelio_sd_is_mounted()) {
         s_sd_busy = false;
         nodelio_panel_ui_toast_defer("未检测到内存卡");
+        release_apps_rail_if_idle();
         return;
     }
     nl_content_envelope_t *env = build_sd_photo_envelope();
     s_sd_busy = false;
     if (!env) {
         nodelio_panel_ui_toast_defer("内存不足");
+        release_apps_rail_if_idle();
         return;
     }
     if (nodelio_sd_photo_count() <= 0) {
         free_owned_env(env);
         nodelio_panel_ui_toast_defer("内存卡里没有 JPG 照片");
+        release_apps_rail_if_idle();
         return;
     }
     nodelio_skill_result_show(nullptr, env, false);
@@ -2548,6 +2639,23 @@ void fill_list(void)
         apply_card_chrome();
         return;
     }
+    if (strcmp(s_env->card_type, "support_thread") == 0) {
+        stop_dsh_detail_poll();
+        stop_dsh_status_anims();
+        s_dsh_focus_row = nullptr;
+        dsh_hide_confirm_bar();
+        if (s_dsh_status) {
+            lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_height(s_dsh_status, 0);
+        }
+        if (s_dsh_detail_bar) {
+            lv_obj_add_flag(s_dsh_detail_bar, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_height(s_dsh_detail_bar, 0);
+        }
+        fill_support_thread();
+        apply_card_chrome();
+        return;
+    }
     /* 带 body 的 DSH 详情卡 */
     if (s_env->detail_body && s_env->detail_body[0] && nl_workbench_app(s_env->app_id)) {
         fill_dsh_detail();
@@ -2619,7 +2727,11 @@ void fill_list(void)
                 } else if (s_dsh_phase == DSH_UI_DISPATCHED) {
                     snprintf(sub, sizeof(sub), "已投递 · 点刷新看进度");
                 } else {
-                    snprintf(sub, sizeof(sub), "共 %d 条 · 点卡片看回复 · 「续聊」开麦", s_env->track_n);
+                    if (s_env->filter_n > 1) {
+                        snprintf(sub, sizeof(sub), "共 %d 条 · 顶栏换工作区 · 「续聊」开麦", s_env->track_n);
+                    } else {
+                        snprintf(sub, sizeof(sub), "共 %d 条 · 点卡片看回复 · 「续聊」开麦", s_env->track_n);
+                    }
                 }
             } else {
                 snprintf(sub, sizeof(sub), "共 %d 条", s_env->track_n);
@@ -2709,12 +2821,15 @@ void fill_list(void)
             lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
             lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
             lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-            /* 曲库：有 URL 点播；相册：点行打开；DSH：点行拉详情 */
+            /* 曲库：有 URL 点播；相册：点行打开；DSH：点行拉详情；客服：点行 invoke */
             const bool photo_row = s_library_source == 2 && s_env->tracks[i].invoke_n > 0;
+            const bool support_row =
+                strcmp(s_env->app_id, "support.inbox") == 0 && s_env->tracks[i].invoke_n > 0;
             const bool dsh_detail_row = nl_workbench_app(s_env->app_id) && !music_card &&
                                         !s_env->tracks[i].playback_url[0] &&
                                         (!s_env->workbench_picker || s_env->tracks[i].invoke_n > 0);
-            if ((can_play && s_env->tracks[i].playback_url[0]) || dsh_detail_row || photo_row) {
+            if ((can_play && s_env->tracks[i].playback_url[0]) || dsh_detail_row || photo_row ||
+                support_row) {
                 lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
                 lv_obj_add_event_cb(row, on_play_row, LV_EVENT_CLICKED, (void *)(intptr_t)i);
                 lv_obj_set_style_bg_color(row, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
@@ -2793,9 +2908,10 @@ void fill_list(void)
             lv_obj_set_style_text_color(a, UI_TEXT_MUTED, 0);
             lv_obj_set_width(a, lv_pct(100));
             /* 简介按真实行数定高。预留两行空盒会把字顶到播放钮上方。 */
-            lv_label_set_long_mode(a, LV_LABEL_LONG_DOT);
             const bool sub_two_lines =
-                comfortable && s_env->app_id[0] && nl_workbench_app(s_env->app_id);
+                comfortable && s_env->app_id[0] &&
+                (nl_workbench_app(s_env->app_id) || strcmp(s_env->app_id, "support.inbox") == 0);
+            lv_label_set_long_mode(a, sub_two_lines ? LV_LABEL_LONG_WRAP : LV_LABEL_LONG_DOT);
             int cell_w = skill_panel_w();
             if (cols > 1) {
                 cell_w = (cell_w - 6 * (cols - 1)) / cols;

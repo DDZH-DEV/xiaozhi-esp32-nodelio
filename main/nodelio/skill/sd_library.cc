@@ -169,7 +169,7 @@ int cmp_path(const void *a, const void *b)
     return strcmp(static_cast<const char *>(a), static_cast<const char *>(b));
 }
 
-bool ensure_table(char *(**table)[NL_SD_PATH_MAX])
+bool ensure_table(char (**table)[NL_SD_PATH_MAX])
 {
     if (*table) {
         return true;

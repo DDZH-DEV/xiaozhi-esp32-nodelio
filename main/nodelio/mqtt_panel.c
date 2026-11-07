@@ -2,6 +2,7 @@
 
 #include "panel_layout.h"
 #include "panel_ui.h"
+#include "skill_result_ui.h"
 #include "wifi_provision.h"
 
 #include <cJSON.h>
@@ -168,6 +169,10 @@ static void handle_notify_payload(const char *data, int len)
         if (cJSON_IsString(nid) && nid->valuestring) {
             nodelio_panel_ui_notice_clear(nid->valuestring);
         }
+    } else if (cJSON_IsString(kind) && kind->valuestring &&
+               strcmp(kind->valuestring, "reminder_changed") == 0) {
+        /* 账号提醒增删改：日历已开则重拉圆点 / 当日列表 */
+        nodelio_skill_daily_reminders_invalidate();
     } else if (cJSON_IsString(kind) && kind->valuestring &&
                strcmp(kind->valuestring, "countdown") == 0) {
         /* 轻量推送：不拉 HTTP，直接改本地剩余秒 */

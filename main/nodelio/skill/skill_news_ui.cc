@@ -1306,6 +1306,8 @@ void fill_news(void)
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        /* 行高固定。标题超出时默认仍可滚这一行，上滑会先吃掉手势，列表推不下去。 */
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_event_cb(row, on_news_row, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_obj_set_style_bg_color(row, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
 
@@ -1316,6 +1318,7 @@ void fill_news(void)
         lv_obj_set_style_bg_color(idx_pod, UI_CAPSULE_OFF, 0);
         lv_obj_set_style_bg_opa(idx_pod, LV_OPA_COVER, 0);
         lv_obj_clear_flag(idx_pod, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(idx_pod, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_t *idx_l = lv_label_create(idx_pod);
         nl_ov_set_font(idx_l);
         char idx_buf[8];
@@ -1332,6 +1335,7 @@ void fill_news(void)
         lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_row(txt, 5, 0);
         lv_obj_clear_flag(txt, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(txt, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *t = lv_label_create(txt);
         nl_ov_set_font(t);
