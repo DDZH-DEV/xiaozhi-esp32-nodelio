@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 static void copy_str(char *dst, size_t dst_len, const cJSON *obj, const char *key)
 {
@@ -63,7 +64,9 @@ static void fill_media_kind_fallback(nl_content_envelope_t *out)
 static void degrade_card_type(nl_content_envelope_t *out)
 {
     if (out->card_type[0] == '\0') {
-        if (out->news_n > 0) {
+        if (out->chat_n > 0) {
+            snprintf(out->card_type, sizeof(out->card_type), "support_thread");
+        } else if (out->news_n > 0) {
             snprintf(out->card_type, sizeof(out->card_type), "news_list");
         } else if (out->track_n > 0) {
             snprintf(out->card_type, sizeof(out->card_type), "music_list");
@@ -72,6 +75,10 @@ static void degrade_card_type(nl_content_envelope_t *out)
         } else {
             snprintf(out->card_type, sizeof(out->card_type), "error");
         }
+        return;
+    }
+    if (strcmp(out->card_type, "support_inbox") == 0 ||
+        strcmp(out->card_type, "support_thread") == 0) {
         return;
     }
     if (strcmp(out->card_type, "music_list") == 0) {
@@ -271,6 +278,14 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
         copy_str(out->preferred_surface, sizeof(out->preferred_surface), display, "preferred_surface");
         copy_str(out->density, sizeof(out->density), display, "density");
         copy_str(out->media_kind, sizeof(out->media_kind), display, "media_kind");
+        {
+            const cJSON *cid = cJSON_GetObjectItemCaseSensitive(display, "conversation_id");
+            if (cJSON_IsNumber(cid)) {
+                out->conversation_id = (uint64_t)cid->valuedouble;
+            } else if (cJSON_IsString(cid) && cid->valuestring) {
+                out->conversation_id = (uint64_t)strtoull(cid->valuestring, NULL, 10);
+            }
+        }
         const cJSON* daily = cJSON_GetObjectItemCaseSensitive(display, "daily");
         if (cJSON_IsObject(daily) && strcmp(out->card_type, "calendar_weather") == 0) {
             copy_str(out->daily.city, sizeof(out->daily.city), daily, "city");
@@ -441,6 +456,79 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
                     continue;
                 }
                 out->news_n++;
+                continue;
+            }
+            if (strcmp(ts, "chat_msg") == 0) {
+                if (out->chat_n >= NL_ENV_CHAT_MAX) {
+                    out->truncated = true;
+                    continue;
+                }
+                if (!out->chats) {
+                    out->chats = (nl_env_chat_msg_t *)heap_caps_calloc(
+                        NL_ENV_CHAT_MAX, sizeof(nl_env_chat_msg_t),
+                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                    if (!out->chats) {
+                        out->chats = (nl_env_chat_msg_t *)calloc(NL_ENV_CHAT_MAX,
+                                                                 sizeof(nl_env_chat_msg_t));
+                    }
+                    if (!out->chats) {
+                        out->truncated = true;
+                        continue;
+                    }
+                }
+                nl_env_chat_msg_t *cm = &out->chats[out->chat_n];
+                memset(cm, 0, sizeof(*cm));
+                copy_str(cm->id, sizeof(cm->id), item, "id");
+                copy_str(cm->role, sizeof(cm->role), item, "role");
+                copy_str(cm->name, sizeof(cm->name), item, "name");
+                copy_str(cm->text, sizeof(cm->text), item, "text");
+                if (cm->text[0] == '\0') {
+                    continue;
+                }
+                if (cm->role[0] == '\0') {
+                    snprintf(cm->role, sizeof(cm->role), "system");
+                }
+                out->chat_n++;
+                continue;
+            }
+            if (strcmp(ts, "action") == 0) {
+                if (out->chip_n >= NL_ENV_CHIP_MAX) {
+                    out->truncated = true;
+                    continue;
+                }
+                const cJSON *run = cJSON_GetObjectItemCaseSensitive(item, "run");
+                const cJSON *inv = cJSON_GetObjectItemCaseSensitive(item, "invoke");
+                if (!cJSON_IsString(run) || !run->valuestring ||
+                    strcmp(run->valuestring, "invoke") != 0 || !cJSON_IsObject(inv)) {
+                    continue;
+                }
+                nl_env_invoke_action_t *ia = &out->chips[out->chip_n];
+                memset(ia, 0, sizeof(*ia));
+                copy_str(ia->id, sizeof(ia->id), item, "id");
+                copy_str(ia->title, sizeof(ia->title), item, "title");
+                copy_str(ia->app_id, sizeof(ia->app_id), inv, "app_id");
+                copy_str(ia->instance_id, sizeof(ia->instance_id), inv, "instance_id");
+                const cJSON *params = cJSON_GetObjectItemCaseSensitive(inv, "params");
+                if (cJSON_IsObject(params)) {
+                    char *ps = cJSON_PrintUnformatted(params);
+                    if (ps) {
+                        snprintf(ia->params_json, sizeof(ia->params_json), "%s", ps);
+                        free(ps);
+                    }
+                    if (out->conversation_id == 0) {
+                        const cJSON *cid =
+                            cJSON_GetObjectItemCaseSensitive(params, "conversation_id");
+                        if (cJSON_IsNumber(cid)) {
+                            out->conversation_id = (uint64_t)cid->valuedouble;
+                        }
+                    }
+                }
+                if (ia->title[0] == '\0') {
+                    snprintf(ia->title, sizeof(ia->title), "%s", ia->id[0] ? ia->id : "执行");
+                }
+                if (ia->app_id[0] || ia->instance_id[0]) {
+                    out->chip_n++;
+                }
                 continue;
             }
             if (strcmp(ts, "music") != 0 && strcmp(ts, "list_item") != 0 && ts[0] != '\0') {

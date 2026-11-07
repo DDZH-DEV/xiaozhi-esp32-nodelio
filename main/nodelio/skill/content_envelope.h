@@ -44,6 +44,9 @@ typedef struct {
 #define NL_ENV_FILTER_TITLE 24
 #define NL_ENV_WS_PATH 160 /* filter.workspace；点选时再拼 params */
 #define NL_ENV_PARAMS 384 /* DSH arm / answer(submit qid+oid)；勿截断 notice_id */
+#define NL_ENV_CHAT_MAX 16
+#define NL_ENV_CHAT_TEXT 256
+#define NL_ENV_CHIP_MAX 8
 
 /** list_item 上 run:invoke 按钮（最多 2 个，如允许/拒绝；提问选项每行 1 个「选择」）. */
 typedef struct {
@@ -85,10 +88,18 @@ typedef struct {
     char image_url[NL_ENV_IMG];
 } nl_env_news_t;
 
+/** 客服气泡：访客左、客服/机器人右；正文不进 96 字节标题。 */
+typedef struct {
+    char id[NL_ENV_STR];
+    char role[16]; /* visitor | agent | bot | system */
+    char name[32];
+    char text[NL_ENV_CHAT_TEXT];
+} nl_env_chat_msg_t;
+
 typedef struct {
     char status[16]; /* ok / error */
     char app_id[NL_ENV_STR];
-    char card_type[32]; /* music_list / news_list / list / plain_result / error */
+    char card_type[32]; /* music_list / news_list / list / support_inbox / support_thread / … */
     char display_title[NL_ENV_STR];
     char bridge_id[64];
     char bridge_name[128];
@@ -122,6 +133,14 @@ typedef struct {
      * 仅详情卡使用；普通列表一般为 NULL。
      */
     char *detail_body;
+    /** support_thread：气泡列表，PSRAM/堆上分配，随 env 释放。 */
+    int chat_n;
+    nl_env_chat_msg_t *chats;
+    /** support_thread 底部操作（接管 / 发送 / 返回）。 */
+    int chip_n;
+    nl_env_invoke_action_t chips[NL_ENV_CHIP_MAX];
+    /** display.conversation_id；语音 draft 用。 */
+    uint64_t conversation_id;
 } nl_content_envelope_t;
 
 /**

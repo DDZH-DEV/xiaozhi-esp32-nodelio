@@ -1,4 +1,5 @@
 #include "skill_ui_priv.h"
+#include "almanac.h"
 
 /* Built-in daily view. No polling task or calendar dependency. */
 static uint32_t s_daily_generation;
@@ -6,6 +7,29 @@ static bool s_daily_weather;
 static int s_daily_year;
 static int s_daily_month;
 static int s_daily_date_key;
+static int s_daily_focus; /* 年月日，0 表示停在月历 */
+
+/** 月历圆点：当前查看年月的有提醒日期（bit d = 日 d）。 */
+static uint32_t s_rem_day_bits;
+static int s_rem_bits_year;
+static int s_rem_bits_month;
+static bool s_rem_fetching;
+
+enum { kDailyRemMax = 12 };
+struct daily_rem_item {
+    int id;
+    char title[48];
+    char time[8];
+    char recur[12];
+    bool missed;
+};
+static daily_rem_item s_rem_day_items[kDailyRemMax];
+static int s_rem_day_n;
+static int s_rem_day_key; /* 已加载的 focus 日 YYYYMMDD */
+
+static bool daily_rem_has(int day) {
+    return day >= 1 && day <= 31 && (s_rem_day_bits & (1u << day)) != 0;
+}
 
 static bool daily_is_open(void) {
     return s_env && strcmp(s_env->card_type, "calendar_weather") == 0 && s_card &&
@@ -38,11 +62,84 @@ static void daily_redraw(void) {
     });
 }
 
+static void daily_reminders_fetch_month(void);
+static void daily_reminders_fetch_day(int ymd);
+
+/** 日详情：完成这一次，或删除整条（含以后的重复）。 */
+static void daily_reminder_mutate(int id, bool cancel) {
+    if (id <= 0)
+        return;
+    nodelio_nvs_config_t cfg{};
+    nl_ov_cfg_for_http(&cfg);
+    if (!cfg.server_url[0] || !cfg.device_id[0] || !cfg.device_key[0]) {
+        nl_ov_toast("未绑定服务");
+        return;
+    }
+    struct arg_t {
+        int id;
+        bool cancel;
+    };
+    auto* arg = static_cast<arg_t*>(malloc(sizeof(arg_t)));
+    if (!arg)
+        return;
+    arg->id = id;
+    arg->cancel = cancel;
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Interactive,
+            [](void* p) {
+                auto* a = static_cast<arg_t*>(p);
+                const int id = a->id;
+                const bool cancel = a->cancel;
+                free(p);
+                nodelio_nvs_config_t cfg{};
+                nl_ov_cfg_for_http(&cfg);
+                char base[160];
+                nl_url_strip_base(cfg.server_url, base, sizeof(base));
+                char url[288];
+                snprintf(url, sizeof(url), "%s/api/devices/%s/panel/reminders/%d/%s", base,
+                         cfg.device_id, id, cancel ? "cancel" : "done");
+                char resp[256] = {0};
+                int status = 0;
+                (void)nodelio_http_post_json(url, cfg.device_key, "{}", &status, resp, sizeof(resp) - 1);
+                Application::GetInstance().Schedule([status, cancel]() {
+                    if (status == 200) {
+                        nl_ov_toast(cancel ? "已删除" : "已完成");
+                        s_rem_day_key = 0;
+                        s_rem_bits_year = 0;
+                        daily_reminders_fetch_month();
+                        if (s_daily_focus)
+                            daily_reminders_fetch_day(s_daily_focus);
+                        daily_redraw();
+                    } else {
+                        nl_ov_toast("操作失败");
+                    }
+                });
+            },
+            arg, [](void* p) { free(p); })) {
+        free(arg);
+    }
+}
+
 static void daily_action(lv_event_t* e) {
     const int action = (int)(intptr_t)lv_event_get_user_data(e);
-    if (action == 10) {
+    if (action >= 300000) {
+        daily_reminder_mutate(action - 300000, true);
+        return;
+    }
+    if (action >= 200000) {
+        daily_reminder_mutate(action - 200000, false);
+        return;
+    }
+    if (action == 40) {
+        s_daily_focus = 0;
+    } else if (action >= 1 && action <= 31) {
+        if (s_daily_year)
+            s_daily_focus = s_daily_year * 10000 + s_daily_month * 100 + action;
+    } else if (action == 10) {
+        s_daily_focus = 0;
         daily_reset_month();
-    } else if (s_daily_year) {
+    } else if (s_daily_year && (action == 11 || action == 12)) {
+        s_daily_focus = 0;
         s_daily_month += action == 11 ? -1 : 1;
         if (s_daily_month < 1) {
             s_daily_month = 12;
@@ -54,12 +151,20 @@ static void daily_action(lv_event_t* e) {
         }
         if (s_daily_year < 1970 || s_daily_year > 2099)
             daily_reset_month();
+        s_rem_bits_year = 0;
     }
     daily_redraw();
+    if (s_daily_focus)
+        daily_reminders_fetch_day(s_daily_focus);
+    else if (!s_daily_weather)
+        daily_reminders_fetch_month();
 }
 
-/* 两页之间左右滑动切换。日历在左、天气在右：向左滑进天气，向右滑回日历。 */
+/* 两页之间左右滑动切换。日历在左、天气在右：向左滑进天气，向右滑回日历。
+ * 点开某一天时先看详情，滑动留给正文。 */
 static void daily_gesture(lv_event_t*) {
+    if (s_daily_focus)
+        return;
     lv_indev_t* indev = lv_indev_active();
     if (!indev)
         return;
@@ -150,45 +255,224 @@ static lv_obj_t* daily_icon_text_btn(lv_obj_t* parent, const char* text, int act
     return btn;
 }
 
+/* ---- 提醒（账号级，HTTP；打开/换月/收到变更时拉） ---------------------- */
+
+static void daily_reminders_fetch_month(void) {
+    if (!s_daily_year || s_rem_fetching)
+        return;
+    if (s_rem_bits_year == s_daily_year && s_rem_bits_month == s_daily_month)
+        return;
+    nodelio_nvs_config_t cfg{};
+    nl_ov_cfg_for_http(&cfg);
+    if (!cfg.server_url[0] || !cfg.device_id[0] || !cfg.device_key[0])
+        return;
+    if (nodelio_wifi_is_asleep() || !nodelio_wifi_has_ip())
+        return;
+    s_rem_fetching = true;
+    struct job_t {
+        int year;
+        int month;
+        nodelio_nvs_config_t cfg;
+    };
+    auto* job = static_cast<job_t*>(malloc(sizeof(job_t)));
+    if (!job) {
+        s_rem_fetching = false;
+        return;
+    }
+    job->year = s_daily_year;
+    job->month = s_daily_month;
+    job->cfg = cfg;
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Background,
+            [](void* p) {
+                auto* j = static_cast<job_t*>(p);
+                char base[160];
+                nl_url_strip_base(j->cfg.server_url, base, sizeof(base));
+                char url[320];
+                snprintf(url, sizeof(url),
+                         "%s/api/devices/%s/panel/reminders?year=%d&month=%d", base,
+                         j->cfg.device_id, j->year, j->month);
+                char buf[2048];
+                buf[0] = '\0';
+                int status = 0;
+                esp_err_t err =
+                    nodelio_http_get_ms(url, j->cfg.device_key, nullptr, &status, buf,
+                                       sizeof(buf) - 1, 6000);
+                uint32_t bits = 0;
+                if (err == ESP_OK && status == 200) {
+                    cJSON* root = cJSON_Parse(buf);
+                    const cJSON* days =
+                        root ? cJSON_GetObjectItemCaseSensitive(root, "days") : nullptr;
+                    if (cJSON_IsArray(days)) {
+                        const cJSON* d = nullptr;
+                        cJSON_ArrayForEach(d, days) {
+                            if (cJSON_IsNumber(d)) {
+                                const int day = (int)d->valuedouble;
+                                if (day >= 1 && day <= 31)
+                                    bits |= (1u << day);
+                            }
+                        }
+                    }
+                    if (root)
+                        cJSON_Delete(root);
+                }
+                const int y = j->year;
+                const int m = j->month;
+                free(j);
+                Application::GetInstance().Schedule([bits, y, m]() {
+                    s_rem_fetching = false;
+                    s_rem_day_bits = bits;
+                    s_rem_bits_year = y;
+                    s_rem_bits_month = m;
+                    if (daily_is_open() && !s_daily_weather && !s_daily_focus &&
+                        s_daily_year == y && s_daily_month == m)
+                        daily_redraw();
+                });
+            },
+            job, [](void* p) { free(p); })) {
+        free(job);
+        s_rem_fetching = false;
+    }
+}
+
+static void daily_reminders_fetch_day(int ymd) {
+    if (ymd <= 0)
+        return;
+    if (s_rem_day_key == ymd)
+        return;
+    nodelio_nvs_config_t cfg{};
+    nl_ov_cfg_for_http(&cfg);
+    if (!cfg.server_url[0] || !cfg.device_id[0] || !cfg.device_key[0])
+        return;
+    if (nodelio_wifi_is_asleep() || !nodelio_wifi_has_ip())
+        return;
+    struct job_t {
+        int ymd;
+        nodelio_nvs_config_t cfg;
+    };
+    auto* job = static_cast<job_t*>(malloc(sizeof(job_t)));
+    if (!job)
+        return;
+    job->ymd = ymd;
+    job->cfg = cfg;
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Background,
+            [](void* p) {
+                auto* j = static_cast<job_t*>(p);
+                const int y = j->ymd / 10000;
+                const int m = (j->ymd / 100) % 100;
+                const int d = j->ymd % 100;
+                char base[160];
+                nl_url_strip_base(j->cfg.server_url, base, sizeof(base));
+                char url[320];
+                snprintf(url, sizeof(url),
+                         "%s/api/devices/%s/panel/reminders?date=%04d-%02d-%02d", base,
+                         j->cfg.device_id, y, m, d);
+                char buf[4096];
+                buf[0] = '\0';
+                int status = 0;
+                (void)nodelio_http_get_ms(url, j->cfg.device_key, nullptr, &status, buf,
+                                          sizeof(buf) - 1, 6000);
+                daily_rem_item items[kDailyRemMax];
+                memset(items, 0, sizeof(items));
+                int n = 0;
+                if (status == 200) {
+                    cJSON* root = cJSON_Parse(buf);
+                    const cJSON* arr =
+                        root ? cJSON_GetObjectItemCaseSensitive(root, "items") : nullptr;
+                    if (cJSON_IsArray(arr)) {
+                        const cJSON* it = nullptr;
+                        cJSON_ArrayForEach(it, arr) {
+                            if (n >= kDailyRemMax)
+                                break;
+                            const cJSON* id = cJSON_GetObjectItemCaseSensitive(it, "id");
+                            const cJSON* title = cJSON_GetObjectItemCaseSensitive(it, "title");
+                            const cJSON* tm = cJSON_GetObjectItemCaseSensitive(it, "time");
+                            const cJSON* recur = cJSON_GetObjectItemCaseSensitive(it, "recur");
+                            const cJSON* missed = cJSON_GetObjectItemCaseSensitive(it, "missed");
+                            const cJSON* st = cJSON_GetObjectItemCaseSensitive(it, "status");
+                            if (cJSON_IsString(st) && st->valuestring &&
+                                strcmp(st->valuestring, "active") != 0)
+                                continue;
+                            if (!cJSON_IsNumber(id) || !cJSON_IsString(title) || !title->valuestring)
+                                continue;
+                            items[n].id = (int)id->valuedouble;
+                            snprintf(items[n].title, sizeof(items[n].title), "%s", title->valuestring);
+                            if (cJSON_IsString(tm) && tm->valuestring)
+                                snprintf(items[n].time, sizeof(items[n].time), "%s", tm->valuestring);
+                            if (cJSON_IsString(recur) && recur->valuestring)
+                                snprintf(items[n].recur, sizeof(items[n].recur), "%s",
+                                         recur->valuestring);
+                            items[n].missed = cJSON_IsTrue(missed);
+                            n++;
+                        }
+                    }
+                    if (root)
+                        cJSON_Delete(root);
+                }
+                const int key = j->ymd;
+                free(j);
+                auto* pack = static_cast<daily_rem_item*>(
+                    malloc(sizeof(daily_rem_item) * (size_t)kDailyRemMax + sizeof(int) * 2));
+                if (!pack)
+                    return;
+                memcpy(pack, items, sizeof(daily_rem_item) * (size_t)n);
+                int* meta = reinterpret_cast<int*>(pack + kDailyRemMax);
+                meta[0] = n;
+                meta[1] = key;
+                Application::GetInstance().Schedule([pack]() {
+                    const int* meta = reinterpret_cast<const int*>(pack + kDailyRemMax);
+                    const int n = meta[0];
+                    const int key = meta[1];
+                    memcpy(s_rem_day_items, pack, sizeof(daily_rem_item) * (size_t)n);
+                    s_rem_day_n = n;
+                    s_rem_day_key = key;
+                    free(pack);
+                    if (daily_is_open() && s_daily_focus == key)
+                        daily_redraw();
+                });
+            },
+            job, [](void* p) { free(p); })) {
+        free(job);
+    }
+}
+
+void nodelio_skill_daily_reminders_invalidate(void) {
+    s_rem_bits_year = 0;
+    s_rem_bits_month = 0;
+    s_rem_day_key = 0;
+    Application::GetInstance().Schedule([]() {
+        if (!daily_is_open())
+            return;
+        if (s_daily_focus)
+            daily_reminders_fetch_day(s_daily_focus);
+        else if (!s_daily_weather)
+            daily_reminders_fetch_month();
+    });
+}
+
 /* ---- 日历 -------------------------------------------------------------- */
 
+/** 日期行之间的留白。表头到首行、以及各日期行之间都走这一档。
+ *  今天的色块铺满格子，这一档太小色块会贴上相邻日期。 */
+static const int kCalRowGap = 12;
+
 /** 日期格高按结果卡可用高度倒推，避免整月溢出后还得滚动。
- *  头部已在精简模式下收起（只留浮动的关闭钮），固定开销只剩
- *  卡片 pad 16 + 月份条 44 + 两道间距 16 + 页脚 7 + 表头 18 + 行距 1。
+ *  头部已在精简模式下收起（只留浮动的关闭钮），固定开销：
+ *  卡片 pad、月份条、表头、点日期提示和页脚圆点。
+ *  日历页把正文行距收到 2px，把省下的高度让给日期行间隔。
  *  从最舒展的 60 往下试，直到整月确实落在卡内，留 6px 余量。 */
 static int daily_cell_h(int rows) {
     const auto* p = nodelio_display_profile();
     const int card_h = p ? (int)p->result_max_height + NL_UI_STATUS_H : 460;
-    const int fixed = 102;
+    const int fixed = 106;
     if (rows < 1)
         rows = 1;
     for (int cell = 60; cell > 30; --cell) {
-        if (fixed + rows * (cell + 1) <= card_h - 6)
+        if (fixed + rows * (cell + kCalRowGap) <= card_h - 6)
             return cell;
     }
     return 30;
-}
-
-/** 格内农历字：初一写月份（十月/冬月/腊月…），其余写日（初一/十五/廿四）。
- *  一律两字，避免单字「十」和「初十」混淆，也让每格宽度一致。 */
-static void daily_lunar_cell_text(int year, int month, int day, char* buf, size_t len) {
-    buf[0] = '\0';
-    nodelio_lunar_t lunar{};
-    if (!nodelio_lunar_from_solar(year, month, day, &lunar))
-        return;
-    if (lunar.leap) {
-        snprintf(buf, len, "闰月");
-        return;
-    }
-    if (lunar.day == 1) {
-        /* 初一只显示月份，读作「这天进新的一月」。 */
-        static const char* const kShortMonth[] = {"正月", "二月", "三月", "四月", "五月", "六月",
-                                                  "七月", "八月", "九月", "十月", "冬月", "腊月"};
-        snprintf(buf, len, "%s", kShortMonth[lunar.month - 1]);
-        return;
-    }
-    /* 其余只显示日：初一…三十，都是两字。 */
-    nodelio_lunar_day_name(&lunar, buf, len);
 }
 
 /** 星期表头：细一号、弱一级，只做方位提示，不画分隔线。 */
@@ -206,6 +490,8 @@ static void daily_week_head(lv_obj_t* grid) {
 }
 
 static void daily_calendar(lv_obj_t* body) {
+    /* 月份条 / 网格 / 提示之间少留一点，把高度让给日期行间隔。 */
+    lv_obj_set_style_pad_row(body, 2, 0);
     struct tm today{};
     const bool synced = daily_today(&today);
     s_daily_date_key =
@@ -214,7 +500,7 @@ static void daily_calendar(lv_obj_t* body) {
         daily_reset_month();
     if (!s_daily_year) {
         daily_label(body, "等待设备时间同步", UI_TEXT, true);
-        daily_label(body, "联网校时后点击刷新。天气可右滑查看。", UI_TEXT_DIM);
+        daily_label(body, "联网校时后点击刷新。左滑查看天气。", UI_TEXT_DIM);
         return;
     }
 
@@ -256,7 +542,7 @@ static void daily_calendar(lv_obj_t* body) {
     /* 网格：无边框、无分隔线，靠留白分组。 */
     const int cell_h = daily_cell_h(rows);
     lv_obj_t* grid = daily_box(body, LV_FLEX_FLOW_ROW_WRAP, false);
-    lv_obj_set_style_pad_row(grid, 1, 0);
+    lv_obj_set_style_pad_row(grid, kCalRowGap, 0);
     lv_obj_set_style_pad_column(grid, 0, 0);
     daily_week_head(grid);
     for (int i = 0; i < cells; ++i) {
@@ -268,10 +554,15 @@ static void daily_calendar(lv_obj_t* body) {
         lv_obj_remove_style_all(cell);
         /* 格子宽度必须保持 14%，否则整月会被挤成 6 列。 */
         lv_obj_set_size(cell, lv_pct(14), cell_h);
-        lv_obj_clear_flag(cell, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
-
-        if (!valid)
+        lv_obj_clear_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
+        if (!valid) {
+            lv_obj_clear_flag(cell, LV_OBJ_FLAG_CLICKABLE);
             continue;
+        }
+        lv_obj_add_flag(cell, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_GESTURE_BUBBLE));
+        lv_obj_add_event_cb(cell, daily_action, LV_EVENT_CLICKED, (void*)(intptr_t)day);
+        lv_obj_set_style_bg_color(cell, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(cell, LV_OPA_COVER, LV_STATE_PRESSED);
 
         /* 今天：整格淡绿底 + 圆角，不画圆盘，避免与两行文字打架。 */
         if (current) {
@@ -298,16 +589,36 @@ static void daily_calendar(lv_obj_t* body) {
         if (current)
             lv_obj_set_style_text_font(num, nl_ov_read_font(), 0);
 
-        char lunar_text[8];
-        daily_lunar_cell_text(s_daily_year, s_daily_month, day, lunar_text, sizeof(lunar_text));
-        if (lunar_text[0]) {
-            lv_obj_t* sub = daily_label(col, lunar_text, current ? UI_ACCENT : UI_TEXT_MUTED);
+        nl_almanac_t info{};
+        if (nl_almanac_build(s_daily_year, s_daily_month, day, &info) && info.label[0]) {
+            lv_color_t sub_c = UI_TEXT_MUTED;
+            if (info.label_kind == NL_ALMANAC_FESTIVAL)
+                sub_c = UI_DANGER;
+            else if (info.label_kind == NL_ALMANAC_TERM)
+                sub_c = UI_WARN;
+            else if (current)
+                sub_c = UI_ACCENT;
+            lv_obj_t* sub = daily_label(col, info.label, sub_c);
             lv_obj_set_width(sub, LV_SIZE_CONTENT);
             lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
-            /* 农历小字固定用 14px 普惠，字号不随文本倍率放大，否则两行会撑破格子。 */
+            /* 副文固定用 14px，字号不随文本倍率放大，否则两行会撑破格子。 */
             lv_obj_set_style_text_font(sub, nl_ov_ui_font_compact(), 0);
         }
+        /* 有提醒的日期：副文下方一颗小圆点，不改公历/农历两行。 */
+        if (daily_rem_has(day)) {
+            lv_obj_t* dot = lv_obj_create(col);
+            lv_obj_remove_style_all(dot);
+            lv_obj_set_size(dot, 5, 5);
+            lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(dot, UI_ACCENT, 0);
+            lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+            lv_obj_clear_flag(dot, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+        }
     }
+
+    lv_obj_t* hint = daily_label(body, "点日期看黄历 · 左滑看天气", UI_TEXT_MUTED);
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(hint, nl_ov_ui_font_compact(), 0);
 }
 
 /* ---- 天气 -------------------------------------------------------------- */
@@ -755,7 +1066,7 @@ static void daily_weather(lv_obj_t* body) {
     /* 4. 底部微弱数据来源 */
     lv_obj_t* foot_l = lv_label_create(body);
     nl_ov_set_font(foot_l);
-    lv_label_set_text(foot_l, "气象与空气数据源 · Open-Meteo · CAMS");
+    lv_label_set_text(foot_l, "右滑查看月历 · Open-Meteo · CAMS");
     lv_obj_set_style_text_color(foot_l, UI_TEXT_MUTED, 0);
     lv_obj_set_style_text_align(foot_l, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(foot_l, lv_pct(100));
@@ -784,6 +1095,176 @@ static void daily_pager_footer(lv_obj_t* parent) {
     }
 }
 
+static lv_obj_t* daily_chip(lv_obj_t* parent, const char* text, lv_color_t fg) {
+    lv_obj_t* chip = lv_obj_create(parent);
+    lv_obj_remove_style_all(chip);
+    lv_obj_set_size(chip, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_left(chip, 8, 0);
+    lv_obj_set_style_pad_right(chip, 8, 0);
+    lv_obj_set_style_pad_top(chip, 3, 0);
+    lv_obj_set_style_pad_bottom(chip, 3, 0);
+    lv_obj_set_style_radius(chip, UI_RADIUS_SM, 0);
+    lv_obj_set_style_bg_color(chip, fg, 0);
+    lv_obj_set_style_bg_opa(chip, LV_OPA_20, 0);
+    lv_obj_clear_flag(chip, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+    lv_obj_t* label = daily_label(chip, text, fg);
+    lv_obj_set_width(label, LV_SIZE_CONTENT);
+    lv_obj_set_style_text_font(label, nl_ov_ui_font_compact(), 0);
+    return chip;
+}
+
+static void daily_pair_row(lv_obj_t* parent, const char* tag, lv_color_t tag_c, const char* text) {
+    lv_obj_t* row = daily_box(parent, LV_FLEX_FLOW_ROW, false);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 8, 0);
+    lv_obj_t* mark = daily_label(row, tag, tag_c);
+    lv_obj_set_width(mark, LV_SIZE_CONTENT);
+    lv_obj_set_style_text_font(mark, nl_ov_ui_font_compact(), 0);
+    lv_obj_t* value = daily_label(row, text, UI_TEXT);
+    lv_obj_set_flex_grow(value, 1);
+    lv_obj_set_width(value, lv_pct(80));
+}
+
+/** 点开某一天：黄历在上，历史上的今天在下，整页可滚动。 */
+static void daily_day(lv_obj_t* body) {
+    const int y = s_daily_focus / 10000;
+    const int m = (s_daily_focus / 100) % 100;
+    const int d = s_daily_focus % 100;
+
+    lv_obj_t* head = daily_box(body, LV_FLEX_FLOW_ROW, false);
+    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(head, 2, 0);
+    lv_obj_set_style_pad_right(head, 48, 0);
+    daily_icon_btn(head, MATERIAL_SYMBOLS_KEYBOARD_ARROW_LEFT, 40, UI_TEXT_SUB);
+
+    nl_almanac_t info{};
+    if (!nl_almanac_build(y, m, d, &info)) {
+        daily_label(head, "这一天暂不能换算黄历", UI_TEXT, true);
+        return;
+    }
+
+    struct tm when{};
+    when.tm_year = y - 1900;
+    when.tm_mon = m - 1;
+    when.tm_mday = d;
+    when.tm_hour = 12;
+    when.tm_isdst = -1;
+    mktime(&when);
+    static const char* week[] = {"周日", "周一", "周二", "周三", "周四", "周五", "周六"};
+
+    char title[48];
+    snprintf(title, sizeof(title), "%d月%d日 %s", m, d, week[when.tm_wday]);
+    lv_obj_t* title_l = daily_label(head, title, UI_TEXT, true);
+    lv_obj_set_width(title_l, LV_SIZE_CONTENT);
+
+    lv_obj_t* lunar = daily_label(body, info.lunar_line, UI_TEXT_SUB);
+    lv_obj_set_style_text_font(lunar, nl_ov_ui_font_compact(), 0);
+
+    if (info.festivals[0] || info.term[0]) {
+        lv_obj_t* chips = daily_box(body, LV_FLEX_FLOW_ROW_WRAP, false);
+        lv_obj_set_style_pad_column(chips, 6, 0);
+        if (info.festivals[0])
+            daily_chip(chips, info.festivals, UI_DANGER);
+        if (info.term[0] && !strstr(info.festivals, info.term))
+            daily_chip(chips, info.term, UI_WARN);
+    }
+
+    lv_obj_t* luck = daily_box(body, LV_FLEX_FLOW_COLUMN, true);
+    lv_obj_set_style_pad_row(luck, 6, 0);
+    char luck_line[32];
+    snprintf(luck_line, sizeof(luck_line), "%s · %s", info.huangdao ? "黄道吉日" : "黑道日", info.tian_shen);
+    lv_obj_t* luck_l = daily_label(luck, luck_line, info.huangdao ? UI_SUCCESS : UI_TEXT_SUB, true);
+    lv_obj_set_width(luck_l, lv_pct(100));
+    char duty[64];
+    snprintf(duty, sizeof(duty), "值日 %s · %s", info.zhi_xing, info.chong_sha);
+    lv_obj_t* duty_l = daily_label(luck, duty, UI_TEXT_DIM);
+    lv_obj_set_style_text_font(duty_l, nl_ov_ui_font_compact(), 0);
+    daily_pair_row(luck, "宜", UI_SUCCESS, info.yi);
+    daily_pair_row(luck, "忌", UI_DANGER, info.ji);
+    lv_obj_t* peng = daily_label(luck, info.pengzu, UI_TEXT_MUTED);
+    lv_obj_set_style_text_font(peng, nl_ov_ui_font_compact(), 0);
+
+    /* 提醒：黄历下、历史上的今天上；今天的排服务端顺序（下次触发在前）。 */
+    lv_obj_t* rem_title = daily_label(body, "提醒", UI_TEXT_DIM);
+    lv_obj_set_style_text_font(rem_title, nl_ov_ui_font_compact(), 0);
+    lv_obj_t* rem = daily_box(body, LV_FLEX_FLOW_COLUMN, true);
+    lv_obj_set_style_pad_row(rem, 6, 0);
+    if (s_rem_day_key != s_daily_focus) {
+        lv_obj_t* loading = daily_label(rem, "加载提醒…", UI_TEXT_MUTED);
+        lv_obj_set_style_text_font(loading, nl_ov_ui_font_compact(), 0);
+    } else if (s_rem_day_n <= 0) {
+        lv_obj_t* empty = daily_label(rem, "这一天没有提醒", UI_TEXT_MUTED);
+        lv_obj_set_style_text_font(empty, nl_ov_ui_font_compact(), 0);
+    } else {
+        for (int i = 0; i < s_rem_day_n; ++i) {
+            const daily_rem_item* it = &s_rem_day_items[i];
+            lv_obj_t* row = lv_obj_create(rem);
+            lv_obj_remove_style_all(row);
+            lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                                  LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_column(row, 8, 0);
+            lv_obj_set_style_pad_ver(row, 4, 0);
+            lv_obj_clear_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+            char left[24];
+            if (it->time[0])
+                snprintf(left, sizeof(left), "%s", it->time);
+            else if (strcmp(it->recur, "daily") == 0)
+                snprintf(left, sizeof(left), "每天");
+            else if (strcmp(it->recur, "weekly") == 0)
+                snprintf(left, sizeof(left), "每周");
+            else
+                snprintf(left, sizeof(left), "一次");
+            lv_obj_t* tm = daily_label(row, left, it->missed ? UI_WARN : UI_ACCENT);
+            lv_obj_set_width(tm, LV_SIZE_CONTENT);
+            lv_obj_set_style_text_font(tm, nl_ov_ui_font_compact(), 0);
+
+            char line[72];
+            if (it->missed)
+                snprintf(line, sizeof(line), "%s · 已过点", it->title);
+            else
+                snprintf(line, sizeof(line), "%s", it->title);
+            lv_obj_t* tx = daily_label(row, line, UI_TEXT);
+            lv_obj_set_flex_grow(tx, 1);
+            lv_obj_set_width(tx, lv_pct(55));
+
+            /* 完成：这一次；删除：整条取消，重复的也不再响。 */
+            daily_icon_text_btn(row, "完成", 200000 + it->id, UI_TEXT_MUTED);
+            daily_icon_text_btn(row, "删除", 300000 + it->id, UI_DANGER);
+        }
+    }
+
+    lv_obj_t* hist_title = daily_label(body, "历史上的今天", UI_TEXT_DIM);
+    lv_obj_set_style_text_font(hist_title, nl_ov_ui_font_compact(), 0);
+    lv_obj_t* hist = daily_box(body, LV_FLEX_FLOW_COLUMN, true);
+    lv_obj_set_style_pad_row(hist, 8, 0);
+    nl_hist_item_t items[6];
+    const int n = nl_history_on_day(m, d, items, 6);
+    if (n <= 0) {
+        lv_obj_t* empty = daily_label(hist, "这一天还没有收录历史见闻", UI_TEXT_MUTED);
+        lv_obj_set_style_text_font(empty, nl_ov_ui_font_compact(), 0);
+    } else {
+        for (int i = 0; i < n; ++i) {
+            lv_obj_t* row = daily_box(hist, LV_FLEX_FLOW_ROW, false);
+            lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_column(row, 10, 0);
+            char year[8];
+            snprintf(year, sizeof(year), "%u", items[i].year);
+            lv_obj_t* yl = daily_label(row, year, UI_ACCENT);
+            lv_obj_set_width(yl, LV_SIZE_CONTENT);
+            lv_obj_t* tx = daily_label(row, items[i].text, UI_TEXT);
+            lv_obj_set_flex_grow(tx, 1);
+            lv_obj_set_width(tx, lv_pct(75));
+        }
+    }
+
+    lv_obj_t* note = daily_label(body, "宜忌按值日归纳，供日常参考", UI_TEXT_MUTED);
+    lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(note, nl_ov_ui_font_compact(), 0);
+}
+
 void fill_calendar_weather(void) {
     bzero(s_row_idx_labels, sizeof(s_row_idx_labels));
     bzero(s_row_btns, sizeof(s_row_btns));
@@ -799,20 +1280,32 @@ void fill_calendar_weather(void) {
     lv_obj_add_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_card_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_card_list, LV_SCROLLBAR_MODE_AUTO);
-    lv_label_set_text(s_card_sub,
-                      s_daily_weather ? "15 天天气 · 当前空气质量" : "内置月历 · 左滑看天气");
+    const char* sub = "15 天天气 · 右滑看月历";
+    if (s_daily_focus && !s_daily_weather)
+        sub = "黄历与历史上的今天";
+    else if (!s_daily_weather)
+        sub = "点日期看黄历 · 左滑看天气";
+    lv_label_set_text(s_card_sub, sub);
     lv_obj_t* body = daily_box(s_card_list, LV_FLEX_FLOW_COLUMN, false);
     lv_obj_add_flag(body, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(body, daily_gesture, LV_EVENT_GESTURE, nullptr);
     lv_obj_clear_flag(body, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
     /* 无标签：两页靠左右滑动切换，页脚用圆点与提示说明手势。 */
-    if (s_daily_weather)
+    const bool detail = s_daily_focus && !s_daily_weather;
+    if (detail)
+        daily_day(body);
+    else if (s_daily_weather)
         daily_weather(body);
     else
         daily_calendar(body);
-    daily_pager_footer(body);
+    if (!detail)
+        daily_pager_footer(body);
     lv_obj_scroll_to_y(s_card_list, 0, LV_ANIM_OFF);
+    if (detail)
+        daily_reminders_fetch_day(s_daily_focus);
+    else if (!s_daily_weather)
+        daily_reminders_fetch_month();
 }
 
 uint32_t nodelio_skill_daily_open(bool reset_view) {
@@ -834,7 +1327,8 @@ uint32_t nodelio_skill_daily_open(bool reset_view) {
     snprintf(env->card_type, sizeof(env->card_type), "calendar_weather");
     snprintf(env->display_title, sizeof(env->display_title), "日历与天气");
     snprintf(env->daily.message, sizeof(env->daily.message), "尚未获取天气，可联网后点击刷新");
-    s_daily_weather = false;
+    s_daily_weather = true;
+    s_daily_focus = 0;
     daily_reset_month();
     nodelio_skill_result_show(nullptr, env, false);
     return s_daily_generation;

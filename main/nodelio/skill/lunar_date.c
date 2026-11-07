@@ -152,13 +152,28 @@ int nodelio_lunar_day_name(const nodelio_lunar_t *lunar, char *buf, size_t len) 
     return snprintf(buf, len, "%s%s", kDayTens[lunar->day / 10], kDayUnits[lunar->day % 10]);
 }
 
+/** 干支表是 UTF-8，每个汉字 3 字节。%c 只会写出首字节。 */
+static int copy_han(const char *table, int index, char *buf, size_t len) {
+    const char *s = table + index * 3;
+    if (!buf || len < 4) {
+        return 0;
+    }
+    buf[0] = s[0];
+    buf[1] = s[1];
+    buf[2] = s[2];
+    buf[3] = '\0';
+    return 3;
+}
+
 int nodelio_lunar_ganzhi(const nodelio_lunar_t *lunar, char *buf, size_t len) {
-    if (!lunar || !buf || !len) {
+    if (!lunar || !buf || len < 7) {
         return 0;
     }
     const int idx = (lunar->year - 1984) % 60;
     const int pos = idx < 0 ? idx + 60 : idx;
-    return snprintf(buf, len, "%c%c", kStems[pos % 10], kBranches[pos % 12]);
+    copy_han(kStems, pos % 10, buf, len);
+    copy_han(kBranches, pos % 12, buf + 3, len - 3);
+    return 6;
 }
 
 int nodelio_lunar_zodiac(const nodelio_lunar_t *lunar, char *buf, size_t len) {
@@ -167,5 +182,5 @@ int nodelio_lunar_zodiac(const nodelio_lunar_t *lunar, char *buf, size_t len) {
     }
     const int idx = (lunar->year - 1984) % 12;
     const int pos = idx < 0 ? idx + 12 : idx;
-    return snprintf(buf, len, "%c", kZodiac[pos]);
+    return copy_han(kZodiac, pos, buf, len);
 }
