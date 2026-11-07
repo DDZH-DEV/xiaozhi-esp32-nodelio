@@ -1,3 +1,4 @@
+#include "skill_lyrics.h"
 #include "skill_ui_priv.h"
 
 lv_obj_t *s_now_bar = nullptr;
@@ -73,6 +74,9 @@ void apply_now_media_chrome(bool playing, bool paused, bool list_open)
     }
     if (paused) {
         lv_label_set_text(s_now_sub, "已暂停 · 点播放继续");
+        return;
+    }
+    if (playing && nodelio_lyrics_apply(s_now_sub)) {
         return;
     }
     const char *kind = env_media_kind();

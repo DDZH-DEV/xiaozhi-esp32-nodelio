@@ -8,6 +8,7 @@
 #include "offline_cmd.h"
 #include "panel_ui.h"
 #include "sd_library.h"
+#include "skill_lyrics.h"
 #include "skill_result_ui.h"
 #include "wake_dram.h"
 
@@ -27,6 +28,8 @@
 #include <vector>
 
 #define TAG "nl_media"
+
+const char *env_media_kind(void);
 
 enum media_op_t : uint8_t { MEDIA_OP_PLAY = 1, MEDIA_OP_STOP = 2 };
 
@@ -562,6 +565,7 @@ static void media_worker(void *arg)
                 s_started_url[0] = '\0';
                 s_now_key[0] = '\0';
                 nodelio_panel_ui_media_now_playing("", false);
+                nodelio_lyrics_clear();
                 reclaim_wake_dram_after_media();
             }
             for (int i = 0; i < 80 && Application::GetInstance().IsHttpAudioBusy(); ++i) {
@@ -838,6 +842,11 @@ esp_err_t nodelio_media_play_track(const nodelio_nvs_config_t *cfg, const nl_env
     snprintf(s_now_key, sizeof(s_now_key), "%s", msg.device_key);
     /* 入队即亮播放条，避免等语音尾句时「有列表无播放器」 */
     nodelio_panel_ui_media_now_playing(s_now_title, true);
+    if (strcmp(env_media_kind(), "live") != 0 && strcmp(env_media_kind(), "episode") != 0) {
+        nodelio_lyrics_request(cfg, track->title, track->artist);
+    } else {
+        nodelio_lyrics_clear();
+    }
     ESP_LOGI(TAG, "enqueue title=%s playing=%d tail=%s", msg.title, (int)s_playing, url_tail(msg.url));
 
     if (xQueueSend(s_q, &msg, pdMS_TO_TICKS(100)) != pdTRUE) {
