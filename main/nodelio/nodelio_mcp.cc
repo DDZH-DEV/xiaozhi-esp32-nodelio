@@ -223,7 +223,8 @@ static bool phrase_implies_on(const char *phrase)
 
 static bool bind_target_offline(const nl_bind_t *bind)
 {
-    if (!bind || bind->kind == NL_BIND_HOME_SCENARIO || !bind->device_id[0]) {
+    if (!bind || bind->kind == NL_BIND_HOME_SCENARIO || bind->kind == NL_BIND_ACTION_BUTTON ||
+        !bind->device_id[0]) {
         return false;
     }
     return !nodelio_panel_ui_device_online(bind->device_id);
@@ -240,6 +241,236 @@ static ToolResult offline_result(const char *name)
     return std::unexpected(msg);
 }
 
+static bool title_worth_listing(const char *title, const char *device_id);
+
+/** sila-86 短包上限约 1024；正文压到 900，留给 JSON-RPC 外壳。 */
+static constexpr size_t kStatusReplyMax = 900;
+static constexpr int kStatusOnMax = 12;
+
+static const nl_dev_cache_t *mcp_find_dev(const char *device_id)
+{
+    if (!device_id || !device_id[0]) {
+        return nullptr;
+    }
+    const int n = nodelio_panel_ui_get_dev_count();
+    for (int i = 0; i < n; i++) {
+        const nl_dev_cache_t *d = nodelio_panel_ui_get_dev(i);
+        if (d && d->id[0] && strcmp(d->id, device_id) == 0) {
+            return d;
+        }
+    }
+    return nullptr;
+}
+
+static bool status_try_append(std::string &out, const char *name, const char *label_zh)
+{
+    if (!name || !name[0] || !label_zh || !label_zh[0]) {
+        return false;
+    }
+    char line[96];
+    std::snprintf(line, sizeof(line), "%s %s", name, label_zh);
+    const size_t need = (out.empty() ? 0 : 1) + std::strlen(line);
+    if (out.size() + need > kStatusReplyMax) {
+        return false;
+    }
+    if (!out.empty()) {
+        out.push_back('\n');
+    }
+    out += line;
+    return true;
+}
+
+/** 点名：该芯片各通道；无通道行则整机 power。 */
+static std::string status_for_device(const nl_dev_cache_t *d, const char *fallback_title)
+{
+    if (!d) {
+        return std::string("未找到设备状态");
+    }
+    const char *head = (fallback_title && fallback_title[0])
+                            ? fallback_title
+                            : (d->name[0] ? d->name : d->id);
+    if (!d->online) {
+        std::string msg = std::string(head) + " 离线";
+        if (msg.size() > kStatusReplyMax) {
+            msg.resize(kStatusReplyMax);
+        }
+        return msg;
+    }
+    std::string out;
+    if (d->ch_n > 0) {
+        for (uint8_t i = 0; i < d->ch_n; i++) {
+            char ch_fallback[24];
+            const char *nm = d->ch_name[i][0] ? d->ch_name[i] : nullptr;
+            if (!nm) {
+                std::snprintf(ch_fallback, sizeof(ch_fallback), "通道%d", (int)d->ch_idx[i]);
+                nm = ch_fallback;
+            }
+            if (!status_try_append(out, nm, nl_ov_state_label_zh(d->ch_st[i]))) {
+                break;
+            }
+        }
+    } else {
+        status_try_append(out, head, nl_ov_state_label_zh(d->power));
+    }
+    if (out.empty()) {
+        return std::string("没有可读状态");
+    }
+    return out;
+}
+
+/** action=STATUS：短中文，不发控家命令。 */
+static ToolResult control_status(const nodelio_panel_layout_t *layout, const std::string &title,
+                                 const std::string &phrase)
+{
+    char hint[48] = {0};
+    const char *name = nullptr;
+    if (!title.empty()) {
+        name = title.c_str();
+    } else if (!phrase.empty()) {
+        extract_title_hint(phrase.c_str(), hint, sizeof(hint));
+        if (hint[0]) {
+            name = hint;
+        }
+    }
+
+    if (name && name[0]) {
+        if (layout) {
+            const nl_widget_t *w = find_widget_by_title(layout, name);
+            if (w && w->bind.kind == NL_BIND_ACTION_BUTTON) {
+                return std::string(w->title[0] ? w->title : (w->bind.name[0] ? w->bind.name : name)) +
+                       " 是组合按钮，没有开关态";
+            }
+            if (w && w->bind.kind != NL_BIND_HOME_SCENARIO && w->bind.device_id[0]) {
+                const char *shown = w->title[0] ? w->title : w->bind.name;
+                const nl_dev_cache_t *d = mcp_find_dev(w->bind.device_id);
+                if (!d) {
+                    return std::string(shown[0] ? shown : name) + " 未知";
+                }
+                return status_for_device(d, shown[0] ? shown : name);
+            }
+        }
+        UnassignedTarget u;
+        if (find_unassigned_target(name, u)) {
+            const nl_dev_cache_t *d = mcp_find_dev(u.device_id.c_str());
+            if (!d) {
+                return u.title + " 未知";
+            }
+            return status_for_device(d, u.title.c_str());
+        }
+        return std::unexpected(std::string("未找到设备，请用 list_controls 确认名称"));
+    }
+
+    /* 不点名：只列还开着的，关着的不写。 */
+    std::string out;
+    int listed = 0;
+    int more = 0;
+    std::unordered_set<std::string> seen;
+
+    auto consider = [&](const char *nm, const char *device_id, const char *st) {
+        if (!nm || !nm[0]) {
+            return;
+        }
+        if (device_id && device_id[0] && !nodelio_panel_ui_device_online(device_id)) {
+            return;
+        }
+        if (strcmp(nl_ov_state_label_zh(st), "开") != 0) {
+            return;
+        }
+        std::string key(nm);
+        if (seen.count(key)) {
+            return;
+        }
+        if (listed >= kStatusOnMax) {
+            more++;
+            return;
+        }
+        if (!status_try_append(out, nm, "开")) {
+            more++;
+            return;
+        }
+        seen.insert(std::move(key));
+        listed++;
+    };
+
+    std::unordered_set<std::string> bound_keys;
+    if (layout) {
+        for (int pi = 0; pi < layout->page_count; pi++) {
+            const nl_page_t *pg = &layout->pages[pi];
+            for (int si = 0; si < pg->section_count; si++) {
+                const nl_section_t *sec = &pg->sections[si];
+                for (int wi = 0; wi < sec->widget_count; wi++) {
+                    const nl_widget_t *w = &sec->widgets[wi];
+                    if (w->bind.kind == NL_BIND_NONE || w->bind.kind == NL_BIND_HOME_SCENARIO ||
+                        w->bind.kind == NL_BIND_ACTION_BUTTON) {
+                        continue;
+                    }
+                    if (w->type == NL_WIDGET_SECTION_HEADER || w->type == NL_WIDGET_SPACER) {
+                        continue;
+                    }
+                    const char *nm = w->title[0] ? w->title : w->bind.name;
+                    if (!title_worth_listing(nm, w->bind.device_id)) {
+                        continue;
+                    }
+                    if (w->bind.device_id[0]) {
+                        if (w->bind.channel >= 0) {
+                            bound_keys.insert(std::string(w->bind.device_id) + ":" +
+                                              std::to_string(w->bind.channel));
+                        } else if (w->bind.pin >= 0) {
+                            bound_keys.insert(std::string(w->bind.device_id) + ":pin" +
+                                              std::to_string(w->bind.pin));
+                        } else {
+                            bound_keys.insert(std::string(w->bind.device_id));
+                        }
+                    }
+                    consider(nm, w->bind.device_id, nl_ov_widget_cache_state(w));
+                }
+            }
+        }
+    }
+
+    const int dev_cnt = nodelio_panel_ui_get_dev_count();
+    for (int i = 0; i < dev_cnt; i++) {
+        const nl_dev_cache_t *d = nodelio_panel_ui_get_dev(i);
+        if (!d || !d->id[0] || strncmp(d->id, "WP-", 3) == 0) {
+            continue;
+        }
+        if (d->ch_n > 0) {
+            for (int ci = 0; ci < d->ch_n; ci++) {
+                std::string key = std::string(d->id) + ":" + std::to_string(d->ch_idx[ci]);
+                if (bound_keys.count(key)) {
+                    continue;
+                }
+                const char *ch_name = d->ch_name[ci];
+                if (!ch_name[0] || !title_worth_listing(ch_name, d->id)) {
+                    continue;
+                }
+                consider(ch_name, d->id, d->ch_st[ci]);
+            }
+        } else {
+            if (bound_keys.count(d->id)) {
+                continue;
+            }
+            const char *nm = d->name[0] ? d->name : nullptr;
+            if (!nm || !title_worth_listing(nm, d->id) || strstr(nm, d->id)) {
+                continue;
+            }
+            consider(nm, d->id, d->power);
+        }
+    }
+
+    if (out.empty()) {
+        return std::string("现在没有开着的设备");
+    }
+    if (more > 0) {
+        char tail[40];
+        std::snprintf(tail, sizeof(tail), "\n还有%d个开着", more);
+        if (out.size() + std::strlen(tail) <= kStatusReplyMax) {
+            out += tail;
+        }
+    }
+    return out;
+}
+
 static ToolResult run_widget_set(const nodelio_nvs_config_t *cfg, const nl_widget_t *w, const char *val)
 {
     if (!w) {
@@ -250,7 +481,7 @@ static ToolResult run_widget_set(const nodelio_nvs_config_t *cfg, const nl_widge
         return offline_result(name[0] ? name : w->id);
     }
     if (!val) {
-        if (w->bind.kind == NL_BIND_HOME_SCENARIO) {
+        if (w->bind.kind == NL_BIND_HOME_SCENARIO || w->bind.kind == NL_BIND_ACTION_BUTTON) {
             val = w->bind.name;
         } else {
             val = "TOGGLE";
@@ -400,13 +631,18 @@ static std::string list_controls_json()
                     const char *kind = "switch";
                     if (w->bind.kind == NL_BIND_HOME_SCENARIO) {
                         kind = "scene";
+                    } else if (w->bind.kind == NL_BIND_ACTION_BUTTON) {
+                        kind = "action";
                     } else if (w->type == NL_WIDGET_SLIDER_TILE ||
                                strcmp(w->bind.capability, "pwm") == 0) {
                         kind = "pwm";
                     }
                     const char *room = sec->title[0] ? sec->title : pg->title;
                     const char *dev =
-                        (w->bind.kind == NL_BIND_HOME_SCENARIO) ? nullptr : w->bind.device_id;
+                        (w->bind.kind == NL_BIND_HOME_SCENARIO ||
+                         w->bind.kind == NL_BIND_ACTION_BUTTON)
+                            ? nullptr
+                            : w->bind.device_id;
                     add_item(title, room, kind, dev);
                 }
             }
@@ -710,6 +946,38 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t* cfg, const std::strin
             }
         }
         cJSON_Delete(body);
+    }
+    /* 客服卡打开时语音只出 draft：注入 conversation_id，缺 op 时补 draft */
+    if (strcmp(skill_id.c_str(), "support.inbox") == 0) {
+        uint64_t cid = 0;
+        if (!nodelio_skill_support_conversation_id(&cid) || cid == 0) {
+            return std::unexpected(std::string("请先打开客服进线卡片"));
+        }
+        cJSON *body = cJSON_Parse(params.empty() ? "{}" : params.c_str());
+        if (!cJSON_IsObject(body)) {
+            cJSON_Delete(body);
+            body = cJSON_CreateObject();
+        }
+        if (!body) {
+            return std::unexpected(std::string("内存不足，未发送"));
+        }
+        if (!cJSON_HasObjectItem(body, "conversation_id")) {
+            cJSON_AddNumberToObject(body, "conversation_id", (double)cid);
+        }
+        const cJSON *jop = cJSON_GetObjectItemCaseSensitive(body, "op");
+        const cJSON *jtext = cJSON_GetObjectItemCaseSensitive(body, "text");
+        if ((!cJSON_IsString(jop) || !jop->valuestring || !jop->valuestring[0]) &&
+            cJSON_IsString(jtext) && jtext->valuestring && jtext->valuestring[0]) {
+            cJSON_DeleteItemFromObject(body, "op");
+            cJSON_AddStringToObject(body, "op", "draft");
+        }
+        char *text = cJSON_PrintUnformatted(body);
+        cJSON_Delete(body);
+        if (!text) {
+            return std::unexpected(std::string("内存不足，未发送"));
+        }
+        params = text;
+        cJSON_free(text);
     }
     const bool dsh_mutation = nl_workbench_mutation(skill_id.c_str(), params.c_str());
     const bool music_app = nodelio_skill_id_is_music(skill_id.c_str());
@@ -1060,6 +1328,209 @@ static ToolResult schedule_tool(const nodelio_nvs_config_t *cfg, const std::stri
     return std::unexpected(std::string("op 须为 list / add / delete"));
 }
 
+static void json_escape_title(const std::string &in, char *out, size_t n)
+{
+    size_t j = 0;
+    for (unsigned char c : in) {
+        if (j + 2 >= n) {
+            break;
+        }
+        if (c == '"' || c == '\\') {
+            out[j++] = '\\';
+            out[j++] = (char)c;
+        } else if (c < 0x20) {
+            continue;
+        } else {
+            out[j++] = (char)c;
+        }
+    }
+    out[j] = '\0';
+}
+
+/** 日历提醒：op=add|list|done|cancel。时间含糊时须追问，勿默成现在。 */
+static ToolResult reminder_tool(const nodelio_nvs_config_t *cfg, const std::string &op_in,
+                                const std::string &title_in, const std::string &when,
+                                const std::string &time_hm, const std::string &recur_in,
+                                const std::string &days, int id, const std::string &query)
+{
+    char base[160];
+    nl_url_strip_base(cfg->server_url, base, sizeof(base));
+    std::string op = op_in;
+    for (auto &c : op) {
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+    }
+    if (op.empty() || op == "list") {
+        char url[256];
+        snprintf(url, sizeof(url), "%s/api/devices/%s/panel/reminders", base, cfg->device_id);
+        char resp[4096] = {0};
+        int status = 0;
+        esp_err_t err = nodelio_http_get(url, cfg->device_key, NULL, &status, resp, sizeof(resp) - 1);
+        if (err != ESP_OK || status != 200) {
+            return std::unexpected(std::string("列出提醒失败 HTTP ") + std::to_string(status));
+        }
+        cJSON *root = cJSON_Parse(resp);
+        if (!root) {
+            return std::string("当前没有提醒");
+        }
+        const cJSON *items = cJSON_GetObjectItemCaseSensitive(root, "items");
+        if (!cJSON_IsArray(items) || cJSON_GetArraySize(items) == 0) {
+            cJSON_Delete(root);
+            return std::string("当前没有未完成提醒");
+        }
+        std::string out = "未完成提醒：";
+        int n = 0;
+        const cJSON *it = nullptr;
+        cJSON_ArrayForEach(it, items) {
+            if (n >= 8) {
+                break;
+            }
+            const cJSON *title = cJSON_GetObjectItemCaseSensitive(it, "title");
+            const cJSON *recur = cJSON_GetObjectItemCaseSensitive(it, "recur");
+            const cJSON *tm = cJSON_GetObjectItemCaseSensitive(it, "time");
+            const cJSON *nf = cJSON_GetObjectItemCaseSensitive(it, "nextFireAt");
+            const cJSON *rid = cJSON_GetObjectItemCaseSensitive(it, "id");
+            if (!cJSON_IsString(title) || !title->valuestring) {
+                continue;
+            }
+            if (n > 0) {
+                out += "；";
+            }
+            out += title->valuestring;
+            if (cJSON_IsNumber(rid)) {
+                out += "(id=";
+                out += std::to_string((int)rid->valuedouble);
+                out += ")";
+            }
+            if (cJSON_IsString(recur) && recur->valuestring) {
+                if (strcmp(recur->valuestring, "daily") == 0) {
+                    out += " 每天";
+                } else if (strcmp(recur->valuestring, "weekly") == 0) {
+                    out += " 每周";
+                }
+            }
+            if (cJSON_IsString(tm) && tm->valuestring && tm->valuestring[0]) {
+                out += " ";
+                out += tm->valuestring;
+            } else if (cJSON_IsString(nf) && nf->valuestring && strlen(nf->valuestring) >= 16) {
+                /* 2026-11-08T08:00:00+08:00 → 11-08 08:00 */
+                out += " ";
+                out.append(nf->valuestring + 5, 5);
+                out += " ";
+                out.append(nf->valuestring + 11, 5);
+            }
+            n++;
+        }
+        cJSON_Delete(root);
+        nodelio_skill_daily_reminders_invalidate();
+        return out;
+    }
+    if (op == "add") {
+        if (title_in.empty()) {
+            return std::unexpected(std::string("请说明提醒内容，例如：提醒我明天早上八点倒垃圾"));
+        }
+        std::string recur = recur_in.empty() ? "once" : recur_in;
+        for (auto &c : recur) {
+            if (c >= 'A' && c <= 'Z') {
+                c = static_cast<char>(c - 'A' + 'a');
+            }
+        }
+        if (recur == "once" && when.empty()) {
+            return std::unexpected(std::string(
+                "时间不清楚。请问清具体日期和时间后再创建，例如明天早上八点，不要默认为现在。"));
+        }
+        if ((recur == "daily" || recur == "weekly") && time_hm.empty()) {
+            return std::unexpected(std::string("请问清每天或每周的具体钟点，例如晚上十点。"));
+        }
+        if (recur == "weekly" && days.empty()) {
+            return std::unexpected(std::string("请问清是星期几，或工作日 / 周末。"));
+        }
+        char esc[160];
+        json_escape_title(title_in, esc, sizeof(esc));
+        char body[512];
+        if (recur == "once") {
+            char wesc[80];
+            json_escape_title(when, wesc, sizeof(wesc));
+            snprintf(body, sizeof(body),
+                     "{\"title\":\"%s\",\"recur\":\"once\",\"when\":\"%s\"}", esc, wesc);
+        } else {
+            char desc[48];
+            json_escape_title(days, desc, sizeof(desc));
+            char tesc[16];
+            json_escape_title(time_hm, tesc, sizeof(tesc));
+            snprintf(body, sizeof(body),
+                     "{\"title\":\"%s\",\"recur\":\"%s\",\"time\":\"%s\",\"days\":\"%s\"}", esc,
+                     recur.c_str(), tesc, desc);
+        }
+        char url[256];
+        snprintf(url, sizeof(url), "%s/api/devices/%s/panel/reminders", base, cfg->device_id);
+        char resp[1024] = {0};
+        int status = 0;
+        esp_err_t err =
+            nodelio_http_post_json(url, cfg->device_key, body, &status, resp, sizeof(resp) - 1);
+        if (err != ESP_OK || (status != 200 && status != 201)) {
+            cJSON *er = cJSON_Parse(resp);
+            const cJSON *msg = er ? cJSON_GetObjectItemCaseSensitive(er, "error") : nullptr;
+            std::string detail = (msg && cJSON_IsString(msg) && msg->valuestring)
+                                     ? msg->valuestring
+                                     : (std::string("HTTP ") + std::to_string(status));
+            if (er) {
+                cJSON_Delete(er);
+            }
+            return std::unexpected(std::string("创建提醒失败：") + detail);
+        }
+        cJSON *root = cJSON_Parse(resp);
+        const cJSON *spoken = root ? cJSON_GetObjectItemCaseSensitive(root, "spoken") : nullptr;
+        std::string ok = (spoken && cJSON_IsString(spoken) && spoken->valuestring)
+                             ? spoken->valuestring
+                             : (std::string("已记下：") + title_in);
+        if (root) {
+            cJSON_Delete(root);
+        }
+        nodelio_panel_ui_toast(ok.c_str());
+        nodelio_skill_daily_reminders_invalidate();
+        return ok;
+    }
+    if (op == "done" || op == "cancel") {
+        char url[288];
+        snprintf(url, sizeof(url), "%s/api/devices/%s/panel/reminders/action", base, cfg->device_id);
+        char esc[160];
+        const std::string q = !query.empty() ? query : title_in;
+        json_escape_title(q, esc, sizeof(esc));
+        char body[320];
+        if (id > 0) {
+            snprintf(body, sizeof(body), "{\"op\":\"%s\",\"id\":%d}", op.c_str(), id);
+        } else if (esc[0]) {
+            snprintf(body, sizeof(body), "{\"op\":\"%s\",\"title\":\"%s\"}", op.c_str(), esc);
+        } else {
+            return std::unexpected(std::string(op == "done" ? "请说明完成哪一条提醒"
+                                                            : "请说明取消哪一条提醒"));
+        }
+        char resp[512] = {0};
+        int status = 0;
+        esp_err_t err =
+            nodelio_http_post_json(url, cfg->device_key, body, &status, resp, sizeof(resp) - 1);
+        if (err != ESP_OK || status != 200) {
+            if (status == 404) {
+                return std::unexpected(std::string("未找到对应提醒"));
+            }
+            return std::unexpected(std::string("操作失败 HTTP ") + std::to_string(status));
+        }
+        cJSON *root = cJSON_Parse(resp);
+        const cJSON *spoken = root ? cJSON_GetObjectItemCaseSensitive(root, "spoken") : nullptr;
+        std::string ok = (spoken && cJSON_IsString(spoken) && spoken->valuestring)
+                             ? spoken->valuestring
+                             : (op == "done" ? "已完成" : "已取消");
+        if (root) {
+            cJSON_Delete(root);
+        }
+        nodelio_skill_daily_reminders_invalidate();
+        return ok;
+    }
+    return std::unexpected(std::string("op 须为 add / list / done / cancel"));
+}
+
 void nodelio_mcp_register_tools(void)
 {
     auto &mcp = McpServer::GetInstance();
@@ -1327,13 +1798,16 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.nodelio.list_controls",
-        "列出可控设备 JSON[{title,room?,kind?,online?}]。offline 勿控。",
+        "列出可控设备 JSON[{title,room?,kind?,online?}]。offline 勿控。"
+        "不含开/关态；问开没开用 control action=STATUS。",
         PropertyList(), [](const PropertyList &) -> ReturnValue { return list_controls_json(); });
 
     mcp.AddTool(
         "self.nodelio.control",
-        "控家。target_title；action=ON|OFF|TOGGLE|SET_PWM|OFF_IN|CANCEL_COUNTDOWN|apply；"
-        "value=秒或PWM0-100；phrase=备用口令。",
+        "控家。target_title；action=ON|OFF|TOGGLE|SET_PWM|OFF_IN|CANCEL_COUNTDOWN|STATUS|apply；"
+        "value=秒或PWM0-100；phrase=备用口令。"
+        "问开没开/哪路开着：action=STATUS（点名列该芯片各路；不点名只列还开着的）；短中文，勿猜 list_controls。"
+        "N秒后关/开直接 OFF_IN，禁止先问确定。",
         PropertyList({
             Property("target_title", kPropertyTypeString, ""),
             Property("action", kPropertyTypeString, ""),
@@ -1358,6 +1832,12 @@ void nodelio_mcp_register_tools(void)
 
             ESP_LOGI(TAG, "control target_title='%s' action='%s' value='%s' phrase='%s'",
                      title.c_str(), action.c_str(), value.c_str(), phrase.c_str());
+
+            if (strcasecmp(action.c_str(), "STATUS") == 0 ||
+                strcasecmp(action.c_str(), "QUERY") == 0 ||
+                strcasecmp(action.c_str(), "STATE") == 0) {
+                return control_status(layout, title, phrase);
+            }
 
             /* OFF_IN：action=OFF_IN + value=秒 → MQTT 字符串；CANCEL_COUNTDOWN 同理 */
             char off_in_buf[48];
@@ -1463,12 +1943,46 @@ void nodelio_mcp_register_tools(void)
         });
 
     mcp.AddTool(
+        "self.nodelio.reminder",
+        "日历提醒/待办。op=add|list|done|cancel。"
+        "add：title 必填；once 用 when=YYYY-MM-DDTHH:MM:SS（本地）；"
+        "daily 用 time=HH:MM；weekly 用 time + days=mon,tue 或 weekday。"
+        "时间含糊（回头/有空）必须追问，禁止默认现在。"
+        "done/cancel：id 或 title/query 匹配。"
+        "用户说提醒我…/我有什么待办/完成了/取消提醒时调用。",
+        PropertyList({
+            Property("op", kPropertyTypeString, ""),
+            Property("title", kPropertyTypeString, ""),
+            Property("when", kPropertyTypeString, ""),
+            Property("time", kPropertyTypeString, ""),
+            Property("recur", kPropertyTypeString, "once"),
+            Property("days", kPropertyTypeString, ""),
+            Property("id", kPropertyTypeInteger, 0),
+            Property("query", kPropertyTypeString, ""),
+        }),
+        [](const PropertyList &properties) -> ToolResult {
+            nodelio_nvs_config_t cfg{};
+            if (!load_cfg(&cfg)) {
+                return std::unexpected(std::string("未绑定 NodeLio 服务"));
+            }
+            return reminder_tool(&cfg, properties["op"].value<std::string>(),
+                                 properties["title"].value<std::string>(),
+                                 properties["when"].value<std::string>(),
+                                 properties["time"].value<std::string>(),
+                                 properties["recur"].value<std::string>(),
+                                 properties["days"].value<std::string>(),
+                                 properties["id"].value<int>(),
+                                 properties["query"].value<std::string>());
+        });
+
+    mcp.AddTool(
         "self.skill.invoke",
         "调技能。skill_id=music.search|radio.stations|podcast.latest|news.latest|"
         "article.daily|codex.status|dsh.status|openai.status|workbuddy.status|workbench."
-        "status。"
+        "status|support.inbox。"
         "工作台查询用对应 .status；params 可带 computer=电脑名称，select_computer=true "
         "选择电脑。派活含 operation=task 和 instruction；续聊保留返回的 session，不得改投电脑。"
+        "客服卡已开时 skill_id=support.inbox，params 只带 text=口令转写（固件补 conversation_id 与 op=draft），勿直接发访客。"
         "听歌须 open_app(曲库)；旧 dsh.task 仍兼容；"
         "列表已开随便放→transport play。",
         PropertyList({
