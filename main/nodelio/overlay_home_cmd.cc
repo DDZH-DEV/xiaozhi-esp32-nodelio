@@ -286,9 +286,28 @@ static const char *widget_cache_state(const nl_widget_t *w)
                 return d->ch_st[i];
             }
         }
+        /* 单路开关（RELAY 等）snapshot 只有整机 powerState，没有 channels。
+           点按会把通道 0 乐观写成 ON，随后 snapshot 清掉通道行，卡片又变关。
+           仅通道 0 且本机没有任何通道行时回退整机态；已有通道行不回退，避免串路。 */
+        if (ch == 0 && d->ch_n == 0 && d->power[0]) {
+            return d->power;
+        }
         return nullptr;
     }
     return d->power;
+}
+
+const char *nl_ov_state_label_zh(const char *st)
+{
+    if (state_is_unknown(st)) {
+        return "未知";
+    }
+    return state_is_on(st) ? "开" : "关";
+}
+
+const char *nl_ov_widget_cache_state(const nl_widget_t *w)
+{
+    return widget_cache_state(w);
 }
 
 /** 通道/引脚只看对应通道态；勿回退整机 power（易把 UNKNOWN/其它路当成开）。 */
@@ -297,7 +316,8 @@ bool nl_ov_widget_is_on(const nl_widget_t *w, tile_kind_t kind)
     if (!w) {
         return false;
     }
-    if (kind == TILE_SCENE || w->bind.kind == NL_BIND_HOME_SCENARIO) {
+    if (kind == TILE_SCENE || w->bind.kind == NL_BIND_HOME_SCENARIO ||
+        w->bind.kind == NL_BIND_ACTION_BUTTON) {
         return true;
     }
     const char *st = widget_cache_state(w);
@@ -309,7 +329,8 @@ bool nl_ov_widget_is_on(const nl_widget_t *w, tile_kind_t kind)
 
 bool nl_ov_widget_state_unknown(const nl_widget_t *w, tile_kind_t kind)
 {
-    if (!w || kind == TILE_SCENE || w->bind.kind == NL_BIND_HOME_SCENARIO) {
+    if (!w || kind == TILE_SCENE || w->bind.kind == NL_BIND_HOME_SCENARIO ||
+        w->bind.kind == NL_BIND_ACTION_BUTTON) {
         return false;
     }
     if (!w->bind.device_id[0]) {
@@ -439,7 +460,8 @@ void nl_ov_set_countdown(const char *device_id, int channel_index, int seconds)
 
 int nl_ov_widget_countdown(const nl_widget_t *w)
 {
-    if (!w || !w->bind.device_id[0] || w->bind.kind == NL_BIND_HOME_SCENARIO) {
+    if (!w || !w->bind.device_id[0] || w->bind.kind == NL_BIND_HOME_SCENARIO ||
+        w->bind.kind == NL_BIND_ACTION_BUTTON) {
         return 0;
     }
     nl_dev_cache_t *d = nl_ov_find_dev(w->bind.device_id);
@@ -544,11 +566,13 @@ void nl_ov_apply_bind_state(const nl_bind_t *bind, const char *value)
 
 struct cmd_pending_t {
     bool active;
+    bool hold; /* 语音已下发成功：快照对上 want 之前，不许旧 power 把卡片刷回去 */
     uint32_t sequence;
     char widget_id[NL_LAYOUT_STR];
     char device_id[NL_LAYOUT_STR];
     int16_t channel;
     char from[12]; /* 点击前缓存态，失败回滚用 */
+    char want[12];
     int64_t start_us;
     int64_t deadline_us;
 };
@@ -590,9 +614,11 @@ static void cmd_pending_clear_slot(cmd_pending_t *p)
         return;
     }
     p->active = false;
+    p->hold = false;
     p->widget_id[0] = '\0';
     p->device_id[0] = '\0';
     p->from[0] = '\0';
+    p->want[0] = '\0';
     p->channel = -1;
     p->deadline_us = 0;
 }
@@ -711,6 +737,11 @@ static void cmd_pending_tick(void)
             continue;
         }
         if (now < p->deadline_us) {
+            continue;
+        }
+        if (p->hold) {
+            /* 口令已成功，超时后改信后续 snapshot，不把灯刷回旧态 */
+            cmd_pending_clear_slot(p);
             continue;
         }
         char wid[NL_LAYOUT_STR];
@@ -832,8 +863,8 @@ void nl_ov_widget_cmd(const nl_widget_t *w, const char *value)
     if (!w) {
         return;
     }
-    if (w->bind.kind != NL_BIND_HOME_SCENARIO && w->bind.device_id[0] &&
-        !nodelio_panel_ui_device_online(w->bind.device_id)) {
+    if (w->bind.kind != NL_BIND_HOME_SCENARIO && w->bind.kind != NL_BIND_ACTION_BUTTON &&
+        w->bind.device_id[0] && !nodelio_panel_ui_device_online(w->bind.device_id)) {
         nl_ov_toast("设备未在线");
         return;
     }
@@ -1280,8 +1311,80 @@ extern "C" void nodelio_panel_ui_lan_cache_load(void)
     heap_caps_free(blob);
 }
 
+static void apply_held_state(const char *device_id, int channel, const char *st)
+{
+    nl_dev_cache_t *d = ensure_dev(device_id);
+    if (!d || !st || !st[0]) {
+        return;
+    }
+    if (channel >= 0) {
+        set_channel_state(d, channel, st);
+        /* 单路继电器 snapshot 往往没有 channels，卡片回退读整机 power。 */
+        if (channel == 0) {
+            bool other = false;
+            for (uint8_t i = 0; i < d->ch_n; i++) {
+                if (d->ch_idx[i] != 0) {
+                    other = true;
+                    break;
+                }
+            }
+            if (!other) {
+                std::snprintf(d->power, sizeof(d->power), "%s", st);
+            }
+        }
+        return;
+    }
+    std::snprintf(d->power, sizeof(d->power), "%s", st);
+}
+
+static const char *cached_state_at(const char *device_id, int channel)
+{
+    nl_dev_cache_t *d = nl_ov_find_dev(device_id);
+    if (!d) {
+        return nullptr;
+    }
+    if (channel >= 0) {
+        for (uint8_t i = 0; i < d->ch_n; i++) {
+            if (d->ch_idx[i] == channel) {
+                return d->ch_st[i];
+            }
+        }
+        if (channel == 0 && d->ch_n == 0 && d->power[0]) {
+            return d->power;
+        }
+        return nullptr;
+    }
+    return d->power[0] ? d->power : nullptr;
+}
+
+static bool held_state_matches(const char *st, const char *want)
+{
+    if (!st || !want || state_is_unknown(st)) {
+        return false;
+    }
+    return state_is_on(st) == state_is_on(want);
+}
+
+/** 快照（含局域网 sticky）写完后：已对上的口令放开，没对上的把卡片按口令保持。 */
+static void cmd_pending_reconcile_after_snapshot(void)
+{
+    for (int i = 0; i < NL_CMD_PENDING_MAX; i++) {
+        cmd_pending_t *p = &s_cmd_pending[i];
+        if (!p->active || !p->hold || !p->want[0] || !p->device_id[0]) {
+            continue;
+        }
+        const char *st = cached_state_at(p->device_id, p->channel);
+        if (held_state_matches(st, p->want)) {
+            cmd_pending_clear_slot(p);
+            continue;
+        }
+        apply_held_state(p->device_id, p->channel, p->want);
+    }
+}
+
 extern "C" void nodelio_panel_ui_snapshot_end(void)
 {
+    cmd_pending_reconcile_after_snapshot();
     lan_cache_save();
     s_have_device_snapshot = true;
     const uint32_t after = nodelio_panel_ui_dev_visual_sig();
@@ -1289,6 +1392,47 @@ extern "C" void nodelio_panel_ui_snapshot_end(void)
         ESP_LOGD(TAG, "snapshot end: visual unchanged — skip tile refresh");
         return;
     }
+    if (!s_home) {
+        return;
+    }
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        return;
+    }
+    nl_ov_request_home_state_refresh();
+}
+
+extern "C" void nodelio_panel_ui_hold_switch(const nl_widget_t *w, const char *want)
+{
+    if (!w || !want || !want[0]) {
+        return;
+    }
+    cmd_pending_begin(w);
+    for (auto &p : s_cmd_pending) {
+        if (p.active && std::strcmp(p.widget_id, w->id) == 0) {
+            p.hold = true;
+            std::snprintf(p.want, sizeof(p.want), "%s", want);
+            p.deadline_us = esp_timer_get_time() + 20000000LL;
+            break;
+        }
+    }
+    apply_held_state(w->bind.device_id, bind_channel_index(w), want);
+    if (!s_home) {
+        return;
+    }
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        return;
+    }
+    nl_ov_request_home_state_refresh();
+}
+
+extern "C" void nodelio_panel_ui_hold_switch_fail(const char *widget_id)
+{
+    if (!widget_id || !widget_id[0]) {
+        return;
+    }
+    cmd_pending_rollback_widget(widget_id);
     if (!s_home) {
         return;
     }

@@ -202,6 +202,10 @@ void nl_ov_format_countdown(int sec, char *buf, size_t buflen);
 void nl_ov_style_hint_pill(lv_obj_t *hint, bool countdown);
 bool nl_ov_widget_is_on(const nl_widget_t *w, tile_kind_t kind);
 bool nl_ov_widget_state_unknown(const nl_widget_t *w, tile_kind_t kind);
+/** 缓存态字符串 → 「开」「关」「未知」；空/UNKNOWN 为未知。 */
+const char *nl_ov_state_label_zh(const char *st);
+/** 磁贴绑定通道/整机缓存态；无则 nullptr。情景勿用。 */
+const char *nl_ov_widget_cache_state(const nl_widget_t *w);
 int nl_ov_widget_pwm_duty(const nl_widget_t *w);
 void nl_ov_set_widget_cache_state(const nl_widget_t *w, const char *st);
 bool nl_ov_widget_is_cmd_pending(const nl_widget_t *w);
@@ -211,6 +215,8 @@ void nl_ov_widget_cmd(const nl_widget_t *w, const char *value);
 /** Refresh matching skill content only; nullptr refreshes all visible skill widgets. */
 void nl_ov_home_refresh_skill(const char* skill_id);
 void nl_ov_refresh_home_tiles(void);
+/** 设置详情关掉后：若滚动期间压住了磁贴刷新，再补一次。 */
+void nl_ov_home_flush_pending_state(void);
 /** PLAN C：已钉 home_tile 缓存；invalidate 后下次 ensure 再拉（无定时轮询） */
 void nl_ov_home_skills_invalidate(void);
 void nl_ov_home_skills_ensure_fetched(void);
@@ -276,6 +282,8 @@ void nl_ov_connect_reapply_appearance(void);
 void nl_ov_open_connect(void);
 void nl_ov_close_connect(void);
 void nl_ov_kb_set_visible(bool on);
+/** 任意单行输入框复用连接页键盘（聚焦/点击弹出）。 */
+void nl_ov_kb_wire_textarea(lv_obj_t *ta);
 /** 连接页与侧栏键盘跟设置子页同一块内容区，工作区变宽时重排。 */
 void nl_ov_connect_relayout(void);
 

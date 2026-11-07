@@ -733,7 +733,8 @@ esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int comm
                     const nl_section_t *sec = &pg->sections[si];
                     for (int wi = 0; wi < sec->widget_count; wi++) {
                         const nl_widget_t *x = &sec->widgets[wi];
-                        if (x->bind.kind == NL_BIND_HOME_SCENARIO) {
+                        if (x->bind.kind == NL_BIND_HOME_SCENARIO ||
+                            x->bind.kind == NL_BIND_ACTION_BUTTON) {
                             n_sc++;
                         } else if (widget_is_onoff(x)) {
                             n_sw++;
@@ -750,7 +751,7 @@ esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int comm
 
     const char *name = widget_label(w);
     bool online = true;
-    if (w->bind.kind != NL_BIND_HOME_SCENARIO) {
+    if (w->bind.kind != NL_BIND_HOME_SCENARIO && w->bind.kind != NL_BIND_ACTION_BUTTON) {
         online = nodelio_panel_ui_device_online(w->bind.device_id);
     }
     if (!online) {
@@ -1206,12 +1207,24 @@ static int switch_name_score(const char *query, const char *label)
     return 0;
 }
 
-bool nodelio_offline_try_named_switch(const char *name)
+/** 带时长的开关交给云端 OFF_IN / schedule，本地只做立刻开或关。 */
+static bool phrase_is_timed_control(const char *phrase)
+{
+    if (!phrase) {
+        return false;
+    }
+    return strstr(phrase, "定时") || strstr(phrase, "倒计时") || strstr(phrase, "秒") ||
+           strstr(phrase, "分钟") || strstr(phrase, "小时后") || strstr(phrase, "后关") ||
+           strstr(phrase, "后开") || strstr(phrase, "之后");
+}
+
+static bool named_switch_exec(const char *name, const char *phrase)
 {
     if (!name || !name[0] || is_known_app_name(name)) {
         return false;
     }
-    const bool turn_off = strstr(name, "关掉") || strstr(name, "关闭") || strstr(name, "关上");
+    /* 名称已被剥掉「关闭」，须看整句，否则「关闭插排灯」会发成 ON。 */
+    const bool turn_off = phrase_has_off(phrase) || phrase_has_off(name);
     const nodelio_panel_layout_t *layout = nodelio_panel_ui_get_layout();
     if (!layout) {
         return false;
@@ -1266,8 +1279,12 @@ bool nodelio_offline_try_named_switch(const char *name)
         nodelio_panel_ui_set_voice_hint(t);
     }
     int http = 0;
-    esp_err_t err = nodelio_panel_command(&cfg, best->id, "set", &best->bind, value, &http);
+    /* 先按口令改卡片，避免随后的旧 snapshot 把单路继电器刷回「开」。 */
+    nodelio_panel_ui_hold_switch(best, value);
+    esp_err_t err =
+        nodelio_panel_command_ex(&cfg, best->id, "set", &best->bind, value, &http, false);
     if (err != ESP_OK) {
+        nodelio_panel_ui_hold_switch_fail(best->id);
         ESP_LOGW(TAG, "named switch %s http=%d: %s", best->id, http, esp_err_to_name(err));
         nodelio_panel_ui_set_voice_hint(err == ESP_ERR_INVALID_STATE ? "设备离线" : "执行失败");
         return true;
@@ -1278,6 +1295,78 @@ bool nodelio_offline_try_named_switch(const char *name)
         nodelio_panel_ui_set_voice_hint(t);
     }
     ESP_LOGI(TAG, "named switch '%s' → %s %s", name, value, label);
+    return true;
+}
+
+bool nodelio_offline_try_named_switch(const char *name)
+{
+    return named_switch_exec(name, name);
+}
+
+/** 布局里组合按钮：按名命中后 POST apply_action_button。 */
+static bool try_named_action_button(const char *phrase)
+{
+    if (!phrase || !phrase[0]) {
+        return false;
+    }
+    const nodelio_panel_layout_t *layout = nodelio_panel_ui_get_layout();
+    if (!layout) {
+        return false;
+    }
+    const nl_widget_t *best = NULL;
+    int best_sc = 0;
+    for (int pi = 0; pi < layout->page_count; pi++) {
+        const nl_page_t *pg = &layout->pages[pi];
+        for (int si = 0; si < pg->section_count; si++) {
+            const nl_section_t *sec = &pg->sections[si];
+            for (int wi = 0; wi < sec->widget_count; wi++) {
+                const nl_widget_t *w = &sec->widgets[wi];
+                if (w->bind.kind != NL_BIND_ACTION_BUTTON) {
+                    continue;
+                }
+                int sc = switch_name_score(phrase, w->title);
+                int sc2 = switch_name_score(phrase, w->bind.name);
+                if (sc2 > sc) {
+                    sc = sc2;
+                }
+                if (sc > best_sc) {
+                    best_sc = sc;
+                    best = w;
+                }
+            }
+        }
+    }
+    if (!best || best_sc < 80) {
+        return false;
+    }
+    if (!nodelio_controls_enabled()) {
+        nodelio_panel_ui_set_voice_hint("控家未启用");
+        return true;
+    }
+    nodelio_nvs_config_t cfg;
+    if (nodelio_nvs_load(&cfg) != ESP_OK || !cfg.device_key[0]) {
+        nodelio_panel_ui_set_voice_hint("未绑定，无法控家");
+        return true;
+    }
+    const char *label = widget_label(best);
+    {
+        char t[48];
+        snprintf(t, sizeof(t), "执行 %s…", label);
+        nodelio_panel_ui_set_voice_hint(t);
+    }
+    int http = 0;
+    esp_err_t err = nodelio_panel_command(&cfg, best->id, "set", &best->bind, best->bind.name, &http);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "action button %s http=%d: %s", best->id, http, esp_err_to_name(err));
+        nodelio_panel_ui_set_voice_hint("执行失败");
+        return true;
+    }
+    {
+        char t[48];
+        snprintf(t, sizeof(t), "已执行 %s", label);
+        nodelio_panel_ui_set_voice_hint(t);
+    }
+    ESP_LOGI(TAG, "action button '%s' → %s", phrase, label);
     return true;
 }
 
@@ -1861,9 +1950,15 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
         }
         return nodelio_offline_cmd_dispatch(NULL, cmd, NULL) == ESP_OK;
     }
+    /* 布局组合按钮按名执行（出门等），优先于单路开关口令。 */
+    if (try_named_action_button(phrase)) {
+        ESP_LOGI(TAG, "system phrase → action button");
+        return true;
+    }
     /* 「打开继电器/灯/插座」已认成通断，但上面故意不派发裸 LIGHT_ON（以免「打开曲库」误开灯）。
-     * 句中点了名的控家对象在这里用布局缓存直接下发，不再等云端 list_controls。 */
-    if (phrase_names_control(phrase) &&
+     * 句中点了名的控家对象在这里用布局缓存直接下发，不再等云端 list_controls。
+     * 「5秒后关 / 定时关」含时长，留给云端 OFF_IN，勿在这里立刻开关。 */
+    if (!phrase_is_timed_control(phrase) && phrase_names_control(phrase) &&
         (cmd == NL_OC_LIGHT_ON || cmd == NL_OC_LIGHT_OFF || cmd == NL_OC_CURTAIN_OPEN ||
          cmd == NL_OC_CURTAIN_CLOSE)) {
         char obj[48];
@@ -1886,7 +1981,7 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
         if (p) {
             strip_app_query(obj, sizeof(obj), p + skip);
         }
-        if (obj[0] && nodelio_offline_try_named_switch(obj)) {
+        if (obj[0] && named_switch_exec(obj, phrase)) {
             ESP_LOGI(TAG, "system phrase → named switch '%s'", obj);
             return true;
         }

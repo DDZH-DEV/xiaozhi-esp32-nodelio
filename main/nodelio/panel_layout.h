@@ -48,6 +48,7 @@ typedef enum {
     NL_BIND_HOME_SCENARIO,
     NL_BIND_DEVICE_CHANNEL,
     NL_BIND_DEVICE_PIN,
+    NL_BIND_ACTION_BUTTON,
 } nl_bind_kind_t;
 
 typedef struct {

@@ -174,6 +174,8 @@ static void parse_bind(const cJSON *bind_obj, nl_bind_t *b)
     copy_str(kind, sizeof(kind), bind_obj, "kind");
     if (strcmp(kind, "home_scenario") == 0) {
         b->kind = NL_BIND_HOME_SCENARIO;
+    } else if (strcmp(kind, "action_button") == 0) {
+        b->kind = NL_BIND_ACTION_BUTTON;
     } else if (strcmp(kind, "device_channel") == 0) {
         b->kind = NL_BIND_DEVICE_CHANNEL;
     } else if (strcmp(kind, "device_pin") == 0) {
@@ -622,6 +624,9 @@ esp_err_t nodelio_panel_command_ex(const nodelio_nvs_config_t *cfg, const char *
     case NL_BIND_HOME_SCENARIO:
         kind = "home_scenario";
         break;
+    case NL_BIND_ACTION_BUTTON:
+        kind = "action_button";
+        break;
     case NL_BIND_DEVICE_CHANNEL:
         kind = "device_channel";
         break;
@@ -638,6 +643,12 @@ esp_err_t nodelio_panel_command_ex(const nodelio_nvs_config_t *cfg, const char *
         snprintf(body, sizeof(body),
                  "{\"widgetId\":\"%s\",\"action\":\"apply_home_scenario\",\"name\":\"%s\","
                  "\"bind\":{\"kind\":\"home_scenario\",\"name\":\"%s\"}}",
+                 widget_id, name, name);
+    } else if (bind->kind == NL_BIND_ACTION_BUTTON) {
+        const char *name = bind->name[0] ? bind->name : value_str;
+        snprintf(body, sizeof(body),
+                 "{\"widgetId\":\"%s\",\"action\":\"apply_action_button\",\"name\":\"%s\","
+                 "\"bind\":{\"kind\":\"action_button\",\"name\":\"%s\"}}",
                  widget_id, name, name);
     } else if (bind->kind == NL_BIND_DEVICE_PIN && strcmp(bind->capability, "pwm") == 0) {
         snprintf(body, sizeof(body),
