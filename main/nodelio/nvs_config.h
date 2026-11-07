@@ -51,6 +51,8 @@ typedef struct {
     uint8_t status_bar_mode;   /* 顶栏状态栏：0=自动隐藏(默认) 1=常显 2=常隐 */
     uint8_t screenshot_fab_en; /* 截图悬浮图标：0=隐藏 1=显示(默认) */
     uint8_t card_radius;       /* 卡片圆角像素半径：0–24px (默认 12px) */
+    uint8_t notice_sound;      /* 推送提示音：0=关 1=轻响 2=成功 3=警示；缺省 1 */
+    uint8_t notice_repeat;     /* 1=未处理的 action/alert 每隔十余秒再响；0=只响一次 */
 } nodelio_nvs_config_t;
 
 #define NODELIO_TEXT_SCALE_DEFAULT 1

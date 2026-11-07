@@ -104,8 +104,8 @@ void ui_style_card(lv_obj_t *obj)
     if (!obj) {
         return;
     }
-#if CONFIG_IDF_TARGET_ESP32S3
-    /* S3 无 PPA：浅色/暗色均关闭卡片高斯软件阴影，避免滚动全屏重算 Alpha 混合 */
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_BOARD_TYPE_SILA_P4C5_62
+    /* S3 无 PPA；P4 还要做 90° 旋转。卡片高斯阴影会让滚动每帧重算 Alpha。 */
     lv_obj_set_style_shadow_width(obj, 0, 0);
     return;
 #else
@@ -331,7 +331,10 @@ lv_obj_t *ui_make_nav_bar(lv_obj_t *parent, int h, const char *title, lv_event_c
     lv_obj_set_height(top, h);
     lv_obj_set_style_bg_color(top, UI_PANEL, 0);
     lv_obj_set_style_bg_opa(top, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_hor(top, UI_PAD_SM, 0);
+    /* 宽屏内容区紧贴左轨。返回再留 8px 会比顶栏左缘缩进去一截。 */
+    const int pad_left = nodelio_display_profile()->nav_width ? 0 : UI_PAD_SM;
+    lv_obj_set_style_pad_left(top, pad_left, 0);
+    lv_obj_set_style_pad_right(top, UI_PAD_SM, 0);
     lv_obj_set_style_pad_top(top, 3, 0);
     lv_obj_set_style_pad_bottom(top, 1, 0);
     lv_obj_set_flex_flow(top, LV_FLEX_FLOW_ROW);

@@ -118,6 +118,8 @@ void nodelio_nvs_cache_get(nodelio_nvs_config_t *out)
     out->media_wake_duck_pct = NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
     out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
     out->ui_mode = 0;
+    out->notice_sound = 1;
+    out->notice_repeat = 0;
     out->ai_bd_w = NODELIO_AI_UNSET;
     out->ai_sh_w = NODELIO_AI_UNSET;
 }
@@ -210,6 +212,10 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     if (out->ui_mode > 1) {
         out->ui_mode = 0;
     }
+    if (out->notice_sound > 3) {
+        out->notice_sound = 1;
+    }
+    out->notice_repeat = out->notice_repeat ? 1 : 0;
     if (out->ai_pos_set > 1) {
         out->ai_pos_set = 0;
     }
@@ -281,6 +287,10 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     if (out->ui_mode > 1) {
         out->ui_mode = 0;
     }
+    if (out->notice_sound > 3) {
+        out->notice_sound = 1;
+    }
+    out->notice_repeat = out->notice_repeat ? 1 : 0;
     if (out->ai_pos_set > 1) {
         out->ai_pos_set = 0;
     }
@@ -347,6 +357,8 @@ static esp_err_t load_config_impl(void *ctx) {
     out->media_wake_duck_pct = NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
     out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
     out->ui_mode = 0;
+    out->notice_sound = 1;
+    out->notice_repeat = 0;
     out->ai_bd_w = NODELIO_AI_UNSET;
     out->ai_sh_w = NODELIO_AI_UNSET;
 
@@ -450,6 +462,18 @@ static esp_err_t load_config_impl(void *ctx) {
             out->ui_mode = v;
         } else {
             out->ui_mode = 0;
+        }
+        v = 1;
+        if (nvs_get_u8(h, "nt_snd", &v) == ESP_OK) {
+            out->notice_sound = v;
+        } else {
+            out->notice_sound = 1;
+        }
+        v = 0;
+        if (nvs_get_u8(h, "nt_rep", &v) == ESP_OK) {
+            out->notice_repeat = v ? 1 : 0;
+        } else {
+            out->notice_repeat = 0;
         }
         v = 0;
         if (nvs_get_u8(h, "ai_pos", &v) == ESP_OK && v == 1) {
@@ -575,6 +599,8 @@ static esp_err_t save_config_impl(void *ctx) {
     NL_ACCUM(nvs_set_u8(h, "md_duck", tmp->media_wake_duck_pct));
     NL_ACCUM(nvs_set_u8(h, "txt_scl", tmp->text_scale));
     NL_ACCUM(nvs_set_u8(h, "ui_mode", tmp->ui_mode > 1 ? 0 : tmp->ui_mode));
+    NL_ACCUM(nvs_set_u8(h, "nt_snd", tmp->notice_sound > 3 ? 1 : tmp->notice_sound));
+    NL_ACCUM(nvs_set_u8(h, "nt_rep", tmp->notice_repeat ? 1 : 0));
     NL_ACCUM(nvs_set_u8(h, "ai_pos", tmp->ai_pos_set ? 1 : 0));
     NL_ACCUM(nvs_set_i16(h, "ai_x", tmp->ai_x));
     NL_ACCUM(nvs_set_i16(h, "ai_y", tmp->ai_y));

@@ -563,6 +563,11 @@ static void wire_ta_input(lv_obj_t *ta)
     lv_obj_add_event_cb(ta, cb, LV_EVENT_CLICKED, nullptr);
 }
 
+void nl_ov_kb_wire_textarea(lv_obj_t *ta)
+{
+    wire_ta_input(ta);
+}
+
 void nl_ov_close_connect(void)
 {
     nl_ov_close_forms();

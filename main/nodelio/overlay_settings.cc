@@ -5,6 +5,9 @@
 #include "board.h"
 #include "board_info.h"
 #include "display.h"
+#include "ota.h"
+#include "settings.h"
+#include "sdkconfig.h"
 #include "fonts/font_puhui_14_1.h"
 #include "layout_cache.h"
 #include "mqtt_panel.h"
@@ -50,6 +53,7 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <strings.h>
 
 #define TAG "nl_set"
@@ -73,6 +77,9 @@ static lv_obj_t *s_media_duck_lbl;
 static lv_obj_t *s_ai_w_lbl;
 static lv_obj_t *s_ai_bd_lbl;
 static lv_obj_t *s_ai_sh_lbl;
+static lv_obj_t *s_voice_mode_row;
+static lv_obj_t *s_voice_custom_wrap;
+static lv_obj_t *s_voice_url_ta;
 
 static void on_factory_confirm(lv_event_t *e)
 {
@@ -360,6 +367,7 @@ void nl_ov_stop_sys_monitor(void)
 void nl_ov_close_settings_detail(void)
 {
     nl_ov_stop_sys_monitor();
+    nl_ov_kb_set_visible(false);
     if (!s_settings_detail) {
         return;
     }
@@ -377,6 +385,10 @@ void nl_ov_close_settings_detail(void)
     s_ai_w_lbl = nullptr;
     s_ai_bd_lbl = nullptr;
     s_ai_sh_lbl = nullptr;
+    s_voice_mode_row = nullptr;
+    s_voice_custom_wrap = nullptr;
+    s_voice_url_ta = nullptr;
+    nl_ov_home_flush_pending_state();
     if (s_tabbar && s_visible) {
         nl_ov_nav_chrome_sync();
     }
@@ -473,6 +485,10 @@ void nl_ov_open_settings_detail(set_page_id_t page)
     lv_obj_add_flag(body, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_OFF);
     lv_obj_clear_flag(body, LV_OBJ_FLAG_SCROLL_ELASTIC);
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62
+    /* 逻辑宽约 1200、再软件/PPA 转 90°。惯性会在松手后连续整页重绘，手感就是一串卡帧。 */
+    lv_obj_clear_flag(body, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+#endif
 
     if (page == SET_PAGE_DIAGNOSTICS) {
         nl_ov_build_diagnostics(body);
@@ -505,6 +521,84 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_label_set_text(hint, "本机扬声器音量");
         nl_ov_set_font(hint);
         lv_obj_set_style_text_color(hint, UI_TEXT_TIP, 0);
+
+        static const char *k_notice_snd[] = {"关闭", "轻响", "成功", "警示"};
+        static const char *k_notice_val[] = {"0", "1", "2", "3"};
+        const int snd = s_cfg.notice_sound > 3 ? 1 : s_cfg.notice_sound;
+        lv_obj_t *snd_band = audio_ctrl_band(body, "提醒声音", k_notice_snd[snd], nullptr);
+        lv_obj_t *snd_row = lv_obj_create(snd_band);
+        lv_obj_remove_style_all(snd_row);
+        lv_obj_set_width(snd_row, lv_pct(100));
+        lv_obj_set_height(snd_row, 44);
+        lv_obj_set_flex_flow(snd_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(snd_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(snd_row, 8, 0);
+        lv_obj_clear_flag(snd_row, LV_OBJ_FLAG_SCROLLABLE);
+        for (int i = 0; i < 4; i++) {
+            const bool on = snd == i;
+            lv_obj_t *chip = lv_obj_create(snd_row);
+            lv_obj_remove_style_all(chip);
+            lv_obj_set_flex_grow(chip, 1);
+            lv_obj_set_height(chip, 44);
+            lv_obj_set_style_radius(chip, 12, 0);
+            lv_obj_set_style_bg_color(chip, on ? UI_ACCENT : UI_CAPSULE_OFF, 0);
+            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+            lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(
+                chip,
+                [](lv_event_t *e) {
+                    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+                        return;
+                    }
+                    const int want = (int)(intptr_t)lv_event_get_user_data(e);
+                    (void)nodelio_panel_ui_set_pref("notice_sound", k_notice_val[want], nullptr, 0);
+                    nl_ov_open_settings_detail(SET_PAGE_DISP);
+                },
+                LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            lv_obj_t *lbl = lv_label_create(chip);
+            nl_ov_set_font(lbl);
+            lv_label_set_text(lbl, k_notice_snd[i]);
+            lv_obj_set_style_text_color(lbl, on ? UI_ON_TILE : UI_TEXT_SUB, 0);
+            lv_obj_center(lbl);
+        }
+        lv_obj_t *snd_hint = lv_label_create(snd_band);
+        lv_label_set_text(snd_hint, "进线、待确认和告警亮屏时播放；点一下可试听");
+        nl_ov_set_font(snd_hint);
+        lv_obj_set_style_text_color(snd_hint, UI_TEXT_TIP, 0);
+        lv_label_set_long_mode(snd_hint, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(snd_hint, lv_pct(100));
+
+        lv_obj_t *rep_row = lv_obj_create(snd_band);
+        lv_obj_remove_style_all(rep_row);
+        lv_obj_set_width(rep_row, lv_pct(100));
+        lv_obj_set_height(rep_row, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(rep_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(rep_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(rep_row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_t *rep_lab = lv_label_create(rep_row);
+        lv_label_set_text(rep_lab, "持续提醒");
+        nl_ov_set_font(rep_lab);
+        lv_obj_set_style_text_color(rep_lab, UI_TEXT, 0);
+        lv_obj_t *rep_sw = lv_switch_create(rep_row);
+        ui_style_switch(rep_sw);
+        if (s_cfg.notice_repeat) {
+            lv_obj_add_state(rep_sw, LV_STATE_CHECKED);
+        }
+        lv_obj_add_event_cb(
+            rep_sw,
+            [](lv_event_t *e) {
+                bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+                (void)nodelio_panel_ui_set_pref("notice_repeat", on ? "on" : "off", nullptr, 0);
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_t *rep_hint = lv_label_create(snd_band);
+        lv_label_set_text(rep_hint, "打开后，待处理的进线或告警大约每 12 秒再响一次，直到被处理");
+        nl_ov_set_font(rep_hint);
+        lv_obj_set_style_text_color(rep_hint, UI_TEXT_TIP, 0);
+        lv_label_set_long_mode(rep_hint, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(rep_hint, lv_pct(100));
 
         auto *codec = Board::GetInstance().GetAudioCodec();
         if (codec && codec->output_channels() > 1) {
@@ -1137,12 +1231,153 @@ void nl_ov_open_settings_detail(set_page_id_t page)
 
         lv_obj_t *hint = lv_label_create(card);
         lv_label_set_text(hint,
-                          "关闭后不再连接 api.tenclass.net，唤醒不等公网 MQTT。"
+                          "关闭后不再连接语音云，唤醒不等公网。"
                           "改开关后约 3 秒重启生效。");
         lv_obj_set_width(hint, lv_pct(100));
         lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
         nl_ov_set_font(hint);
         lv_obj_set_style_text_color(hint, UI_TEXT_TIP, 0);
+
+        /* —— 官方 / 自定义小智语音服务器 —— */
+        lv_obj_t *srv_card = settings_card(body, "语音服务器");
+        lv_obj_set_style_pad_all(srv_card, 16, 0);
+        lv_obj_set_style_pad_row(srv_card, 12, 0);
+
+        Settings wifi_rd("wifi", false);
+        const std::string stored_ota = wifi_rd.GetString("ota_url");
+        const bool is_official = stored_ota.empty() || stored_ota == CONFIG_OTA_URL;
+        const std::string cur_voice = is_official ? std::string(CONFIG_OTA_URL) : stored_ota;
+
+        s_voice_mode_row = lv_obj_create(srv_card);
+        lv_obj_remove_style_all(s_voice_mode_row);
+        lv_obj_set_width(s_voice_mode_row, lv_pct(100));
+        lv_obj_set_height(s_voice_mode_row, 44);
+        lv_obj_set_flex_flow(s_voice_mode_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(s_voice_mode_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(s_voice_mode_row, 8, 0);
+        lv_obj_clear_flag(s_voice_mode_row, LV_OBJ_FLAG_SCROLLABLE);
+
+        s_voice_custom_wrap = lv_obj_create(srv_card);
+        lv_obj_remove_style_all(s_voice_custom_wrap);
+        lv_obj_set_width(s_voice_custom_wrap, lv_pct(100));
+        lv_obj_set_height(s_voice_custom_wrap, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(s_voice_custom_wrap, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(s_voice_custom_wrap, 8, 0);
+        lv_obj_clear_flag(s_voice_custom_wrap, LV_OBJ_FLAG_SCROLLABLE);
+        if (is_official) {
+            lv_obj_add_flag(s_voice_custom_wrap, LV_OBJ_FLAG_HIDDEN);
+        }
+
+        for (int i = 0; i < 2; i++) {
+            const bool on = (i == 0) ? is_official : !is_official;
+            lv_obj_t *chip = lv_obj_create(s_voice_mode_row);
+            lv_obj_remove_style_all(chip);
+            lv_obj_set_flex_grow(chip, 1);
+            lv_obj_set_height(chip, 44);
+            lv_obj_set_style_radius(chip, 12, 0);
+            lv_obj_set_style_bg_color(chip, on ? UI_ACCENT : UI_CAPSULE_OFF, 0);
+            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+            lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(chip, UI_EXT_CLICK);
+            lv_obj_add_event_cb(
+                chip,
+                [](lv_event_t *e) {
+                    const int v = (int)(intptr_t)lv_event_get_user_data(e);
+                    if (!s_voice_mode_row) {
+                        return;
+                    }
+                    const uint32_t n = lv_obj_get_child_count(s_voice_mode_row);
+                    for (uint32_t i = 0; i < n; i++) {
+                        lv_obj_t *c = lv_obj_get_child(s_voice_mode_row, (int32_t)i);
+                        const bool sel = (int)i == v;
+                        lv_obj_set_style_bg_color(c, sel ? UI_ACCENT : UI_CAPSULE_OFF, 0);
+                        lv_obj_t *lab = lv_obj_get_child(c, 0);
+                        if (lab) {
+                            lv_obj_set_style_text_color(lab, sel ? UI_ON_TILE : UI_TEXT, 0);
+                        }
+                    }
+                    lv_obj_set_user_data(s_voice_mode_row, (void *)(intptr_t)v);
+                    if (s_voice_custom_wrap) {
+                        if (v == 0) {
+                            lv_obj_add_flag(s_voice_custom_wrap, LV_OBJ_FLAG_HIDDEN);
+                            nl_ov_kb_set_visible(false);
+                        } else {
+                            lv_obj_clear_flag(s_voice_custom_wrap, LV_OBJ_FLAG_HIDDEN);
+                        }
+                    }
+                },
+                LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            lv_obj_t *lab = lv_label_create(chip);
+            nl_ov_set_font(lab);
+            lv_label_set_text(lab, i == 0 ? "官方" : "自定义");
+            lv_obj_set_style_text_color(lab, on ? UI_ON_TILE : UI_TEXT, 0);
+            lv_obj_center(lab);
+        }
+        lv_obj_set_user_data(s_voice_mode_row, (void *)(intptr_t)(is_official ? 0 : 1));
+
+        lv_obj_t *url_lbl = lv_label_create(s_voice_custom_wrap);
+        lv_label_set_text(url_lbl, "OTA 地址");
+        nl_ov_set_font(url_lbl);
+        lv_obj_set_style_text_color(url_lbl, UI_TEXT_DIM, 0);
+
+        s_voice_url_ta = lv_textarea_create(s_voice_custom_wrap);
+        lv_textarea_set_one_line(s_voice_url_ta, true);
+        lv_textarea_set_max_length(s_voice_url_ta, 160);
+        lv_textarea_set_placeholder_text(s_voice_url_ta, "http://ip:8003/xiaozhi/ota/");
+        if (!is_official) {
+            lv_textarea_set_text(s_voice_url_ta, cur_voice.c_str());
+        }
+        lv_obj_set_width(s_voice_url_ta, lv_pct(100));
+        lv_obj_set_style_pad_ver(s_voice_url_ta, 10, 0);
+        lv_obj_set_style_pad_hor(s_voice_url_ta, 12, 0);
+        lv_obj_set_style_bg_color(s_voice_url_ta, UI_FIELD, 0);
+        lv_obj_set_style_bg_opa(s_voice_url_ta, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(s_voice_url_ta, 2, 0);
+        lv_obj_set_style_border_color(s_voice_url_ta, UI_BORDER, 0);
+        lv_obj_set_style_radius(s_voice_url_ta, UI_RADIUS_SM, 0);
+        nl_ov_set_font(s_voice_url_ta);
+        lv_obj_set_style_text_color(s_voice_url_ta, UI_TEXT, 0);
+        lv_obj_set_style_bg_color(s_voice_url_ta, UI_FIELD_FOCUS, LV_STATE_FOCUSED);
+        lv_obj_set_style_border_color(s_voice_url_ta, UI_ACCENT, LV_STATE_FOCUSED);
+        lv_obj_set_scroll_dir(s_voice_url_ta, LV_DIR_HOR);
+        lv_obj_set_scrollbar_mode(s_voice_url_ta, LV_SCROLLBAR_MODE_OFF);
+        nl_ov_kb_wire_textarea(s_voice_url_ta);
+
+        lv_obj_t *srv_hint = lv_label_create(s_voice_custom_wrap);
+        lv_label_set_text(srv_hint, "填自建小智的 OTA 地址，不是 NodeLio 控家地址。");
+        lv_obj_set_width(srv_hint, lv_pct(100));
+        lv_label_set_long_mode(srv_hint, LV_LABEL_LONG_WRAP);
+        nl_ov_set_font(srv_hint);
+        lv_obj_set_style_text_color(srv_hint, UI_TEXT_TIP, 0);
+
+        lv_obj_t *save_btn = ui_make_text_btn(srv_card, "保存并重连", 0, [](lv_event_t *) {
+            const int mode =
+                s_voice_mode_row ? (int)(intptr_t)lv_obj_get_user_data(s_voice_mode_row) : 0;
+            nl_ov_kb_set_visible(false);
+            if (mode == 0) {
+                Application::GetInstance().RequestVoiceServerApply(true);
+                return;
+            }
+            const char *raw = s_voice_url_ta ? lv_textarea_get_text(s_voice_url_ta) : "";
+            if (!raw || !raw[0]) {
+                nl_ov_toast("请填写 OTA 地址");
+                return;
+            }
+            if (strncmp(raw, "http://", 7) != 0 && strncmp(raw, "https://", 8) != 0) {
+                nl_ov_toast("地址须以 http:// 或 https:// 开头");
+                return;
+            }
+            Application::GetInstance().RequestVoiceServerApply(false, raw);
+        });
+        lv_obj_set_style_margin_top(save_btn, 4, 0);
+
+        lv_obj_t *off_hint = lv_label_create(srv_card);
+        lv_label_set_text(off_hint, "官方为 api.tenclass.net。保存后会重启面板。");
+        lv_obj_set_width(off_hint, lv_pct(100));
+        lv_label_set_long_mode(off_hint, LV_LABEL_LONG_WRAP);
+        nl_ov_set_font(off_hint);
+        lv_obj_set_style_text_color(off_hint, UI_TEXT_TIP, 0);
 
         char sec[16];
         uint16_t lis = s_cfg.listen_idle_s ? s_cfg.listen_idle_s : NODELIO_LISTEN_IDLE_DEFAULT;

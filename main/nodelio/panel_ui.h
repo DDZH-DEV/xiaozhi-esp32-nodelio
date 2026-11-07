@@ -217,6 +217,9 @@ void nodelio_panel_ui_set_lan_online(const char *device_id, bool online, const c
 void nodelio_panel_ui_set_lan_pass_required(const char *device_id, bool need);
 void nodelio_panel_ui_clear_lan_channels(const char *device_id);
 void nodelio_panel_ui_refresh_tiles(void);
+/** 语音开关已准备下发：先写卡片，并在快照对上之前挡住旧态。失败时 hold_switch_fail。 */
+void nodelio_panel_ui_hold_switch(const nl_widget_t *w, const char *want);
+void nodelio_panel_ui_hold_switch_fail(const char *widget_id);
 
 /** 仅写缓存（snapshot 批量用）；channel_index 为负表示设备级。 */
 void nodelio_panel_ui_note_countdown(const char *device_id, int channel_index, int seconds);

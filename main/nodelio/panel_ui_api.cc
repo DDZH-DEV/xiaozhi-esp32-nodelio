@@ -769,6 +769,156 @@ static void notice_do_invoke(const nodelio_panel_notice_t *n)
     nl_ov_invoke_skill_async(sid, body);
 }
 
+static esp_timer_handle_t s_notice_repeat_tmr = nullptr;
+static bool s_notice_boot_remind_done = false;
+
+static int notice_sound_cue(void)
+{
+    nodelio_nvs_config_t cfg{};
+    nodelio_nvs_cache_get(&cfg);
+    if (cfg.notice_sound == 0 || cfg.notice_sound > 3) {
+        return -1;
+    }
+    return (int)cfg.notice_sound - 1;
+}
+
+static bool notice_repeat_on(void)
+{
+    nodelio_nvs_config_t cfg{};
+    nodelio_nvs_cache_get(&cfg);
+    return cfg.notice_repeat != 0 && cfg.notice_sound >= 1 && cfg.notice_sound <= 3;
+}
+
+/** 未点开的 action/alert；0=最新。仅 info 不算。 */
+static const nodelio_panel_notice_t *notice_newest_action_alert(void)
+{
+    if (!s_notice_items) {
+        return nullptr;
+    }
+    for (int i = 0; i < s_notice_n; ++i) {
+        const nodelio_panel_notice_t *it = &s_notice_items[i];
+        if (strcmp(it->mode, "action") == 0 || strcmp(it->mode, "alert") == 0) {
+            return it;
+        }
+    }
+    return nullptr;
+}
+
+static void notice_arm_active_from(const nodelio_panel_notice_t *n)
+{
+    if (n && n->notice_id[0]) {
+        snprintf(s_notice_active_id, sizeof(s_notice_active_id), "%s", n->notice_id);
+    } else {
+        s_notice_active_id[0] = '\0';
+    }
+}
+
+static void notice_repeat_stop(void)
+{
+    if (s_notice_repeat_tmr) {
+        esp_timer_stop(s_notice_repeat_tmr);
+    }
+}
+
+static void notice_repeat_cb(void *)
+{
+    Application::GetInstance().Schedule([]() {
+        const nodelio_panel_notice_t *n = notice_newest_action_alert();
+        if (!n || !notice_repeat_on()) {
+            s_notice_active_id[0] = '\0';
+            notice_repeat_stop();
+            return;
+        }
+        notice_arm_active_from(n);
+        const int cue = notice_sound_cue();
+        if (cue >= 0) {
+            nodelio_panel_ui_play_cue(cue);
+        }
+    });
+}
+
+static void notice_repeat_start(void)
+{
+    const nodelio_panel_notice_t *n = notice_newest_action_alert();
+    if (!notice_repeat_on() || !n) {
+        notice_repeat_stop();
+        return;
+    }
+    notice_arm_active_from(n);
+    if (!s_notice_repeat_tmr) {
+        const esp_timer_create_args_t args = {
+            .callback = notice_repeat_cb,
+            .arg = nullptr,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "nl_nt_rep",
+            .skip_unhandled_events = true,
+        };
+        if (esp_timer_create(&args, &s_notice_repeat_tmr) != ESP_OK) {
+            return;
+        }
+    }
+    esp_timer_stop(s_notice_repeat_tmr);
+    esp_timer_start_periodic(s_notice_repeat_tmr, 12 * 1000000LL);
+}
+
+static void notice_play_arrival(const nodelio_panel_notice_t *n)
+{
+    if (!n) {
+        return;
+    }
+    const int cue = notice_sound_cue();
+    if (cue >= 0) {
+        nodelio_panel_ui_play_cue(cue);
+    }
+    const bool needs_person = strcmp(n->mode, "action") == 0 || strcmp(n->mode, "alert") == 0;
+    if (needs_person) {
+        notice_repeat_start();
+    } else if (!notice_newest_action_alert()) {
+        notice_repeat_stop();
+    }
+}
+
+/**
+ * 开机云端对账（或失败后用本机缓存）完成后提醒一轮：Toast + 一声；
+ * 持续提醒开着则恢复 12s 计时。不 invoke、不自动开卡片。同次开机只做一次。
+ */
+static void notice_boot_remind_once(void)
+{
+    if (s_notice_boot_remind_done) {
+        return;
+    }
+    s_notice_boot_remind_done = true;
+
+    const nodelio_panel_notice_t *n = notice_newest_action_alert();
+    if (!n) {
+        return;
+    }
+    notice_arm_active_from(n);
+
+    const char *toast = n->title[0] ? n->title : nullptr;
+    if (!toast) {
+        if (strcmp(n->mode, "alert") == 0) {
+            toast = "监测告警";
+        } else {
+            toast = "需要你确认";
+        }
+    }
+    {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            nl_ov_toast(toast);
+        }
+    }
+
+    const int cue = notice_sound_cue();
+    if (cue >= 0) {
+        nodelio_panel_ui_play_cue(cue);
+    }
+    if (notice_repeat_on()) {
+        notice_repeat_start();
+    }
+}
+
 static void notice_present(const nodelio_panel_notice_t *n)
 {
     if (!n) {
@@ -792,8 +942,15 @@ static void notice_present(const nodelio_panel_notice_t *n)
         }
     }
     nl_ov_toast(toast);
-    if (strcmp(n->mode, "alert") == 0 && strcmp(n->severity, "critical") == 0) {
-        nodelio_panel_ui_play_cue(0);
+    notice_play_arrival(n);
+
+    /* 日历提醒：念一次标题，并刷新已开日历的圆点；不 invoke 技能卡 */
+    if (n->app_id[0] && strcmp(n->app_id, "builtin.reminder") == 0) {
+        if (n->title[0]) {
+            nodelio_panel_ui_request_cloud_speak(n->title);
+        }
+        nodelio_skill_daily_reminders_invalidate();
+        return;
     }
 
     /* 有 invoke_app（或 action/alert 带 app_id）才拉 Envelope；纯 title info 零 HTTP */
@@ -866,6 +1023,11 @@ extern "C" void nodelio_panel_ui_notice_clear(const char *notice_id)
         (void)notice_store_remove_by_id(id, nullptr);
         if (s_notice_active_id[0] && strcmp(s_notice_active_id, id) == 0) {
             s_notice_active_id[0] = '\0';
+        }
+        if (notice_newest_action_alert() && notice_repeat_on()) {
+            notice_repeat_start();
+        } else {
+            notice_repeat_stop();
         }
         for (int i = 0; s_notice_defer && i < s_notice_defer_n; ++i) {
             if (strcmp(s_notice_defer[i].notice_id, id) == 0) {
@@ -958,6 +1120,7 @@ extern "C" void nodelio_panel_ui_apply_notices_http_body(const char *json)
             }
             ESP_LOGI(TAG, "reconciled %d unread notices from cloud", s_notice_n);
         }
+        notice_boot_remind_once();
         cJSON_Delete(root);
     });
 }
@@ -967,6 +1130,7 @@ static void notices_sync_worker(void *arg)
     (void)arg;
     nodelio_nvs_config_t cfg;
     if (!nl_ov_cfg_http_ready(&cfg, false) || !cfg.device_key[0]) {
+        Application::GetInstance().Schedule([]() { notice_boot_remind_once(); });
         return;
     }
     char base[160];
@@ -979,13 +1143,19 @@ static void notices_sync_worker(void *arg)
         body = static_cast<char *>(malloc(cap));
     }
     if (!body) {
+        Application::GetInstance().Schedule([]() { notice_boot_remind_once(); });
         return;
     }
     body[0] = '\0';
     int status = 0;
-    if (nodelio_http_get_ms(url, cfg.device_key, nullptr, &status, body, cap, 6000) == ESP_OK &&
-        status == 200) {
+    const bool ok = nodelio_http_get_ms(url, cfg.device_key, nullptr, &status, body, cap, 6000) ==
+                        ESP_OK &&
+                    status == 200;
+    if (ok) {
         nodelio_panel_ui_apply_notices_http_body(body);
+    } else {
+        /* 对账失败：用本机未读缓存提醒一轮 */
+        Application::GetInstance().Schedule([]() { notice_boot_remind_once(); });
     }
     free(body);
 }
@@ -1045,6 +1215,11 @@ extern "C" void nodelio_panel_ui_notice_resolve(const char *notice_id, bool open
         if (s_notice_active_id[0] && strcmp(s_notice_active_id, id) == 0) {
             s_notice_active_id[0] = '\0';
         }
+        if (notice_newest_action_alert() && notice_repeat_on()) {
+            notice_repeat_start();
+        } else {
+            notice_repeat_stop();
+        }
         if (open_target && found && (removed.invoke_app[0] || removed.app_id[0])) {
             notice_do_invoke(&removed);
         }
@@ -1083,6 +1258,7 @@ extern "C" void nodelio_panel_ui_notice_resolve_all(void)
         }
         s_notice_n = 0;
         s_notice_active_id[0] = '\0';
+        notice_repeat_stop();
         s_notice_defer_n = 0;
         notice_persist_disk_cache();
         DisplayLockGuard lock(nl_ov_disp());
