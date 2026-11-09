@@ -10,7 +10,7 @@ extern "C" {
 
 #define NL_ENV_STR 64
 #define NL_ENV_TITLE 96
-#define NL_ENV_SUB 128
+#define NL_ENV_SUB 220
 #define NL_ENV_URL 320
 #define NL_ENV_SPOKEN 320
 #define NL_ENV_TRACK_MAX 24
@@ -75,6 +75,8 @@ typedef struct {
     char mime[32];
     int64_t expires_at;
     bool has_play_action;
+    bool unread; /* support_inbox：有未读访客消息 */
+    bool online; /* support_inbox：访客 WS 仍在本机会话房间 */
     int invoke_n;
     nl_env_invoke_action_t invokes[NL_ENV_ACTION_MAX];
 } nl_env_track_t;
@@ -94,6 +96,8 @@ typedef struct {
     char role[16]; /* visitor | agent | bot | system */
     char name[32];
     char text[NL_ENV_CHAT_TEXT];
+    char image_url[NL_ENV_URL]; /* 非空则气泡内显示 JPEG；普惠字库没有的表情走 emoji 回退字 */
+    char sent_at[20];           /* 本机时区的短时间，如 16:32 */
 } nl_env_chat_msg_t;
 
 typedef struct {
@@ -141,6 +145,12 @@ typedef struct {
     nl_env_invoke_action_t chips[NL_ENV_CHIP_MAX];
     /** display.conversation_id；语音 draft 用。 */
     uint64_t conversation_id;
+    /** display.message_id；小智拟回复写发送按钮时用。 */
+    uint64_t message_id;
+    /** display.cloud_suggest：go-chat 无建议时由小智拟 2–4 条。 */
+    bool cloud_suggest;
+    /** display.support_meta：会话顶栏，时间 / IP / 位置 / 客户端，可含换行。 */
+    char support_meta[192];
 } nl_content_envelope_t;
 
 /**

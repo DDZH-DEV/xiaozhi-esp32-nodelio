@@ -72,7 +72,7 @@ typedef struct nodelio_panel_notice {
     char mode[12];
     char severity[12];
     char coalesce_key[168];
-    char title[96];
+    char title[192];
     char app_id[72];
     char invoke_app[72];
     char invoke_params[256];

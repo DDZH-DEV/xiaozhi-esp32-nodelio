@@ -4,6 +4,7 @@ managed_components/
 build/
 build-c5-hosted-slave/
 .nodelio_build_stamp.json
+.nodelio_build_stamp.*.json
 main/nodelio/nodelio_build_stamp.h
 dist/
 .vscode/

@@ -175,12 +175,17 @@ static void layout_notice_card(void)
     }
     const auto *p = nodelio_display_profile();
     const int w = p->nav_width ? (int)p->result_width : ((int)p->width - 24);
-    const int h = (int)p->height - (NL_UI_STATUS_H + 16);
+    /* 顶栏已不占位，不要再空出 NL_UI_STATUS_H，否则卡片悬在屏顶下面。 */
+    const int top = 12;
+    int h = (int)p->height - top - 12;
+    if (h < 160) {
+        h = (int)p->height - 8;
+    }
     lv_obj_set_size(s_notice_card, w, h);
     if (p->nav_width) {
-        lv_obj_align(s_notice_card, LV_ALIGN_TOP_RIGHT, -12, NL_UI_STATUS_H + 4);
+        lv_obj_align(s_notice_card, LV_ALIGN_TOP_RIGHT, -12, top);
     } else {
-        lv_obj_align(s_notice_card, LV_ALIGN_TOP_MID, 0, NL_UI_STATUS_H + 4);
+        lv_obj_align(s_notice_card, LV_ALIGN_TOP_MID, 0, top);
     }
 }
 

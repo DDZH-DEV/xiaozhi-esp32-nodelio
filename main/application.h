@@ -103,6 +103,11 @@ public:
      */
     void StartListening();
 
+#if CONFIG_NODELIO_PANEL
+    /** 客服「自己说」：自动停听，说完即出识别字；不等播放队列排空。 */
+    void StartSupportReplyListen();
+#endif
+
     /**
      * Stop listening (event-based, thread-safe)
      * Sends MAIN_EVENT_STOP_LISTENING to be handled in Run()
@@ -179,6 +184,13 @@ public:
      * 促云端 tools/call self.skill.news，由模型 TTS 念正文（禁止 detect 塞正文）。
      */
     void StartLocalNewsRead(const char *op /* read|continue */);
+    /**
+     * go-chat 无建议：短 detect「调support.suggest」（≤16 字）促云端
+     * tools/call self.support.suggest，把 2–4 条写回发送按钮。不朗读。
+     */
+    void StartSupportCloudSuggest();
+    /** finished=false：第一轮已取到原话，延长等待；true：选项已上屏或失败，结束云会话。 */
+    void OnSupportSuggestToolCalled(bool finished);
     /** 停当前段 TTS，不跳过未读原文；之后可点「继续」或说「继续读」。 */
     void PauseNewsRead();
     /** 翻篇：立即掐 TTS/解码，无「已暂停」toast，不发 detect。 */
@@ -260,9 +272,19 @@ private:
     int news_mcp_detect_retries_ = 0;
     int64_t news_mcp_deadline_us_ = 0;
     std::string news_detect_echo_;
+    std::atomic<bool> support_suggest_awaiting_{false};
+    /** 下一次 START_LISTENING 走自动停听并立刻开麦（客服自己说）。 */
+    bool support_reply_listen_ = false;
+    bool force_listen_audio_ = false;
+    int support_suggest_retries_ = 0;
+    int64_t support_suggest_deadline_us_ = 0;
+    std::string support_detect_echo_;
     void TryFlushPendingCloudSpeak();
     void CheckNewsReadRequest();
     void SendNewsReadRequest(bool interrupt = true);
+    void CheckSupportSuggestRequest();
+    void SendSupportSuggestRequest();
+    void FailSupportCloudSuggest(const char *toast);
     void FinishNewsReadPlayback();
     void OnNewsReadSentence(const char* text);
     void CancelNewsReadPlayback();

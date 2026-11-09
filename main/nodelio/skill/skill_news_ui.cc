@@ -1152,8 +1152,15 @@ static void news_set_nav_bar(bool on)
         lv_obj_set_height(s_dsh_detail_bar, 0);
         return;
     }
-    lv_obj_set_flex_align(s_dsh_detail_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+    /* 客服底栏会把这条改成纵向，宽度 0 的按钮会看不见。详情必须回到横排。 */
+    lv_obj_set_flex_flow(s_dsh_detail_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_dsh_detail_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_grow(s_dsh_detail_bar, 0);
+    lv_obj_set_width(s_dsh_detail_bar, lv_pct(100));
+    lv_obj_set_style_max_height(s_dsh_detail_bar, LV_COORD_MAX, 0);
+    lv_obj_set_style_pad_column(s_dsh_detail_bar, 8, 0);
+    news_make_bar_btn(s_dsh_detail_bar, "返回列表", on_news_back, nullptr, false);
     news_make_bar_btn(s_dsh_detail_bar, "上一篇", on_news_nav, (void *)(intptr_t)-1, false);
     s_news_read_btn = news_make_bar_btn(s_dsh_detail_bar, "朗读", on_news_read_btn, nullptr, true);
     news_make_bar_btn(s_dsh_detail_bar, "下一篇", on_news_nav, (void *)(intptr_t)1, false);
@@ -1219,36 +1226,12 @@ void fill_news(void)
             snprintf(meta, sizeof(meta), "%s", when[0] ? when : "");
         }
 
-        /* 返回和来源同一行：左边按钮，右边出处，避免按钮单独占一行、右侧空一大块。 */
-        lv_obj_t *bar = lv_obj_create(s_card_list);
-        lv_obj_remove_style_all(bar);
-        lv_obj_set_width(bar, lv_pct(100));
-        lv_obj_set_height(bar, LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(bar, meta[0] ? LV_FLEX_ALIGN_START : LV_FLEX_ALIGN_END,
-                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(bar, 16, 0);
-        lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
-
-        lv_obj_t *back = make_text_action_btn(bar, "返回列表", on_news_back, nullptr);
-        lv_obj_set_size(back, LV_SIZE_CONTENT, 40);
-        lv_obj_set_style_pad_hor(back, 14, 0);
-        lv_obj_set_style_bg_color(back, UI_CAPSULE_OFF, 0);
-        lv_obj_set_style_radius(back, 12, 0);
-        {
-            lv_obj_t *bl = lv_obj_get_child(back, 0);
-            if (bl) {
-                lv_obj_set_style_text_color(bl, UI_TEXT_SUB, 0);
-            }
-        }
         if (meta[0]) {
-            lv_obj_t *meta_l = lv_label_create(bar);
+            lv_obj_t *meta_l = lv_label_create(s_card_list);
             nl_ov_set_font(meta_l);
             lv_label_set_text(meta_l, meta);
-            lv_obj_set_flex_grow(meta_l, 1);
-            lv_obj_set_width(meta_l, 0);
+            lv_obj_set_width(meta_l, lv_pct(100));
             lv_label_set_long_mode(meta_l, LV_LABEL_LONG_DOT);
-            lv_obj_set_style_text_align(meta_l, LV_TEXT_ALIGN_RIGHT, 0);
             lv_obj_set_style_text_color(meta_l, UI_TEXT_MUTED, 0);
         }
 

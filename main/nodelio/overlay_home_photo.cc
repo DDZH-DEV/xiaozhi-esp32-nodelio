@@ -173,19 +173,8 @@ static void photo_nav_raise(lv_obj_t *tile)
     if (!tile) {
         return;
     }
-    lv_obj_update_layout(tile);
-    /* 未出图时 layout 宽高可能仍为 0；回退到 place_grid_obj 写入的 style 尺寸，
-     * 否则右钮会落到 x=10（看起来像叠在左上角）。 */
-    int32_t tw = lv_obj_get_width(tile);
-    int32_t th = lv_obj_get_height(tile);
-    if (tw <= 0) {
-        tw = lv_obj_get_style_width(tile, LV_PART_MAIN);
-    }
-    if (th <= 0) {
-        th = lv_obj_get_style_height(tile, LV_PART_MAIN);
-    }
-    const int32_t btn = 48;
-    const int32_t y = (th > btn) ? ((th - btn) / 2) : 0;
+    /* 用对齐而不是绝对坐标。加载中卡片 coords 仍是 0 时，set_pos 会把右钮钉在 (10,0)，
+     * 图出来后也不会再挪。LEFT/RIGHT_MID 会在父级尺寸生效后重新落到两侧居中。 */
     for (uint32_t i = 0; i < lv_obj_get_child_count(tile); i++) {
         lv_obj_t *ch = lv_obj_get_child(tile, i);
         if (!ch || !lv_obj_has_flag(ch, LV_OBJ_FLAG_USER_1)) {
@@ -194,9 +183,9 @@ static void photo_nav_raise(lv_obj_t *tile)
         lv_obj_add_flag(ch, (lv_obj_flag_t)(LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_IGNORE_LAYOUT));
         const intptr_t delta = (intptr_t)lv_obj_get_user_data(ch);
         if (delta < 0) {
-            lv_obj_set_pos(ch, 10, y);
+            lv_obj_align(ch, LV_ALIGN_LEFT_MID, 10, 0);
         } else {
-            lv_obj_set_pos(ch, (tw > btn + 10) ? (tw - btn - 10) : 10, y);
+            lv_obj_align(ch, LV_ALIGN_RIGHT_MID, -10, 0);
         }
         lv_obj_move_foreground(ch);
     }
@@ -558,11 +547,26 @@ static void photo_advance(photo_rt_t *rt)
     photo_step(rt, 1);
 }
 
+static bool photo_hold_for_voice(void)
+{
+#if CONFIG_BOARD_TYPE_SILA_86
+    const auto st = Application::GetInstance().GetDeviceState();
+    return st == kDeviceStateConnecting || st == kDeviceStateListening ||
+           st == kDeviceStateSpeaking;
+#else
+    return false;
+#endif
+}
+
 static void on_photo_timer(lv_timer_t *t)
 {
     (void)t;
     if (!s_screen_on || s_active_tab != NL_TAB_HOME || !s_home ||
         lv_obj_has_flag(s_home, LV_OBJ_FLAG_HIDDEN)) {
+        return;
+    }
+    /* 聆听时留着当前这张，不再解码下一张，避免和语音上行抢内部内存。 */
+    if (photo_hold_for_voice()) {
         return;
     }
     if (nodelio_wifi_is_asleep()) {
@@ -712,6 +716,11 @@ static void photo_add_nav_btn(lv_obj_t *tile, nl_widget_t *w, int delta, bool le
     lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_ext_click_area(btn, 10);
     lv_obj_set_user_data(btn, (void *)(intptr_t)delta);
+    if (delta < 0) {
+        lv_obj_align(btn, LV_ALIGN_LEFT_MID, 10, 0);
+    } else {
+        lv_obj_align(btn, LV_ALIGN_RIGHT_MID, -10, 0);
+    }
     lv_obj_add_event_cb(btn, on_photo_nav_btn, LV_EVENT_CLICKED, w);
     lv_obj_t *lb = lv_label_create(btn);
     nl_ov_set_font(lb);

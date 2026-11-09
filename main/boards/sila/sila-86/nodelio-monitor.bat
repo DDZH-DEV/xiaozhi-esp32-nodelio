@@ -3,11 +3,12 @@ setlocal
 chcp 65001 >nul
 
 rem SILA-86 - monitor only (re-attach after reset / port change)
-rem   nodelio-monitor.bat
-rem   nodelio-monitor.bat COM15
+rem   nodelio-monitor.bat           auto-detect the serial port
+rem   nodelio-monitor.bat COM15     force a port
 
 set "PORT=%~1"
-if "%PORT%"=="" set "PORT=COM12"
+set "PORT_ARGS="
+if not "%PORT%"=="" set "PORT_ARGS=-p %PORT%"
 
 set "REPO=D:\xz25"
 set "IDF_PATH=D:\Espressif\frameworks\esp-idf-v6.1"
@@ -18,10 +19,14 @@ call "%IDF_PATH%\export.bat"
 if errorlevel 1 exit /b 1
 cd /d "%REPO%"
 
-echo [sila-86] monitor on %PORT% (no build/flash; esp32s3) ...
-if exist build\xiaozhi.elf (
-  python "%IDF_PATH%\tools\idf_monitor.py" -p %PORT% -b 115200 --toolchain-prefix xtensa-esp32s3-elf- --target esp32s3 build\xiaozhi.elf
+if "%PORT%"=="" (
+  echo [sila-86] monitor auto port ^(no build/flash; esp32s3^) ...
 ) else (
-  python "%IDF_PATH%\tools\idf_monitor.py" -p %PORT% -b 115200 --target esp32s3
+  echo [sila-86] monitor on %PORT% ^(no build/flash; esp32s3^) ...
+)
+if exist build\xiaozhi.elf (
+  python "%IDF_PATH%\tools\idf_monitor.py" %PORT_ARGS% -b 115200 --toolchain-prefix xtensa-esp32s3-elf- --target esp32s3 build\xiaozhi.elf
+) else (
+  python "%IDF_PATH%\tools\idf_monitor.py" %PORT_ARGS% -b 115200 --target esp32s3
 )
 exit /b %ERRORLEVEL%

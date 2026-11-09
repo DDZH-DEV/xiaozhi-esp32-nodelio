@@ -543,8 +543,9 @@ static esp_err_t http_exchange_once(const char *method, const char *url, const c
         pace->mark_sent();
     }
 
-    /* 收包放 PSRAM。默认 new/vector 扩容失败会走异常桩 abort（片内 DRAM 碎片时常见）。 */
-    constexpr size_t kMaxRaw = 96 * 1024;
+    /* 收包放 PSRAM。默认 new/vector 扩容失败会走异常桩 abort（片内 DRAM 碎片时常见）。
+     * 二进制（out_n）允许更大，客服气泡要拉 JPEG；JSON 仍停在 96KB。 */
+    const size_t kMaxRaw = out_n ? static_cast<size_t>(400 * 1024) : static_cast<size_t>(96 * 1024);
     size_t cap = 4096;
     char *raw_buf =
         static_cast<char *>(heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -661,9 +662,25 @@ static esp_err_t http_exchange_once(const char *method, const char *url, const c
         memcpy(trunc, resp_body, sn);
         trunc[sn] = '\0';
         ESP_LOGW(TAG, "%s %s → HTTP %d body=%s", method, url, status, trunc);
-        /* 技能 invoke 的 config_missing 等会回 403 + Envelope；body 已写入 resp，交给上层上屏/toast */
+        if (resp_body && resp_n > 0) {
+            const char *mk = strstr(resp_body, "\"message\":\"");
+            if (mk) {
+                mk += strlen("\"message\":\"");
+                char emsg[120];
+                size_t i = 0;
+                while (mk[i] && mk[i] != '"' && i + 1 < sizeof(emsg)) {
+                    emsg[i] = mk[i];
+                    ++i;
+                }
+                emsg[i] = '\0';
+                if (emsg[0]) {
+                    ESP_LOGW(TAG, "HTTP %d error.message=%s", status, emsg);
+                }
+            }
+        }
+        /* 技能 invoke 的错误 Envelope（含 Host 包的 502）交给上层上屏，不要当成没连上。 */
         const bool skill_envelope_err =
-            status >= 400 && status < 500 && resp_n > 0 && resp_body &&
+            status >= 400 && resp_n > 0 && resp_body &&
             strstr(resp_body, "\"schema_version\"") != nullptr;
         if (!skill_envelope_err) {
             ret = ESP_FAIL;

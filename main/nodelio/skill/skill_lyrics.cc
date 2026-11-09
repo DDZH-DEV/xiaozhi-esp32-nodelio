@@ -40,6 +40,8 @@ struct lyric_job_t {
 };
 
 lyric_line_t s_lines[kLineMax];
+/* 只在 nl_lyric 里写。不能放进 lyric_worker 栈：100 行约 8.8KB，任务栈只有 8KB。 */
+lyric_line_t s_parse_lines[kLineMax];
 int s_line_n = 0;
 bool s_synced = false;
 uint32_t s_gen = 0;
@@ -159,7 +161,6 @@ void lyric_worker(void *)
         if (!root) {
             continue;
         }
-        lyric_line_t parsed[kLineMax];
         int n = 0;
         bool synced = cJSON_IsTrue(cJSON_GetObjectItem(root, "synced"));
         cJSON *lines = cJSON_GetObjectItem(root, "lines");
@@ -174,8 +175,8 @@ void lyric_worker(void *)
                     continue;
                 }
                 cJSON *ms = cJSON_GetObjectItem(it, "ms");
-                parsed[n].ms = cJSON_IsNumber(ms) && ms->valuedouble > 0 ? static_cast<uint32_t>(ms->valuedouble) : 0;
-                snprintf(parsed[n].text, sizeof(parsed[n].text), "%s", text->valuestring);
+                s_parse_lines[n].ms = cJSON_IsNumber(ms) && ms->valuedouble > 0 ? static_cast<uint32_t>(ms->valuedouble) : 0;
+                snprintf(s_parse_lines[n].text, sizeof(s_parse_lines[n].text), "%s", text->valuestring);
                 n++;
             }
         }
@@ -186,7 +187,7 @@ void lyric_worker(void *)
         xSemaphoreTake(s_mu, portMAX_DELAY);
         if (job.gen == s_gen) {
             if (n > 0) {
-                memcpy(s_lines, parsed, sizeof(lyric_line_t) * static_cast<size_t>(n));
+                memcpy(s_lines, s_parse_lines, sizeof(lyric_line_t) * static_cast<size_t>(n));
                 s_line_n = n;
                 s_synced = synced;
                 s_shown[0] = '\0';

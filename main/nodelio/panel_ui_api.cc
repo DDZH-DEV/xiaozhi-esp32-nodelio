@@ -740,6 +740,54 @@ static void notice_maybe_wake(const nodelio_panel_notice_t *n)
     Board::GetInstance().NoteUserActivity();
 }
 
+static void notice_force_support_thread(nodelio_panel_notice_t *n)
+{
+    if (!n || !n->invoke_params[0]) {
+        return;
+    }
+    const char *app = n->invoke_app[0] ? n->invoke_app : n->app_id;
+    if (!app || !strstr(app, "support.inbox")) {
+        return;
+    }
+    cJSON *root = cJSON_Parse(n->invoke_params);
+    if (!root) {
+        return;
+    }
+    const cJSON *jc = cJSON_GetObjectItemCaseSensitive(root, "conversation_id");
+    uint64_t cid = 0;
+    if (cJSON_IsNumber(jc) && jc->valuedouble > 0) {
+        cid = (uint64_t)jc->valuedouble;
+    } else if (cJSON_IsString(jc) && jc->valuestring && jc->valuestring[0]) {
+        cid = (uint64_t)strtoull(jc->valuestring, nullptr, 10);
+    }
+    if (cid == 0) {
+        cJSON_Delete(root);
+        return;
+    }
+    const cJSON *op = cJSON_GetObjectItemCaseSensitive(root, "op");
+    if (cJSON_IsString(op) && op->valuestring && strcmp(op->valuestring, "thread") == 0) {
+        cJSON_Delete(root);
+        return;
+    }
+    cJSON *repl = cJSON_CreateString("thread");
+    if (!repl) {
+        cJSON_Delete(root);
+        return;
+    }
+    if (cJSON_GetObjectItemCaseSensitive(root, "op")) {
+        cJSON_ReplaceItemInObject(root, "op", repl);
+    } else {
+        cJSON_AddItemToObject(root, "op", repl);
+    }
+    char *printed = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!printed) {
+        return;
+    }
+    snprintf(n->invoke_params, sizeof(n->invoke_params), "%s", printed);
+    cJSON_free(printed);
+}
+
 static void notice_do_invoke(const nodelio_panel_notice_t *n)
 {
     if (!n) {
@@ -765,7 +813,23 @@ static void notice_do_invoke(const nodelio_panel_notice_t *n)
         cJSON_Delete(params);
         return;
     }
+    char stay[256];
     const char *body = n->invoke_params[0] ? n->invoke_params : "{}";
+    const char *app = sid;
+    if (const char *sep = strstr(sid, "::")) {
+        app = sep + 2;
+    }
+    /* 提醒不是已装技能。点开若 invoke builtin.reminder，404 会被当成服务器无响应。 */
+    if (strcmp(app, "builtin.reminder") == 0 ||
+        (n->app_id[0] && strcmp(n->app_id, "builtin.reminder") == 0)) {
+        (void)nodelio_skill_daily_open_reminders();
+        return;
+    }
+    /* 正在看这一通详情时，新消息通知默认 op=inbox，会把卡片换成列表。改成刷新详情。 */
+    if (strcmp(app, "support.inbox") == 0 && n->invoke_params[0] &&
+        nodelio_skill_support_keep_thread(n->invoke_params, stay, sizeof(stay))) {
+        body = stay;
+    }
     nl_ov_invoke_skill_async(sid, body);
 }
 
@@ -919,6 +983,11 @@ static void notice_boot_remind_once(void)
     }
 }
 
+static bool notice_is_quiet_refresh(const nodelio_panel_notice_t *n)
+{
+    return n && strcmp(n->reason, "panel_replied") == 0;
+}
+
 static void notice_present(const nodelio_panel_notice_t *n)
 {
     if (!n) {
@@ -927,25 +996,33 @@ static void notice_present(const nodelio_panel_notice_t *n)
     if (n->notice_id[0]) {
         snprintf(s_notice_active_id, sizeof(s_notice_active_id), "%s", n->notice_id);
     }
-    const char *toast = n->title[0] ? n->title : nullptr;
-    if (!toast) {
-        if (strcmp(n->reason, "needs_you") == 0) {
-            toast = "有任务等你确认";
-        } else if (strcmp(n->reason, "completed") == 0) {
-            toast = "有任务已完成";
-        } else if (strcmp(n->mode, "alert") == 0) {
-            toast = "监测告警";
-        } else if (strcmp(n->mode, "action") == 0) {
-            toast = "需要你确认";
-        } else {
-            toast = "新通知";
+    /* 已回复访客：折叠掉上一条未读并刷新会话，不 Toast、不响、不循环提醒。 */
+    if (notice_is_quiet_refresh(n)) {
+        if (!notice_newest_action_alert()) {
+            s_notice_active_id[0] = '\0';
+            notice_repeat_stop();
         }
+    } else {
+        const char *toast = n->title[0] ? n->title : nullptr;
+        if (!toast) {
+            if (strcmp(n->reason, "needs_you") == 0) {
+                toast = "有任务等你确认";
+            } else if (strcmp(n->reason, "completed") == 0) {
+                toast = "有任务已完成";
+            } else if (strcmp(n->mode, "alert") == 0) {
+                toast = "监测告警";
+            } else if (strcmp(n->mode, "action") == 0) {
+                toast = "需要你确认";
+            } else {
+                toast = "新通知";
+            }
+        }
+        nl_ov_toast(toast);
+        notice_play_arrival(n);
     }
-    nl_ov_toast(toast);
-    notice_play_arrival(n);
 
     /* 日历提醒：念一次标题，并刷新已开日历的圆点；不 invoke 技能卡 */
-    if (n->app_id[0] && strcmp(n->app_id, "builtin.reminder") == 0) {
+    if (!notice_is_quiet_refresh(n) && n->app_id[0] && strcmp(n->app_id, "builtin.reminder") == 0) {
         if (n->title[0]) {
             nodelio_panel_ui_request_cloud_speak(n->title);
         }
@@ -1221,6 +1298,7 @@ extern "C" void nodelio_panel_ui_notice_resolve(const char *notice_id, bool open
             notice_repeat_stop();
         }
         if (open_target && found && (removed.invoke_app[0] || removed.app_id[0])) {
+            notice_force_support_thread(&removed);
             notice_do_invoke(&removed);
         }
         {

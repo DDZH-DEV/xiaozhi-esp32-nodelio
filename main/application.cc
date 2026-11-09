@@ -168,6 +168,7 @@ void Application::Initialize() {
     // Opening an installed app and reading it must both be visible on the first page.
     mcp_server.PromoteTool("self.nodelio.open_app");
     mcp_server.PromoteTool("self.skill.news");
+    mcp_server.PromoteTool("self.support.suggest");
 #endif
 
     // Set network event callback for UI updates and network state handling
@@ -396,6 +397,7 @@ void Application::Run() {
 #if CONFIG_NODELIO_PANEL
             PollPanelAudioTest();
             CheckNewsReadRequest();
+            CheckSupportSuggestRequest();
             FinishNewsReadPlayback();
             HandleListenIdleTick();
 #endif
@@ -810,7 +812,7 @@ void Application::InitializeProtocol() {
 
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
 #if CONFIG_NODELIO_PANEL
-        if (news_awaiting_mcp_ || IsCloudTtsSuppressed()) {
+        if (news_awaiting_mcp_ || support_suggest_awaiting_ || IsCloudTtsSuppressed()) {
             return;
         }
         /* 墙板主循环常被 snapshot/布局占住：UDP 比 MQTT tts-start 更早到。
@@ -862,6 +864,10 @@ void Application::InitializeProtocol() {
             nodelio_skill_news_sync_read_btn();
             news_detect_echo_.clear();
             pending_confirm_read_news_ = false;
+            if (support_suggest_awaiting_.exchange(false)) {
+                nodelio_skill_support_cloud_suggest_failed();
+            }
+            support_detect_echo_.clear();
 #endif
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
@@ -892,6 +898,9 @@ void Application::InitializeProtocol() {
                  * 也不 RequestGoodbyeSleep，交给空闲计时自然灭屏。 */
                 ESP_LOGI(TAG, "audio channel closed skill_up asleep=%d — skip wake/goodbye",
                          asleep ? 1 : 0);
+                if (nodelio_skill_support_voice_armed()) {
+                    nodelio_skill_support_voice_fail("没听到，请再说一次");
+                }
             } else {
                 board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
                 board.RequestGoodbyeSleep();
@@ -950,9 +959,9 @@ void Application::InitializeProtocol() {
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
 #if CONFIG_NODELIO_PANEL
-                    if (news_awaiting_mcp_) {
-                        // Acknowledgements/denials are not a news tool result. Do not abort
-                        // here: the server may still be dispatching the requested tool.
+                    if (news_awaiting_mcp_ || support_suggest_awaiting_) {
+                        // Acknowledgements are not the tool result. Do not abort:
+                        // the server may still be dispatching the requested tool.
                         return;
                     }
                     if (IsCloudTtsSuppressed()) {
@@ -999,7 +1008,7 @@ void Application::InitializeProtocol() {
                 if (cJSON_IsString(text)) {
 #if CONFIG_NODELIO_PANEL
                     // Only tool dispatch releases the read gate; article words are irrelevant.
-                    if (news_awaiting_mcp_ || IsCloudTtsSuppressed()) {
+                    if (news_awaiting_mcp_ || support_suggest_awaiting_ || IsCloudTtsSuppressed()) {
                         ESP_LOGI(TAG, "drop cloud tts sentence: %s", text->valuestring);
                         if (news_awaiting_mcp_ &&
                             tts_looks_like_news_tool_deny(text->valuestring)) {
@@ -1114,6 +1123,15 @@ void Application::InitializeProtocol() {
                         ESP_LOGI(TAG, "stt local-route: skip news MCP detect echo");
                         return;
                     }
+                    if (support_suggest_awaiting_ && !support_detect_echo_.empty() &&
+                        message == support_detect_echo_) {
+                        ESP_LOGI(TAG, "stt local-route: skip support suggest detect echo");
+                        return;
+                    }
+                    if (support_suggest_awaiting_.exchange(false)) {
+                        support_detect_echo_.clear();
+                        nodelio_skill_support_cloud_suggest_failed();
+                    }
                     // A real user turn supersedes the previous read request, including its retry.
                     CancelNewsReadPlayback();
                     news_awaiting_mcp_ = false;
@@ -1121,9 +1139,11 @@ void Application::InitializeProtocol() {
                     suppress_cloud_tts_until_us_ = 0;
                     /* 客服气泡已开：这句话只生成待确认草稿，不当成家庭口令。 */
                     if (nodelio_skill_try_support_voice_draft(message.c_str())) {
-                        ESP_LOGI(TAG, "stt local-route: support draft");
-                        SuppressCloudTts(5000);
-                        ContinueListeningAfterLocalSkill();
+                        /* 这句话只当客服草稿。abort 并关通道，避免小智顺着它继续聊。 */
+                        ESP_LOGI(TAG, "stt local-route: support draft, stop cloud chat");
+                        AbortSpeaking(kAbortReasonNone);
+                        EndVoiceSessionAfterLocalSkill();
+                        SuppressCloudTts(8000);
                         return;
                     }
                     /* 派活正文可能含「第一个」「重启」；不能被面板导航/新闻确认抢走。 */
@@ -1344,6 +1364,15 @@ void Application::ToggleChatState() { xEventGroupSetBits(event_group_, MAIN_EVEN
 
 void Application::StartListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_START_LISTENING); }
 
+#if CONFIG_NODELIO_PANEL
+void Application::StartSupportReplyListen()
+{
+    support_reply_listen_ = true;
+    force_listen_audio_ = true;
+    xEventGroupSetBits(event_group_, MAIN_EVENT_START_LISTENING);
+}
+#endif
+
 void Application::StopListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_STOP_LISTENING); }
 
 void Application::HandleToggleChatEvent() {
@@ -1470,6 +1499,9 @@ static void EnsureNetReadyAfterScreenSleep()
 void Application::ContinueOpenAudioChannel(ListeningMode mode) {
     // Check state again in case it was changed during scheduling
     if (GetDeviceState() != kDeviceStateConnecting) {
+#if CONFIG_NODELIO_PANEL
+        force_listen_audio_ = false;
+#endif
         return;
     }
 
@@ -1481,20 +1513,34 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
     if (!nodelio_xiaozhi_enabled()) {
         ESP_LOGI(TAG, "Xiaozhi disabled — skip cloud listen");
         SetDeviceState(kDeviceStateIdle);
+        force_listen_audio_ = false;
+        nodelio_skill_support_voice_fail("小智已关闭");
         return;
     }
     EnsureNetReadyAfterScreenSleep();
     if (!nodelio_wifi_has_ip()) {
         SetDeviceState(kDeviceStateIdle);
+        force_listen_audio_ = false;
+        nodelio_skill_support_voice_fail("网络未就绪");
         return;
     }
 #endif
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 唤醒路径会先放预留；点按/客服自己说走这里，进 UDP 前同样放开。 */
+    (void)nodelio_wake_dram_release_for_arm();
+    ESP_LOGI(TAG, "wake dram before listen largest=%u",
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+#endif
     if (!protocol_->IsAudioChannelOpened()) {
         if (!protocol_->OpenAudioChannel()) {
             // Return to idle so the device is not stuck in the connecting
             // state (not every failure path reports a network error)
             SetDeviceState(kDeviceStateIdle);
+#if CONFIG_NODELIO_PANEL
+            force_listen_audio_ = false;
+            nodelio_skill_support_voice_fail("没连上小智");
+#endif
             return;
         }
     }
@@ -1504,7 +1550,10 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 
 void Application::HandleStartListeningEvent() {
 #if CONFIG_NODELIO_PANEL
+    const bool support_reply = support_reply_listen_;
+    support_reply_listen_ = false;
     if (panel_audio_test_active_) {
+        force_listen_audio_ = false;
         return;
     }
 #endif
@@ -1527,29 +1576,55 @@ void Application::HandleStartListeningEvent() {
 
     if (state == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
+#if CONFIG_NODELIO_PANEL
+        force_listen_audio_ = false;
+#endif
         return;
     } else if (state == kDeviceStateWifiConfiguring) {
         audio_service_.EnableAudioTesting(true);
         SetDeviceState(kDeviceStateAudioTesting);
+#if CONFIG_NODELIO_PANEL
+        force_listen_audio_ = false;
+#endif
         return;
     }
 
     if (!protocol_) {
         ESP_LOGE(TAG, "Protocol not initialized");
+#if CONFIG_NODELIO_PANEL
+        force_listen_audio_ = false;
+#endif
         return;
     }
+
+#if CONFIG_NODELIO_PANEL
+    if (!support_reply) {
+        force_listen_audio_ = false;
+    }
+    const ListeningMode mode =
+        support_reply ? kListeningModeAutoStop : kListeningModeManualStop;
+    if (support_reply) {
+        ESP_LOGI(TAG, "support reply listen: auto stop, force mic");
+    }
+#else
+    const ListeningMode mode = kListeningModeManualStop;
+#endif
 
     if (state == kDeviceStateIdle) {
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             // Schedule to let the state change be processed first (UI update)
-            Schedule([this]() { ContinueOpenAudioChannel(kListeningModeManualStop); });
+            Schedule([this, mode]() { ContinueOpenAudioChannel(mode); });
             return;
         }
-        SetListeningMode(kListeningModeManualStop);
+        SetListeningMode(mode);
     } else if (state == kDeviceStateSpeaking) {
         AbortSpeaking(kAbortReasonNone);
-        SetListeningMode(kListeningModeManualStop);
+        SetListeningMode(mode);
+    } else {
+#if CONFIG_NODELIO_PANEL
+        force_listen_audio_ = false;
+#endif
     }
 }
 
@@ -1733,7 +1808,7 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     protocol_->SendWakeWordDetected(wake_word);
     SetListeningMode(GetDefaultListeningMode());
 #else
-    if (!news_reading_) {
+    if (!news_reading_ && !support_suggest_awaiting_) {
         play_popup_on_listening_ = true;
         SetListeningMode(GetDefaultListeningMode());
     } else {
@@ -1825,6 +1900,17 @@ void Application::HandleStateChangedEvent() {
 #endif
 
             // Make sure the audio processor is running
+#if CONFIG_NODELIO_PANEL
+            if (force_listen_audio_) {
+                /* 客服自己说：播放队列未空时自动停听会一直不开麦。先清掉再开。 */
+                force_listen_audio_ = false;
+                pending_listening_start_ = false;
+                if (!audio_service_.IsPlaybackIdle()) {
+                    audio_service_.ResetDecoder();
+                }
+                StartListeningAudio();
+            } else
+#endif
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
                 // For auto mode, wait for the playback queue to drain before enabling
                 // voice processing. This prevents audio truncation when STOP arrives
@@ -1906,7 +1992,7 @@ void Application::StartListeningAudio() {
     }
 
 #if CONFIG_NODELIO_PANEL
-    if (news_awaiting_mcp_) {
+    if (news_awaiting_mcp_ || support_suggest_awaiting_) {
         // A deferred state/playback event must not overwrite the just-sent detect turn.
         return;
     }
@@ -2139,6 +2225,10 @@ void Application::EndVoiceSessionAfterLocalSkill()
     pending_confirm_read_news_ = false;
     news_awaiting_mcp_ = false;
     news_detect_echo_.clear();
+    if (support_suggest_awaiting_.exchange(false)) {
+        nodelio_skill_support_cloud_suggest_failed();
+    }
+    support_detect_echo_.clear();
     pending_cloud_speak_.clear();
     ESP_LOGI(TAG, "end voice session after local skill (state=%d ch=%d)", (int)GetDeviceState(),
              (protocol_ && protocol_->IsAudioChannelOpened()) ? 1 : 0);
@@ -2259,6 +2349,11 @@ void Application::HandleListenIdleTick() {
         if (!listen_idle_pending_close_) {
             listen_idle_ticks_++;
             if (lim > 0 && listen_idle_ticks_ >= lim) {
+                if (nodelio_skill_support_voice_armed()) {
+                    ESP_LOGI(TAG, "support voice idle %ds → close", lim);
+                    protocol_->CloseAudioChannel();
+                    return;
+                }
                 listen_idle_pending_close_ = true;
                 listen_announce_hold_ticks_ = 0;
                 ESP_LOGI(TAG, "listen idle %ds → announce then close", lim);
@@ -2426,6 +2521,123 @@ void Application::SendNewsReadRequest(bool interrupt) {
              news_detect_echo_.c_str());
     protocol_->SendWakeWordDetected(news_detect_echo_);
     // Do not follow detect with listen.start: it can interrupt the new tool/TTS turn.
+}
+
+void Application::CheckSupportSuggestRequest()
+{
+    if (!support_suggest_awaiting_) {
+        return;
+    }
+    if (!nodelio_skill_support_thread_open()) {
+        FailSupportCloudSuggest(nullptr);
+        return;
+    }
+    if (!protocol_ || !protocol_->IsAudioChannelOpened()) {
+        if (GetDeviceState() == kDeviceStateConnecting) {
+            return;
+        }
+        if (esp_timer_get_time() < support_suggest_deadline_us_) {
+            return;
+        }
+        FailSupportCloudSuggest("小智未给出回复选项");
+        return;
+    }
+    if (esp_timer_get_time() < support_suggest_deadline_us_) {
+        return;
+    }
+    if (support_suggest_retries_++ == 0) {
+        ESP_LOGW(TAG, "support suggest: no tools/call after 12s, retry once");
+        SendSupportSuggestRequest();
+        return;
+    }
+    ESP_LOGW(TAG, "support suggest: tools/call timeout");
+    FailSupportCloudSuggest("小智未给出回复选项");
+}
+
+void Application::SendSupportSuggestRequest()
+{
+    if (GetDeviceState() == kDeviceStateSpeaking || GetDeviceState() == kDeviceStateIdle) {
+        SetDeviceState(kDeviceStateListening);
+    }
+    support_detect_echo_ = "调support.suggest";
+    support_suggest_deadline_us_ = esp_timer_get_time() + 12000000;
+    aborted_ = false;
+    ESP_LOGI(TAG, "support suggest: detect=%s", support_detect_echo_.c_str());
+    protocol_->SendWakeWordDetected(support_detect_echo_);
+}
+
+void Application::FailSupportCloudSuggest(const char *toast)
+{
+    support_suggest_awaiting_ = false;
+    support_suggest_deadline_us_ = 0;
+    support_detect_echo_.clear();
+    nodelio_skill_support_cloud_suggest_failed();
+    if (toast && toast[0]) {
+        nodelio_panel_ui_toast(toast);
+    }
+    EndVoiceSessionAfterLocalSkill();
+}
+
+void Application::StartSupportCloudSuggest()
+{
+    if (!nodelio_skill_support_thread_open()) {
+        return;
+    }
+    char visitor[256];
+    if (!nodelio_skill_support_visitor_text(visitor, sizeof(visitor)) || !visitor[0]) {
+        return;
+    }
+    if (support_suggest_awaiting_) {
+        if (protocol_ && protocol_->IsAudioChannelOpened()) {
+            SendSupportSuggestRequest();
+        }
+        return;
+    }
+    if (!protocol_) {
+        nodelio_skill_support_cloud_suggest_failed();
+        return;
+    }
+#if CONFIG_NODELIO_PANEL
+    if (!nodelio_xiaozhi_enabled()) {
+        nodelio_skill_support_cloud_suggest_failed();
+        nodelio_panel_ui_toast("小智未开启");
+        return;
+    }
+    if (!nodelio_wifi_has_ip()) {
+        nodelio_skill_support_cloud_suggest_failed();
+        nodelio_panel_ui_toast("WiFi未连接");
+        return;
+    }
+#endif
+    support_suggest_retries_ = 0;
+    support_suggest_awaiting_ = true;
+    support_suggest_deadline_us_ = esp_timer_get_time() + 12000000;
+    support_detect_echo_ = "调support.suggest";
+    if (!protocol_->IsAudioChannelOpened()) {
+        audio_service_.DiscardWakeWordAudio();
+        BeginWakeWordInvoke(support_detect_echo_);
+        return;
+    }
+    SendSupportSuggestRequest();
+}
+
+void Application::OnSupportSuggestToolCalled(bool finished)
+{
+    if (!support_suggest_awaiting_) {
+        if (finished) {
+            EndVoiceSessionAfterLocalSkill();
+        }
+        return;
+    }
+    if (!finished) {
+        support_suggest_deadline_us_ = esp_timer_get_time() + 12000000;
+        ESP_LOGI(TAG, "support suggest: visitor text returned, wait for replies");
+        return;
+    }
+    support_suggest_awaiting_ = false;
+    support_suggest_deadline_us_ = 0;
+    support_detect_echo_.clear();
+    EndVoiceSessionAfterLocalSkill();
 }
 
 void Application::StartLocalNewsRead(const char *op)

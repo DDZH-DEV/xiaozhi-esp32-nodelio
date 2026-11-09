@@ -1,4 +1,5 @@
 #include "skill_ui_priv.h"
+#include "skill_support_ui.h"
 
 lv_obj_t *s_scrim = nullptr;
 lv_obj_t *s_card = nullptr;
@@ -6,6 +7,8 @@ lv_obj_t *s_filter_bar = nullptr;
 lv_obj_t *s_src_bar = nullptr;
 lv_obj_t *s_card_list = nullptr;
 lv_obj_t *s_card_title = nullptr;
+lv_obj_t *s_title_row = nullptr;
+lv_obj_t *s_support_nav = nullptr;
 lv_obj_t *s_card_sub = nullptr;
 lv_timer_t *s_ttl_tmr = nullptr;
 bool s_minimized = false;
@@ -111,7 +114,7 @@ int skill_panel_w(void)
     }
     const int base = (int)p->result_width;
     if (s_active_tab == NL_TAB_HOME) {
-        const int home_col = 520;
+        const int home_col = 400;
         int w = (int)p->width - (int)p->nav_width - home_col - SKILL_GAP;
         if (w < base) {
             w = base;
@@ -633,6 +636,26 @@ void paint_music_mark(lv_obj_t *lbl, bool playing, int index)
     }
 }
 
+/** 客服文字列在 flex 里百分比宽会缩成内容宽，布局后再把两行标签拉到列宽。 */
+static void support_row_text_fit(lv_event_t *e)
+{
+    lv_obj_t *txt = (lv_obj_t *)lv_event_get_target(e);
+    if (!txt) {
+        return;
+    }
+    const int w = lv_obj_get_content_width(txt);
+    if (w < 8) {
+        return;
+    }
+    const uint32_t n = lv_obj_get_child_count(txt);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(txt, i);
+        if (child && lv_obj_get_width(child) != w) {
+            lv_obj_set_width(child, w);
+        }
+    }
+}
+
 static int list_row_h(void)
 {
     if (list_use_comfortable()) {
@@ -642,13 +665,14 @@ static int list_row_h(void)
         if (!tall_sub) {
             return SKILL_LIST_ROW_H;
         }
-        /* 标题一行 + 副文两行 + 上下 pad，固定 68 会把标题裁进圆角 */
+        /* 客服列表：标题一行，副文两行（IP/客户端，再一行消息预览） */
+        const int sub_lines = 2;
         const int font_h = nl_ov_ui_font_line_h();
         int lsp = nl_ov_ui_line_box() - font_h;
         if (lsp < 0) {
             lsp = 0;
         }
-        int h = 16 + font_h + 3 + (font_h * 2 + lsp) + 6;
+        int h = 16 + font_h + 3 + (font_h * sub_lines + lsp * (sub_lines - 1)) + 6;
         if (h < SKILL_LIST_ROW_H) {
             h = SKILL_LIST_ROW_H;
         }
@@ -1962,6 +1986,8 @@ static void null_skill_widget_ptrs(void)
     s_dsh_detail_bar = nullptr;
     s_card_list = nullptr;
     s_card_title = nullptr;
+    s_title_row = nullptr;
+    s_support_nav = nullptr;
     s_card_sub = nullptr;
     s_now_bar = nullptr;
     s_now_eq_wrap = nullptr;
@@ -2204,13 +2230,33 @@ static void ensure_card(void)
     lv_obj_set_flex_flow(hdr_txt, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(hdr_txt, 2, 0);
 
-    s_card_title = lv_label_create(hdr_txt);
+    s_title_row = lv_obj_create(hdr_txt);
+    lv_obj_remove_style_all(s_title_row);
+    lv_obj_set_width(s_title_row, lv_pct(100));
+    lv_obj_set_height(s_title_row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(s_title_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_title_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(s_title_row, 8, 0);
+    lv_obj_clear_flag(s_title_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_card_title = lv_label_create(s_title_row);
     nl_ov_set_font(s_card_title);
     lv_label_set_text(s_card_title, "曲库");
     lv_label_set_long_mode(s_card_title, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s_card_title, lv_pct(100));
     lv_obj_set_height(s_card_title, nl_ov_ui_font_line_h());
     lv_obj_set_style_text_color(s_card_title, UI_TEXT, 0);
+    lv_obj_set_style_min_width(s_card_title, 0, 0);
+
+    s_support_nav = lv_obj_create(s_title_row);
+    lv_obj_remove_style_all(s_support_nav);
+    lv_obj_set_width(s_support_nav, 0);
+    lv_obj_set_height(s_support_nav, 0);
+    lv_obj_set_flex_flow(s_support_nav, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_support_nav, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(s_support_nav, 6, 0);
+    lv_obj_clear_flag(s_support_nav, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_support_nav, LV_OBJ_FLAG_HIDDEN);
 
     s_card_sub = lv_label_create(hdr_txt);
     nl_ov_set_font(s_card_sub);
@@ -2518,7 +2564,9 @@ void apply_card_chrome(void)
     const bool mid_btn = news || list_page_count() > 1 ||
                          (s_library_source == 1 && nodelio_sd_batch_count() > 1) ||
                          (s_library_source == 2 && nodelio_sd_photo_batch_count() > 1);
-    const bool compact = !music && !news && !daily &&
+    const bool support = strcmp(s_env->card_type, "support_thread") == 0;
+    const bool support_inbox = strcmp(s_env->card_type, "support_inbox") == 0;
+    const bool compact = !music && !news && !daily && !support && !support_inbox &&
                          !mid_btn && !dsh_detail && s_env->filter_n == 0 && s_env->track_n <= 4;
     /* 字号条仅新闻详情；切到其它卡或列表时收起 */
     if (!news || s_news_detail < 0) {
@@ -2594,6 +2642,13 @@ void apply_card_chrome(void)
         lv_obj_set_style_max_height(s_card, hmax, 0);
         if (s_card_list) {
             lv_obj_set_flex_grow(s_card_list, 1);
+            if (support || support_inbox || (news && s_news_detail >= 0)) {
+                /* 高度跟内容走时，父卡片裁切后滚动范围是 0，底栏也会被挤出屏幕。 */
+                lv_obj_set_height(s_card_list, 0);
+                lv_obj_set_style_min_height(s_card_list, 0, 0);
+                lv_obj_add_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_set_scroll_dir(s_card_list, LV_DIR_VER);
+            }
         }
     }
     /* 日历用更紧的内边距，把省下来的高度全给网格。 */
@@ -2610,6 +2665,11 @@ void fill_list(void)
     if (!s_card_list || !s_env) {
         return;
     }
+    if (s_card_sub && strcmp(s_env->card_type, "support_thread") != 0) {
+        lv_label_set_long_mode(s_card_sub, LV_LABEL_LONG_DOT);
+        lv_obj_set_height(s_card_sub, nl_ov_ui_font_line_h());
+    }
+    hide_support_title_nav();
     fill_filters(); /* news 等无 filters 时收起横条 */
     fill_source_bar();
     if (strcmp(s_env->card_type, "calendar_weather") == 0) {
@@ -2654,6 +2714,17 @@ void fill_list(void)
         }
         fill_support_thread();
         apply_card_chrome();
+        if (s_card) {
+            lv_obj_update_layout(s_card);
+        }
+        if (s_card_list) {
+            lv_obj_scroll_to_y(s_card_list, LV_COORD_MAX, LV_ANIM_OFF);
+        }
+        if (s_env->cloud_suggest) {
+            Application::GetInstance().Schedule([]() {
+                Application::GetInstance().StartSupportCloudSuggest();
+            });
+        }
         return;
     }
     /* 带 body 的 DSH 详情卡 */
@@ -2784,6 +2855,7 @@ void fill_list(void)
     const int cols = list_cols();
     const int page_sz = list_page_size();
     const int row_h = list_row_h();
+    const bool support_list = strcmp(s_env->card_type, "support_inbox") == 0;
     const int start = s_list_page * page_sz;
     int end = start + page_sz;
     if (end > s_env->track_n) {
@@ -2797,7 +2869,7 @@ void fill_list(void)
         lv_obj_set_flex_flow(line, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(line, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(line, 6, 0);
-        lv_obj_set_style_pad_row(line, 6, 0);
+        lv_obj_set_style_pad_row(line, support_list ? 4 : 6, 0);
         lv_obj_clear_flag(line, LV_OBJ_FLAG_CLICKABLE);
 
         const int ncell = (base + cols - 1 < end) ? cols : (end - base);
@@ -2815,7 +2887,7 @@ void fill_list(void)
             lv_obj_set_style_border_color(row, UI_TILE_OFF_BORDER, 0);
             lv_obj_set_style_border_opa(row, LV_OPA_60, 0);
             lv_obj_set_style_pad_hor(row, (comfortable || music_card) ? 10 : 6, 0);
-            lv_obj_set_style_pad_ver(row, music_card ? 6 : (comfortable ? 8 : 0), 0);
+            lv_obj_set_style_pad_ver(row, music_card ? 6 : (support_list ? 2 : (comfortable ? 8 : 0)), 0);
             lv_obj_set_style_pad_column(row, music_card ? 10 : 6, 0);
             lv_obj_set_style_clip_corner(row, true, 0);
             lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
@@ -2842,11 +2914,13 @@ void fill_list(void)
             }
 
             const int mark = music_card ? music_end_sz() : (comfortable ? 26 : 22);
+            const bool support_unread = strcmp(s_env->card_type, "support_inbox") == 0 &&
+                                        s_env->tracks[i].unread;
             lv_obj_t *idx_pod = lv_obj_create(row);
             lv_obj_remove_style_all(idx_pod);
             lv_obj_set_size(idx_pod, mark, mark);
             lv_obj_set_style_radius(idx_pod, music_card ? mark / 2 : 6, 0);
-            lv_obj_set_style_bg_color(idx_pod, UI_CAPSULE_OFF, 0);
+            lv_obj_set_style_bg_color(idx_pod, support_unread ? UI_WARN : UI_CAPSULE_OFF, 0);
             lv_obj_set_style_bg_opa(idx_pod, LV_OPA_COVER, 0);
             lv_obj_clear_flag(idx_pod, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_t *idx_l = lv_label_create(idx_pod);
@@ -2862,12 +2936,22 @@ void fill_list(void)
                     char idx_buf[16];
                     snprintf(idx_buf, sizeof(idx_buf), "%d", i + 1);
                     lv_label_set_text(idx_l, idx_buf);
-                    lv_obj_set_style_text_color(idx_l, UI_ACCENT_SOFT, 0);
+                    lv_obj_set_style_text_color(idx_l, support_unread ? UI_ON_TILE : UI_ACCENT_SOFT, 0);
                 }
             }
             lv_obj_center(idx_l);
             if (i < 64) {
                 s_row_idx_labels[i] = idx_l;
+            }
+
+            if (support_list) {
+                lv_obj_t *dot = lv_obj_create(row);
+                lv_obj_remove_style_all(dot);
+                lv_obj_set_size(dot, 10, 10);
+                lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+                lv_obj_set_style_bg_color(dot, s_env->tracks[i].online ? UI_SUCCESS : UI_TEXT_MUTED, 0);
+                lv_obj_set_style_bg_opa(dot, s_env->tracks[i].online ? LV_OPA_COVER : LV_OPA_40, 0);
+                lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
             }
 
             lv_obj_t *txt = lv_obj_create(row);
@@ -2878,15 +2962,17 @@ void fill_list(void)
             lv_obj_set_style_min_width(txt, 0, 0);
             lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
             lv_obj_set_flex_align(txt, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-            lv_obj_set_style_pad_row(txt, music_card ? 2 : (comfortable ? 3 : 1), 0);
-            lv_obj_set_style_clip_corner(txt, true, 0);
+            lv_obj_set_style_pad_row(txt, music_card ? 2 : (support_list ? 1 : (comfortable ? 3 : 1)), 0);
+            if (!support_list) {
+                lv_obj_set_style_clip_corner(txt, true, 0);
+            }
             lv_obj_clear_flag(txt, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_clear_flag(txt, LV_OBJ_FLAG_SCROLLABLE);
 
             lv_obj_t *t = lv_label_create(txt);
             nl_ov_set_font(t);
             lv_label_set_text(t, s_env->tracks[i].title);
-            lv_obj_set_style_text_color(t, UI_TEXT, 0);
+            lv_obj_set_style_text_color(t, support_unread ? UI_WARN : UI_TEXT, 0);
             lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
             lv_obj_set_width(t, lv_pct(100));
             const int font_h = nl_ov_ui_font_line_h();
@@ -2905,13 +2991,16 @@ void fill_list(void)
             } else {
                 lv_label_set_text(a, " ");
             }
-            lv_obj_set_style_text_color(a, UI_TEXT_MUTED, 0);
+            lv_obj_set_style_text_color(a, support_unread ? UI_WARN : UI_TEXT_MUTED, 0);
             lv_obj_set_width(a, lv_pct(100));
-            /* 简介按真实行数定高。预留两行空盒会把字顶到播放钮上方。 */
-            const bool sub_two_lines =
-                comfortable && s_env->app_id[0] &&
-                (nl_workbench_app(s_env->app_id) || strcmp(s_env->app_id, "support.inbox") == 0);
-            lv_label_set_long_mode(a, sub_two_lines ? LV_LABEL_LONG_WRAP : LV_LABEL_LONG_DOT);
+            /* 简介按真实行数定高。客服副文固定两行：来源和预览。 */
+            const int sub_lines = (support_list ||
+                                   (comfortable && s_env->app_id[0] &&
+                                    (nl_workbench_app(s_env->app_id) ||
+                                     strcmp(s_env->app_id, "support.inbox") == 0)))
+                                      ? 2
+                                      : 1;
+            lv_label_set_long_mode(a, sub_lines > 1 ? LV_LABEL_LONG_WRAP : LV_LABEL_LONG_DOT);
             int cell_w = skill_panel_w();
             if (cols > 1) {
                 cell_w = (cell_w - 6 * (cols - 1)) / cols;
@@ -2920,14 +3009,30 @@ void fill_list(void)
             const int gap = music_card ? 10 : 6;
             const bool has_play = can_play && s_env->tracks[i].playback_url[0];
             const int play_w = has_play ? (music_card ? mark : SKILL_CTRL_SZ) : 0;
-            int text_w = cell_w - side_pad * 2 - gap - mark - (has_play ? gap + play_w : 0);
+            const int open_w = (support_list && s_env->tracks[i].invoke_n > 0) ? 96 : 0;
+            const int dot_w = support_list ? (10 + gap) : 0;
+            int text_w = cell_w - side_pad * 2 - gap - mark - dot_w - (has_play ? gap + play_w : 0) -
+                         (open_w ? gap + open_w : 0);
             if (text_w < 48) {
                 text_w = 48;
             }
+            if (support_list) {
+                lv_obj_add_event_cb(txt, support_row_text_fit, LV_EVENT_SIZE_CHANGED, nullptr);
+                lv_obj_set_height(a, font_h * 2 + lsp);
+            }
             int sub_h = nl_ov_wrapped_text_h(lv_label_get_text(a), text_w);
-            const int sub_cap = sub_two_lines ? (font_h * 2 + lsp) : font_h;
+            if (sub_lines >= 3) {
+                lv_point_t sz{};
+                lv_text_get_size(&sz, lv_label_get_text(a), nl_ov_ui_font(), 0, lsp, text_w,
+                                 LV_TEXT_FLAG_NONE);
+                sub_h = sz.y > font_h ? sz.y : font_h;
+            }
+            const int sub_cap = sub_lines > 1 ? (font_h * sub_lines + lsp * (sub_lines - 1)) : font_h;
             if (sub_h > sub_cap) {
                 sub_h = sub_cap;
+            }
+            if (support_list && sub_h < font_h * 2) {
+                sub_h = font_h * 2 + lsp;
             }
             lv_obj_set_height(a, sub_h);
             lv_obj_set_height(txt, LV_SIZE_CONTENT);

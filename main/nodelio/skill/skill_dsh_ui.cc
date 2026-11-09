@@ -925,6 +925,7 @@ void fill_dsh_detail(void)
     /* 底栏：返回列表 + 续聊（固定不滚） */
     if (s_dsh_detail_bar) {
         lv_obj_clean(s_dsh_detail_bar);
+        lv_obj_set_flex_flow(s_dsh_detail_bar, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(s_dsh_detail_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
         lv_obj_t *back = make_text_action_btn(s_dsh_detail_bar, "返回列表", on_dsh_back_list, nullptr);

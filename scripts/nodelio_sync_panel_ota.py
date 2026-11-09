@@ -37,9 +37,21 @@ NOTES = (
     "设备只读 boards[board_id]（sila_86 / sila_p4c5_62）。"
     "version 为构建号 YYYYMMDD.NNN；url 是 ota_0 用的 xiaozhi.bin，禁止两板互刷。"
     "sila_p4c5_62 对应 32m 变体；16m 槽更小，不要拿 32m 包去刷。"
-    "P4 包未上传时 url 留空。"
     "已出厂的 86 旧固件仍请求 esp32s3-slia-86-update.json。"
 )
+
+# esp_image_header_t.chip_id @ offset 12
+CHIP_IMAGE_ID = {
+    "esp32s3": 0x0009,
+    "esp32p4": 0x0012,
+}
+
+
+def read_image_chip(path: Path) -> int:
+    hdr = path.read_bytes()[:14]
+    if len(hdr) < 14 or hdr[0] != 0xE9:
+        raise SystemExit(f"[panel-ota] {path} is not an ESP app image")
+    return int.from_bytes(hdr[12:14], "little")
 
 
 def read_stamp(header: Path) -> str:
@@ -98,14 +110,36 @@ def main() -> int:
         return 1
     stamp = read_stamp(header)
     spec = BOARDS[args.board]
+    expect = CHIP_IMAGE_ID[spec["chip"]]
+
+    bin_name = f"xiaozhi-{stamp}.bin"
+    url = f"{spec['cdn']}/{bin_name}"
+    src = root / "build" / "xiaozhi.bin"
+    if not args.skip_bin:
+        if not src.is_file():
+            print(f"[panel-ota] missing {src}; manifest not updated", file=sys.stderr)
+            return 1
+        chip = read_image_chip(src)
+        if chip != expect:
+            print(
+                f"[panel-ota] {src} chip_id=0x{chip:04x}, {args.board} needs 0x{expect:04x}; "
+                "manifest not updated",
+                file=sys.stderr,
+            )
+            return 1
 
     zy: Path = args.zy_works.resolve()
     zy.mkdir(parents=True, exist_ok=True)
     bin_dir = zy / spec["bin_dir"]
     bin_dir.mkdir(parents=True, exist_ok=True)
+    if not args.skip_bin:
+        dst = bin_dir / bin_name
+        shutil.copy2(src, dst)
+        latest = bin_dir / "xiaozhi-latest.bin"
+        shutil.copy2(src, latest)
+        print(f"[panel-ota] copied {src} -> {dst}")
+        print(f"[panel-ota] copied {src} -> {latest}")
 
-    bin_name = f"xiaozhi-{stamp}.bin"
-    url = f"{spec['cdn']}/{bin_name}"
     manifest = load_manifest(zy / MANIFEST_NAME)
     manifest["boards"][args.board]["firmware"] = {"version": stamp, "url": url, "force": 0}
 
@@ -127,17 +161,7 @@ def main() -> int:
         print(f"[panel-ota] wrote legacy {legacy_path}")
 
     if not args.skip_bin:
-        src = root / "build" / "xiaozhi.bin"
-        if src.is_file():
-            dst = bin_dir / bin_name
-            shutil.copy2(src, dst)
-            latest = bin_dir / "xiaozhi-latest.bin"
-            shutil.copy2(src, latest)
-            print(f"[panel-ota] copied {src} -> {dst}")
-            print(f"[panel-ota] copied {src} -> {latest}")
-            print("[panel-ota] 请上传清单与 bin 到站点 / CDN 后，板上「检查更新」才会下到新包")
-        else:
-            print(f"[panel-ota] WARN no {src} yet — json updated; rebuild then re-run to copy bin")
+        print("[panel-ota] 请上传清单与 bin 到站点 / CDN 后，板上「检查更新」才会下到新包")
 
     return 0
 

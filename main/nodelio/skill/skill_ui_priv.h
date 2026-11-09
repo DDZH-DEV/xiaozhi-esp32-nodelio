@@ -109,6 +109,8 @@ extern lv_obj_t *s_dsh_detail_bar;  /* 详情底栏：续聊悬浮，不随正�
 extern char s_dsh_pending_preview[96];
 extern lv_obj_t *s_card_list;
 extern lv_obj_t *s_card_title;
+extern lv_obj_t *s_title_row;
+extern lv_obj_t *s_support_nav;
 extern lv_obj_t *s_card_sub;
 extern lv_obj_t *s_now_bar;
 extern lv_obj_t *s_now_eq_wrap;

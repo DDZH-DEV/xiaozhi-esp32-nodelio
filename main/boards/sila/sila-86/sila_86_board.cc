@@ -69,7 +69,6 @@ private:
     i2c_master_bus_handle_t i2c_bus_ = nullptr;
     Button boot_button_;
     LcdDisplay* display_ = nullptr;
-    esp_lcd_panel_handle_t panel_handle_ = nullptr;
     PowerSaveTimer* power_save_timer_ = nullptr;
     esp_lcd_touch_handle_t touch_ = nullptr;
 #if CONFIG_NODELIO_PANEL
@@ -145,9 +144,8 @@ private:
                     codec->EnableOutput(false);
                 }
             }
-            if (panel_handle_) {
-                (void)esp_lcd_panel_disp_on_off(panel_handle_, false);
-            }
+            /* 不发 ST7701 DISPOFF。DISP 脚是 NC，关屏走 0x28，再开的 0x29
+             * 会让源极驱动打一帧白。背光已灭，RGB 继续扫当前首页帧。 */
             (void)lvgl_port_stop();
             StartTouchWakePoll(); /* 息屏后 LVGL 不读触摸，单独轮询唤醒 */
         });
@@ -163,15 +161,21 @@ private:
             }
 #endif
             (void)lvgl_port_resume();
-            if (panel_handle_) {
-                (void)esp_lcd_panel_disp_on_off(panel_handle_, true);
-            }
             GetDisplay()->SetPowerSaveMode(false);
-            GetBacklight()->RestoreBrightness();
 #if CONFIG_NODELIO_PANEL
             SetPanelScreenState(true);
+            if (display_) {
+                DisplayLockGuard lock(display_);
+                if (lock) {
+                    if (auto* disp = lv_display_get_default()) {
+                        lv_refr_now(disp);
+                    }
+                }
+            }
             nodelio_panel_ui_notice_flush_deferred();
 #endif
+            /* 帧已在，再开背光。与开机 reveal_boot_backlight_after_frame 同一顺序。 */
+            GetBacklight()->RestoreBrightness();
             /* 播报时 AudioService 会再 EnableOutput(true)；此处不强制开 */
         });
 #if CONFIG_NODELIO_PANEL
@@ -323,7 +327,6 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
         ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
         esp_lcd_panel_disp_on_off(panel_handle, true);
-        panel_handle_ = panel_handle;
 
         display_ = new RgbLcdDisplay(panel_io, panel_handle,
                                      DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,

@@ -113,6 +113,12 @@ static void parse_track_obj(const cJSON *item, nl_env_track_t *t, bool allow_pla
     if (t->artist[0] == '\0') {
         copy_str(t->artist, sizeof(t->artist), item, "subtitle");
     }
+    {
+        const cJSON *un = cJSON_GetObjectItemCaseSensitive(item, "unread");
+        t->unread = cJSON_IsTrue(un) || (cJSON_IsNumber(un) && un->valuedouble > 0);
+        const cJSON *on = cJSON_GetObjectItemCaseSensitive(item, "online");
+        t->online = cJSON_IsTrue(on) || (cJSON_IsNumber(on) && on->valuedouble > 0);
+    }
     const cJSON *playback = cJSON_GetObjectItemCaseSensitive(item, "playback");
     if (cJSON_IsObject(playback)) {
         copy_str(t->playback_url, sizeof(t->playback_url), playback, "url");
@@ -263,6 +269,7 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
     if (cJSON_IsObject(display)) {
         copy_str(out->card_type, sizeof(out->card_type), display, "card_type");
         copy_str(out->display_title, sizeof(out->display_title), display, "title");
+        copy_str(out->support_meta, sizeof(out->support_meta), display, "support_meta");
         copy_str(out->bridge_id, sizeof(out->bridge_id), display, "bridge_id");
         copy_str(out->bridge_name, sizeof(out->bridge_name), display, "bridge_name");
         copy_str(out->workbench_provider, sizeof(out->workbench_provider), display,
@@ -285,6 +292,14 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
             } else if (cJSON_IsString(cid) && cid->valuestring) {
                 out->conversation_id = (uint64_t)strtoull(cid->valuestring, NULL, 10);
             }
+            const cJSON *mid = cJSON_GetObjectItemCaseSensitive(display, "message_id");
+            if (cJSON_IsNumber(mid)) {
+                out->message_id = (uint64_t)mid->valuedouble;
+            } else if (cJSON_IsString(mid) && mid->valuestring) {
+                out->message_id = (uint64_t)strtoull(mid->valuestring, NULL, 10);
+            }
+            out->cloud_suggest =
+                cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display, "cloud_suggest"));
         }
         const cJSON* daily = cJSON_GetObjectItemCaseSensitive(display, "daily");
         if (cJSON_IsObject(daily) && strcmp(out->card_type, "calendar_weather") == 0) {
@@ -482,7 +497,9 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
                 copy_str(cm->role, sizeof(cm->role), item, "role");
                 copy_str(cm->name, sizeof(cm->name), item, "name");
                 copy_str(cm->text, sizeof(cm->text), item, "text");
-                if (cm->text[0] == '\0') {
+                copy_str(cm->image_url, sizeof(cm->image_url), item, "image_url");
+                copy_str(cm->sent_at, sizeof(cm->sent_at), item, "time");
+                if (cm->text[0] == '\0' && cm->image_url[0] == '\0') {
                     continue;
                 }
                 if (cm->role[0] == '\0') {

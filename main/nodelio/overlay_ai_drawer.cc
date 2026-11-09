@@ -561,6 +561,27 @@ static void cancel_connect_delay_timer(void)
     s_connect_delay_force = false;
 }
 
+void nl_ov_dismiss_ai_chat(void)
+{
+    s_ai_user_dismissed = true;
+    s_chat_phase = CHAT_IDLE;
+    nl_ov_hide_ai_drawer();
+}
+
+void nl_ov_ai_drawer_force_listen(void)
+{
+    s_ai_user_dismissed = false;
+    s_ai_farewell_closing = false;
+    s_ai_minimized = false;
+    hide_ai_mini_fab();
+    cancel_connect_delay_timer();
+    s_connect_delay_force = true;
+    nl_ov_show_ai_drawer_locked(CHAT_LISTEN, "小智在听…", "请说要发给访客的话");
+    if (s_ai_drawer) {
+        lv_obj_move_foreground(s_ai_drawer);
+    }
+}
+
 void nl_ov_hide_ai_drawer(void)
 {
     cancel_connect_delay_timer();

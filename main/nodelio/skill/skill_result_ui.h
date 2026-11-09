@@ -23,6 +23,8 @@ void nodelio_skill_result_hide(void);
 
 /** Built-in calendar opens offline; refresh may only update this open session. */
 uint32_t nodelio_skill_daily_open(bool reset_view);
+/** 消息里的日历提醒：打开今天的日详情，不走技能 invoke。 */
+uint32_t nodelio_skill_daily_open_reminders(void);
 void nodelio_skill_daily_update(const nodelio_nvs_config_t* cfg, nl_content_envelope_t* env,
                                 uint32_t generation);
 /** Reuse the shell clock tick; updates date highlighting only, never requests weather. */
@@ -166,11 +168,37 @@ void nodelio_skill_dsh_on_arm_cleared(void);
  */
 bool nodelio_skill_support_conversation_id(uint64_t *out_id);
 
+/** 当前客服卡是否仍打开（support_thread）。 */
+bool nodelio_skill_support_thread_open(void);
+
+/** 当前客服卡访客最新一句；供 self.support.suggest 第一轮回传云端。 */
+bool nodelio_skill_support_visitor_text(char *out, size_t out_len);
+
+/**
+ * 用小智拟的 2–4 条替换底部发送按钮（无 20s 倒计时）。
+ */
+bool nodelio_skill_support_apply_cloud_replies(const char *const *replies, int n);
+
+/** 小智未在时限内给出选项：底栏改回「暂时无法根据这句话生成回复」。 */
+void nodelio_skill_support_cloud_suggest_failed(void);
+
+/**
+ * 气泡详情已打开，且这条通知就是当前会话、原本会打开列表时：
+ * 把 invoke 参数改成 op=thread 写进 out。调用方用 out 代替原参数。
+ */
+bool nodelio_skill_support_keep_thread(const char *invoke_params, char *out, size_t out_len);
+
 /**
  * 客服气泡页已打开时，把本轮识别原文转成 op=draft（不落库）。
  * 已处理返回 true，调用方应抑制云端把这句话当成家庭口令。
  */
 bool nodelio_skill_try_support_voice_draft(const char *text);
+
+/** 客服「自己说」正在等这句话。 */
+bool nodelio_skill_support_voice_armed(void);
+
+/** 开麦失败：收起「正在听」，并提示原因。未武装时无操作。 */
+void nodelio_skill_support_voice_fail(const char *reason);
 
 #ifdef __cplusplus
 }

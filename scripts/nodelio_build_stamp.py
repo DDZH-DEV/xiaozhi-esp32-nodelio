@@ -2,8 +2,8 @@
 """NodeLio 墙板构建号：按源码指纹升号，非每次编译都涨。
 
 格式：YYYYMMDD.NNN（当天首次改代码为 001，同日再改递增；换日重置为 001）
-仅扫描硬件面板相关源：main/nodelio、main/boards/sila
-内容未变 → 复用上次构建号（重编不涨号）
+sila_86 与 sila_p4c5_62 各记各的序号，互不占用。
+内容未变 → 复用该板上次构建号（重编不涨号）
 """
 from __future__ import annotations
 
@@ -15,14 +15,24 @@ from datetime import datetime
 from pathlib import Path
 
 SCAN_GLOBS = ("**/*.c", "**/*.cc", "**/*.cpp", "**/*.h", "**/*.hpp", "**/*.inc")
-SCAN_DIRS = ("main/nodelio", "main/boards/sila")
+# 86 保持原扫描范围，避免已有 .nodelio_build_stamp.json 的指纹被换范围后空涨一号。
+BOARD_SCAN = {
+    "sila_86": ("main/nodelio", "main/boards/sila"),
+    "sila_p4c5_62": ("main/nodelio", "main/boards/sila/sila-p4c5-62"),
+}
 SKIP_NAMES = {"nodelio_build_stamp.h"}
 
 
-def content_fingerprint(root: Path) -> str:
+def default_state_path(root: Path, board: str) -> Path:
+    if board == "sila_86":
+        return root / ".nodelio_build_stamp.json"
+    return root / f".nodelio_build_stamp.{board}.json"
+
+
+def content_fingerprint(root: Path, scan_dirs: tuple[str, ...]) -> str:
     h = hashlib.sha256()
     files: list[Path] = []
-    for rel in SCAN_DIRS:
+    for rel in scan_dirs:
         base = root / rel
         if not base.is_dir():
             continue
@@ -66,6 +76,7 @@ def write_header(out: Path, stamp: str, fingerprint: str, day: str, serial: int)
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    ap.add_argument("--board", choices=sorted(BOARD_SCAN), default="sila_86")
     ap.add_argument(
         "--out",
         type=Path,
@@ -76,15 +87,15 @@ def main() -> int:
         "--state",
         type=Path,
         default=None,
-        help="persistent stamp state json",
+        help="persistent stamp state json (default: per-board file)",
     )
     args = ap.parse_args()
     root: Path = args.root.resolve()
     out = (args.out or (root / "main" / "nodelio" / "nodelio_build_stamp.h")).resolve()
-    state_path = (args.state or (root / ".nodelio_build_stamp.json")).resolve()
+    state_path = (args.state or default_state_path(root, args.board)).resolve()
 
     today = datetime.now().strftime("%Y%m%d")
-    fp = content_fingerprint(root)
+    fp = content_fingerprint(root, BOARD_SCAN[args.board])
     state = load_state(state_path)
 
     reused = False
@@ -114,7 +125,7 @@ def main() -> int:
 
     write_header(out, stamp, fp, day, serial)
     action = "reuse" if reused else "bump"
-    print(f"[nodelio-stamp] {action} {stamp} content={fp}")
+    print(f"[nodelio-stamp] {args.board} {action} {stamp} content={fp}")
     return 0
 
 

@@ -42,18 +42,21 @@ echo [p4c5-62] idf.py --version
 idf.py --version
 if errorlevel 1 exit /b 1
 
+echo [p4c5-62] build stamp ^(sila_p4c5_62 day serial^) ...
+python "!REPO!\scripts\nodelio_build_stamp.py" --root "!REPO!" --board sila_p4c5_62
+if errorlevel 1 (
+  echo [p4c5-62] build stamp failed
+  exit /b 1
+)
+
 if "!QUICK!"=="1" goto quick_build
 
 echo [p4c5-62] build !BOARD_DIR! --name !BUILD_NAME! ...
 echo [p4c5-62] full path reconfigures sdkconfig; UI-only changes: nodelio-build.bat --quick
 python scripts\build.py !BOARD_DIR! --name !BUILD_NAME!
 if errorlevel 1 exit /b 1
-echo [p4c5-62] sync panel OTA manifest + bin to Z-Y ...
-python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --board sila_p4c5_62
-if errorlevel 1 (
-  echo [p4c5-62] WARN panel OTA sync failed ^(build ok^)
-)
-exit /b 0
+call :sync_ota
+exit /b %ERRORLEVEL%
 
 :quick_build
 if not exist sdkconfig (
@@ -73,9 +76,18 @@ if errorlevel 1 (
 echo [p4c5-62] incremental idf.py build ^(!VARIANT!^; no reconfigure^) ...
 idf.py build
 if errorlevel 1 exit /b 1
+call :sync_ota
+exit /b %ERRORLEVEL%
+
+:sync_ota
+if /I not "!VARIANT!"=="32m" (
+  echo [p4c5-62] !VARIANT! is not the OTA package; skip sila-panel-update.json
+  exit /b 0
+)
 echo [p4c5-62] sync panel OTA manifest + bin to Z-Y ...
 python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --board sila_p4c5_62
 if errorlevel 1 (
   echo [p4c5-62] WARN panel OTA sync failed ^(build ok^)
+  exit /b 0
 )
 exit /b 0

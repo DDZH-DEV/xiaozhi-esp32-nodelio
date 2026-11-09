@@ -1301,6 +1301,7 @@ static int s_home_user_cur;
 static constexpr int k_home_dots_h = 18;
 static void home_collect_user_pages(void);
 static void home_resolve_current(void);
+static void home_dots_rebind(void);
 
 struct home_cached_view_t {
     lv_obj_t* root = nullptr;
@@ -1778,6 +1779,9 @@ static void home_apply_delta(int delta)
         s_home_cacheable = true;
         s_home_state_dirty = true;
         s_home_skills_dirty = true;
+        /* 相册页不进缓存。离开时会删掉当前页，分页点指针必须改绑到恢复的那一屏。 */
+        home_dots_rebind();
+        nl_ov_nav_chrome_sync();
         nl_ov_home_prepare();
         ESP_LOGD(TAG, "home cache hit %s", next_id);
     } else {
@@ -1842,9 +1846,33 @@ static void on_home_gesture(lv_event_t *e)
 
 static lv_obj_t *s_home_dots;
 
+static void on_home_dots_deleted(lv_event_t *e)
+{
+    if (lv_event_get_target(e) == s_home_dots) {
+        s_home_dots = nullptr;
+    }
+}
+
+static void home_dots_rebind(void)
+{
+    s_home_dots = nullptr;
+    if (!s_home) {
+        return;
+    }
+    const uint32_t n = lv_obj_get_child_count(s_home);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *ch = lv_obj_get_child(s_home, i);
+        if (ch && lv_obj_has_flag(ch, LV_OBJ_FLAG_USER_2)) {
+            s_home_dots = ch;
+            return;
+        }
+    }
+}
+
 void nl_ov_home_dots_set_visible(bool on)
 {
-    if (!s_home_dots) {
+    if (!s_home_dots || !lv_obj_is_valid(s_home_dots)) {
+        s_home_dots = nullptr;
         return;
     }
     if (on) {
@@ -1864,6 +1892,8 @@ static void append_home_page_dots(lv_obj_t *parent, int strip_h)
     lv_obj_t *dots = lv_obj_create(parent);
     s_home_dots = dots;
     lv_obj_remove_style_all(dots);
+    lv_obj_add_flag(dots, LV_OBJ_FLAG_USER_2);
+    lv_obj_add_event_cb(dots, on_home_dots_deleted, LV_EVENT_DELETE, nullptr);
     lv_obj_add_flag(dots, LV_OBJ_FLAG_FLOATING);
     lv_obj_add_flag(dots, LV_OBJ_FLAG_IGNORE_LAYOUT);
     lv_obj_set_size(dots, lv_pct(100), k_home_dots_h);
@@ -2076,6 +2106,8 @@ static void build_home_view(void) {
     nl_ov_home_skills_ensure_fetched();
 
     lv_obj_remove_event_cb(s_home, on_home_gesture);
+    /* clean 会删掉当前页的分页点；先摘掉指针，避免删除过程里触摸回调踩到它。 */
+    s_home_dots = nullptr;
     lv_obj_clean(s_home);
     lv_obj_set_layout(s_home, 0);
     lv_obj_set_style_pad_left(s_home, NL_UI_HOME_PAD_H, 0);

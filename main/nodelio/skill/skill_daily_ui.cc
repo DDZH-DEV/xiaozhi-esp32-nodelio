@@ -1308,30 +1308,67 @@ void fill_calendar_weather(void) {
         daily_reminders_fetch_month();
 }
 
-uint32_t nodelio_skill_daily_open(bool reset_view) {
+static uint32_t daily_bump_generation(void) {
     ++s_daily_generation;
     if (!s_daily_generation)
         ++s_daily_generation;
-    if (!reset_view && daily_is_open()) {
-        daily_redraw();
-        return s_daily_generation;
-    }
+    return s_daily_generation;
+}
+
+static nl_content_envelope_t* daily_shell_env(void) {
     auto* env = static_cast<nl_content_envelope_t*>(
         heap_caps_calloc(1, sizeof(nl_content_envelope_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!env) {
         nl_ov_toast("内存不足");
-        return 0;
+        return nullptr;
     }
     snprintf(env->status, sizeof(env->status), "ok");
     snprintf(env->app_id, sizeof(env->app_id), "builtin.daily");
     snprintf(env->card_type, sizeof(env->card_type), "calendar_weather");
     snprintf(env->display_title, sizeof(env->display_title), "日历与天气");
     snprintf(env->daily.message, sizeof(env->daily.message), "尚未获取天气，可联网后点击刷新");
+    return env;
+}
+
+uint32_t nodelio_skill_daily_open(bool reset_view) {
+    const uint32_t generation = daily_bump_generation();
+    if (!reset_view && daily_is_open()) {
+        daily_redraw();
+        return generation;
+    }
+    auto* env = daily_shell_env();
+    if (!env)
+        return 0;
     s_daily_weather = true;
     s_daily_focus = 0;
     daily_reset_month();
     nodelio_skill_result_show(nullptr, env, false);
-    return s_daily_generation;
+    return generation;
+}
+
+uint32_t nodelio_skill_daily_open_reminders(void) {
+    const uint32_t generation = daily_bump_generation();
+    struct tm today{};
+    int focus = 0;
+    if (daily_today(&today)) {
+        s_daily_year = today.tm_year + 1900;
+        s_daily_month = today.tm_mon + 1;
+        focus = s_daily_year * 10000 + s_daily_month * 100 + today.tm_mday;
+    } else {
+        daily_reset_month();
+    }
+    s_daily_weather = false;
+    s_daily_focus = focus;
+    s_rem_day_key = 0;
+    if (daily_is_open()) {
+        daily_redraw();
+        return generation;
+    }
+    auto* env = daily_shell_env();
+    if (!env)
+        return 0;
+    nodelio_skill_result_show(nullptr, env, false);
+    return generation;
 }
 
 void nodelio_skill_daily_clock_tick(void) {

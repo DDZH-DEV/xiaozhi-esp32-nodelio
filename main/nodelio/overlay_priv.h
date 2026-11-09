@@ -370,6 +370,8 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent);
 void nl_ov_ai_reapply_appearance(void);
 void nl_ov_ai_apply_metrics(void);
 void nl_ov_hide_ai_drawer(void);
+/** 收起对话抽屉，并挡住本轮晚到的小智字幕再次弹出。 */
+void nl_ov_dismiss_ai_chat(void);
 void nl_ov_restore_ai_drawer_if_session(void);
 bool nl_ov_ai_session_active(void);
 /** 告别后抑制再弹（… / listening / restore），直到用户再说话或重新建链 */
@@ -379,6 +381,8 @@ bool nl_ov_ai_user_dismissed(void);
 bool nl_ov_ai_is_minimized(void);
 void nl_ov_ai_raise_mini_fab(void);
 void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, const char *msg_text);
+/** 已持显示锁。清掉关闭/最小化/告别抑制，立刻弹出聆听抽屉（客服「自己说」）。 */
+void nl_ov_ai_drawer_force_listen(void);
 /** 弹出/切相位：有记录则保留最近几句，无记录才用唤醒提示（禁止每轮清空） */
 void nl_ov_show_ai_drawer_session(chat_phase_t phase);
 

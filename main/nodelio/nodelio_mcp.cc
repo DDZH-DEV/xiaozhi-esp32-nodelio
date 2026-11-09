@@ -27,6 +27,7 @@
 #include <strings.h>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #define TAG "nl_mcp"
 
@@ -1599,6 +1600,85 @@ void nodelio_mcp_register_tools(void)
                 return std::unexpected(std::string("正文加载失败"));
             }
             return out;
+        });
+
+    mcp.AddTool(
+        "self.support.suggest",
+        "self.support.suggest: 客服拟回复。听到「调support.suggest」必须调用。"
+        "replies 为空时返回访客原话；你必须立刻再次调用，replies 为 2 到 4 条针对原话的短回复，用 | 分隔。"
+        "不要朗读这些回复。",
+        PropertyList({
+            Property("replies", kPropertyTypeString, std::string("")).SetMaxLength(512),
+        }),
+        [](const PropertyList &properties) -> ToolResult {
+            std::string replies = properties["replies"].value<std::string>();
+            std::vector<std::string> lines;
+            std::string cur;
+            auto push = [&]() {
+                while (!cur.empty() && (cur.front() == ' ' || cur.front() == '\t')) {
+                    cur.erase(cur.begin());
+                }
+                while (!cur.empty() && (cur.back() == ' ' || cur.back() == '\t' || cur.back() == '\r')) {
+                    cur.pop_back();
+                }
+                if (!cur.empty() && lines.size() < 4) {
+                    lines.push_back(cur);
+                }
+                cur.clear();
+            };
+            if (!replies.empty() && replies.front() == '[') {
+                cJSON *arr = cJSON_Parse(replies.c_str());
+                if (cJSON_IsArray(arr)) {
+                    const cJSON *it = nullptr;
+                    cJSON_ArrayForEach(it, arr) {
+                        if (cJSON_IsString(it) && it->valuestring && lines.size() < 4) {
+                            cur = it->valuestring;
+                            push();
+                        }
+                    }
+                }
+                cJSON_Delete(arr);
+            }
+            if (lines.empty()) {
+                for (char c : replies) {
+                    if (c == '|' || c == '\n') {
+                        push();
+                    } else {
+                        cur.push_back(c);
+                    }
+                }
+                push();
+            }
+            if (lines.empty()) {
+                char visitor[256];
+                visitor[0] = '\0';
+                if (!nodelio_skill_support_visitor_text(visitor, sizeof(visitor)) || !visitor[0]) {
+                    return std::unexpected(std::string("请先打开客服会话"));
+                }
+                Application::GetInstance().Schedule([]() {
+                    Application::GetInstance().OnSupportSuggestToolCalled(false);
+                });
+                std::string out = "访客原话：";
+                out += visitor;
+                out += "\n立刻再次调用 self.support.suggest，replies 为 2 到 4 条针对这句话的短回复，用 | 分隔。不要朗读。";
+                return out;
+            }
+            Application::GetInstance().Schedule([lines]() {
+                const char *ptrs[4] = {};
+                int n = 0;
+                for (const auto &line : lines) {
+                    if (n < 4) {
+                        ptrs[n++] = line.c_str();
+                    }
+                }
+                const bool ok = nodelio_skill_support_apply_cloud_replies(ptrs, n);
+                if (!ok) {
+                    nodelio_skill_support_cloud_suggest_failed();
+                    nodelio_panel_ui_toast("小智未给出回复选项");
+                }
+                Application::GetInstance().OnSupportSuggestToolCalled(true);
+            });
+            return std::string("已写入发送按钮，不要朗读");
         });
 
     mcp.AddTool(

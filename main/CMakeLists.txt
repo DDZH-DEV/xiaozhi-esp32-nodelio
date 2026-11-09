@@ -1290,12 +1290,16 @@ if(CONFIG_NODELIO_PANEL AND NOT CMAKE_BUILD_EARLY_EXPANSION)
     endif()
     set(NODELIO_STAMP_PY ${PROJECT_DIR}/scripts/nodelio_build_stamp.py)
     set(NODELIO_STAMP_H ${CMAKE_CURRENT_SOURCE_DIR}/nodelio/nodelio_build_stamp.h)
-    set(NODELIO_STAMP_STATE ${PROJECT_DIR}/.nodelio_build_stamp.json)
+    if(CONFIG_BOARD_TYPE_SILA_P4C5_62)
+        set(NODELIO_STAMP_BOARD sila_p4c5_62)
+    else()
+        set(NODELIO_STAMP_BOARD sila_86)
+    endif()
     add_custom_target(nodelio_gen_build_stamp
         COMMAND ${PYTHON} ${NODELIO_STAMP_PY}
                 --root ${PROJECT_DIR}
+                --board ${NODELIO_STAMP_BOARD}
                 --out ${NODELIO_STAMP_H}
-                --state ${NODELIO_STAMP_STATE}
         BYPRODUCTS ${NODELIO_STAMP_H}
         WORKING_DIRECTORY ${PROJECT_DIR}
         COMMENT "NodeLio panel build stamp YYYYMMDD.NNN"

@@ -325,10 +325,19 @@ private:
                 const int64_t goodbye_at = goodbye_sleep_at_.load();
                 const bool timeout = elapsed >= pdMS_TO_TICKS(idle_seconds_.load() * 1000) ||
                                      (goodbye_at > 0 && esp_timer_get_time() >= goodbye_at);
-                const bool idle = timeout && Application::GetInstance().CanEnterSleepMode();
-                if (idle != asleep_.load() && display_->SetIdleRefresh(idle)) {
-                    asleep_.store(idle);
-                    if (idle) {
+                const bool can_sleep = Application::GetInstance().CanEnterSleepMode();
+                /* 提示音会让播放队列非空，CanEnterSleepMode 短暂为假。
+                 * 已息屏时不要因此 RestoreBrightness，否则每声提醒亮一下再灭。
+                 * 只有新的触摸/活动（timeout 被清掉）才点亮。 */
+                bool next_asleep = asleep_.load();
+                if (!timeout) {
+                    next_asleep = false;
+                } else if (can_sleep) {
+                    next_asleep = true;
+                }
+                if (next_asleep != asleep_.load() && display_->SetIdleRefresh(next_asleep)) {
+                    asleep_.store(next_asleep);
+                    if (next_asleep) {
                         backlight_.SetBrightness(0);
                     } else {
                         backlight_.RestoreBrightness();
@@ -336,7 +345,7 @@ private:
 #if CONFIG_NODELIO_PANEL
                     DisplayLockGuard lock(display_);
                     if (lock) {
-                        nodelio_panel_ui_notify_screen(!idle);
+                        nodelio_panel_ui_notify_screen(!next_asleep);
                     }
 #endif
                 }
