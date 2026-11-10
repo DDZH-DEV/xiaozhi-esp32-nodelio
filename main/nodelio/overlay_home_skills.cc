@@ -8,6 +8,7 @@
 #include "nodelio_http.h"
 #include "panel_ui.h"
 #include "content_envelope.h"
+#include "skill_result_ui.h"
 #include "skill_runtime.h"
 #include <esp_timer.h>
 #include "wifi_provision.h"
@@ -186,7 +187,9 @@ bool nl_ov_invoke_skill_async(const char* skill_id, const char* body) {
                             Application::GetInstance().EndVoiceSessionAfterLocalSkill();
                         }
                     });
-                } else if (nodelio_media_preempt_for_heavy_app()) {
+                } else if (nodelio_skill_id_preempts_media(a->id) &&
+                           nodelio_media_preempt_for_heavy_app()) {
+                    nodelio_skill_clear_music_stash();
                     nodelio_panel_ui_toast_defer("已停止音乐以打开应用");
                 }
                 char base[160];

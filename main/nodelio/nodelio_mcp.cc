@@ -902,26 +902,19 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t* cfg, const std::strin
     if (skill_id_in.empty()) {
         return std::unexpected(std::string("skill_id 不能为空"));
     }
-    const std::string skill_id = normalize_skill_id_alias(skill_id_in);
+    std::string skill_id = normalize_skill_id_alias(skill_id_in);
+    bool weather_voice = false;
     {
         const char *bare = skill_id.c_str();
         const char *colon = strrchr(bare, ':');
         if (colon && colon > bare && colon[-1] == ':') {
             bare = colon + 1;
         }
+        /* 天气/空气：走 builtin.daily invoke，返回 spoken 供小智播报；开卡放到拿到结果后再做。 */
         if (strcmp(bare, "weather.today") == 0 || strcmp(bare, "air.now") == 0 ||
             strcmp(bare, "builtin.daily") == 0) {
-            bool opened = false;
-            {
-                DisplayLockGuard lock(nl_ov_disp());
-                if (lock) {
-                    opened = nl_ov_apps_open_by_query("日历与天气");
-                }
-            }
-            if (!opened) {
-                return std::unexpected(std::string("打不开日历与天气"));
-            }
-            return std::string("已打开日历与天气");
+            weather_voice = true;
+            skill_id = "builtin.daily";
         }
     }
     const bool dsh_app = nl_workbench_app(skill_id.c_str());
@@ -987,7 +980,8 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t* cfg, const std::strin
     }
     const bool dsh_mutation = nl_workbench_mutation(skill_id.c_str(), params.c_str());
     const bool music_app = nodelio_skill_id_is_music(skill_id.c_str());
-    if (!music_app && nodelio_media_preempt_for_heavy_app()) {
+    if (nodelio_skill_id_preempts_media(skill_id.c_str()) && nodelio_media_preempt_for_heavy_app()) {
+        nodelio_skill_clear_music_stash();
         ESP_LOGI(TAG, "preempt media before skill '%s'", skill_id.c_str());
     }
 
@@ -1065,8 +1059,9 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t* cfg, const std::strin
     }
     resp[0] = '\0';
     int status = 0;
+    const int http_ms = dsh_app ? 22000 : (weather_voice ? 16000 : 10000);
     esp_err_t err = nodelio_http_post_json_ms(url, cfg->device_key, body.c_str(), &status, resp,
-                                              cap - 1, dsh_app ? 22000 : 10000);
+                                              cap - 1, http_ms);
     const bool envelope_body = resp[0] && strstr(resp, "\"schema_version\"") != nullptr;
     const bool http_ok = (status == 200 || status == 201);
     const bool envelope_err = status >= 400 && envelope_body;
@@ -1099,6 +1094,32 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t* cfg, const std::strin
     if (n > 0 && resp[n - 1] != '}' && resp[n - 1] != ']') {
         ESP_LOGW(TAG, "invoke skill '%s' resp looks incomplete bytes=%u tail=0x%02x", skill_id.c_str(),
                  (unsigned)n, (unsigned)(unsigned char)resp[n - 1]);
+    }
+
+    /* 天气：先拿到 spoken，再开卡（开卡二次 invoke 可打中服务端同日缓存）。 */
+    if (weather_voice) {
+        char spoken[NL_ENV_SPOKEN];
+        spoken[0] = '\0';
+        cJSON* root = cJSON_Parse(resp);
+        const cJSON* sp = root ? cJSON_GetObjectItemCaseSensitive(root, "spoken") : nullptr;
+        const cJSON* tx =
+            cJSON_IsObject(sp) ? cJSON_GetObjectItemCaseSensitive(sp, "text") : nullptr;
+        if (cJSON_IsString(tx) && tx->valuestring) {
+            snprintf(spoken, sizeof(spoken), "%s", tx->valuestring);
+        }
+        cJSON_Delete(root);
+        free(resp);
+        {
+            DisplayLockGuard lock(nl_ov_disp());
+            if (lock) {
+                (void)nl_ov_apps_open_by_query("日历与天气");
+            }
+        }
+        ESP_LOGI(TAG, "invoke weather spoken=%s", spoken[0] ? spoken : "(empty)");
+        if (spoken[0]) {
+            return std::string(spoken);
+        }
+        return std::string("已打开日历与天气");
     }
 
     /* 双投递：UI Envelope + 模型短摘要；开播只信 Host display.auto_play */
@@ -1801,8 +1822,9 @@ void nodelio_mcp_register_tools(void)
         "self.nodelio.set_pref",
         "改面板设置。亮度/音量用 key=brightness|volume value=0-100（你有此能力，请直接调用）。"
         "其它 key=idle_wifi_s|idle_sleep_s|bye_sleep_s|power_save|controls|xiaozhi|"
-        "listen_idle_s|media_sleep|media_pause_s|media_wake_duck_pct|text_scale|ui_mode|"
-        "layout_sync|fw_check|factory_reset。text_scale=0标准|1较大|2更大。ui_mode=0浅色|1深色。",
+        "voice_barge_in|listen_idle_s|media_sleep|media_pause_s|media_wake_duck_pct|text_scale|ui_mode|"
+        "layout_sync|fw_check|factory_reset。text_scale=0标准|1较大|2更大。ui_mode=0浅色|1深色。"
+        "voice_barge_in=on/off 免唤醒词语音打断。",
         PropertyList({
             Property("key", kPropertyTypeString),
             Property("value", kPropertyTypeString, ""),

@@ -1238,6 +1238,44 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         nl_ov_set_font(hint);
         lv_obj_set_style_text_color(hint, UI_TEXT_TIP, 0);
 
+        lv_obj_t *barge_row = lv_obj_create(card);
+        lv_obj_remove_style_all(barge_row);
+        lv_obj_set_width(barge_row, lv_pct(100));
+        lv_obj_set_height(barge_row, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(barge_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(barge_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(barge_row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *barge_lab = lv_label_create(barge_row);
+        lv_label_set_text(barge_lab, "语音打断");
+        nl_ov_set_font(barge_lab);
+        lv_obj_set_style_text_color(barge_lab, UI_TEXT, 0);
+
+        lv_obj_t *barge_sw = lv_switch_create(barge_row);
+        ui_style_switch(barge_sw);
+        if (s_cfg.voice_barge_in) {
+            lv_obj_add_state(barge_sw, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(barge_sw, LV_STATE_CHECKED);
+        }
+        lv_obj_add_event_cb(
+            barge_sw,
+            [](lv_event_t *e) {
+                bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+                (void)nodelio_panel_ui_set_pref("voice_barge_in", on ? "on" : "off", nullptr, 0);
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+
+        lv_obj_t *barge_hint = lv_label_create(card);
+        lv_label_set_text(barge_hint,
+                          "开启后小智说话时可直接开口打断（免唤醒词）。"
+                          "喇叭回采可能误触，不适可关。即时生效。");
+        lv_obj_set_width(barge_hint, lv_pct(100));
+        lv_label_set_long_mode(barge_hint, LV_LABEL_LONG_WRAP);
+        nl_ov_set_font(barge_hint);
+        lv_obj_set_style_text_color(barge_hint, UI_TEXT_TIP, 0);
+
         /* —— 官方 / 自定义小智语音服务器 —— */
         lv_obj_t *srv_card = settings_card(body, "语音服务器");
         lv_obj_set_style_pad_all(srv_card, 16, 0);

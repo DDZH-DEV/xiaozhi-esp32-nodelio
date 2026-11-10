@@ -262,3 +262,120 @@ esp_err_t jpeg_to_image(const uint8_t* src, size_t src_len, uint8_t** out, size_
 #endif
     return decode_with_new_jpeg(src, src_len, out, out_len, width, height, stride);
 }
+
+static esp_err_t decode_scaled_soft(const uint8_t* src, size_t src_len, int tw, int th, uint8_t** out,
+                                    size_t* out_len, size_t* width, size_t* height, size_t* stride) {
+    jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
+    config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
+    config.scale.width = tw;
+    config.scale.height = th;
+
+    jpeg_dec_handle_t jpeg_dec = NULL;
+    jpeg_error_t jpeg_ret = jpeg_dec_open(&config, &jpeg_dec);
+    if (jpeg_ret != JPEG_ERR_OK) {
+        return ESP_FAIL;
+    }
+
+    jpeg_dec_io_t jpeg_io = {0};
+    jpeg_dec_header_info_t out_info = {0};
+    jpeg_io.inbuf = (uint8_t*)src;
+    jpeg_io.inbuf_len = (int)src_len;
+    jpeg_ret = jpeg_dec_parse_header(jpeg_dec, &jpeg_io, &out_info);
+    if (jpeg_ret != JPEG_ERR_OK) {
+        jpeg_dec_close(jpeg_dec);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const size_t bytes = (size_t)tw * (size_t)th * 2;
+    uint8_t* out_buf = (uint8_t*)heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (out_buf == NULL) {
+        out_buf = (uint8_t*)heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_8BIT);
+    }
+    if (out_buf == NULL) {
+        jpeg_dec_close(jpeg_dec);
+        return ESP_ERR_NO_MEM;
+    }
+
+    jpeg_io.outbuf = out_buf;
+    jpeg_ret = jpeg_dec_process(jpeg_dec, &jpeg_io);
+    jpeg_dec_close(jpeg_dec);
+    if (jpeg_ret != JPEG_ERR_OK) {
+        heap_caps_free(out_buf);
+        return ESP_FAIL;
+    }
+
+    *out = out_buf;
+    *out_len = bytes;
+    *width = (size_t)tw;
+    *height = (size_t)th;
+    *stride = (size_t)tw * 2;
+    return ESP_OK;
+}
+
+esp_err_t jpeg_to_image_fit(const uint8_t* src, size_t src_len, int max_w, int max_h, size_t max_bytes,
+                            uint8_t** out, size_t* out_len, size_t* width, size_t* height, size_t* stride) {
+    if (src == NULL || src_len < 4 || out == NULL || out_len == NULL || width == NULL || height == NULL ||
+        stride == NULL || max_w < 8 || max_h < 8 || max_bytes < 64) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (src[0] != 0xFF || src[1] != 0xD8) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *out = NULL;
+    *out_len = 0;
+    *width = 0;
+    *height = 0;
+    *stride = 0;
+
+    jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
+    config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
+    jpeg_dec_handle_t jpeg_dec = NULL;
+    if (jpeg_dec_open(&config, &jpeg_dec) != JPEG_ERR_OK) {
+        return ESP_FAIL;
+    }
+
+    jpeg_dec_io_t jpeg_io = {0};
+    jpeg_dec_header_info_t info = {0};
+    jpeg_io.inbuf = (uint8_t*)src;
+    jpeg_io.inbuf_len = (int)src_len;
+    if (jpeg_dec_parse_header(jpeg_dec, &jpeg_io, &info) != JPEG_ERR_OK || info.width < 8 ||
+        info.height < 8) {
+        jpeg_dec_close(jpeg_dec);
+        return ESP_ERR_INVALID_ARG;
+    }
+    jpeg_dec_close(jpeg_dec);
+
+    int tw = info.width;
+    int th = info.height;
+    const int min_w = info.width / 8 >= 8 ? info.width / 8 : 8;
+    const int min_h = info.height / 8 >= 8 ? info.height / 8 : 8;
+    while (((tw > max_w || th > max_h) || ((size_t)tw * (size_t)th * 2 > max_bytes)) &&
+           (tw / 2 >= min_w && th / 2 >= min_h)) {
+        tw /= 2;
+        th /= 2;
+    }
+    if (tw < min_w) {
+        tw = min_w;
+    }
+    if (th < min_h) {
+        th = min_h;
+    }
+    tw = (tw / 8) * 8;
+    th = (th / 8) * 8;
+    if (tw < 8) {
+        tw = 8;
+    }
+    if (th < 8) {
+        th = 8;
+    }
+    if ((size_t)tw * (size_t)th * 2 > max_bytes) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* No downscale: prefer hardware path via jpeg_to_image(). */
+    if (tw == info.width && th == info.height) {
+        return jpeg_to_image(src, src_len, out, out_len, width, height, stride);
+    }
+    return decode_scaled_soft(src, src_len, tw, th, out, out_len, width, height, stride);
+}

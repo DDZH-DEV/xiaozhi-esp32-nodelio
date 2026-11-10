@@ -245,12 +245,15 @@ static void photo_apply_rgb(const char *widget_id, uint8_t *rgb, size_t rgb_len,
     dsc->header.stride = (uint32_t)stride;
 
     lv_obj_t *img = lv_image_create(tile);
-    lv_obj_set_size(img, lv_pct(100), lv_pct(100));
-    lv_obj_center(img);
     lv_obj_set_style_radius(img, UI_RADIUS_MD, 0);
     lv_obj_set_style_clip_corner(img, true, 0);
     lv_image_set_src(img, dsc);
-    lv_image_set_inner_align(img, fit_contain ? LV_IMAGE_ALIGN_CONTAIN : LV_IMAGE_ALIGN_COVER);
+    lv_image_set_scale(img, LV_SCALE_NONE);
+    /* Decoded to tile size already; keep 1:1 to avoid per-frame CONTAIN/COVER resample. */
+    (void)fit_contain;
+    lv_image_set_inner_align(img, LV_IMAGE_ALIGN_TOP_LEFT);
+    lv_obj_set_size(img, static_cast<int>(w), static_cast<int>(h));
+    lv_obj_center(img);
     lv_obj_clear_flag(img, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(img, on_photo_img_deleted, LV_EVENT_DELETE, dsc);
     photo_nav_raise(tile);
@@ -335,6 +338,8 @@ static void photo_fetch_async(const nl_widget_t *w, uint8_t idx)
         char photo_id[NL_PHOTO_ID_MAX];
         uint8_t fit_contain;
         uint32_t gen;
+        int max_w;
+        int max_h;
     };
     auto *arg = static_cast<photo_arg *>(malloc(sizeof(photo_arg)));
     if (!arg) {
@@ -345,6 +350,24 @@ static void photo_fetch_async(const nl_widget_t *w, uint8_t idx)
     snprintf(arg->photo_id, sizeof(arg->photo_id), "%s", w->photo_ids[idx]);
     arg->fit_contain = w->photo_fit_contain;
     arg->gen = s_home_gen;
+    arg->max_w = 320;
+    arg->max_h = 240;
+    {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            lv_obj_t *tile = find_home_tile_by_widget_id(w->id);
+            if (tile) {
+                const int tw = static_cast<int>(lv_obj_get_content_width(tile));
+                const int th = static_cast<int>(lv_obj_get_content_height(tile));
+                if (tw >= 8) {
+                    arg->max_w = tw;
+                }
+                if (th >= 8) {
+                    arg->max_h = th;
+                }
+            }
+        }
+    }
 
     if (!nodelio::SubmitPanelJob(
             nodelio::PanelJobLane::Background,
@@ -429,8 +452,14 @@ static void photo_fetch_async(const nl_widget_t *w, uint8_t idx)
                 uint8_t *rgb = nullptr;
                 size_t rgb_len = 0, iw = 0, ih = 0, stride = 0;
                 const char *fail_tip = nullptr;
+                constexpr size_t kRgbCap = 256 * 1024;
+                auto decode_fit = [&]() -> bool {
+                    return jpeg_to_image_fit(jpeg, jpeg_n, a->max_w, a->max_h, kRgbCap, &rgb, &rgb_len,
+                                             &iw, &ih, &stride) == ESP_OK &&
+                           rgb != nullptr;
+                };
                 if (err == ESP_OK && status == 200 && jpeg_n > 0) {
-                    if (jpeg_to_image(jpeg, jpeg_n, &rgb, &rgb_len, &iw, &ih, &stride) != ESP_OK) {
+                    if (!decode_fit()) {
                         rgb = nullptr;
                         if (from_flash || photo_blob_find(a->photo_id)) {
                             (void)nodelio_photo_cache_remove(a->photo_id);
@@ -443,8 +472,7 @@ static void photo_fetch_async(const nl_widget_t *w, uint8_t idx)
                             err = ESP_FAIL;
                             try_http();
                             if (err == ESP_OK && status == 200 && jpeg_n > 0) {
-                                if (jpeg_to_image(jpeg, jpeg_n, &rgb, &rgb_len, &iw, &ih, &stride) !=
-                                    ESP_OK) {
+                                if (!decode_fit()) {
                                     rgb = nullptr;
                                     fail_tip = "解码失败";
                                 }

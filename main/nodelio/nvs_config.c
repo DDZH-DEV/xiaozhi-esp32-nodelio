@@ -105,6 +105,7 @@ void nodelio_nvs_cache_get(nodelio_nvs_config_t *out)
     _lock_release(&s_config_lock);
     memset(out, 0, sizeof(*out));
     out->xiaozhi_en = 1;
+    out->voice_barge_in = 0;
     out->local_cmd_en = 0;
     out->power_save_en = 1;
     out->wake_on_sleep = 0;
@@ -173,6 +174,7 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     if (out->xiaozhi_en > 1) {
         out->xiaozhi_en = 1;
     }
+    out->voice_barge_in = out->voice_barge_in ? 1 : 0;
     if (out->local_cmd_en > 1) {
         out->local_cmd_en = 0;
     }
@@ -266,6 +268,7 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     if (out->xiaozhi_en > 1) {
         out->xiaozhi_en = 1;
     }
+    out->voice_barge_in = out->voice_barge_in ? 1 : 0;
     if (out->local_cmd_en > 1) {
         out->local_cmd_en = 0;
     }
@@ -344,6 +347,7 @@ static esp_err_t load_config_impl(void *ctx) {
     }
     memset(out, 0, sizeof(*out));
     out->xiaozhi_en = 1;
+    out->voice_barge_in = 0;
     out->local_cmd_en = 0;
     out->power_save_en = 1;
     out->wake_on_sleep = 0;
@@ -398,6 +402,12 @@ static esp_err_t load_config_impl(void *ctx) {
             out->xiaozhi_en = v ? 1 : 0;
         } else {
             out->xiaozhi_en = 1;
+        }
+        v = 0;
+        if (nvs_get_u8(h, "vb_in", &v) == ESP_OK) {
+            out->voice_barge_in = v ? 1 : 0;
+        } else {
+            out->voice_barge_in = 0;
         }
         out->local_cmd_en = 0; /* MultiNet 已移除；忽略旧 NVS lc_en */
         v = 1;
@@ -586,6 +596,7 @@ static esp_err_t save_config_impl(void *ctx) {
     NL_ACCUM(nvs_set_u8(h, "brightness", tmp->brightness));
     NL_ACCUM(nvs_set_u8(h, "volume", tmp->volume));
     NL_ACCUM(nvs_set_u8(h, "xz_en", tmp->xiaozhi_en ? 1 : 0));
+    NL_ACCUM(nvs_set_u8(h, "vb_in", tmp->voice_barge_in ? 1 : 0));
     NL_ACCUM(nvs_set_u8(h, "lc_en", tmp->local_cmd_en ? 1 : 0));
     NL_ACCUM(nvs_set_u8(h, "ps_en", tmp->power_save_en ? 1 : 0));
     NL_ACCUM(nvs_set_u8(h, "w_slp", tmp->wake_on_sleep ? 1 : 0));
@@ -772,6 +783,25 @@ esp_err_t nodelio_xiaozhi_set_enabled(bool on)
         return err;
     }
     cfg.xiaozhi_en = on ? 1 : 0;
+    return nodelio_nvs_save_preferences(&cfg);
+}
+
+bool nodelio_voice_barge_in_enabled(void)
+{
+    if (!s_ram_ok) {
+        return false;
+    }
+    return s_ram.voice_barge_in != 0;
+}
+
+esp_err_t nodelio_voice_barge_in_set_enabled(bool on)
+{
+    nodelio_nvs_config_t cfg;
+    esp_err_t err = nodelio_nvs_load(&cfg);
+    if (err != ESP_OK) {
+        return err;
+    }
+    cfg.voice_barge_in = on ? 1 : 0;
     return nodelio_nvs_save_preferences(&cfg);
 }
 

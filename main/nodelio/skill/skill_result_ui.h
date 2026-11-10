@@ -36,6 +36,15 @@ void nodelio_skill_daily_reminders_invalidate(void);
 bool nodelio_skill_result_is_visible(void);
 bool nodelio_skill_result_card_visible(void);
 
+/**
+ * 播放中再点曲库：恢复已有 music_list（含 stash），不重新 invoke。
+ * 成功则列表上屏并返回 true。
+ */
+bool nodelio_skill_try_reopen_music_list(void);
+
+/** 电台/播客抢占停歌时清空 stash，避免再点曲库误恢复旧歌单。 */
+void nodelio_skill_clear_music_stash(void);
+
 /** 停播并收起技能卡/播放条/悬浮球（语音「关闭电台」或 MCP close）。 */
 void nodelio_skill_close_all(void);
 

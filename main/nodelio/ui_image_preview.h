@@ -29,12 +29,19 @@ bool nl_ui_image_preview_visible(void);
 bool nl_ui_image_preview_view_size(int *w, int *h);
 
 /**
- * 设置 RGB565。成功则接管 rgb（heap_caps_free）。
+ * 设置 RGB565，1:1 显示（不 STRETCH）。成功则接管 rgb（heap_caps_free）。
  * gen 不匹配或已关闭时释放 rgb 并返回 false。
- * 调用方须已持有显示锁（与现有 Job 回写一致）。
+ * 调用方须已持有显示锁。无 JPEG 源时缩放按钮不可用。
  */
 bool nl_ui_image_preview_set_rgb565(uint32_t gen, uint8_t *rgb, uint32_t w, uint32_t h,
                                     uint32_t stride, size_t data_size);
+
+/**
+ * 接管 JPEG，在锁外 decode_fit，再加显示锁 1:1 上屏。
+ * 允许缩放时保留 JPEG，放大/缩小异步重解，禁止逐帧 STRETCH。
+ * 调用方不要持有显示锁。成功后 jpeg 由预览层释放。
+ */
+bool nl_ui_image_preview_set_jpeg(uint32_t gen, uint8_t *jpeg, size_t jpeg_len, size_t max_rgb_bytes);
 
 void nl_ui_image_preview_fail(uint32_t gen, const char *msg);
 void nl_ui_image_preview_hide(void);

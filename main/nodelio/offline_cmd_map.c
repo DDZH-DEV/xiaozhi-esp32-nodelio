@@ -197,7 +197,7 @@ bool nodelio_offline_cmd_is_local(int command_id)
            command_id == NL_OC_PAGE_NEXT || command_id == NL_OC_PAGE_PREV ||
            command_id == NL_OC_SCROLL_DOWN || command_id == NL_OC_SCROLL_UP ||
            (command_id >= NL_OC_APP_MUSIC && command_id <= NL_OC_APP_QUOTE) ||
-           command_id == NL_OC_APP_SD ||
+           command_id == NL_OC_APP_SD || command_id == NL_OC_WEATHER_REFRESH ||
            command_id == NL_OC_SKILL_CLOSE || command_id == NL_OC_RADIO_SWAP ||
            (command_id >= NL_OC_BRIGHT_UP && command_id <= NL_OC_VOL_MIN);
 }
@@ -285,6 +285,8 @@ const char *nodelio_offline_cmd_zh(int command_id)
         return "打开新闻";
     case NL_OC_APP_WEATHER:
         return "打开天气";
+    case NL_OC_WEATHER_REFRESH:
+        return "刷新天气";
     case NL_OC_APP_RADIO:
         return "打开电台";
     case NL_OC_APP_PODCAST:
@@ -466,6 +468,11 @@ esp_err_t nodelio_offline_cmd_dispatch(const nodelio_nvs_config_t *cfg, int comm
         }
         nodelio_panel_ui_set_voice_hint("正在读取内存卡");
         nodelio_skill_request_sd_library(false);
+        return ESP_OK;
+    }
+    if (command_id == NL_OC_WEATHER_REFRESH) {
+        nodelio_panel_ui_set_voice_hint("刷新天气");
+        nodelio_panel_ui_refresh_weather();
         return ESP_OK;
     }
     if (command_id >= NL_OC_APP_MUSIC && command_id <= NL_OC_APP_QUOTE) {
@@ -971,7 +978,7 @@ static int phrase_to_cmd_id(const char *phrase)
         return NL_OC_APP_QUOTE;
     }
     if (strstr(phrase, "再问天气") || strstr(phrase, "刷新天气") || strstr(phrase, "更新天气")) {
-        return NL_OC_APP_WEATHER;
+        return NL_OC_WEATHER_REFRESH;
     }
     if (strstr(phrase, "再问空气") || strstr(phrase, "刷新空气") || strstr(phrase, "更新空气")) {
         return NL_OC_APP_AIR;
@@ -1923,7 +1930,8 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
         cmd == NL_OC_MEDIA_PREV || cmd == NL_OC_MEDIA_NEXT ||
         cmd == NL_OC_MEDIA_PAUSE || cmd == NL_OC_MEDIA_RESUME ||
         cmd == NL_OC_SKILL_CLOSE || cmd == NL_OC_RADIO_SWAP || cmd == NL_OC_APP_SD ||
-        cmd == NL_OC_APP_QUOTE || cmd == NL_OC_APP_WEATHER || cmd == NL_OC_APP_AIR ||
+        cmd == NL_OC_APP_QUOTE || cmd == NL_OC_APP_WEATHER || cmd == NL_OC_WEATHER_REFRESH ||
+        cmd == NL_OC_APP_AIR ||
         (cmd >= NL_OC_BRIGHT_UP && cmd <= NL_OC_VOL_MIN)) {
         ESP_LOGI(TAG, "system phrase → %s", nodelio_offline_cmd_zh(cmd));
         if (end_session) {

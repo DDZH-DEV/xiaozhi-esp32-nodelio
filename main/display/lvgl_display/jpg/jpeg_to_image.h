@@ -55,6 +55,16 @@ extern "C" {
 esp_err_t jpeg_to_image(const uint8_t* src, size_t src_len, uint8_t** out, size_t* out_len, size_t* width,
                         size_t* height, size_t* stride);
 
+/**
+ * @brief Decode JPEG to RGB565 fitted within max_w x max_h (and max_bytes).
+ *
+ * When the source already fits, uses jpeg_to_image() (hardware decoder first if enabled).
+ * When downscale is required, uses esp_new_jpeg software scale (no full-res HW decode).
+ * On success the caller owns *out and must free it with heap_caps_free().
+ */
+esp_err_t jpeg_to_image_fit(const uint8_t* src, size_t src_len, int max_w, int max_h, size_t max_bytes,
+                            uint8_t** out, size_t* out_len, size_t* width, size_t* height, size_t* stride);
+
 #ifdef __cplusplus
 }
 #endif

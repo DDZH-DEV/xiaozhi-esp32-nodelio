@@ -1113,9 +1113,12 @@ menu "Camera Configuration"
     config XIAOZHI_ENABLE_HARDWARE_JPEG_DECODER
         bool "Enable Hardware JPEG Decoder"
         default n
-        depends on SOC_JPEG_DECODE_SUPPORTED && XIAOZHI_CAMERA_ALLOW_JPEG_INPUT
+        depends on SOC_JPEG_DECODE_SUPPORTED
         help
             Use hardware JPEG decoder on ESP32-P4 to decode JPEG to image.
+            Used by panel photo/preview paths (jpeg_to_image) when no downscale is required;
+            scaled decode still uses esp_new_jpeg software. Formerly also required camera JPEG
+            input; that dependency was removed so wall panels without cameras can enable it.
             See https://docs.espressif.com/projects/esp-idf/en/stable/esp32p4/api-reference/peripherals/jpeg.html for more details.
 
     config XIAOZHI_ENABLE_CAMERA_DEBUG_MODE

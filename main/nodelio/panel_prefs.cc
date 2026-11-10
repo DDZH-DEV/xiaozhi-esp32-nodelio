@@ -610,6 +610,22 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         nl_ov_persist_voice_and_reboot();
         return ESP_OK;
     }
+    if (strcasecmp(key, "voice_barge_in") == 0) {
+        bool on = false;
+        if (!parse_on_off(value, &on, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        uint8_t next = on ? 1 : 0;
+        if (s_cfg.voice_barge_in == next) {
+            return ESP_OK;
+        }
+        s_cfg.voice_barge_in = next;
+        nodelio_nvs_cache_put(&s_cfg);
+        nl_ov_persist_cfg_async();
+        nodelio_voice_barge_in_apply(true);
+        nl_ov_toast(on ? "已开启语音打断" : "已关闭语音打断");
+        return ESP_OK;
+    }
     if (strcasecmp(key, "local_cmd") == 0) {
         /* MultiNet 已下线：忽略开关，清掉旧 NVS 位 */
         if (s_cfg.local_cmd_en) {
@@ -807,6 +823,10 @@ extern "C" esp_err_t nodelio_panel_ui_get_pref(const char *key, char *buf, size_
         std::snprintf(buf, len, "%s", s_cfg.xiaozhi_en ? "on" : "off");
         return ESP_OK;
     }
+    if (strcasecmp(key, "voice_barge_in") == 0) {
+        std::snprintf(buf, len, "%s", s_cfg.voice_barge_in ? "on" : "off");
+        return ESP_OK;
+    }
     if (strcasecmp(key, "local_cmd") == 0) {
         std::snprintf(buf, len, "%s", "off");
         return ESP_OK;
@@ -856,4 +876,11 @@ extern "C" esp_err_t nodelio_panel_ui_get_pref(const char *key, char *buf, size_
         return ESP_OK;
     }
     return ESP_ERR_NOT_FOUND;
+}
+
+extern "C" void nodelio_voice_barge_in_apply(bool notify)
+{
+    const AecMode mode =
+        nodelio_voice_barge_in_enabled() ? kAecOnServerSide : kAecOff;
+    Application::GetInstance().SetAecMode(mode, notify);
 }

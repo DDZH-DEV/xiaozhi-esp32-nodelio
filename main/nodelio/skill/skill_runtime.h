@@ -13,6 +13,9 @@ extern "C" {
 /** 是否音频列表类技能（曲库 / 电台 / 播客；兼容 market:: 前缀）。 */
 bool nodelio_skill_id_is_music(const char *skill_id);
 
+/** 打开时是否应停掉当前 HTTP 播歌（电台/播客新流；在线曲库浏览不停）。 */
+bool nodelio_skill_id_preempts_media(const char *skill_id);
+
 /**
  * 解析 Envelope JSON → 上屏；spoken_out 写短摘要给 LLM（可空）。
  * auto_play_first：调用方强制播首条（打开曲库）；与 Envelope display.auto_play 任一为真即播。

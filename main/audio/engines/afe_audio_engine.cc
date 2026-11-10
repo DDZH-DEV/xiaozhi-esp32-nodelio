@@ -13,11 +13,11 @@
 #include "audio_service.h"
 #include "wake_words/custom_wake_word.h"
 
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#include "media_player.h"
+#endif
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-#include "media_player.h"
 #include "offline_cmd.h"
-#elif CONFIG_BOARD_TYPE_SILA_P4C5_62 && CONFIG_NODELIO_PANEL
-#include "media_player.h"
 #endif
 
 #define TAG "AfeAudioEngine"
@@ -161,7 +161,13 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
         return false;
     }
 
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62 && CONFIG_NODELIO_PANEL
+    /* P4 墙板：有参考麦也会建 AEC3；空闲唤醒 FEED 时 AEC/FFT 偶发 Load/Store fault。
+     * 板级全双工 AEC 未验收前不创建 AEC 模块（仍用 MR 格式喂 WakeNet）。 */
+    afe_config->aec_init = false;
+#else
     afe_config->aec_init = codec_->input_reference();
+#endif
     afe_config->aec_mode = AEC_MODE_FD_LOW_COST;
     /* VERYAGGR 的 NLP 易把 audio_input 钉死在 CPU0 → IDLE0 TWDT，RGB 屏跟着闪一下 */
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
@@ -197,15 +203,24 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
     afe_config->agc_init = false;
     /* P4 的 conv1d 汇编会在缓冲区前 16 字节预取。工作区全在 PSRAM 时会 Load access fault。 */
 #if CONFIG_IDF_TARGET_ESP32P4
-    afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_INTERNAL_PSRAM_BALANCE;
+    {
+        const size_t largest =
+            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        /* 片内够大时优先 MORE_INTERNAL，降低 WakeNet 工作区落 PSRAM 的概率 */
+        afe_config->memory_alloc_mode = (largest >= 96 * 1024)
+                                            ? AFE_MEMORY_ALLOC_MORE_INTERNAL
+                                            : AFE_MEMORY_ALLOC_INTERNAL_PSRAM_BALANCE;
+        ESP_LOGI(TAG, "AFE mem_mode=%d largest_internal=%u", (int)afe_config->memory_alloc_mode,
+                 (unsigned)largest);
+    }
 #else
     afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
 #endif
 
-    ESP_LOGI(TAG, "Before AFE create: free=%u min=%u largest=%u",
+    ESP_LOGI(TAG, "Before AFE create: free=%u min=%u largest=%u aec_init=%d",
              heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
-             heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+             heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), afe_config->aec_init ? 1 : 0);
     afe_iface_ = esp_afe_handle_from_config(afe_config);
     if (afe_iface_ != nullptr) {
         afe_data_ = afe_iface_->create_from_config(afe_config);
@@ -280,7 +295,7 @@ void AfeAudioEngine::Feed(std::vector<int16_t>&& data) {
     if ((bits & kVoiceProcessingEnabled) && !kUseAfeForVoiceProcessing) {
         OutputRawAudio(data);
     }
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
     /* 点歌时默认丢麦帧，避免 FEED 抢核导致开声卡顿；播中已武装唤醒则必须继续喂，
      * 否则 EnableWakeWord 只是假开（log 有 armed 但永远检不到）。 */
     if (nodelio_media_is_playing() && (bits & kWakeWordEnabled) == 0) {
@@ -430,18 +445,32 @@ void AfeAudioEngine::UpdateAecState() {
 }
 
 void AfeAudioEngine::ApplyAfeControls() {
+    if (afe_iface_ == nullptr || afe_data_ == nullptr) {
+        return;
+    }
+    /* enable/disable 与 Feed 并发会踩坏 AFE 内部缓冲（P4 表现为 Load/Store fault） */
+    std::lock_guard<std::mutex> lock(input_buffer_mutex_);
     EventBits_t bits = xEventGroupGetBits(event_group_);
     if (wake_detector_ == WakeDetector::kWakeNet) {
-        if (bits & kWakeWordEnabled) {
-            afe_iface_->enable_wakenet(afe_data_);
-        } else {
-            afe_iface_->disable_wakenet(afe_data_);
+        static bool last_wn = false;
+        const bool want_wn = (bits & kWakeWordEnabled) != 0;
+        if (want_wn != last_wn) {
+            if (want_wn) {
+                afe_iface_->enable_wakenet(afe_data_);
+            } else {
+                afe_iface_->disable_wakenet(afe_data_);
+            }
+            last_wn = want_wn;
         }
     }
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62 && CONFIG_NODELIO_PANEL
+    /* aec_init=false：管道无 AEC，勿反复 enable/disable */
+    (void)bits;
+#else
     if (codec_->input_reference()) {
         /* 通话全双工要 AEC；唤醒态仅在扬声器开着时开，避免空闲 NLP 占满 CPU0。
-         * HTTP 音乐也算 output on，但 AEC3 会把 CPU0 占满超过 10s，IDLE0 看门狗复位。 */
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+         * HTTP 音乐也算 output on，但 AEC3 会把 CPU0 占满超过 10s。 */
+#if CONFIG_NODELIO_PANEL && CONFIG_BOARD_TYPE_SILA_86
         const bool media_playing = nodelio_media_is_playing();
 #else
         const bool media_playing = false;
@@ -449,20 +478,17 @@ void AfeAudioEngine::ApplyAfeControls() {
         const bool enable_aec =
             !media_playing && ((device_aec_enabled_.load() && (bits & kVoiceProcessingEnabled)) ||
                                ((bits & kWakeWordEnabled) && codec_->output_enabled()));
-        if (enable_aec) {
-            afe_iface_->enable_aec(afe_data_);
-        } else {
-            afe_iface_->disable_aec(afe_data_);
+        static bool last_aec = false;
+        if (enable_aec != last_aec) {
+            if (enable_aec) {
+                afe_iface_->enable_aec(afe_data_);
+            } else {
+                afe_iface_->disable_aec(afe_data_);
+            }
+            last_aec = enable_aec;
         }
-#if CONFIG_BOARD_TYPE_SILA_P4C5_62 && CONFIG_NODELIO_PANEL
-        const bool playing = nodelio_media_is_playing();
-        ESP_LOGI(TAG,
-                 "afe ctrl aec=%d wake=%d voice=%d out=%d media_gate=%d playing=%d device_aec=%d",
-                 enable_aec ? 1 : 0, (bits & kWakeWordEnabled) ? 1 : 0,
-                 (bits & kVoiceProcessingEnabled) ? 1 : 0, codec_->output_enabled() ? 1 : 0,
-                 media_playing ? 1 : 0, playing ? 1 : 0, device_aec_enabled_.load() ? 1 : 0);
-#endif
     }
+#endif
 }
 
 void AfeAudioEngine::ApplyPendingReset() {
@@ -492,7 +518,7 @@ void AfeAudioEngine::ProcessingTask() {
                 afe_control_dirty_ = true;
             }
         }
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
         static bool last_media_playing = false;
         const bool media_playing = nodelio_media_is_playing();
         if (media_playing != last_media_playing) {

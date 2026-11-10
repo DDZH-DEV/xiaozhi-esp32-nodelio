@@ -1689,6 +1689,12 @@ static void strip_open_app_query(char *s)
     }
 }
 
+extern "C" void nodelio_panel_ui_refresh_weather(void)
+{
+    Board::GetInstance().NoteUserActivity();
+    Application::GetInstance().Schedule([]() { nl_ov_apps_refresh_daily(); });
+}
+
 extern "C" bool nodelio_panel_ui_open_app(const char *name_or_id)
 {
     if (!name_or_id || !name_or_id[0]) {
@@ -1715,8 +1721,12 @@ extern "C" bool nodelio_panel_ui_open_app(const char *name_or_id)
             return;
         }
         /* 先确认打得开。没有这个应用就留在会话里，方便接着说。
-         * 媒体须退会话才能 HTTP 播，但要在确认能打开之后、真正 invoke 之前。 */
-        const bool keep_listen = nodelio_offline_query_keeps_listening(q);
+         * 媒体须退会话才能 HTTP 播，但要在确认能打开之后、真正 invoke 之前。
+         * 天气/空气：问「怎么样」时 keep_cloud=1，云端已在 TTS；此处若按短名「天气」
+         * 误判 keep_listen=0 会掐通道，听感就是「开了卡却没播报」。 */
+        const bool weather_like = strstr(q, "天气") != nullptr || strstr(q, "空气") != nullptr ||
+                                  strstr(q, "日历") != nullptr;
+        const bool keep_listen = weather_like || nodelio_offline_query_keeps_listening(q);
         bool found = false;
         {
             DisplayLockGuard lock(nl_ov_disp());

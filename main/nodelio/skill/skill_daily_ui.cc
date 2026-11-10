@@ -9,6 +9,12 @@ static int s_daily_month;
 static int s_daily_date_key;
 static int s_daily_focus; /* 年月日，0 表示停在月历 */
 
+/** 当日天气 RAM 缓存：打开时先上屏，再后台刷新。 */
+static bool s_wx_cache_ok;
+static int s_wx_cache_day; /* YYYYMMDD */
+static nl_env_daily_t s_wx_cache_daily;
+static char s_wx_cache_spoken[NL_ENV_SPOKEN];
+
 /** 月历圆点：当前查看年月的有提醒日期（bit d = 日 d）。 */
 static uint32_t s_rem_day_bits;
 static int s_rem_bits_year;
@@ -1315,6 +1321,28 @@ static uint32_t daily_bump_generation(void) {
     return s_daily_generation;
 }
 
+static int daily_today_key(void) {
+    struct tm today{};
+    if (!daily_today(&today)) {
+        return 0;
+    }
+    return (today.tm_year + 1900) * 10000 + (today.tm_mon + 1) * 100 + today.tm_mday;
+}
+
+static void daily_cache_store(const nl_content_envelope_t* env) {
+    if (!env || env->daily.temperature[0] == '\0') {
+        return;
+    }
+    const int day = daily_today_key();
+    if (!day) {
+        return;
+    }
+    s_wx_cache_daily = env->daily;
+    snprintf(s_wx_cache_spoken, sizeof(s_wx_cache_spoken), "%s", env->spoken);
+    s_wx_cache_day = day;
+    s_wx_cache_ok = true;
+}
+
 static nl_content_envelope_t* daily_shell_env(void) {
     auto* env = static_cast<nl_content_envelope_t*>(
         heap_caps_calloc(1, sizeof(nl_content_envelope_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -1326,7 +1354,15 @@ static nl_content_envelope_t* daily_shell_env(void) {
     snprintf(env->app_id, sizeof(env->app_id), "builtin.daily");
     snprintf(env->card_type, sizeof(env->card_type), "calendar_weather");
     snprintf(env->display_title, sizeof(env->display_title), "日历与天气");
-    snprintf(env->daily.message, sizeof(env->daily.message), "尚未获取天气，可联网后点击刷新");
+    const int day = daily_today_key();
+    if (s_wx_cache_ok && day && s_wx_cache_day == day) {
+        env->daily = s_wx_cache_daily;
+        if (s_wx_cache_spoken[0]) {
+            snprintf(env->spoken, sizeof(env->spoken), "%s", s_wx_cache_spoken);
+        }
+    } else {
+        snprintf(env->daily.message, sizeof(env->daily.message), "尚未获取天气，可联网后点击刷新");
+    }
     return env;
 }
 
@@ -1391,6 +1427,7 @@ void nodelio_skill_daily_update(const nodelio_nvs_config_t* cfg, nl_content_enve
         free_owned_env(env);
         return;
     }
+    daily_cache_store(env);
     const int scroll_y = s_card_list ? lv_obj_get_scroll_y(s_card_list) : 0;
     nodelio_skill_result_show(cfg, env, false);
     if (s_card_list && scroll_y > 0) {

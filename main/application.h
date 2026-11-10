@@ -134,7 +134,7 @@ public:
     void MarkTransportSuspended(bool suspended);
     void SendMcpMessage(const std::string& payload);
     void RegisterMcpBroadcastCallback(std::function<void(const std::string&)> callback);
-    void SetAecMode(AecMode mode);
+    void SetAecMode(AecMode mode, bool notify = true);
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }

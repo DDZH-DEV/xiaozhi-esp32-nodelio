@@ -9,6 +9,7 @@
 #include "ui_theme.h"
 #include "ui_widgets.h"
 
+#include "board_info.h"
 #include "jpg/jpeg_to_image.h"
 
 #include <esp_heap_caps.h>
@@ -21,6 +22,7 @@
 namespace {
 
 constexpr size_t kJpegCap = 512 * 1024;
+constexpr size_t kRgbMaxBytes = 512 * 1024;
 
 struct PhotoUi {
     lv_obj_t *root = nullptr;
@@ -88,6 +90,10 @@ void apply_rgb(uint8_t *rgb, size_t rgb_len, size_t w, size_t h, size_t stride, 
     s_ui.dsc.data_size = static_cast<uint32_t>(rgb_len);
     s_ui.dsc.data = rgb;
     lv_image_set_src(s_ui.img, &s_ui.dsc);
+    lv_image_set_scale(s_ui.img, LV_SCALE_NONE);
+    lv_image_set_inner_align(s_ui.img, LV_IMAGE_ALIGN_TOP_LEFT);
+    lv_obj_set_size(s_ui.img, static_cast<int>(w), static_cast<int>(h));
+    lv_obj_center(s_ui.img);
     char cap[128];
     snprintf(cap, sizeof(cap), "%d / %d  %s", index + 1, nodelio_sd_photo_count(),
              title ? title : "");
@@ -123,7 +129,17 @@ void load_index_worker(void *p)
     size_t rgb_len = 0, w = 0, h = 0, stride = 0;
     esp_err_t err = ESP_FAIL;
     if (jpeg_n > 0) {
-        err = jpeg_to_image(jpeg, jpeg_n, &rgb, &rgb_len, &w, &h, &stride);
+        const auto *profile = nodelio_display_profile();
+        int max_w = profile ? static_cast<int>(profile->width) : 1280;
+        int max_h = profile ? static_cast<int>(profile->height) : 452;
+        if (max_w > 48) {
+            max_w -= 48;
+        }
+        if (max_h > 48) {
+            max_h -= 48;
+        }
+        err = jpeg_to_image_fit(jpeg, jpeg_n, max_w, max_h, kRgbMaxBytes, &rgb, &rgb_len, &w, &h,
+                                &stride);
     }
     heap_caps_free(jpeg);
     char title[96];
@@ -196,6 +212,7 @@ void ensure_shell()
     lv_obj_add_flag(s_ui.root, LV_OBJ_FLAG_CLICKABLE);
 
     s_ui.img = lv_image_create(s_ui.root);
+    lv_image_set_inner_align(s_ui.img, LV_IMAGE_ALIGN_TOP_LEFT);
     lv_obj_center(s_ui.img);
 
     s_ui.caption = lv_label_create(s_ui.root);

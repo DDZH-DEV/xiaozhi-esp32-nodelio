@@ -408,7 +408,9 @@ void AudioService::AudioInputTask() {
             int samples = 160;  // 10ms
             std::vector<int16_t> data;
             if (ReadAudioData(data, 16000, samples)) {
-                audio_engine_->Feed(std::move(data));
+                if (audio_engine_ && audio_engine_initialized_) {
+                    audio_engine_->Feed(std::move(data));
+                }
                 /* taskYIELD 调度不到 IDLE（优先级更低）。播放时重采样会占满 CPU0，
                  * IDLE0 喂不了看门狗，屏会闪。让出 1ms 给 IDLE。 */
                 vTaskDelay(pdMS_TO_TICKS(1));

@@ -236,6 +236,8 @@ python scripts/build.py sila/sila-p4c5-62 --name sila-p4c5-62-32m-render-ppa-ful
 
 ## 显示、音频与任务预算
 
+LVGL / 图片预览约束与优化约定见 [`docs/nodelio-sila-p4c5-lvgl.md`](../../../../docs/nodelio-sila-p4c5-lvgl.md)。
+
 - 物理452×1280，LVGL旋转90°，逻辑1280×452；触摸只交原始物理坐标，由 LVGL 统一旋转。
 - 2-lane DSI / 1000Mbps，DPI 48MHz，RGB888；HBP/HFP/HSW=90/90/10，VBP/VFP/VSW=10/250/50。
   按总时序计算约47Hz；参考宏名称的“60Hz”不是本板实测帧率。

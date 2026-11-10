@@ -3,6 +3,7 @@
 
 #include "content_envelope.h"
 #include "device_caps.h"
+#include "media_player.h"
 #include "panel_ui.h"
 #include "skill_result_ui.h"
 
@@ -44,6 +45,15 @@ bool nodelio_skill_id_is_music(const char *skill_id)
     /* 音频列表类：曲库 / 电台 / 播客（互切不抢占正在播的 HTTP 音频） */
     return strstr(skill_id, "music.search") != NULL || strstr(skill_id, "music_search") != NULL ||
            strstr(skill_id, "radio.stations") != NULL || strstr(skill_id, "podcast.latest") != NULL;
+}
+
+bool nodelio_skill_id_preempts_media(const char *skill_id)
+{
+    if (!skill_id || !skill_id[0]) {
+        return false;
+    }
+    /* 新直播/播客流才停歌；日历/客服/新闻/曲库浏览不停 */
+    return strstr(skill_id, "radio.stations") != NULL || strstr(skill_id, "podcast.latest") != NULL;
 }
 
 void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *json, bool auto_play_first,
@@ -93,10 +103,18 @@ void nodelio_skill_deliver_json(const nodelio_nvs_config_t *cfg, const char *jso
         nodelio_panel_ui_toast_defer(env->error_message[0] ? env->error_message : "技能失败");
     }
 
-    /* env.auto_play：服务端点播/搜歌；auto_play_first：打开曲库强制播（须识别 market::music.search）。 */
+    /* env.auto_play：服务端点播/搜歌；auto_play_first：打开曲库强制播。
+     * 仅 music_list 且首条有 URL 才开播；客服 support_inbox 等也会带 tracks/auto_play，勿误播。 */
     const bool caps = nodelio_caps_has_media();
     const bool ok = strcmp(env->status, "ok") == 0;
-    const bool play = ok && caps && (env->auto_play || auto_play_first);
+    const bool music_card = strcmp(env->card_type, "music_list") == 0;
+    const bool has_url0 = env->track_n > 0 && env->tracks[0].playback_url[0];
+    bool play = ok && caps && music_card && has_url0 && (env->auto_play || auto_play_first);
+    /* 已在播/暂停时仅刷新 music_list（非强制首播）不要 play_at(0) 切歌 */
+    if (play && !auto_play_first &&
+        (nodelio_media_is_playing() || nodelio_media_is_paused())) {
+        play = false;
+    }
     ESP_LOGI(TAG,
              "deliver play=%d env_ap=%d force=%d caps=%d ok=%d card=%s app=%s tracks=%d url0=%d "
              "spoken_wav=%d title=%s",

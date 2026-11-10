@@ -399,6 +399,7 @@ static esp_err_t start_client(void)
     Board::GetInstance().SetIdleWifiSeconds((int)nodelio_idle_wifi_seconds());
     Board::GetInstance().SetPowerSaveEnabled(nodelio_power_save_enabled());
     (void)nodelio_panel_ui_start(&cfg); /* overlay 已可出缓存布局 */
+    nodelio_voice_barge_in_apply(false); /* NVS 覆盖 AEC；勿弹 toast */
     (void)nodelio_media_init();
     ensure_pwr_task();
 

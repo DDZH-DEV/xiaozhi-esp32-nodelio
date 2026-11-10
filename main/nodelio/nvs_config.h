@@ -28,6 +28,7 @@ typedef struct {
     uint8_t brightness; /* 1–100；0=未设置用板级默认 */
     uint8_t volume;     /* 0–100；助手音频启用后生效 */
     uint8_t xiaozhi_en; /* 1=启用小智云对话（默认）；0=关闭 */
+    uint8_t voice_barge_in; /* 1=说话中免唤醒词打断（服务端 AEC+realtime）；默认 0 */
     uint8_t local_cmd_en; /* 已废弃：固件不再编 MultiNet，读写恒为 0 */
     uint8_t power_save_en; /* 1=允许空闲断网（默认）；0=不断 WiFi；息屏仍走 idle_sleep */
     uint8_t wake_on_sleep; /* 1=息屏保留语音唤醒；0=息屏停麦克风与唤醒词（省电默认） */
@@ -127,6 +128,11 @@ bool nodelio_nvs_has_wifi(const nodelio_nvs_config_t *cfg);
 /** 小智云对话开关；读 RAM 镜像，缺省开启。 */
 bool nodelio_xiaozhi_enabled(void);
 esp_err_t nodelio_xiaozhi_set_enabled(bool on);
+/** 免唤醒词语音打断；读 RAM 镜像，缺省关闭。 */
+bool nodelio_voice_barge_in_enabled(void);
+esp_err_t nodelio_voice_barge_in_set_enabled(bool on);
+/** 按 NVS 把 Application AEC 模式同步为 ServerSide/Off（可静默）。 */
+void nodelio_voice_barge_in_apply(bool notify);
 /** 本地 MultiNet 口令；读 RAM 镜像，缺省关闭（不占片内 DRAM）。 */
 bool nodelio_local_cmd_enabled(void);
 esp_err_t nodelio_local_cmd_set_enabled(bool on);

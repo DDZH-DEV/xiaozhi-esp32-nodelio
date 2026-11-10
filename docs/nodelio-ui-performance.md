@@ -72,6 +72,7 @@ worker 栈固定为 **16384 字节 PSRAM**。ESP-IDF 的创建接口使用字节
 - 共用息屏：`NODELIO_UI_IDLE_REFRESH_MS` 默认 200ms，适用于 P4 和 S3 播放息屏，
   唤醒恢复共用活动周期。P4 保留现有 RGB888、
   分块双缓冲与 PPA 输出旋转。PPA 填充/全屏缓冲沿用已有实验开关与板级变体，未强行开启。
+- P4 显示/预览专项（绑核、JPEG fit、禁止 STRETCH、硬解边界）：见 [nodelio-sila-p4c5-lvgl.md](nodelio-sila-p4c5-lvgl.md)。
 - 未改 LCD 时序、引脚、板型身份、AES 策略、ES8389、DMA 归属或语音服务。
 
 以上是代码默认值与可对照配置，尚无两块板的帧时、端到端延迟或电流测量，不能推断实际收益。

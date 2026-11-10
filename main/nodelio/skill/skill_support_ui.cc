@@ -6,10 +6,10 @@
 #include "nodelio_http.h"
 #include "overlay_priv.h"
 #include "panel_jobs.h"
+#include "jpg/jpeg_to_image.h"
 #include "ui_image_preview.h"
 
 #include <esp_heap_caps.h>
-#include <esp_jpeg_dec.h>
 #include <esp_log.h>
 
 #include <cstdint>
@@ -331,85 +331,17 @@ bool caption_is_placeholder(const char *text)
 uint8_t *decode_jpeg_fit(const uint8_t *src, size_t src_len, int max_w, int max_h, size_t max_bytes,
                          uint32_t *ow, uint32_t *oh, uint32_t *ostride, size_t *olen)
 {
-    if (!src || src_len < 4 || src[0] != 0xFF || src[1] != 0xD8 || max_w < 8 || max_h < 8 ||
-        max_bytes < 64) {
+    uint8_t *rgb = nullptr;
+    size_t rgb_len = 0, w = 0, h = 0, stride = 0;
+    if (jpeg_to_image_fit(src, src_len, max_w, max_h, max_bytes, &rgb, &rgb_len, &w, &h, &stride) !=
+        ESP_OK) {
         return nullptr;
     }
-    jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
-    config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
-    jpeg_dec_handle_t dec = nullptr;
-    if (jpeg_dec_open(&config, &dec) != JPEG_ERR_OK) {
-        return nullptr;
-    }
-    jpeg_dec_io_t io{};
-    io.inbuf = const_cast<uint8_t *>(src);
-    io.inbuf_len = static_cast<int>(src_len);
-    jpeg_dec_header_info_t info{};
-    if (jpeg_dec_parse_header(dec, &io, &info) != JPEG_ERR_OK || info.width < 8 || info.height < 8) {
-        jpeg_dec_close(dec);
-        return nullptr;
-    }
-    int tw = info.width;
-    int th = info.height;
-    const int min_w = info.width / 8 >= 8 ? info.width / 8 : 8;
-    const int min_h = info.height / 8 >= 8 ? info.height / 8 : 8;
-    jpeg_dec_close(dec);
-    while (((tw > max_w || th > max_h) ||
-            (static_cast<size_t>(tw) * static_cast<size_t>(th) * 2 > max_bytes)) &&
-           (tw / 2 >= min_w && th / 2 >= min_h)) {
-        tw /= 2;
-        th /= 2;
-    }
-    if (tw < min_w) {
-        tw = min_w;
-    }
-    if (th < min_h) {
-        th = min_h;
-    }
-    tw = (tw / 8) * 8;
-    th = (th / 8) * 8;
-    if (tw < 8) {
-        tw = 8;
-    }
-    if (th < 8) {
-        th = 8;
-    }
-    const size_t bytes = static_cast<size_t>(tw) * static_cast<size_t>(th) * 2;
-    if (bytes > max_bytes) {
-        return nullptr;
-    }
-    config.scale.width = tw;
-    config.scale.height = th;
-    if (jpeg_dec_open(&config, &dec) != JPEG_ERR_OK) {
-        return nullptr;
-    }
-    io.inbuf = const_cast<uint8_t *>(src);
-    io.inbuf_len = static_cast<int>(src_len);
-    if (jpeg_dec_parse_header(dec, &io, &info) != JPEG_ERR_OK) {
-        jpeg_dec_close(dec);
-        return nullptr;
-    }
-    uint8_t *out = static_cast<uint8_t *>(
-        heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!out) {
-        out = static_cast<uint8_t *>(heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_8BIT));
-    }
-    if (!out) {
-        jpeg_dec_close(dec);
-        return nullptr;
-    }
-    io.outbuf = out;
-    if (jpeg_dec_process(dec, &io) != JPEG_ERR_OK) {
-        heap_caps_free(out);
-        jpeg_dec_close(dec);
-        return nullptr;
-    }
-    jpeg_dec_close(dec);
-    *ow = static_cast<uint32_t>(tw);
-    *oh = static_cast<uint32_t>(th);
-    *ostride = static_cast<uint32_t>(tw * 2);
-    *olen = bytes;
-    return out;
+    *ow = static_cast<uint32_t>(w);
+    *oh = static_cast<uint32_t>(h);
+    *ostride = static_cast<uint32_t>(stride);
+    *olen = rgb_len;
+    return rgb;
 }
 
 void img_job_run(void *p)
@@ -486,9 +418,7 @@ void preview_job_run(void *p)
         heap_caps_malloc(kJpegCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     size_t jpeg_n = 0;
     int status = 0;
-    uint8_t *rgb = nullptr;
-    uint32_t w = 0, h = 0, stride = 0;
-    size_t rgb_len = 0;
+    bool ok = false;
     if (jpeg) {
         char fetch_url[512];
         const char *key = nullptr;
@@ -499,30 +429,23 @@ void preview_job_run(void *p)
             ESP_LOGW("support", "preview url unresolvable: %s", job->url);
         }
         if (err == ESP_OK && status == 200 && jpeg_n > 0) {
-            rgb = decode_jpeg_fit(jpeg, jpeg_n, job->max_w, job->max_h, kPreviewMaxBytes, &w, &h, &stride,
-                                  &rgb_len);
+            /* set_jpeg takes ownership of jpeg (lock-free decode). */
+            ok = nl_ui_image_preview_set_jpeg(job->gen, jpeg, jpeg_n, kPreviewMaxBytes);
+            jpeg = nullptr;
         } else {
-            ESP_LOGW("support", "preview fetch status=%d err=%d n=%u", status, (int)err, (unsigned)jpeg_n);
+            ESP_LOGW("support", "preview fetch status=%d err=%d n=%u", status, (int)err,
+                     (unsigned)jpeg_n);
         }
     }
     if (jpeg) {
         heap_caps_free(jpeg);
     }
-
-    DisplayLockGuard lock(nl_ov_disp());
-    if (!lock) {
-        if (rgb) {
-            heap_caps_free(rgb);
+    if (!ok) {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            nl_ui_image_preview_fail(job->gen, "无法预览");
         }
-        delete job;
-        return;
     }
-    if (!rgb) {
-        nl_ui_image_preview_fail(job->gen, "无法预览");
-        delete job;
-        return;
-    }
-    (void)nl_ui_image_preview_set_rgb565(job->gen, rgb, w, h, stride, rgb_len);
     delete job;
 }
 
@@ -1023,7 +946,9 @@ void fill_support_nav(void)
     }
     ensure_release_chip();
     lv_obj_clean(s_support_nav);
-    if (s_filter_bar) {
+    /* support_inbox 顶栏应用筛选靠 display.filters；仅气泡页藏掉 filter 条。 */
+    if (s_filter_bar && s_env->card_type[0] &&
+        strcmp(s_env->card_type, "support_inbox") != 0) {
         lv_obj_add_flag(s_filter_bar, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_height(s_filter_bar, 0);
     }

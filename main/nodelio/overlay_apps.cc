@@ -204,7 +204,7 @@ static void apps_split_failed(void)
     });
 }
 
-static void open_app_at(int idx, bool reset_daily = true) {
+static void open_app_at(int idx, bool reset_daily = true, bool force_weather_refresh = false) {
     if (idx < 0 || idx >= s_item_n) {
         return;
     }
@@ -224,6 +224,15 @@ static void open_app_at(int idx, bool reset_daily = true) {
             render_list();
         }
         nodelio_skill_request_sd_library(false);
+        return;
+    }
+    /* 播歌中再点曲库：恢复列表，勿重新 invoke（会换一批并误切歌） */
+    if (nodelio_skill_id_is_music(s_items[idx].id) &&
+        (nodelio_media_is_playing() || nodelio_media_is_paused()) &&
+        nodelio_skill_try_reopen_music_list()) {
+        if (apps_wide() && s_split) {
+            render_list();
+        }
         return;
     }
     const bool daily = strcmp(s_items[idx].id, "builtin.daily") == 0;
@@ -260,6 +269,7 @@ static void open_app_at(int idx, bool reset_daily = true) {
         nodelio_nvs_config_t *cfg;
         char id[72];
         uint32_t daily_generation;
+        bool force_weather_refresh;
     };
     auto *arg = static_cast<invoke_arg *>(malloc(sizeof(invoke_arg)));
     if (!arg) {
@@ -271,8 +281,9 @@ static void open_app_at(int idx, bool reset_daily = true) {
     }
     arg->cfg = cfgp;
     arg->daily_generation = daily_generation;
+    arg->force_weather_refresh = daily && force_weather_refresh;
     snprintf(arg->id, sizeof(arg->id), "%s", s_items[idx].id);
-    nl_ov_toast("正在打开…");
+    nl_ov_toast(daily && force_weather_refresh ? "正在刷新天气…" : "正在打开…");
     if (daily)
         s_daily_loading = true;
     if (!nodelio::SubmitPanelJob(
@@ -288,7 +299,9 @@ static void open_app_at(int idx, bool reset_daily = true) {
                             Application::GetInstance().EndVoiceSessionAfterLocalSkill();
                         }
                     });
-                } else if (!a->daily_generation && nodelio_media_preempt_for_heavy_app()) {
+                } else if (!a->daily_generation && nodelio_skill_id_preempts_media(a->id) &&
+                           nodelio_media_preempt_for_heavy_app()) {
+                    nodelio_skill_clear_music_stash();
                     nodelio_panel_ui_toast_defer("已停止音乐以打开应用");
                 }
                 char base[160];
@@ -308,8 +321,10 @@ static void open_app_at(int idx, bool reset_daily = true) {
                 } else {
                     resp[0] = '\0';
                     int status = 0;
+                    const char *body =
+                        a->force_weather_refresh ? "{\"refresh\":true}" : "{\"keyword\":\"\"}";
                     esp_err_t err = nodelio_http_post_json_ms(
-                        url, a->cfg->device_key, "{\"keyword\":\"\"}", &status, resp, cap - 1,
+                        url, a->cfg->device_key, body, &status, resp, cap - 1,
                         a->daily_generation ? 16000 : 10000);
                     if (err == ESP_OK && resp[0] &&
                         (status == 200 || status == 201 ||
@@ -324,9 +339,19 @@ static void open_app_at(int idx, bool reset_daily = true) {
                                 strcmp(env->card_type, "calendar_weather") == 0) {
                                 const uint32_t generation = a->daily_generation;
                                 const auto cfg = *a->cfg;
+                                char spoken[NL_ENV_SPOKEN];
+                                spoken[0] = '\0';
+                                if (env->spoken[0]) {
+                                    snprintf(spoken, sizeof(spoken), "%s", env->spoken);
+                                }
                                 Application::GetInstance().Schedule([env, generation, cfg]() {
                                     nodelio_skill_daily_update(&cfg, env, generation);
                                 });
+                                /* 问天气时通道应仍开着（open_app 不再误掐），云端 TTS 继续念；
+                                 * 这里把服务端 spoken 再 toast/字幕一次，方便核对 API 结果。 */
+                                if (spoken[0]) {
+                                    nodelio_panel_ui_announce_spoken(spoken);
+                                }
                                 ok = true;
                             } else {
                                 if (env)
@@ -383,7 +408,7 @@ static void open_app_at(int idx, bool reset_daily = true) {
 void nl_ov_apps_refresh_daily(void) {
     for (int i = 0; i < s_item_n; ++i) {
         if (strcmp(s_items[i].id, "builtin.daily") == 0) {
-            open_app_at(i, false);
+            open_app_at(i, false, true);
             return;
         }
     }

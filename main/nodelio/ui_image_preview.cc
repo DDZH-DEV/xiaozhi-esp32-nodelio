@@ -3,7 +3,9 @@
 #include "board.h"
 #include "board_info.h"
 #include "display.h"
+#include "jpg/jpeg_to_image.h"
 #include "overlay_priv.h"
+#include "panel_jobs.h"
 #include "panel_ui.h"
 #include "ui_theme.h"
 #include "ui_widgets.h"
@@ -19,6 +21,7 @@ constexpr int kZoomMax = 768;  /* 300% */
 constexpr int kZoomStep = 64;
 constexpr int kSideBtnW = 72;
 constexpr int kSideBtnH = 44;
+constexpr size_t kDefaultMaxRgb = 512 * 1024;
 
 struct State {
     lv_obj_t *root = nullptr;
@@ -29,53 +32,60 @@ struct State {
     lv_obj_t *hint = nullptr;
     lv_obj_t *zoom_lbl = nullptr;
     uint8_t *rgb = nullptr;
+    uint8_t *jpeg = nullptr;
+    size_t jpeg_len = 0;
+    size_t max_rgb_bytes = kDefaultMaxRgb;
     lv_image_dsc_t dsc{};
     uint32_t gen = 1;
     int zoom = LV_SCALE_NONE;
     int view_w = 0;
     int view_h = 0;
+    /** 100% 时 fit 后的显示尺寸；缩放相对它，不是相对整屏视口。 */
+    int base_w = 0;
+    int base_h = 0;
     bool allow_zoom = false;
+    bool redecode_busy = false;
 };
 
 State s{};
 
-int fit_zoom()
+void free_jpeg()
 {
-    const int bw = static_cast<int>(s.dsc.header.w);
-    const int bh = static_cast<int>(s.dsc.header.h);
-    if (bw < 1 || bh < 1 || s.view_w < 8 || s.view_h < 8) {
-        return LV_SCALE_NONE;
+    if (s.jpeg) {
+        heap_caps_free(s.jpeg);
+        s.jpeg = nullptr;
     }
-    const int zx = (s.view_w * 256) / bw;
-    const int zy = (s.view_h * 256) / bh;
-    int z = zx < zy ? zx : zy;
-    if (z < kZoomMin) {
-        z = kZoomMin;
-    }
-    if (z > kZoomMax) {
-        z = kZoomMax;
-    }
-    return z;
+    s.jpeg_len = 0;
 }
 
-void apply_zoom()
+void free_rgb()
+{
+    if (s.rgb) {
+        heap_caps_free(s.rgb);
+        s.rgb = nullptr;
+    }
+    memset(&s.dsc, 0, sizeof(s.dsc));
+}
+
+void update_zoom_label()
+{
+    if (s.zoom_lbl && lv_obj_is_valid(s.zoom_lbl)) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d%%", (s.zoom * 100 + 128) / 256);
+        lv_label_set_text(s.zoom_lbl, buf);
+    }
+}
+
+void place_image_1x1(uint32_t w, uint32_t h)
 {
     if (!s.img || !lv_obj_is_valid(s.img) || !s.dsc.data) {
         return;
     }
-    if (s.zoom < kZoomMin) {
-        s.zoom = kZoomMin;
-    }
-    if (s.zoom > kZoomMax) {
-        s.zoom = kZoomMax;
-    }
-    const int bw = static_cast<int>(s.dsc.header.w);
-    const int bh = static_cast<int>(s.dsc.header.h);
-    const int dw = (bw * s.zoom + 128) / 256;
-    const int dh = (bh * s.zoom + 128) / 256;
     lv_image_set_scale(s.img, LV_SCALE_NONE);
-    lv_image_set_inner_align(s.img, LV_IMAGE_ALIGN_STRETCH);
-    lv_obj_set_size(s.img, dw > 1 ? dw : 1, dh > 1 ? dh : 1);
+    lv_image_set_inner_align(s.img, LV_IMAGE_ALIGN_TOP_LEFT);
+    const int dw = static_cast<int>(w > 0 ? w : 1);
+    const int dh = static_cast<int>(h > 0 ? h : 1);
+    lv_obj_set_size(s.img, dw, dh);
     int x = 0;
     int y = 0;
     if (dw < s.view_w) {
@@ -85,25 +95,180 @@ void apply_zoom()
         y = (s.view_h - dh) / 2;
     }
     lv_obj_set_pos(s.img, x, y);
-    if (s.zoom_lbl && lv_obj_is_valid(s.zoom_lbl)) {
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%d%%", (s.zoom * 100 + 128) / 256);
-        lv_label_set_text(s.zoom_lbl, buf);
-    }
+    update_zoom_label();
     if (s.viewport && lv_obj_is_valid(s.viewport)) {
         lv_obj_scroll_to(s.viewport, 0, 0, LV_ANIM_OFF);
         lv_obj_update_layout(s.viewport);
     }
 }
 
-void zoom_by(int delta)
+bool apply_rgb_locked(uint8_t *rgb, uint32_t w, uint32_t h, uint32_t stride, size_t data_size)
 {
-    Board::GetInstance().NoteUserActivity();
-    if (!s.allow_zoom || !s.dsc.data) {
+    if (!rgb || w < 1 || h < 1 || !s.root || !s.img || !lv_obj_is_valid(s.img)) {
+        if (rgb) {
+            heap_caps_free(rgb);
+        }
+        return false;
+    }
+    free_rgb();
+    s.rgb = rgb;
+    s.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    s.dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+    s.dsc.header.w = w;
+    s.dsc.header.h = h;
+    s.dsc.header.stride = stride ? stride : (w * 2);
+    s.dsc.data_size = static_cast<uint32_t>(data_size);
+    s.dsc.data = rgb;
+    lv_image_set_src(s.img, &s.dsc);
+    lv_obj_clear_flag(s.img, LV_OBJ_FLAG_HIDDEN);
+    place_image_1x1(w, h);
+    if (s.hint && lv_obj_is_valid(s.hint)) {
+        lv_obj_add_flag(s.hint, LV_OBJ_FLAG_HIDDEN);
+    }
+    return true;
+}
+
+void decode_target_size(int *max_w, int *max_h)
+{
+    /* 有 base 时相对图本身缩放；尚未上图时用视口（初次 fit）。 */
+    const int bw = s.base_w > 0 ? s.base_w : s.view_w;
+    const int bh = s.base_h > 0 ? s.base_h : s.view_h;
+    int zw = (bw * s.zoom + 128) / 256;
+    int zh = (bh * s.zoom + 128) / 256;
+    if (zw < 8) {
+        zw = 8;
+    }
+    if (zh < 8) {
+        zh = 8;
+    }
+    *max_w = zw;
+    *max_h = zh;
+}
+
+/** Nearest-neighbor upscale RGB565 once (not per-frame STRETCH). */
+uint8_t *scale_rgb565_nn(const uint8_t *src, size_t src_w, size_t src_h, size_t src_stride,
+                         size_t dst_w, size_t dst_h, size_t *out_len)
+{
+    if (!src || src_w < 1 || src_h < 1 || dst_w < 1 || dst_h < 1 || !out_len) {
+        return nullptr;
+    }
+    if (src_stride < src_w * 2) {
+        src_stride = src_w * 2;
+    }
+    const size_t bytes = dst_w * dst_h * 2;
+    uint8_t *dst = static_cast<uint8_t *>(
+        heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!dst) {
+        dst = static_cast<uint8_t *>(heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_8BIT));
+    }
+    if (!dst) {
+        return nullptr;
+    }
+    for (size_t y = 0; y < dst_h; ++y) {
+        const size_t sy = (y * src_h) / dst_h;
+        const uint8_t *row = src + sy * src_stride;
+        uint8_t *out = dst + y * dst_w * 2;
+        for (size_t x = 0; x < dst_w; ++x) {
+            const size_t sx = (x * src_w) / dst_w;
+            const uint8_t *px = row + sx * 2;
+            out[x * 2] = px[0];
+            out[x * 2 + 1] = px[1];
+        }
+    }
+    *out_len = bytes;
+    return dst;
+}
+
+/**
+ * Decode JPEG fitted to max_w/max_h; if still smaller than target, one-shot upscale
+ * so zoom-in past native/fit size still has visible effect.
+ */
+bool decode_jpeg_for_zoom(const uint8_t *jpeg, size_t jpeg_len, int target_w, int target_h,
+                          size_t max_rgb_bytes, uint8_t **out_rgb, size_t *out_len, size_t *out_w,
+                          size_t *out_h, size_t *out_stride)
+{
+    if (!jpeg || jpeg_len == 0 || !out_rgb || !out_len || !out_w || !out_h || !out_stride) {
+        return false;
+    }
+    if (target_w < 8) {
+        target_w = 8;
+    }
+    if (target_h < 8) {
+        target_h = 8;
+    }
+    uint8_t *rgb = nullptr;
+    size_t rgb_len = 0, w = 0, h = 0, stride = 0;
+    if (jpeg_to_image_fit(jpeg, jpeg_len, target_w, target_h, max_rgb_bytes, &rgb, &rgb_len, &w, &h,
+                          &stride) != ESP_OK ||
+        !rgb) {
+        return false;
+    }
+    const size_t tw = static_cast<size_t>(target_w);
+    const size_t th = static_cast<size_t>(target_h);
+    /* 源图不够大时一次性放大到目标；目标已是 base×zoom，勿再撑满视口。 */
+    if (w < tw || h < th) {
+        size_t up_len = 0;
+        uint8_t *up = scale_rgb565_nn(rgb, w, h, stride, tw, th, &up_len);
+        heap_caps_free(rgb);
+        if (!up) {
+            return false;
+        }
+        rgb = up;
+        rgb_len = up_len;
+        w = tw;
+        h = th;
+        stride = tw * 2;
+    }
+    *out_rgb = rgb;
+    *out_len = rgb_len;
+    *out_w = w;
+    *out_h = h;
+    *out_stride = stride;
+    return true;
+}
+
+struct RedecodeJob {
+    uint32_t gen = 0;
+    int zoom = LV_SCALE_NONE;
+    int max_w = 8;
+    int max_h = 8;
+    uint8_t *jpeg = nullptr;
+    size_t jpeg_len = 0;
+    size_t max_rgb_bytes = kDefaultMaxRgb;
+};
+
+void redecode_job_run(void *p)
+{
+    auto *job = static_cast<RedecodeJob *>(p);
+    uint8_t *rgb = nullptr;
+    size_t rgb_len = 0, w = 0, h = 0, stride = 0;
+    if (job->jpeg && job->jpeg_len > 0) {
+        (void)decode_jpeg_for_zoom(job->jpeg, job->jpeg_len, job->max_w, job->max_h,
+                                   job->max_rgb_bytes, &rgb, &rgb_len, &w, &h, &stride);
+    }
+
+    DisplayLockGuard lock(nl_ov_disp());
+    s.redecode_busy = false;
+    if (!lock || job->gen != s.gen) {
+        if (rgb) {
+            heap_caps_free(rgb);
+        }
+        if (job->jpeg) {
+            heap_caps_free(job->jpeg);
+        }
+        delete job;
         return;
     }
-    s.zoom += delta;
-    apply_zoom();
+    s.zoom = job->zoom;
+    if (rgb) {
+        (void)apply_rgb_locked(rgb, static_cast<uint32_t>(w), static_cast<uint32_t>(h),
+                               static_cast<uint32_t>(stride), rgb_len);
+    }
+    update_zoom_label();
+    if (job->jpeg) {
+        heap_caps_free(job->jpeg);
+    }
+    delete job;
 }
 
 void raise_controls()
@@ -131,6 +296,69 @@ void style_close_btn(lv_obj_t *btn)
     }
 }
 
+void zoom_by(int delta)
+{
+    Board::GetInstance().NoteUserActivity();
+    if (!s.allow_zoom || s.redecode_busy) {
+        return;
+    }
+    if (!s.jpeg || s.jpeg_len == 0) {
+        nl_ov_toast("无法缩放");
+        return;
+    }
+    int next = s.zoom + delta;
+    if (next < kZoomMin) {
+        next = kZoomMin;
+    }
+    if (next > kZoomMax) {
+        next = kZoomMax;
+    }
+    if (next == s.zoom) {
+        return;
+    }
+
+    const int prev_zoom = s.zoom;
+    s.zoom = next;
+    int max_w = 8;
+    int max_h = 8;
+    decode_target_size(&max_w, &max_h);
+    s.zoom = prev_zoom;
+
+    auto *job = new RedecodeJob();
+    job->gen = s.gen;
+    job->zoom = next;
+    job->max_w = max_w;
+    job->max_h = max_h;
+    job->max_rgb_bytes = s.max_rgb_bytes;
+    job->jpeg = static_cast<uint8_t *>(
+        heap_caps_malloc(s.jpeg_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!job->jpeg) {
+        delete job;
+        return;
+    }
+    memcpy(job->jpeg, s.jpeg, s.jpeg_len);
+    job->jpeg_len = s.jpeg_len;
+    s.redecode_busy = true;
+    s.zoom = next;
+    update_zoom_label();
+    if (!nodelio::SubmitPanelJob(nodelio::PanelJobLane::Interactive, redecode_job_run, job,
+                                 [](void *p) {
+                                     auto *j = static_cast<RedecodeJob *>(p);
+                                     if (j->jpeg) {
+                                         heap_caps_free(j->jpeg);
+                                     }
+                                     delete j;
+                                     s.redecode_busy = false;
+                                 },
+                                 0, "preview_zoom")) {
+        s.redecode_busy = false;
+        s.zoom = prev_zoom;
+        update_zoom_label();
+        heap_caps_free(job->jpeg);
+        delete job;
+    }
+}
+
 }  // namespace
 
 extern "C" void nl_ui_image_preview_hide(void)
@@ -139,12 +367,13 @@ extern "C" void nl_ui_image_preview_hide(void)
     s.zoom = LV_SCALE_NONE;
     s.view_w = 0;
     s.view_h = 0;
+    s.base_w = 0;
+    s.base_h = 0;
     s.allow_zoom = false;
-    if (s.rgb) {
-        heap_caps_free(s.rgb);
-        s.rgb = nullptr;
-    }
-    memset(&s.dsc, 0, sizeof(s.dsc));
+    s.redecode_busy = false;
+    s.max_rgb_bytes = kDefaultMaxRgb;
+    free_rgb();
+    free_jpeg();
     if (s.root) {
         lv_obj_delete(s.root);
         s.root = nullptr;
@@ -214,6 +443,7 @@ extern "C" uint32_t nl_ui_image_preview_open(const nl_ui_image_preview_opts_t *o
     s.allow_zoom = o.allow_zoom;
     s.view_w = box_w;
     s.view_h = box_h;
+    s.zoom = LV_SCALE_NONE;
 
     s.root = lv_obj_create(layer);
     lv_obj_set_size(s.root, box_w, box_h);
@@ -330,33 +560,77 @@ extern "C" uint32_t nl_ui_image_preview_open(const nl_ui_image_preview_opts_t *o
 extern "C" bool nl_ui_image_preview_set_rgb565(uint32_t gen, uint8_t *rgb, uint32_t w, uint32_t h,
                                                uint32_t stride, size_t data_size)
 {
-    if (!rgb || w < 1 || h < 1 || !s.root || !s.img || !lv_obj_is_valid(s.img) || gen != s.gen) {
+    if (!s.root || gen != s.gen) {
         if (rgb) {
             heap_caps_free(rgb);
         }
         return false;
     }
-    if (s.rgb) {
-        heap_caps_free(s.rgb);
+    free_jpeg();
+    const bool ok = apply_rgb_locked(rgb, w, h, stride, data_size);
+    if (ok) {
+        raise_controls();
     }
-    s.rgb = rgb;
-    memset(&s.dsc, 0, sizeof(s.dsc));
-    s.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-    s.dsc.header.cf = LV_COLOR_FORMAT_RGB565;
-    s.dsc.header.w = w;
-    s.dsc.header.h = h;
-    s.dsc.header.stride = stride ? stride : (w * 2);
-    s.dsc.data_size = static_cast<uint32_t>(data_size);
-    s.dsc.data = rgb;
-    lv_image_set_src(s.img, &s.dsc);
-    lv_obj_clear_flag(s.img, LV_OBJ_FLAG_HIDDEN);
-    s.zoom = s.allow_zoom ? fit_zoom() : LV_SCALE_NONE;
-    apply_zoom();
-    if (s.hint && lv_obj_is_valid(s.hint)) {
-        lv_obj_add_flag(s.hint, LV_OBJ_FLAG_HIDDEN);
+    return ok;
+}
+
+extern "C" bool nl_ui_image_preview_set_jpeg(uint32_t gen, uint8_t *jpeg, size_t jpeg_len,
+                                             size_t max_rgb_bytes)
+{
+    if (!jpeg || jpeg_len == 0) {
+        if (jpeg) {
+            heap_caps_free(jpeg);
+        }
+        return false;
     }
-    raise_controls();
-    return true;
+
+    int max_w = 8;
+    int max_h = 8;
+    size_t cap = max_rgb_bytes > 64 ? max_rgb_bytes : kDefaultMaxRgb;
+    {
+        DisplayLockGuard lock(nl_ov_disp());
+        if (!lock || !s.root || gen != s.gen) {
+            heap_caps_free(jpeg);
+            return false;
+        }
+        s.zoom = LV_SCALE_NONE;
+        decode_target_size(&max_w, &max_h);
+        cap = max_rgb_bytes > 64 ? max_rgb_bytes : kDefaultMaxRgb;
+    }
+
+    /* 初次 100%：只 fit 不放大；放大按钮走 decode_jpeg_for_zoom 一次性放大 */
+    uint8_t *rgb = nullptr;
+    size_t rgb_len = 0, w = 0, h = 0, stride = 0;
+    if (jpeg_to_image_fit(jpeg, jpeg_len, max_w, max_h, cap, &rgb, &rgb_len, &w, &h, &stride) !=
+            ESP_OK ||
+        !rgb) {
+        heap_caps_free(jpeg);
+        return false;
+    }
+
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock || !s.root || gen != s.gen) {
+        heap_caps_free(rgb);
+        heap_caps_free(jpeg);
+        return false;
+    }
+    free_jpeg();
+    s.jpeg = jpeg;
+    s.jpeg_len = jpeg_len;
+    s.max_rgb_bytes = cap;
+    s.zoom = LV_SCALE_NONE;
+    const bool ok = apply_rgb_locked(rgb, static_cast<uint32_t>(w), static_cast<uint32_t>(h),
+                                     static_cast<uint32_t>(stride), rgb_len);
+    if (ok) {
+        s.base_w = static_cast<int>(w);
+        s.base_h = static_cast<int>(h);
+        raise_controls();
+    } else {
+        s.base_w = 0;
+        s.base_h = 0;
+        free_jpeg();
+    }
+    return ok;
 }
 
 extern "C" void nl_ui_image_preview_fail(uint32_t gen, const char *msg)

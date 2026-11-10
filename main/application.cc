@@ -65,6 +65,10 @@ Application::Application() : notify_player_(audio_service_) {
 #else
     aec_mode_ = kAecOff;
 #endif
+#if CONFIG_NODELIO_PANEL
+    /* 墙板默认关免唤醒词打断；开机后由 NVS voice_barge_in 再打开。 */
+    aec_mode_ = kAecOff;
+#endif
 
     esp_timer_create_args_t clock_timer_args = {.callback =
                                                     [](void* arg) {
@@ -1938,25 +1942,30 @@ void Application::HandleStateChangedEvent() {
             /* 勿再 show_chat：会把标题打成「在听」；正文由 SetStatus/on_chat 维护 */
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-            /* 云端 TTS 期间：关 voice + 关唤醒 AFE（与 Notifying 同策略）。
-             * 若此时再 EnableWakeWord，AFE/AEC 重配共享 I2S，易把问候弄成全程哑音。 */
-            audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(false);
-            if (auto* codec = board.GetAudioCodec()) {
-                codec->EnableOutput(true);
-                ESP_LOGI(TAG, "speaking: output on vol=%d (wake off for cloud TTS)",
-                         codec->output_volume());
-            }
-            /* 关唤醒后 audio_input 异步关麦会再动共享 I2S；下一拍再 unmute 一次 */
-            Schedule([this]() {
-                if (GetDeviceState() != kDeviceStateSpeaking) {
-                    return;
-                }
-                if (auto* codec = Board::GetInstance().GetAudioCodec()) {
+            if (aec_mode_ == kAecOff) {
+                /* 云端 TTS 期间：关 voice + 关唤醒 AFE（与 Notifying 同策略）。
+                 * 若此时再 EnableWakeWord，AFE/AEC 重配共享 I2S，易把问候弄成全程哑音。 */
+                audio_service_.EnableVoiceProcessing(false);
+                audio_service_.EnableWakeWordDetection(false);
+                if (auto* codec = board.GetAudioCodec()) {
                     codec->EnableOutput(true);
-                    ESP_LOGI(TAG, "speaking: deferred unmute vol=%d", codec->output_volume());
+                    ESP_LOGI(TAG, "speaking: output on vol=%d (wake off for cloud TTS)",
+                             codec->output_volume());
                 }
-            });
+                /* 关唤醒后 audio_input 异步关麦会再动共享 I2S；下一拍再 unmute 一次 */
+                Schedule([this]() {
+                    if (GetDeviceState() != kDeviceStateSpeaking) {
+                        return;
+                    }
+                    if (auto* codec = Board::GetInstance().GetAudioCodec()) {
+                        codec->EnableOutput(true);
+                        ESP_LOGI(TAG, "speaking: deferred unmute vol=%d", codec->output_volume());
+                    }
+                });
+            } else {
+                /* 语音打断开：speaking 保持开麦（realtime），允许免唤醒词打断。 */
+                audio_service_.ResetDecoder();
+            }
 #else
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
@@ -3513,23 +3522,29 @@ void Application::SendMcpMessage(const std::string& payload) {
     });
 }
 
-void Application::SetAecMode(AecMode mode) {
+void Application::SetAecMode(AecMode mode, bool notify) {
     aec_mode_ = mode;
-    Schedule([this]() {
+    Schedule([this, notify]() {
         auto& board = Board::GetInstance();
         auto display = board.GetDisplay();
         switch (aec_mode_) {
             case kAecOff:
                 audio_service_.EnableDeviceAec(false);
-                display->ShowNotification(Lang::Strings::RTC_MODE_OFF);
+                if (notify) {
+                    display->ShowNotification(Lang::Strings::RTC_MODE_OFF);
+                }
                 break;
             case kAecOnServerSide:
                 audio_service_.EnableDeviceAec(false);
-                display->ShowNotification(Lang::Strings::RTC_MODE_ON);
+                if (notify) {
+                    display->ShowNotification(Lang::Strings::RTC_MODE_ON);
+                }
                 break;
             case kAecOnDeviceSide:
                 audio_service_.EnableDeviceAec(true);
-                display->ShowNotification(Lang::Strings::RTC_MODE_ON);
+                if (notify) {
+                    display->ShowNotification(Lang::Strings::RTC_MODE_ON);
+                }
                 break;
         }
 

@@ -18,6 +18,8 @@ nodelio_nvs_config_t s_skill_cfg;
 /** ~54KB：必须 PSRAM。由 deliver 堆分配后交给 show 接管，禁止再拷一份。 */
 nl_content_envelope_t *s_env = nullptr;
 bool s_have_env = false;
+/** 播歌时打开其它技能卡：暂存上一份 music_list，供再点曲库恢复。 */
+static nl_content_envelope_t *s_music_stash = nullptr;
 int s_play_idx = -1;
 int s_list_page = 0;
 lv_obj_t *s_hdr_mid_btn = nullptr;
@@ -29,26 +31,7 @@ bool s_hdr_minimal = false;     /* 日历：顶部只留关闭，把高度让给
 lv_obj_t *s_row_idx_labels[64] = {nullptr};  /* 序号胶囊标签（数字/耳机） */
 lv_obj_t *s_row_btns[64] = {nullptr};       /* 播放/暂停按钮 */
 
-void free_skill_env(void)
-{
-    if (!s_env) {
-        return;
-    }
-    if (s_env->detail_body) {
-        heap_caps_free(s_env->detail_body);
-        s_env->detail_body = nullptr;
-    }
-    if (s_env->chats) {
-        heap_caps_free(s_env->chats);
-        s_env->chats = nullptr;
-        s_env->chat_n = 0;
-    }
-    heap_caps_free(s_env);
-    s_env = nullptr;
-    s_have_env = false;
-}
-
-void free_owned_env(nl_content_envelope_t *env)
+static void free_one_env(nl_content_envelope_t *env)
 {
     if (!env) {
         return;
@@ -63,6 +46,32 @@ void free_owned_env(nl_content_envelope_t *env)
         env->chat_n = 0;
     }
     heap_caps_free(env);
+}
+
+static void free_music_stash(void)
+{
+    free_one_env(s_music_stash);
+    s_music_stash = nullptr;
+}
+
+extern "C" void nodelio_skill_clear_music_stash(void)
+{
+    free_music_stash();
+}
+
+void free_skill_env(void)
+{
+    if (!s_env) {
+        return;
+    }
+    free_one_env(s_env);
+    s_env = nullptr;
+    s_have_env = false;
+}
+
+void free_owned_env(nl_content_envelope_t *env)
+{
+    free_one_env(env);
 }
 
 /** 技能层抬完后把状态栏、小智和提示条按固定顺序压回去。 */
@@ -372,16 +381,15 @@ void nodelio_skill_result_raise(void)
     ensure_chrome_order();
 }
 
-/** 曲库或播放条可见时挡住下层应用页，避免点穿卡片 */
+/** 技能卡可见时挡住下层应用页；仅播放条时不挡，便于播歌中点其它应用 */
 void sync_player_block_scrim(void)
 {
     if (!s_scrim) {
         return;
     }
     const bool card_up = s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN);
-    const bool bar_up = s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
     const bool wide = nodelio_display_profile()->nav_width != 0;
-    if (!s_minimized && (card_up || (bar_up && wide))) {
+    if (!s_minimized && card_up) {
         lv_obj_clear_flag(s_scrim, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_bg_opa(s_scrim, wide ? SKILL_SCRIM_OPA : LV_OPA_COVER, 0);
     } else if (!card_up) {
@@ -836,7 +844,7 @@ static void on_hdr_mid(lv_event_t *e)
 
 void reopen_list(void)
 {
-    if (s_env->track_n <= 0 || !s_card) {
+    if (!s_env || s_env->track_n <= 0 || !s_card) {
         nl_ov_toast("暂无曲目列表");
         return;
     }
@@ -866,11 +874,59 @@ void reopen_list(void)
     }
     lv_obj_clear_flag(s_card, LV_OBJ_FLAG_HIDDEN);
     anim_show_obj(s_card, true);
-    apply_now_media_chrome(true, false, true);
+    /* 最小化会藏 now_bar；从应用再进曲库须与 expand_from_fab 一样恢复播放条 */
+    const bool playing = nodelio_media_is_playing();
+    const bool paused = nodelio_media_is_paused();
+    if (s_now_bar && (playing || paused)) {
+        apply_now_media_chrome(playing, paused, true);
+        set_pause_btn_icon(playing);
+        lv_obj_clear_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
+        if (playing) {
+            start_now_anims();
+        } else {
+            stop_now_anims();
+        }
+        anim_show_obj(s_now_bar, true);
+    } else {
+        apply_now_media_chrome(false, false, true);
+    }
     nl_ov_apps_notify_skill_open(true);
     layout_skill_layers();
     raise_skill_layers();
     ensure_chrome_order();
+}
+
+extern "C" bool nodelio_skill_try_reopen_music_list(void)
+{
+    if (s_env && strcmp(s_env->card_type, "music_list") == 0 && s_env->track_n > 0) {
+        reopen_list();
+        return true;
+    }
+    if (s_music_stash && strcmp(s_music_stash->card_type, "music_list") == 0 &&
+        s_music_stash->track_n > 0) {
+        {
+            DisplayLockGuard lock(nl_ov_disp());
+            if (!lock) {
+                return false;
+            }
+            if (s_env && s_env != s_music_stash) {
+                free_skill_env();
+            }
+            s_env = s_music_stash;
+            s_music_stash = nullptr;
+            s_have_env = true;
+            if (strcmp(s_env->app_id, "music.sd") == 0) {
+                s_library_source = 1;
+            } else if (strcmp(s_env->app_id, "photo.sd") == 0) {
+                s_library_source = 2;
+            } else {
+                s_library_source = 0;
+            }
+        }
+        reopen_list();
+        return true;
+    }
+    return false;
 }
 
 struct reshuffle_job {
@@ -1324,6 +1380,28 @@ void invoke_filter_workspace(const nl_env_filter_t *f)
     run_invoke_action(&ia);
 }
 
+static void invoke_filter_support_inbox(const nl_env_filter_t *f)
+{
+    if (!f || !f->workspace[0] || !s_env) {
+        return;
+    }
+    nl_env_invoke_action_t ia;
+    memset(&ia, 0, sizeof(ia));
+    snprintf(ia.id, sizeof(ia.id), "filter");
+    snprintf(ia.title, sizeof(ia.title), "%s", f->title[0] ? f->title : "应用");
+    snprintf(ia.app_id, sizeof(ia.app_id), "support.inbox");
+    const bool all = strcmp(f->workspace, "all") == 0 || strcmp(f->workspace, "*") == 0;
+    if (all) {
+        snprintf(ia.params_json, sizeof(ia.params_json), "{\"op\":\"inbox\"}");
+    } else {
+        char esc[NL_ENV_WS_PATH * 2];
+        json_escape_str(esc, sizeof(esc), f->workspace);
+        snprintf(ia.params_json, sizeof(ia.params_json),
+                 "{\"op\":\"inbox\",\"app_id\":\"%s\"}", esc);
+    }
+    run_invoke_action(&ia);
+}
+
 static void on_filter_chip(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
@@ -1338,6 +1416,11 @@ static void on_filter_chip(lv_event_t *e)
     }
     const nl_env_filter_t *f = &s_env->filters[idx];
     if (f->selected) {
+        return;
+    }
+    if (strcmp(s_env->app_id, "support.inbox") == 0 ||
+        strcmp(s_env->card_type, "support_inbox") == 0) {
+        invoke_filter_support_inbox(f);
         return;
     }
     /* 换工作区：取消续聊武装，避免派错会话 */
@@ -2133,6 +2216,7 @@ void dismiss_library_and_player(void)
     s_close_gen += 1;
     s_ui_closing = true;
     free_skill_env();
+    free_music_stash();
     s_play_idx = -1;
     s_minimized = false;
     clear_ttl();
@@ -3344,9 +3428,23 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
             stop_dsh_detail_poll();
         }
     }
-    /* 接管堆信封：先摘掉旧指针再挂新的，峰值只保留一份 ~54KB */
+    /* 接管堆信封：播歌中换非曲库卡时 stash 歌单；新曲库包则清 stash */
     if (s_env && s_env != env) {
-        free_skill_env();
+        const bool old_music =
+            strcmp(s_env->card_type, "music_list") == 0 && s_env->track_n > 0;
+        const bool new_music = strcmp(env->card_type, "music_list") == 0;
+        const bool keep_audio = nodelio_media_is_playing() || nodelio_media_is_paused();
+        if (old_music && !new_music && keep_audio) {
+            free_music_stash();
+            s_music_stash = s_env;
+            s_env = nullptr;
+            s_have_env = false;
+        } else {
+            free_skill_env();
+        }
+    }
+    if (strcmp(env->card_type, "music_list") == 0) {
+        free_music_stash();
     }
     s_env = env;
     s_have_env = true;
@@ -3495,11 +3593,11 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
         restart_skill_ttl();
     }
 
-    if (auto_play_first && nodelio_caps_has_media() && s_env->track_n > 0 &&
-        s_env->tracks[0].playback_url[0]) {
+    if (auto_play_first && strcmp(s_env->card_type, "music_list") == 0 &&
+        nodelio_caps_has_media() && s_env->track_n > 0 && s_env->tracks[0].playback_url[0]) {
         ESP_LOGI(TAG, "auto play #0 title=%s", s_env->tracks[0].title);
         play_at(0);
-    } else if (auto_play_first) {
+    } else if (auto_play_first && strcmp(s_env->card_type, "music_list") == 0) {
         ESP_LOGW(TAG, "auto play skipped caps=%d tracks=%d url0=%d",
                  nodelio_caps_has_media() ? 1 : 0, s_env->track_n,
                  (s_env->track_n > 0 && s_env->tracks[0].playback_url[0]) ? 1 : 0);

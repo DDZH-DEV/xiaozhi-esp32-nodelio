@@ -284,6 +284,8 @@ esp_err_t nodelio_panel_ui_scroll(int dir);
  * 命中返回 true；未装/未知返回 false。
  */
 bool nodelio_panel_ui_open_app(const char *name_or_id);
+/** 强制刷新「日历与天气」上游数据（跳过同日缓存）。 */
+void nodelio_panel_ui_refresh_weather(void);
 
 /**
  * 语音派活：POST dsh.task，body 含 instruction。
