@@ -171,6 +171,12 @@ bool nodelio_skill_support_conversation_id(uint64_t *out_id);
 /** 当前客服卡是否仍打开（support_thread）。 */
 bool nodelio_skill_support_thread_open(void);
 
+/** 客服收件箱/气泡卡打开时需保持 MQTT，禁止空闲断网。 */
+bool nodelio_skill_support_holds_network(void);
+
+/** MQTT 重连后：若气泡卡开着则补拉当前 thread。 */
+void nodelio_skill_support_on_network_resumed(void);
+
 /** 当前客服卡访客最新一句；供 self.support.suggest 第一轮回传云端。 */
 bool nodelio_skill_support_visitor_text(char *out, size_t out_len);
 

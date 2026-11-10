@@ -270,6 +270,7 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
         copy_str(out->card_type, sizeof(out->card_type), display, "card_type");
         copy_str(out->display_title, sizeof(out->display_title), display, "title");
         copy_str(out->support_meta, sizeof(out->support_meta), display, "support_meta");
+        copy_str(out->qr_image_url, sizeof(out->qr_image_url), display, "qr_image_url");
         copy_str(out->bridge_id, sizeof(out->bridge_id), display, "bridge_id");
         copy_str(out->bridge_name, sizeof(out->bridge_name), display, "bridge_name");
         copy_str(out->workbench_provider, sizeof(out->workbench_provider), display,

@@ -950,7 +950,7 @@ static void on_play_row(lv_event_t *e)
         return;
     }
     const int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    /* 客服进线：点整行 = 该行第一个 invoke（接管/发送） */
+    /* 网站智能客服：点整行 = 该行第一个 invoke（接管/发送） */
     if (s_have_env && s_env && strcmp(s_env->app_id, "support.inbox") == 0 && idx >= 0 &&
         idx < s_env->track_n && s_env->tracks[idx].invoke_n > 0) {
         run_invoke_action(&s_env->tracks[idx].invokes[0]);
@@ -1989,6 +1989,7 @@ static void null_skill_widget_ptrs(void)
     s_title_row = nullptr;
     s_support_nav = nullptr;
     s_card_sub = nullptr;
+    nodelio_skill_support_on_card_teardown();
     s_now_bar = nullptr;
     s_now_eq_wrap = nullptr;
     for (int i = 0; i < SKILL_EQ_N; i++) {
@@ -2218,7 +2219,8 @@ static void ensure_card(void)
     lv_obj_set_width(hdr, lv_pct(100));
     lv_obj_set_height(hdr, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    /* 刷新/关闭贴顶，避免与双行标题垂直居中后显得偏下、易误触下方内容 */
+    lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
 
     lv_obj_t *hdr_txt = lv_obj_create(hdr);
     s_hdr_txt = hdr_txt;

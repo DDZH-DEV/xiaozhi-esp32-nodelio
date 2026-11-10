@@ -16,7 +16,8 @@
                 "CONFIG_LV_FONT_MONTSERRAT_20=y",
                 "CONFIG_SR_MN_CN_NONE=y",
                 "CONFIG_ESP_TASK_WDT_TIMEOUT_S=20",
-                "CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384"
+                "CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384",
+                "CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT=y"
             ]
         }
     ]

@@ -55,3 +55,12 @@ private:
     int off_level_ = 0;
     bool held_off_ = false;
 };
+
+/** R4 SY7200：BL_CTR 接死 3.3V，软件关不了；勿占 IO13（KEY）。 */
+class NoopBacklight : public Backlight {
+public:
+    NoopBacklight() = default;
+    void SetBrightnessImpl(uint8_t brightness) override {
+        (void)brightness;
+    }
+};

@@ -64,7 +64,7 @@
 #define DISPLAY_BACKLIGHT_FREQ_HZ          25000
 #define DISPLAY_BACKLIGHT_OFF_LEVEL        0
 
-/* 必须整除 DISPLAY_HEIGHT(480): 480/30 = 16倍。30行(28.8KB)有效抗DMA Underrun闪屏 */
-#define RGB_BOUNCE_BUFFER_SIZE   (DISPLAY_WIDTH * 20)
+/* 必须整除 DISPLAY_HEIGHT(480): 480/30 = 16 段。30 行(~28.8KB) 抗 DMA underrun 闪屏 */
+#define RGB_BOUNCE_BUFFER_SIZE   (DISPLAY_WIDTH * 30)
 
 #endif // _BOARD_CONFIG_H_

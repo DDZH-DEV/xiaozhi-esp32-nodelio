@@ -151,6 +151,8 @@ typedef struct {
     bool cloud_suggest;
     /** display.support_meta：会话顶栏，时间 / IP / 位置 / 客户端，可含换行。 */
     char support_meta[192];
+    /** display.qr_image_url：坐席免登二维码 JPEG；宽屏停左侧栏，方屏全屏预览。 */
+    char qr_image_url[NL_ENV_URL];
 } nl_content_envelope_t;
 
 /**

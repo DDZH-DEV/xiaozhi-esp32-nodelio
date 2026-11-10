@@ -50,6 +50,13 @@ if errorlevel 1 (
     "$c=Get-Content sdkconfig -Raw; $c=$c -replace '(?m)^CONFIG_MBEDTLS_HARDWARE_AES=.*\r?\n?',''; $c=$c.TrimEnd()+[Environment]::NewLine+'# CONFIG_MBEDTLS_HARDWARE_AES is not set'+[Environment]::NewLine; Set-Content sdkconfig -Value $c -Encoding ascii -NoNewline"
   if errorlevel 1 exit /b 1
 )
+REM R4 SY7200 always-on backlight (scheme B / RY3730: remove this line)
+findstr /b /c:"CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT=y" sdkconfig >nul
+if errorlevel 1 (
+  echo [sila-86] enabling FIXED_BACKLIGHT ^(R4 SY7200 always-on^)
+  powershell -NoProfile -Command ^
+    "$c=Get-Content sdkconfig -Raw; if ($c -notmatch 'CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT') { $c=$c.TrimEnd()+[Environment]::NewLine+'CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT=y'+[Environment]::NewLine }; $c=$c -replace '# CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT is not set','CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT=y'; Set-Content sdkconfig -Value $c -Encoding ascii -NoNewline"
+)
 echo [sila-86] build stamp (code-change day serial) ...
 python "%REPO%\scripts\nodelio_build_stamp.py" --root "%REPO%"
 if errorlevel 1 (

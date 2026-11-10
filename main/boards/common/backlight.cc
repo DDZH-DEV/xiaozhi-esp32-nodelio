@@ -178,6 +178,9 @@ void PwmBacklight::SetBrightnessImpl(uint8_t brightness) {
     // LEDC resolution set to 10bits, thus: 100% = 1023
     uint32_t duty_cycle = (1023 * brightness) / 100;
     if (held_off_) {
+        /* 钉灭时脚在 GPIO 模式；不 reset 就 BindChannel 会刷
+         * "GPIO N is not usable, maybe conflict"，背光可能关不干净导致开机闪。 */
+        gpio_reset_pin(pin_);
         BindChannel(duty_cycle);
         held_off_ = false;
         return;

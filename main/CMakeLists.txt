@@ -955,6 +955,7 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/softap_portal.cc"
         "nodelio/ui_theme.cc"
         "nodelio/ui_widgets.cc"
+        "nodelio/ui_image_preview.cc"
         "nodelio/nl_url_util.c"
         "nodelio/nl_time.cc"
         "nodelio/nodelio_overlay.cc"

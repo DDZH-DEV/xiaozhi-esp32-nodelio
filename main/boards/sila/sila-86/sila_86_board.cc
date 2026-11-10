@@ -76,6 +76,9 @@ private:
 #endif
     esp_timer_handle_t touch_wake_timer_ = nullptr;
     uint8_t touch_wake_hits_ = 0; /* 息屏触摸去抖：连续命中次数 */
+#if CONFIG_NODELIO_PANEL && CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT
+    lv_obj_t* sleep_cover_ = nullptr; /* 常亮背光：息屏铺黑盖，不停 RGB/LVGL */
+#endif
 
 #if CONFIG_NODELIO_PANEL
     static void OnPanelTouchPressed(lv_event_t* event) {
@@ -103,6 +106,40 @@ private:
         }
         nodelio_panel_ui_notify_screen(on);
     }
+
+#if CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT
+    void ShowSleepCover(bool on) {
+        if (!display_) {
+            return;
+        }
+        DisplayLockGuard lock(display_);
+        if (!lock) {
+            return;
+        }
+        if (on) {
+            if (!sleep_cover_) {
+                sleep_cover_ = lv_obj_create(lv_layer_top());
+                if (!sleep_cover_) {
+                    return;
+                }
+                lv_obj_remove_style_all(sleep_cover_);
+                lv_obj_set_size(sleep_cover_, LV_HOR_RES, LV_VER_RES);
+                lv_obj_set_style_bg_color(sleep_cover_, lv_color_black(), 0);
+                lv_obj_set_style_bg_opa(sleep_cover_, LV_OPA_COVER, 0);
+                lv_obj_clear_flag(sleep_cover_, LV_OBJ_FLAG_SCROLLABLE);
+                /* 吃触摸：只唤醒，不点穿到磁贴 */
+                lv_obj_add_flag(sleep_cover_, LV_OBJ_FLAG_CLICKABLE);
+            }
+            lv_obj_clear_flag(sleep_cover_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(sleep_cover_);
+            if (auto* disp = lv_display_get_default()) {
+                lv_refr_now(disp);
+            }
+        } else if (sleep_cover_) {
+            lv_obj_add_flag(sleep_cover_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+#endif
 #endif
 
     void InitializePowerSaveTimer() {
@@ -121,6 +158,18 @@ private:
         power_save_timer_ = new PowerSaveTimer(-1, idle_s, -1);
 #endif
         power_save_timer_->OnEnterSleepMode([this]() {
+#if CONFIG_NODELIO_PANEL && CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT
+            /* R4 常亮背光：停 LVGL/RGB 会出横条。铺黑盖 + 降刷新，触摸仍走 LVGL。 */
+            SetPanelScreenState(false);
+            ShowSleepCover(true);
+            GetDisplay()->SetPowerSaveMode(true);
+            if (!nodelio_media_is_playing()) {
+                if (auto* codec = GetAudioCodec()) {
+                    codec->EnableOutput(false);
+                }
+            }
+            return;
+#endif
             /* 先拉灭背光，再停 LVGL。反过来会先看到横条，背光还亮着。 */
             GetBacklight()->SetBrightness(0);
 #if CONFIG_NODELIO_PANEL
@@ -150,6 +199,21 @@ private:
             StartTouchWakePoll(); /* 息屏后 LVGL 不读触摸，单独轮询唤醒 */
         });
         power_save_timer_->OnExitSleepMode([this]() {
+#if CONFIG_NODELIO_PANEL && CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT
+            GetDisplay()->SetPowerSaveMode(false);
+            SetPanelScreenState(true);
+            ShowSleepCover(false);
+            if (display_) {
+                DisplayLockGuard lock(display_);
+                if (lock) {
+                    if (auto* disp = lv_display_get_default()) {
+                        lv_refr_now(disp);
+                    }
+                }
+            }
+            nodelio_panel_ui_notice_flush_deferred();
+            return;
+#endif
             StopTouchWakePoll();
 #if CONFIG_NODELIO_PANEL
             if (display_ && touch_indev_) {
@@ -208,7 +272,15 @@ private:
                     /* 连续两拍（~100ms）才唤醒，滤毛刺/悬空误触 */
                     if (++self->touch_wake_hits_ >= 2) {
                         self->touch_wake_hits_ = 0;
-                        self->power_save_timer_->NoteActivity();
+                        /* 勿在 esp_timer 回调里同步 WakeUp/删本定时器；只停轮询并丢给主任务 */
+                        if (self->touch_wake_timer_) {
+                            esp_timer_stop(self->touch_wake_timer_);
+                        }
+                        Application::GetInstance().Schedule([self]() {
+                            if (self->power_save_timer_) {
+                                self->power_save_timer_->NoteActivity();
+                            }
+                        });
                     }
                 } else {
                     self->touch_wake_hits_ = 0;
@@ -399,14 +471,18 @@ private:
 
 public:
     Sila86Board() : boot_button_(BOOT_BUTTON_GPIO) {
+#if CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT
+        /* R4 常亮背光：RGB 侧先铺黑；建壳 hold 刷新，结束一次出图。 */
+        GetBacklight()->PreloadSavedBrightness();
+#else
         /* 先钉灭背光再点屏：否则 ST7701 垃圾帧 + 浮空 BL 会闪一下。 */
         GetBacklight()->PreloadSavedBrightness();
+#endif
         InitializePowerSaveTimer();
         InitializeI2c();
         InitializeRGB();
         InitializeTouch();
         /* 无物理 BOOT 键（GPIO0=RGB DB0）；配网：无 WiFi/未绑定→SoftAP，或语音「进入配网」 */
-        /* 亮度等 overlay 首帧 lv_refr_now 后再 RestoreBrightness */
     }
 
     virtual AudioCodec* GetAudioCodec() override {
@@ -431,9 +507,15 @@ public:
     }
 
     virtual Backlight* GetBacklight() override {
+#if CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT
+        /* R4：SY7200 常亮；IO13=KEY，禁止 LEDC 占用 */
+        static NoopBacklight backlight;
+        return &backlight;
+#else
         static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT,
                                       DISPLAY_BACKLIGHT_FREQ_HZ, DISPLAY_BACKLIGHT_OFF_LEVEL);
         return &backlight;
+#endif
     }
 
     virtual void SetPowerSaveLevel(PowerSaveLevel level) override {

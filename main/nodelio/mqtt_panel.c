@@ -239,6 +239,8 @@ static void mqtt_event(void *handler_args, esp_event_base_t base, int32_t event_
         if (s_ever_connected) {
             /* 断线重连后静默补拉未读通知，与本地去重对齐 */
             nodelio_panel_ui_notices_sync_async();
+            /* 客服气泡卡若仍开着，再拉一次 thread（sync 只对账角标） */
+            nodelio_skill_support_on_network_resumed();
         }
         s_ever_connected = true;
         break;

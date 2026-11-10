@@ -236,7 +236,8 @@ void Application::Initialize() {
 
 #if CONFIG_NODELIO_PANEL
     /* Assets：加载 WakeNet 等；MultiNet 已从产品拿掉（省 ~4MB PSRAM），不再 prewarm。
-     * 勿 refresh_display_theme：此时 NodeLio 首页已渲染，SetTheme 会整屏脏刷闪白。 */
+     * 勿 refresh_display_theme：此时 NodeLio 首页已渲染，SetTheme 会整屏脏刷闪白。
+     * 背光压到 assets/字号之后再开：否则字库指针变触发二次刷首页时可见撕裂。 */
     {
         auto& assets = Assets::GetInstance();
         const int64_t t0 = esp_timer_get_time();
@@ -249,6 +250,7 @@ void Application::Initialize() {
         if (applied) {
             nodelio_overlay_apply_text_scale();
         }
+        nodelio_overlay_reveal_boot_backlight();
     }
 #endif
 

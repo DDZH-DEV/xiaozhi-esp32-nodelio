@@ -13,6 +13,7 @@
 #include "media_player.h"
 #include "nvs_config.h"
 #include "panel_ui.h"
+#include "skill_result_ui.h"
 #endif
 
 #include <driver/gpio.h>
@@ -353,7 +354,8 @@ private:
                 SampleAccelerometer();
 #if CONFIG_NODELIO_PANEL
                 const bool playing = nodelio_media_is_playing();
-                const bool want_net = net_save_.load() && !playing &&
+                const bool hold_net = nodelio_skill_support_holds_network();
+                const bool want_net = net_save_.load() && !playing && !hold_net &&
                                       elapsed >= pdMS_TO_TICKS(idle_wifi_seconds_.load() * 1000) &&
                                       Application::GetInstance().CanEnterSleepMode();
                 if (want_net) {

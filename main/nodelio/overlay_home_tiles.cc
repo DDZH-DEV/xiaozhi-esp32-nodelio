@@ -2095,6 +2095,12 @@ static void build_home_view(void) {
         return;
     }
     NlUiWorkScope work("home.build");
+    /* 嵌套 hold：外壳建壳未结束时不 refr；单独 rebuild 时本层 end 出一帧 */
+    struct HomeBuildInvGuard {
+        HomeBuildInvGuard() { nl_ov_refresh_hold_begin(); }
+        ~HomeBuildInvGuard() { nl_ov_refresh_hold_end(true); }
+    } inv_guard;
+
     s_home_structure_dirty = false;
     s_home_skills_dirty = false;
     s_home_state_dirty = false;

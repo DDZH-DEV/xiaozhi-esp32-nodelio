@@ -40,6 +40,12 @@ void nodelio_overlay_retarget_font(const void *from_font, const void *to_font);
 /** 全局应用当前文字缩放（内部自带 DisplayLockGuard）。 */
 void nodelio_overlay_apply_text_scale(void);
 
+/**
+ * 开机首帧刷完后再开背光（assets/字号落地后由 Application 调用）。
+ * 壳建完不立刻亮：避免 assets 再刷一次首页时背光已开导致撕裂闪屏。
+ */
+void nodelio_overlay_reveal_boot_backlight(void);
+
 #ifdef __cplusplus
 }
 #endif

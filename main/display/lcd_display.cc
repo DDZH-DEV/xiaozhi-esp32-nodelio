@@ -234,8 +234,12 @@ RgbLcdDisplay::RgbLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
                              int width, int height, int offset_x, int offset_y, bool mirror_x,
                              bool mirror_y, bool swap_xy)
     : LcdDisplay(panel_io, panel, width, height) {
-    // draw white
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* R4 SY7200 背光常亮：绝不能先刷白帧，否则建壳前就刺眼闪一下。 */
+    std::vector<uint16_t> buffer(width_, 0x0000);
+#else
     std::vector<uint16_t> buffer(width_, 0xFFFF);
+#endif
     for (int y = 0; y < height_; y++) {
         esp_lcd_panel_draw_bitmap(panel_, 0, y, width_, y + 1, buffer.data());
     }

@@ -185,6 +185,10 @@ void nl_ov_close_forms(void);
 void nl_ov_ensure_devs_cache(void);
 
 /* —— home tiles / photo / cmd —— */
+/** 嵌套：禁 LVGL invalidate；最外层 end(true) 才 refr。常亮背光建壳防撕裂。 */
+void nl_ov_refresh_hold_begin(void);
+void nl_ov_refresh_hold_end(bool refr_now);
+
 /** Structural invalidation; hidden pages rebuild on their next reveal. Display lock required. */
 void nl_ov_fill_home(void);
 void nl_ov_home_prepare(void);

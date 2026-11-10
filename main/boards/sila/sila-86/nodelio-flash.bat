@@ -3,12 +3,12 @@ setlocal EnableDelayedExpansion
 chcp 65001 >nul
 
 rem SILA-86 - build then flash+monitor
-rem   nodelio-flash.bat              default COM12, build then flash
-rem   nodelio-flash.bat COM15        set port
+rem   nodelio-flash.bat              auto port, build then flash
+rem   nodelio-flash.bat COM15        force a port
 rem   nodelio-flash.bat --nofresh    skip build, flash existing build dir
 rem   nodelio-flash.bat COM15 --nofresh
 
-set "PORT=COM12"
+set "PORT="
 set "NOFRESH=0"
 rem NOTE: do not put SHIFT inside if (...); it does not affect %1 there -> infinite parse loop
 :parse
@@ -46,6 +46,13 @@ if errorlevel 1 (
   echo [sila-86] CONFIG_BOARD_TYPE_SILA_86 not set - refuse flash ^(wrong board build^)
   exit /b 1
 )
-echo [sila-86] flash+monitor on !PORT! ...
-idf.py -p !PORT! flash monitor
+
+set "PORT_ARGS="
+if not "!PORT!"=="" set "PORT_ARGS=-p !PORT!"
+if "!PORT!"=="" (
+  echo [sila-86] flash+monitor auto port ...
+) else (
+  echo [sila-86] flash+monitor on !PORT! ...
+)
+idf.py !PORT_ARGS! flash monitor
 exit /b %ERRORLEVEL%

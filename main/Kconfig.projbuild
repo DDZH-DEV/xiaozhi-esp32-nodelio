@@ -1270,6 +1270,16 @@ menu "NodeLio Panel"
             Use a finer clock for touch/animation timing. The old RGB port used
             50 ms; choose 50 for comparison. S3 still suspends LVGL in sleep.
 
+    config NODELIO_SILA86_FIXED_BACKLIGHT
+        bool "sila-86 backlight always on (SY7200 R4)"
+        depends on NODELIO_PANEL && BOARD_TYPE_SILA_86
+        default y
+        help
+            R4 schematic: SY7200 BL_CTR tied to +3.3V; IO13 is KEY not PWM.
+            Boot keeps LVGL refresh frozen until the shell is ready (black frame).
+            Sleep paints a black cover and does NOT stop the RGB clock / LVGL.
+            Disable for scheme B boards (IP5306 + RY3730 on IO13).
+
     config NODELIO_TYPE_CODE
         string "type_code at register"
         depends on NODELIO_PANEL

@@ -3,6 +3,9 @@
 #include "board.h"
 #include "settings.h"
 
+#if CONFIG_NODELIO_PANEL
+#include "skill_result_ui.h"
+#endif
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
 #include "media_player.h"
 #endif
@@ -94,6 +97,12 @@ void PowerSaveTimer::TryEnterNetSleep() {
     if (!app.CanEnterSleepMode()) {
         return;
     }
+#if CONFIG_NODELIO_PANEL
+    /* 客服卡打开时必须保持 MQTT，否则访客新消息 Notice 到不了 */
+    if (nodelio_skill_support_holds_network()) {
+        return;
+    }
+#endif
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     /* HTTP 音乐流依赖 WiFi：播放中禁止断网，息屏仍可 */
     if (nodelio_media_is_playing()) {
@@ -129,6 +138,19 @@ void PowerSaveTimer::TryEnterSleepMode() {
     in_sleep_mode_ = true;
     sleep_asap_ = false;
     ticks_ = 0;
+
+#if CONFIG_NODELIO_PANEL
+    /* PowerSaveCheck 跑在 esp_timer：OnEnterSleepMode（sila-86 FIXED_BACKLIGHT）含
+     * ShowSleepCover → lv_refr_now，客服卡+JPEG 后同步调用会 stack overflow。
+     * 与 WakeUp 对称，defer 到主任务；若期间已唤醒则跳过。 */
+    auto enter_cb = on_enter_sleep_mode_;
+    Application::GetInstance().Schedule([this, enter_cb]() {
+        if (!in_sleep_mode_ || !enter_cb) {
+            return;
+        }
+        enter_cb();
+    });
+#else
     if (on_enter_sleep_mode_) {
         on_enter_sleep_mode_();
     }
@@ -152,6 +174,7 @@ void PowerSaveTimer::TryEnterSleepMode() {
         };
         esp_pm_configure(&pm_config);
     }
+#endif
 }
 
 void PowerSaveTimer::EnterSleepMode() {
@@ -245,7 +268,9 @@ void PowerSaveTimer::WakeUp() {
     seconds_to_sleep_override_ = -1;
     seconds_to_net_override_ = -1;
     /* 先亮屏，再拉网（与墙板「先背光后 WiFi」一致） */
-    if (in_sleep_mode_) {
+    const bool need_exit_sleep = in_sleep_mode_;
+    const bool need_exit_net = in_net_sleep_;
+    if (need_exit_sleep) {
         ESP_LOGI(TAG, "Exiting power save mode");
         in_sleep_mode_ = false;
 
@@ -264,10 +289,27 @@ void PowerSaveTimer::WakeUp() {
                 audio_service.EnableWakeWordDetection(true);
             }
         }
+    }
 
-        if (on_exit_sleep_mode_) {
-            on_exit_sleep_mode_();
-        }
+#if CONFIG_NODELIO_PANEL
+    /* NoteActivity / 触屏唤醒常跑在 esp_timer：禁止在此同步 lv_refr_now / 拉网，
+     * 否则 sila-86 会直接 stack overflow（表现为点应用/唤醒即重启）。 */
+    if (need_exit_sleep || need_exit_net) {
+        auto sleep_cb = on_exit_sleep_mode_;
+        Application::GetInstance().Schedule([this, need_exit_sleep, need_exit_net, sleep_cb]() {
+            if (need_exit_sleep && sleep_cb) {
+                sleep_cb();
+            }
+            if (need_exit_net) {
+                ExitNetSleep();
+            }
+        });
+        return;
+    }
+#else
+    if (need_exit_sleep && on_exit_sleep_mode_) {
+        on_exit_sleep_mode_();
     }
     ExitNetSleep();
+#endif
 }

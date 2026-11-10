@@ -100,7 +100,37 @@ bool s_screen_on = true;
 nodelio_panel_ui_screen_cb_t s_screen_cb;
 nodelio_panel_ui_net_cb_t s_net_cb;
 static bool s_boot_bl_revealed = false;
+static int s_refr_hold_depth = 0;
 static void reveal_boot_backlight_after_frame(void);
+
+void nl_ov_refresh_hold_begin(void)
+{
+    lv_display_t *disp = lv_display_get_default();
+    if (!disp) {
+        return;
+    }
+    if (s_refr_hold_depth++ == 0) {
+        lv_display_enable_invalidation(disp, false);
+    }
+}
+
+void nl_ov_refresh_hold_end(bool refr_now)
+{
+    lv_display_t *disp = lv_display_get_default();
+    if (!disp || s_refr_hold_depth <= 0) {
+        return;
+    }
+    if (--s_refr_hold_depth > 0) {
+        return;
+    }
+    lv_display_enable_invalidation(disp, true);
+    if (refr_now) {
+        if (s_root) {
+            lv_obj_invalidate(s_root);
+        }
+        lv_refr_now(disp);
+    }
+}
 
 lv_obj_t *s_settings_detail;
 lv_obj_t *s_settings_detail_body;
@@ -320,7 +350,10 @@ void nl_ov_apply_text_scale(void)
     static const lv_font_t *s_last_font = nullptr;
     const uint8_t cur_scale = (uint8_t)nodelio_text_scale();
     const lv_font_t *now = nl_ov_ui_font();
-    const bool scale_changed = cur_scale != s_last_applied_scale || now != s_last_font;
+    /* 255=尚未对齐过：开机壳已按当前档位画过首页，assets 首次同步不得当「档位变更」再 fill_home */
+    const bool first_sync = s_last_applied_scale == 255;
+    const bool scale_num_changed = !first_sync && cur_scale != s_last_applied_scale;
+    const bool font_changed = now != s_last_font;
     s_last_applied_scale = cur_scale;
     s_last_font = now;
 
@@ -347,8 +380,11 @@ void nl_ov_apply_text_scale(void)
     }
     apply_font_if(s_ai_drawer_status);
     apply_font_if(s_ai_drawer_text);
-    if (scale_changed && s_have_layout && s_home) {
+    if (scale_num_changed && s_have_layout && s_home) {
         nl_ov_fill_home();
+    } else if ((first_sync || font_changed) && s_have_layout && s_home) {
+        ESP_LOGI(TAG, "text scale sync%s — skip home rebuild",
+                 first_sync ? " (boot)" : " (font ptr)");
     }
     nl_ov_apps_relayout();
     nl_ov_settings_reapply_text_scale();
@@ -746,9 +782,8 @@ void nl_ov_refresh_status_icons(bool wifi_ok, bool cloud_ok, const char *msg)
     refresh_clock_lbl();
     refresh_battery_lbl();
     status_bar_relayout();
-    if (!s_boot_bl_revealed && (wifi_ok || !nodelio_nvs_has_wifi(&s_cfg))) {
-        reveal_boot_backlight_after_frame();
-    }
+    /* 开机背光只走 Application→nodelio_overlay_reveal_boot_backlight，避免 assets 前误亮 */
+    (void)wifi_ok;
 }
 
 static void status_poll_cb(void *arg)
@@ -1052,6 +1087,16 @@ static void reveal_boot_backlight_after_frame(void)
     reveal_boot_backlight();
 }
 
+void nodelio_overlay_reveal_boot_backlight(void)
+{
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        reveal_boot_backlight();
+        return;
+    }
+    reveal_boot_backlight_after_frame();
+}
+
 static void apply_visible_locked(void)
 {
     if (!s_root) {
@@ -1100,15 +1145,18 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     s_building = false;
     if (s_ready) {
         apply_visible_locked();
-        reveal_boot_backlight_after_frame();
+        /* 背光由 Application assets 落地后 reveal，避免二次刷首页时撕裂 */
         return;
     }
 
     ui_styles_init();
+    /* 常亮背光：建壳全过程禁刷新，结束一次出图，避免中间态撕裂 */
+    nl_ov_refresh_hold_begin();
 
     s_root = lv_obj_create(lv_layer_top());
     if (!s_root) {
         ESP_LOGE(TAG, "root create fail");
+        nl_ov_refresh_hold_end(false);
         reveal_boot_backlight_after_frame();
         return;
     }
@@ -1299,7 +1347,8 @@ static void build_shell_on_lvgl(void * /*user_data*/)
 
     s_ready = true;
     apply_visible_locked();
-    reveal_boot_backlight_after_frame();
+    nl_ov_refresh_hold_end(true);
+    /* 不在这里开背光：等 assets/字号稳定后 nodelio_overlay_reveal_boot_backlight */
     start_status_poll();
     for (lv_indev_t *indev = lv_indev_get_next(nullptr); indev; indev = lv_indev_get_next(indev)) {
         if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {

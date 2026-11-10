@@ -948,12 +948,8 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t* cfg, const std::strin
         }
         cJSON_Delete(body);
     }
-    /* 客服卡打开时语音只出 draft：注入 conversation_id，缺 op 时补 draft */
+    /* 网站智能客服：kb_lookup 只读查 FAQ/KB，无需开卡；其它 op 须开卡，缺 op 时补 draft */
     if (strcmp(skill_id.c_str(), "support.inbox") == 0) {
-        uint64_t cid = 0;
-        if (!nodelio_skill_support_conversation_id(&cid) || cid == 0) {
-            return std::unexpected(std::string("请先打开客服进线卡片"));
-        }
         cJSON *body = cJSON_Parse(params.empty() ? "{}" : params.c_str());
         if (!cJSON_IsObject(body)) {
             cJSON_Delete(body);
@@ -962,15 +958,24 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t* cfg, const std::strin
         if (!body) {
             return std::unexpected(std::string("内存不足，未发送"));
         }
-        if (!cJSON_HasObjectItem(body, "conversation_id")) {
-            cJSON_AddNumberToObject(body, "conversation_id", (double)cid);
-        }
         const cJSON *jop = cJSON_GetObjectItemCaseSensitive(body, "op");
-        const cJSON *jtext = cJSON_GetObjectItemCaseSensitive(body, "text");
-        if ((!cJSON_IsString(jop) || !jop->valuestring || !jop->valuestring[0]) &&
-            cJSON_IsString(jtext) && jtext->valuestring && jtext->valuestring[0]) {
-            cJSON_DeleteItemFromObject(body, "op");
-            cJSON_AddStringToObject(body, "op", "draft");
+        const bool kb_lookup = cJSON_IsString(jop) && jop->valuestring &&
+                               strcmp(jop->valuestring, "kb_lookup") == 0;
+        if (!kb_lookup) {
+            uint64_t cid = 0;
+            if (!nodelio_skill_support_conversation_id(&cid) || cid == 0) {
+                cJSON_Delete(body);
+                return std::unexpected(std::string("请先打开网站智能客服卡片"));
+            }
+            if (!cJSON_HasObjectItem(body, "conversation_id")) {
+                cJSON_AddNumberToObject(body, "conversation_id", (double)cid);
+            }
+            const cJSON *jtext = cJSON_GetObjectItemCaseSensitive(body, "text");
+            if ((!cJSON_IsString(jop) || !jop->valuestring || !jop->valuestring[0]) &&
+                cJSON_IsString(jtext) && jtext->valuestring && jtext->valuestring[0]) {
+                cJSON_DeleteItemFromObject(body, "op");
+                cJSON_AddStringToObject(body, "op", "draft");
+            }
         }
         char *text = cJSON_PrintUnformatted(body);
         cJSON_Delete(body);
@@ -2062,6 +2067,7 @@ void nodelio_mcp_register_tools(void)
         "status|support.inbox。"
         "工作台查询用对应 .status；params 可带 computer=电脑名称，select_computer=true "
         "选择电脑。派活含 operation=task 和 instruction；续聊保留返回的 session，不得改投电脑。"
+        "业务FAQ/知识库：support.inbox params={\"op\":\"kb_lookup\",\"text\":\"问题\"}（无需先开客服卡）。"
         "客服卡已开时 skill_id=support.inbox，params 只带 text=口令转写（固件补 conversation_id 与 op=draft），勿直接发访客。"
         "听歌须 open_app(曲库)；旧 dsh.task 仍兼容；"
         "列表已开随便放→transport play。",
