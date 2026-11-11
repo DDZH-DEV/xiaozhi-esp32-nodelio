@@ -653,10 +653,10 @@ static void status_bar_relayout(void)
     nl_ov_status_bar_relayout();
 }
 
-static void refresh_clock_lbl(void)
+static bool refresh_clock_lbl(void)
 {
     if (!s_clock_lbl) {
-        return;
+        return false;
     }
     time_t now = time(nullptr);
     struct tm tm_now {};
@@ -668,11 +668,12 @@ static void refresh_clock_lbl(void)
         std::snprintf(buf, sizeof(buf), "--:--");
     }
     if (strcmp(buf, s_clock_last) == 0) {
-        return;
+        return false;
     }
     std::snprintf(s_clock_last, sizeof(s_clock_last), "%s", buf);
     lv_label_set_text(s_clock_lbl, s_clock_last);
     nodelio_skill_daily_clock_tick();
+    return true;
 }
 
 /** 按 RSSI 选格数；阈值与 WifiBoard::GetNetworkStateIcon 一致。未关联不读 AP info。 */
@@ -694,6 +695,9 @@ static const char *wifi_status_glyph(bool wifi_ok)
 /** 无电池 / 读失败为 -1，顶栏不画图标。 */
 static int s_batt_level = -1;
 static bool s_batt_charging = false;
+static const char *s_wifi_glyph_last = nullptr;
+static const char *s_batt_glyph_last = nullptr;
+static int s_batt_vis_last = -1; /* -1=unknown, 0=hidden, 1=shown_normal, 2=shown_warn */
 
 static const char *battery_status_glyph(int level, bool charging)
 {
@@ -746,24 +750,33 @@ static void sample_battery_cache(void)
 #endif
 }
 
-static void refresh_battery_lbl(void)
+static bool refresh_battery_lbl(void)
 {
     if (!s_batt_lbl) {
-        return;
+        return false;
     }
     if (s_batt_level < 0) {
+        if (s_batt_vis_last == 0) {
+            return false;
+        }
+        s_batt_vis_last = 0;
+        s_batt_glyph_last = nullptr;
         lv_obj_add_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN);
-        return;
+        return true;
     }
     const char *glyph = battery_status_glyph(s_batt_level, s_batt_charging);
+    const bool warn = (!s_batt_charging && s_batt_level <= 15);
+    const int vis_state = warn ? 2 : 1;
+    if (s_batt_vis_last == vis_state && s_batt_glyph_last == glyph) {
+        return false;
+    }
+    s_batt_vis_last = vis_state;
+    s_batt_glyph_last = glyph;
     lv_obj_set_style_text_font(s_batt_lbl, &font_material_symbols_30_4, 0);
     lv_label_set_text(s_batt_lbl, glyph);
-    lv_color_t color = UI_ON_TILE;
-    if (!s_batt_charging && s_batt_level <= 15) {
-        color = UI_WARN;
-    }
-    lv_obj_set_style_text_color(s_batt_lbl, color, 0);
+    lv_obj_set_style_text_color(s_batt_lbl, warn ? UI_WARN : UI_ON_TILE, 0);
     lv_obj_remove_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN);
+    return true;
 }
 
 void nl_ov_refresh_battery(void)
@@ -777,30 +790,35 @@ void nl_ov_refresh_battery(void)
     if (!lock) {
         return;
     }
-    refresh_battery_lbl();
-    status_bar_relayout();
+    if (refresh_battery_lbl()) {
+        status_bar_relayout();
+    }
 }
 
 void nl_ov_refresh_status_icons(bool wifi_ok, bool cloud_ok, const char *msg)
 {
     s_wifi_ok = wifi_ok;
     s_cloud_ok = cloud_ok;
+    bool changed = false;
     if (s_wifi_lbl) {
-        lv_obj_set_style_text_font(s_wifi_lbl, &font_material_symbols_20_4, 0);
-        lv_label_set_text(s_wifi_lbl, wifi_status_glyph(wifi_ok));
-        lv_obj_set_style_text_color(s_wifi_lbl, UI_ON_TILE, 0);
-    }
-    if (s_cloud_lbl) {
-        /* 无独立云符号：UPLOAD≈云同步 */
-        lv_label_set_text(s_cloud_lbl, LV_SYMBOL_UPLOAD);
-        nl_ov_set_icon_font(s_cloud_lbl);
-        lv_obj_set_style_text_color(s_cloud_lbl, UI_ON_TILE, 0);
+        const char *g = wifi_status_glyph(wifi_ok);
+        if (s_wifi_glyph_last != g) {
+            s_wifi_glyph_last = g;
+            lv_label_set_text(s_wifi_lbl, g);
+            changed = true;
+        }
     }
     /* msg 不再刷布局版本；左挂编译戳开机写死，避免断网变 v0 */
     (void)msg;
-    refresh_clock_lbl();
-    refresh_battery_lbl();
-    status_bar_relayout();
+    if (refresh_clock_lbl()) {
+        changed = true;
+    }
+    if (refresh_battery_lbl()) {
+        changed = true;
+    }
+    if (changed) {
+        status_bar_relayout();
+    }
     /* 开机背光只走 Application→nodelio_overlay_reveal_boot_backlight，避免 assets 前误亮 */
     (void)wifi_ok;
 }
@@ -1652,4 +1670,10 @@ bool nodelio_overlay_visible(void)
 {
     return s_visible;
 }
+
+bool nodelio_overlay_suppress_net_toast(void)
+{
+    return s_ready && s_visible && s_have_layout && !nl_ov_obj_shown(s_connect);
+}
+
 

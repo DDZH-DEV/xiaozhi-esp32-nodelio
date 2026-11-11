@@ -635,6 +635,7 @@ static void apply_pins_and_refill(nl_home_skill *items, int n)
             ESP_LOGI(TAG, "pins unchanged n=%d — skip home refill", nn);
             return;
         }
+        const int old_strip_n = home_skill_strip_visible_n();
         s_pin_n = nn;
         if (s_pin_n > 0 && items) {
             memcpy(s_pins, items, sizeof(nl_home_skill) * (size_t)s_pin_n);
@@ -642,6 +643,11 @@ static void apply_pins_and_refill(nl_home_skill *items, int n)
             s_pin_n = 0;
         }
         free(items);
+        const int new_strip_n = home_skill_strip_visible_n();
+        if (!nl_ov_home_uses_launcher() && old_strip_n == 0 && new_strip_n == 0) {
+            ESP_LOGI(TAG, "pins updated n=%d (all on page, strip=0) — skip home refill", s_pin_n);
+            return;
+        }
         if (s_home) {
             nl_ov_fill_home();
         }

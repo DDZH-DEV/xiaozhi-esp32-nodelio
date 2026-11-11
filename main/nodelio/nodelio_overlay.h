@@ -46,6 +46,12 @@ void nodelio_overlay_apply_text_scale(void);
  */
 void nodelio_overlay_reveal_boot_backlight(void);
 
+/**
+ * 首页已就绪且不在屏上配网/连接子页时返回 true：
+ * 抑制后台 WiFi 扫描/连接/关联/已连等进度弹窗（避免双缓冲 DIRECT 连续全屏交换导致 RGB 闪屏）。
+ */
+bool nodelio_overlay_suppress_net_toast(void);
+
 #ifdef __cplusplus
 }
 #endif

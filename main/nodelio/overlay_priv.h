@@ -234,6 +234,8 @@ int nl_ov_home_skill_pinned_count(void);
 int nl_ov_home_skill_strip_h(void);
 /** 当前用户屏 layout 是否已有该 skillId 的 skill_tile 或 skill_widget（钉选条去重用） */
 bool nl_ov_layout_current_page_has_skill(const char *skill_id);
+/** 当前首页是否处于无内容启动台态（决定钉选变更是否必须重建首页） */
+bool nl_ov_home_uses_launcher(void);
 /** 内容组件摘要缓存；无则空串 */
 const char *nl_ov_skill_widget_line(const char *skill_id);
 

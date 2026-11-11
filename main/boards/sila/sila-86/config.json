@@ -15,6 +15,8 @@
                 "CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6",
                 "CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16",
                 "CONFIG_ESP_WIFI_RX_BA_WIN=6",
+                "CONFIG_ESP_WIFI_NVS_ENABLED=n",
+                "CONFIG_ESP_PHY_CALIBRATION_AND_DATA_STORAGE=n",
                 "CONFIG_LV_USE_TABVIEW=y",
                 "CONFIG_LV_USE_KEYBOARD=y",
                 "CONFIG_LV_FONT_MONTSERRAT_20=y",

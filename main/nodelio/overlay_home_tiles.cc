@@ -1722,6 +1722,21 @@ int nl_ov_home_user_page_count(void)
     return s_home_user_n;
 }
 
+bool nl_ov_home_uses_launcher(void)
+{
+    if (!s_have_layout || !s_layout) {
+        return false;
+    }
+    if (s_home_user_n <= 0) {
+        return true;
+    }
+    if (!nodelio_controls_enabled() && count_all_user_skill_tiles() == 0 &&
+        count_all_user_content_tiles() == 0) {
+        return true;
+    }
+    return count_all_user_content_tiles() == 0;
+}
+
 static void home_apply_delta(int delta)
 {
     if (s_home_user_n <= 1 || delta == 0 || !s_home) {

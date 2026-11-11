@@ -39,13 +39,13 @@ static constexpr int CONNECT_TIMEOUT_SEC = 60;
 #if defined(CONFIG_NODELIO_PANEL)
 static int s_dhcp_retry = 0;
 /*
- * L2 已关联却无 IP：先给原生 DHCP 3s，再 kick。
- * 实测（ChinaNet 网关）：原生 DHCP 8s 拿不到，kick 后 2s 即拿到，说明链路通、
- * 只是 DHCP 报文丢了；lwIP 重传退避（4s/8s 起跳）会把窗口拖满，久等无益。
- * 重试 4s 一轮，3 轮共约 15s，仍远小于 CONNECT_TIMEOUT_SEC。
+ * L2 已关联却无 IP：先给原生 DHCP 8s（弱信号下 EAPOL + <ba-add> 需 ~3s，
+ * 过早 stop/start DHCP 会重置 xid 掐断正在回包的 OFFER/ACK）。
+ * 重试每轮给足 6s 窗口；若 3 轮 kick 后仍无 IP，说明 AP 会话半死锁，
+ * 主动 esp_wifi_disconnect() 触发 WifiStation 重关联，严禁卡死在 L2 在线但 0.0.0.0 无 IP 状态。
  */
-static constexpr int DHCP_ASSIST_FIRST_US = 3 * 1000000;
-static constexpr int DHCP_ASSIST_RETRY_US = 4 * 1000000;
+static constexpr int DHCP_ASSIST_FIRST_US = 8 * 1000000;
+static constexpr int DHCP_ASSIST_RETRY_US = 6 * 1000000;
 static constexpr int DHCP_ASSIST_MAX = 3;
 static esp_timer_handle_t s_dhcp_assist_timer = nullptr;
 static int s_dhcp_assist_n = 0;
@@ -83,7 +83,10 @@ static void nl_dhcp_assist_cb(void * /*arg*/)
         return;
     }
     if (s_dhcp_assist_n >= DHCP_ASSIST_MAX) {
-        ESP_LOGW(TAG, "DHCP assist exhausted (ssid=%s)", (const char *)ap.ssid);
+        ESP_LOGW(TAG, "DHCP assist exhausted (ssid=%s rssi=%d) — force L2 reassociate",
+                 (const char *)ap.ssid, ap.rssi);
+        s_dhcp_assist_n = 0;
+        (void)esp_wifi_disconnect();
         return;
     }
     s_dhcp_assist_n++;
@@ -94,7 +97,7 @@ static void nl_dhcp_assist_cb(void * /*arg*/)
     if (d) {
         d->ShowNotification("已连路由，等待分配 IP…", 3000);
     }
-    if (s_dhcp_assist_timer && s_dhcp_assist_n < DHCP_ASSIST_MAX) {
+    if (s_dhcp_assist_timer) {
         esp_timer_start_once(s_dhcp_assist_timer, DHCP_ASSIST_RETRY_US);
     }
 }
@@ -207,9 +210,11 @@ void WifiBoard::StartNetwork() {
         [](void *, esp_event_base_t, int32_t, void *) {
             (void)esp_wifi_set_ps(WIFI_PS_NONE);
             ESP_LOGI(TAG, "STA associated — wait DHCP (assist in 8s)");
-            auto *d = Board::GetInstance().GetDisplay();
-            if (d) {
-                d->ShowNotification("已连路由，等待分配 IP…", 8000);
+            if (!nodelio_overlay_suppress_net_toast()) {
+                auto *d = Board::GetInstance().GetDisplay();
+                if (d) {
+                    d->ShowNotification("已连路由，等待分配 IP…", 8000);
+                }
             }
             nl_dhcp_assist_arm();
         },

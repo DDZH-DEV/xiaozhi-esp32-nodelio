@@ -181,7 +181,12 @@ void Application::Initialize() {
 
         switch (event) {
             case NetworkEvent::Scanning:
-                display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000);
+#if CONFIG_NODELIO_PANEL
+                if (!nodelio_overlay_suppress_net_toast())
+#endif
+                {
+                    display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000);
+                }
 #if !(CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL)
                 /* 面板息屏断网再唤醒时，重连扫描会误置 DISCONNECTED，把刚建的会话掐掉 */
                 xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_DISCONNECTED);
@@ -193,17 +198,27 @@ void Application::Initialize() {
                     display->SetStatus(Lang::Strings::REGISTERING_NETWORK);
                 } else {
                     // WiFi or cellular with carrier info
-                    std::string msg = Lang::Strings::CONNECT_TO;
-                    msg += data;
-                    msg += "...";
-                    display->ShowNotification(msg.c_str(), 30000);
+#if CONFIG_NODELIO_PANEL
+                    if (!nodelio_overlay_suppress_net_toast())
+#endif
+                    {
+                        std::string msg = Lang::Strings::CONNECT_TO;
+                        msg += data;
+                        msg += "...";
+                        display->ShowNotification(msg.c_str(), 30000);
+                    }
                 }
                 break;
             }
             case NetworkEvent::Connected: {
-                std::string msg = Lang::Strings::CONNECTED_TO;
-                msg += data;
-                display->ShowNotification(msg.c_str(), 30000);
+#if CONFIG_NODELIO_PANEL
+                if (!nodelio_overlay_suppress_net_toast())
+#endif
+                {
+                    std::string msg = Lang::Strings::CONNECTED_TO;
+                    msg += data;
+                    display->ShowNotification(msg.c_str(), 30000);
+                }
                 xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_CONNECTED);
                 break;
             }

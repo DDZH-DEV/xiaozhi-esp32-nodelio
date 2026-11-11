@@ -275,3 +275,35 @@ HTTP、解码器和输出队列，覆盖 64kbit/s 慢流、短文件尾部、队
 5. **RGB Bounce Buffer 上限**：`RGB_BOUNCE_BUFFER_SIZE` 严格锁定 `DISPLAY_WIDTH * 30`（双缓冲 57.6KB），严禁改大。
 6. **截图预留**：`SnapshotToJpeg` 在编码前强制 `jpeg_data.reserve(32768)`，确保大缓冲一次性在 PSRAM 就位，不污染片内 DMA。
 7. **AFE 全天候常驻**：86 墙板全天候保持 WakeNet 常驻，黑屏随时可唤醒；**严禁息屏销毁 AFE**！仅在云端 TTS 播放（Speaking 态）时拆 AFE 腾出连续堆收 UDP，会话回 Idle 立即占回重建。
+
+---
+
+## SILA-86 开机联网期间屏幕频繁闪烁治理与抗频闪铁律（2026-11-11）
+
+### 1. 现象与多重叠加根因分析
+在 `sila-86`（ESP32-S3 + 480×480 RGB565 并口屏，16MHz PCLK，双帧缓冲 PSRAM `DIRECT` 模式 + 30 行 SRAM Bounce Buffer，仅 ~0.95ms 扫描余量）开机时，首页在 `t ≈ 2.8s` 已经完整渲染，但随后在 `t ≈ 3.2s – 7.0s` 联网窗口内屏幕会频繁白闪/黑闪数次。深入追踪定位出 3 个真正根因及 1 个致命硬件禁区：
+
+1. **`phy_init` 300ms NVS 跨页 GC 擦写阻塞 + `nvs.net80211` 冗余写 Flash（核心硬件阻塞源）**：
+   - `16m.csv` 中 `nvs` 分区仅 16KB（3 个活动页）。`CONFIG_ESP_PHY_CALIBRATION_AND_DATA_STORAGE=y` 每次开机在 `t=3.34s` 尝试向 NVS 写入 ~2KB RF 校准数据。因无连续 62 条空闲项，NVS 发生耗时 300ms 的跨页擦除与数据搬移（期间关闭 Flash/PSRAM Cache 导致 RGB Bounce Buffer 持续欠载必闪），最后仍报 `0x1105`（`ESP_ERR_NVS_NOT_ENOUGH_SPACE`）失败。
+   - `CONFIG_ESP_WIFI_NVS_ENABLED=y` 使 IDF Wi-Fi 驱动在关联期间重复写 `nvs.net80211`，而固件本已使用 `SsidManager` 独立管理凭据。
+2. **PSRAM 双缓冲 `DIRECT` 模式下联网 1.8 秒内连续弹出 4 次进度 Toast 强行整屏交换**：
+   - 扫描中（`Scanning`）→ 连接中（`Connecting`）→ 关联路由（`STA_CONNECTED`）→ 已连接（`Connected`）连续调用 `ShowNotification`，在已渲染完成的首页底部快速弹出 4 次全屏刷新通知；
+   - 叠加顶栏 `status_poll_cb` 1Hz 无条件重设字库/颜色并调用 `status_bar_relayout()`，使 LVGL 样式每秒全屏脏刷，在射频与 Flash 高峰期严重加剧 PSRAM 总线竞争。
+3. **`bootstrap` 拉取完成后无条件整屏销毁重建（`lv_obj_clean(s_home)`）**：
+   - `apply_pins_and_refill()` 在开机初次拉取到钉选技能时（`s_pin_n` 从 0 变 `nn`），哪怕用户当前屏画布已包含全部钉选技能（底部应用条可见数前后均为 0），原逻辑仍无条件触发 `nl_ov_fill_home()` 销毁全部磁贴重建，造成联网成功瞬间再闪一次。
+4. **【致命禁区】严禁开启 `CONFIG_LCD_RGB_ISR_IRAM_SAFE=y`（会导致无限重启 Cache Panic）**：
+   - `sila-86` 的 2 个全屏 Framebuffer 位于 PSRAM（`0x3c...`，受 MSPI DCache 映射），GDMA EOF 中断调 `lcd_rgb_panel_fill_bounce_buffer()` 从 PSRAM Framebuffer `memcpy` 到片内 SRAM Bounce Buffer（`0x3fc...`）。
+   - 若开启 `CONFIG_LCD_RGB_ISR_IRAM_SAFE=y`，GDMA 中断带 `ESP_INTR_FLAG_IRAM`，在 SPI Flash 读写/擦除关闭 Cache 期间**不会被屏蔽**，中断触发时直接读取已关闭 Cache 的 PSRAM 地址 `0x3c...`，立即触发 `Guru Meditation Error: Core 0 panic'ed (Cache error). Cache disabled but cached memory region accessed` 死循环重启！
+   - 同时 ESP-IDF 6.1 在未设 `CONFIG_LCD_RGB_RESTART_IN_VSYNC` 时已在 `lcd_rgb_panel_try_restart_transmission` 中按 `bb_eof_count < expect_eof_count` 自动检测欠载并在 VBlank 重启 GDMA，无需强开每帧强制重启。
+
+### 2. 治理与规范总结
+1. **严禁开启 `CONFIG_LCD_RGB_ISR_IRAM_SAFE` 与 `CONFIG_LCD_RGB_RESTART_IN_VSYNC`**：
+   - 保持两者未设置（`n`），确保 Flash 操作关 Cache 期间自动挂起 RGB GDMA 中断，杜绝 ISR 访问 PSRAM Framebuffer 引发 Cache Panic。
+2. **剔除 Wi-Fi/PHY 启动期无用 Flash 写入**：
+   - 强制关闭 `CONFIG_ESP_PHY_CALIBRATION_AND_DATA_STORAGE=n` 与 `CONFIG_ESP_WIFI_NVS_ENABLED=n`（PHY 直接走 `RF_CAL_PARTIAL` 内存校准，不再读写 NVS `"phy"` 命名空间，彻底消灭 `0x1105` 与 300ms 擦写阻塞）；且禁止在 RGB 亮屏启动后在 `nvs_init_impl` 中做额外的 `nvs_erase_all` 写盘。
+3. **已载入首页态抑制后台网络进度 Toast**：
+   - 提供 `nodelio_overlay_suppress_net_toast()`：当面板已就绪、有本地布局且用户不在配网/连接页面时，拦截后台自动扫描、连接路由、等待 IP、已连接等阶段性通知，仅在状态栏静默点亮 Wi-Fi 图标。
+4. **顶栏状态与时钟按变化触发，杜绝 1Hz 无条件重排**：
+   - 状态栏时钟、Wi-Fi 格数字形、电池图标与告警色引入状态缓存，无变化时直接跳过 LVGL 对象操作与 `status_bar_relayout()`。
+5. **钉选技能条差分刷新，避免 `bootstrap` 重绘首页**：
+   - 在 `apply_pins_and_refill()` 中对比更新前后 `home_skill_strip_visible_n()`：若非空态启动台且底部条可见数更新前后均为 0，直接跳过 `nl_ov_fill_home()`，保持首页完整稳定。
