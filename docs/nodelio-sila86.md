@@ -1,7 +1,7 @@
 # SILA-86 on xiaozhi-esp32 v2.5.2 (NodeLio stage K)
 
 ## Status
-- Source: official tag v2.5.2 → `D:\xz25` (branch `nodelio-sila86`)
+- Source: official tag v2.5.2 → `D:\xz25` (branch `nodelio-panel`)
 - **Firmware root**: this tree. `D:\xz` = 1.5.6 pin reference only.
 - **IDF 6.1**: `D:\Espressif\frameworks\esp-idf-v6.1` + `idf6.1_py3.11_env`
 - **K0–K2 done**: board + chat + `main/nodelio/` overlay

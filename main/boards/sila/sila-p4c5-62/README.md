@@ -7,8 +7,8 @@ S3 专用的硬件 AES、DRAM 占位、断网休眠及音频规避没有整体�
 
 ## 基线与证据
 
-- 固件基线：`origin/nodelio-sila86`，`e3a9e0fc9ae64948e6545843d180282ced88dcc6`。
-- 产品代码已并入 `nodelio-sila86`（`eaa0c094`），后续按用户指定的产品主分支维护。
+- 固件基线：`nodelio/nodelio-panel`，`e3a9e0fc9ae64948e6545843d180282ced88dcc6`。
+- 产品代码已并入 `nodelio-panel`（`eaa0c094`），后续按该产品主分支维护。
 - 用户 COM8 探测：P4 silicon v3.2、40MHz 晶振、USB Serial/JTAG；Secure Boot 和 Flash Encryption 均未启用。
 - 卖家描述：ESP32-P4NRW32X、ESP32-C5-MINI、ES8389、AXP2101；用户有两块板，其中一块升级到 32MB Flash。
 - 用户提供的 `SCH_P4X_2026-10-13.pdf`（11 页）：第 1 页总连接，第 2 页 MCU/外置 Flash，第 8 页音频。
