@@ -326,7 +326,7 @@ int nl_ov_apps_split_rail_w(void);
 void nl_ov_workspace_reserve(int right, int bottom);
 void nl_ov_apps_reserve_bottom(int bottom);
 void nl_ov_apps_refresh_daily(void);
-/** 应用列表刷新 FAB 落位（左下；与右下音乐球错开）。 */
+/** 应用页 chrome 占位（原刷新 FAB 已移除；音乐球仍可回调）。 */
 void nl_ov_apps_layout_chrome(void);
 /** 有本地缓存则只画列表；无缓存才拉网。 */
 void nl_ov_apps_ensure(void);

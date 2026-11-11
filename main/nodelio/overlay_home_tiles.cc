@@ -2032,7 +2032,8 @@ static void fill_home_launcher(void)
     lv_obj_set_flex_flow(s_home, LV_FLEX_FLOW_COLUMN);
     /* 侧栏条目少时整组垂直居中，避免两张卡贴在顶上、下面一大块空 */
     lv_obj_set_flex_align(s_home,
-                          (side && pins <= 2) ? LV_FLEX_ALIGN_CENTER : LV_FLEX_ALIGN_START,
+                          (pins == 0 || (side && pins <= 2)) ? LV_FLEX_ALIGN_CENTER
+                                                              : LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_hor(s_home, side ? 16 : 20, 0);
     lv_obj_set_style_pad_ver(s_home, side ? 16 : 12, 0);

@@ -92,6 +92,8 @@ private:
     // uses it to reject a fetch result produced before a disable/re-enable cycle.
     std::atomic<uint32_t> control_generation_{0};
     WakeDetector wake_detector_ = WakeDetector::kNone;
+    bool last_wakenet_enabled_ = false;
+    bool last_aec_enabled_ = false;
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     bool prefer_wake_afe_ = false;
 #endif

@@ -351,13 +351,12 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_PLAYBACK_DRAINED) {
 #if CONFIG_NODELIO_PANEL
-            /* 云端偶发不发 tts.stop：喇叭已空仍要推进新闻续段。 */
-            if (news_reading_ && !news_awaiting_mcp_ && !aborted_) {
-                if (news_playback_token_ == 0) {
-                    news_playback_token_ = nodelio_skill_news_read_token();
-                }
-                news_tts_stopped_ = true;
+            /* 句间 / UDP 间隙也会排空，不能立刻当 tts.stop；见 MaybeSynthesizeNewsTtsStop。 */
+            if (news_reading_ && audio_service_.IsPlaybackIdle() &&
+                news_playback_idle_since_us_ == 0) {
+                news_playback_idle_since_us_ = esp_timer_get_time();
             }
+            MaybeSynthesizeNewsTtsStop();
             FinishNewsReadPlayback();
 #endif
             if (audio_service_.IsPlaybackIdle()) {
@@ -433,6 +432,14 @@ void Application::Run() {
             PollPanelAudioTest();
             CheckNewsReadRequest();
             CheckSupportSuggestRequest();
+            if (news_reading_) {
+                if (!audio_service_.IsPlaybackIdle()) {
+                    news_playback_idle_since_us_ = 0;
+                } else if (news_playback_idle_since_us_ == 0) {
+                    news_playback_idle_since_us_ = esp_timer_get_time();
+                }
+                MaybeSynthesizeNewsTtsStop();
+            }
             FinishNewsReadPlayback();
             HandleListenIdleTick();
 #endif
@@ -1013,6 +1020,7 @@ void Application::InitializeProtocol() {
                     ESP_LOGI(TAG, "cloud tts start (pending_dsh=%d)",
                              pending_confirm_open_dsh_ ? 1 : 0);
                     news_tts_stopped_ = false;
+                    news_playback_idle_since_us_ = 0;
 #if CONFIG_BOARD_TYPE_SILA_86
                     /* TTS 包常早于 Speaking 态；先拆 AFE 给 UDP pbuf。 */
                     audio_service_.ReleaseAudioEngine();
@@ -1032,6 +1040,7 @@ void Application::InitializeProtocol() {
                             news_playback_token_ = nodelio_skill_news_read_token();
                         }
                         news_tts_stopped_ = true;
+                        news_playback_idle_since_us_ = 0;
                         FinishNewsReadPlayback();
                         return;
                     }
@@ -2473,6 +2482,7 @@ void Application::OnNewsReadToolCalled() {
     suppress_cloud_tts_until_us_ = 0;
     aborted_ = false;
     news_tts_stopped_ = false;
+    news_playback_idle_since_us_ = 0;
     /* 同轮重复 call：保留已有 token / 起播计数，避免把「已在播」判成没播过。 */
     if (news_playback_token_ == 0) {
         news_playback_start_count_ = audio_service_.GetPlaybackCount();
@@ -2484,6 +2494,7 @@ void Application::OnNewsReadToolCalled() {
 void Application::CancelNewsReadPlayback() {
     news_playback_token_ = 0;
     news_tts_stopped_ = false;
+    news_playback_idle_since_us_ = 0;
     nodelio_skill_news_cancel_read();
 }
 
@@ -2499,11 +2510,41 @@ void Application::OnNewsReadSentence(const char* text) {
     if (const auto token = nodelio_skill_news_on_sentence(text)) {
         news_playback_token_ = token;
         news_reading_ = true;
+        news_playback_idle_since_us_ = 0;
         if (state == kDeviceStateListening && !news_tts_stopped_) {
             ESP_LOGI(TAG, "news article sentence: restore speaking token=%u", (unsigned)token);
             SetDeviceState(kDeviceStateSpeaking);
         }
     }
+}
+
+/** 云端偶发不发 tts.stop：仅在已 Listening，或喇叭连续空闲 ≥800ms 时合成 stop。 */
+void Application::MaybeSynthesizeNewsTtsStop() {
+    if (news_tts_stopped_ || !news_reading_ || news_awaiting_mcp_ || aborted_) {
+        return;
+    }
+    if (!audio_service_.IsPlaybackIdle()) {
+        news_playback_idle_since_us_ = 0;
+        return;
+    }
+    if (news_playback_idle_since_us_ == 0) {
+        news_playback_idle_since_us_ = esp_timer_get_time();
+        return;
+    }
+    const DeviceState st = GetDeviceState();
+    constexpr int64_t kIdleGraceUs = 800000; /* 800ms：撑过句间 / UDP 空隙 */
+    const bool listening = st == kDeviceStateListening;
+    const bool idle_long =
+        (esp_timer_get_time() - news_playback_idle_since_us_) >= kIdleGraceUs;
+    if (!listening && !idle_long) {
+        return;
+    }
+    if (news_playback_token_ == 0) {
+        news_playback_token_ = nodelio_skill_news_read_token();
+    }
+    news_tts_stopped_ = true;
+    ESP_LOGW(TAG, "news read: synthesize tts.stop (listening=%d idle_ms=%lld)", listening ? 1 : 0,
+             (long long)((esp_timer_get_time() - news_playback_idle_since_us_) / 1000));
 }
 
 void Application::FinishNewsReadPlayback() {
@@ -2516,6 +2557,7 @@ void Application::FinishNewsReadPlayback() {
     }
     news_playback_token_ = 0;
     news_tts_stopped_ = false;
+    news_playback_idle_since_us_ = 0;
     bool more = false;
     const bool played = audio_service_.GetPlaybackCount() != news_playback_start_count_;
     /* 只播了标题时 played 也可能为 true；finish_chunk 会把「未匹配正文」收成 more=1。 */

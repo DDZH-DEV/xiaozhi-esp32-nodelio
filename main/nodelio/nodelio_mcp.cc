@@ -1634,8 +1634,8 @@ void nodelio_mcp_register_tools(void)
     mcp.AddTool(
         "self.support.suggest",
         "self.support.suggest: 客服拟回复。听到「调support.suggest」必须调用。"
-        "replies 为空时返回访客原话；你必须立刻再次调用，replies 为 2 到 4 条针对原话的短回复，用 | 分隔。"
-        "不要朗读这些回复。",
+        "replies 为空时返回访客原话与回复语言；你必须立刻再次调用，replies 为 2 到 4 条短回复，用 | 分隔。"
+        "回复语言必须与访客原话一致：英文访客→全英文，中文访客→简体中文。不要朗读。",
         PropertyList({
             Property("replies", kPropertyTypeString, std::string("")).SetMaxLength(512),
         }),
@@ -1687,9 +1687,38 @@ void nodelio_mcp_register_tools(void)
                 Application::GetInstance().Schedule([]() {
                     Application::GetInstance().OnSupportSuggestToolCalled(false);
                 });
-                std::string out = "访客原话：";
+                /* 与 go-chat EffectiveReplyLocale 同判：拉丁字母为主且无汉字 → 英文。 */
+                int letters = 0, han = 0;
+                for (const unsigned char *p = reinterpret_cast<const unsigned char *>(visitor); *p;) {
+                    if (*p < 0x80) {
+                        if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')) {
+                            letters++;
+                        }
+                        p++;
+                        continue;
+                    }
+                    if ((*p & 0xF0) == 0xE0 && p[1] && p[2]) {
+                        const uint32_t cp = ((uint32_t)(p[0] & 0x0F) << 12) |
+                                           ((uint32_t)(p[1] & 0x3F) << 6) | (uint32_t)(p[2] & 0x3F);
+                        if (cp >= 0x4E00 && cp <= 0x9FFF) {
+                            han++;
+                        }
+                        p += 3;
+                        continue;
+                    }
+                    p += (*p & 0xF8) == 0xF0 ? 4 : ((*p & 0xE0) == 0xC0 ? 2 : 1);
+                }
+                const bool en = letters >= 3 && han == 0;
+                std::string out = en ? "Visitor message: " : "访客原话：";
                 out += visitor;
-                out += "\n立刻再次调用 self.support.suggest，replies 为 2 到 4 条针对这句话的短回复，用 | 分隔。不要朗读。";
+                if (en) {
+                    out += "\nCRITICAL: Reply language is English ONLY (no Chinese). "
+                           "Call self.support.suggest again now with replies = 2 to 4 short English "
+                           "replies separated by |. Do not speak them aloud.";
+                } else {
+                    out += "\n关键：用简体中文写候选。立刻再次调用 self.support.suggest，"
+                           "replies 为 2 到 4 条针对这句话的短回复，用 | 分隔。不要朗读。";
+                }
                 return out;
             }
             Application::GetInstance().Schedule([lines]() {

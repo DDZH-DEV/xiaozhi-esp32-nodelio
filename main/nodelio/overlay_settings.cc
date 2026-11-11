@@ -1666,11 +1666,11 @@ static void fill_settings_hub(void)
     std::snprintf(bri_sub, sizeof(bri_sub), "%d%% · %d%% · %s", s_brightness, s_volume,
                   nl_ov_ui_mode_name(s_cfg.ui_mode));
 
-    /* 普通入口统一弱 accent；仅恢复出厂保留危险红。 */
-    settings_tile(s_settings, "brightness_6", "显示与声音", bri_sub, UI_C_ACCENT, nullptr,
+    /* 入口 Pod 分色（与应用列表同风）；仅恢复出厂用危险红。 */
+    settings_tile(s_settings, "brightness_6", "显示与声音", bri_sub, UI_C_INFO, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_DISP); });
     settings_tile(s_settings, "home", "控家",
-                  nodelio_controls_enabled() ? "已开启" : "已关闭", UI_C_ACCENT, nullptr,
+                  nodelio_controls_enabled() ? "已开启" : "已关闭", UI_C_SUCCESS, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_CTRL); });
     {
         char pwr_sub[40];
@@ -1681,7 +1681,7 @@ static void fill_settings_hub(void)
             std::snprintf(pwr_sub, sizeof(pwr_sub), "%ds · 不断网",
                           (int)nodelio_idle_sleep_seconds());
         }
-        settings_tile(s_settings, "power_settings_new", "省电", pwr_sub, UI_C_ACCENT, nullptr,
+        settings_tile(s_settings, "power_settings_new", "省电", pwr_sub, UI_C_WARN, nullptr,
                       [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_POWER); });
     }
     {
@@ -1689,24 +1689,24 @@ static void fill_settings_hub(void)
         std::snprintf(media_sub, sizeof(media_sub), "%s · %d%%",
                       nodelio_media_sleep_enabled() ? "可息屏" : "常亮",
                       (int)nodelio_media_wake_duck_pct());
-        settings_tile(s_settings, "music_note", "播放器", media_sub, UI_C_ACCENT, nullptr,
+        settings_tile(s_settings, "music_note", "播放器", media_sub, UI_C_PURPLE, nullptr,
                       [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_MEDIA); });
     }
-    settings_tile(s_settings, "wifi", "网络与连接", "WiFi · 服务器", UI_C_ACCENT, nullptr,
+    settings_tile(s_settings, "wifi", "网络与连接", "WiFi · 服务器", 0x00B4D8, nullptr,
                   [](lv_event_t*) { nl_ov_open_connect(); });
     settings_tile(
-        s_settings, "refresh", "刷新布局", "重新拉取", UI_C_ACCENT, nullptr,
+        s_settings, "refresh", "刷新布局", "重新拉取", 0xF2994A, nullptr,
         [](lv_event_t*) { (void)nodelio_panel_ui_set_pref("layout_sync", "", nullptr, 0); });
     {
         char voice_sub[40];
         std::snprintf(voice_sub, sizeof(voice_sub), "%s · %ds",
                       nodelio_xiaozhi_enabled() ? "小智" : "无云",
                       (int)nodelio_listen_idle_seconds());
-        settings_tile(s_settings, "mic", "语音助手", voice_sub, UI_C_ACCENT, nullptr,
+        settings_tile(s_settings, "mic", "语音助手", voice_sub, 0x8E44AD, nullptr,
                       [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_VOICE); });
     }
 #if CONFIG_FIRMWARE_OTA_ENABLED
-    settings_tile(s_settings, "cloud_download", "检查固件更新", "检查更新", UI_C_ACCENT, nullptr,
+    settings_tile(s_settings, "cloud_download", "检查固件更新", "检查更新", 0x0284C7, nullptr,
                   [](lv_event_t*) {
                       char err[64];
                       if (nodelio_panel_ui_set_pref("fw_check", "", err, sizeof(err)) != ESP_OK &&
@@ -1715,9 +1715,9 @@ static void fill_settings_hub(void)
                       }
                   });
 #endif
-    settings_tile(s_settings, "info", "设备信息", "状态", UI_C_ACCENT, nullptr,
+    settings_tile(s_settings, "info", "设备信息", "状态", 0x3D5A80, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_SYS); });
-    settings_tile(s_settings, "build", "硬件自检", "触摸 · 麦", UI_C_ACCENT, nullptr,
+    settings_tile(s_settings, "build", "硬件自检", "触摸 · 麦", 0x5B5EA6, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_DIAGNOSTICS); });
     settings_tile(s_settings, "restart_alt", "恢复出厂", "清空并重启", UI_C_DANGER, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_RESET); });

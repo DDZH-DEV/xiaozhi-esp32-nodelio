@@ -253,6 +253,9 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
     if (codec_->input_reference()) {
         afe_iface_->disable_aec(afe_data_);
     }
+    last_wakenet_enabled_ = false;
+    last_aec_enabled_ = false;
+    afe_control_dirty_ = true;
     afe_iface_->print_pipeline(afe_data_);
 
     if (processing_task_stack_ == nullptr) {
@@ -356,7 +359,8 @@ bool AfeAudioEngine::Deinitialize()
         afe_data_ = nullptr;
         afe_iface_ = nullptr;
     }
-    wake_words_.clear();
+    last_wakenet_enabled_ = false;
+    last_aec_enabled_ = false;
     xEventGroupClearBits(event_group_, kDestroyRequested);
     ESP_LOGI(TAG, "Deinitialize AFE done free=%u largest=%u",
              heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -377,27 +381,43 @@ void AfeAudioEngine::Feed(std::vector<int16_t>&& data) {
     }
 #endif
 
-    if (afe_data_ == nullptr || (bits & kAfeActive) == 0) {
+    if (afe_data_ == nullptr || afe_iface_ == nullptr || (bits & kAfeActive) == 0 ||
+        data.empty()) {
         return;
     }
 
     std::unique_lock<std::mutex> lock(input_buffer_mutex_);
-    if ((xEventGroupGetBits(event_group_) & kAfeActive) == 0) {
+    if (afe_data_ == nullptr || afe_iface_ == nullptr ||
+        (xEventGroupGetBits(event_group_) & kAfeActive) == 0) {
         return;
     }
-    input_buffer_.insert(input_buffer_.end(), data.begin(), data.end());
-    size_t chunk_size = afe_iface_->get_feed_chunksize(afe_data_) * codec_->input_channels();
+    /* 先取 chunk：为 0 时绝不能 insert，否则队列只涨不耗会把堆打穿。 */
+    const size_t chunk_size =
+        afe_iface_->get_feed_chunksize(afe_data_) * codec_->input_channels();
     if (chunk_size == 0) {
         return;
     }
+    /* 播中唤醒路径若 feed 跟不上，限制缓冲，避免 insert realloc 踩坏 PSRAM。 */
+    constexpr size_t kMaxBufferedSamples = 16000; /* ~1s @16k mono */
+    if (input_buffer_.size() + data.size() > kMaxBufferedSamples) {
+        ESP_LOGW(TAG, "Feed drop backlog size=%u +%u", (unsigned)input_buffer_.size(),
+                 (unsigned)data.size());
+        input_buffer_.clear();
+    }
+    input_buffer_.insert(input_buffer_.end(), data.begin(), data.end());
     while (input_buffer_.size() >= chunk_size) {
+        if (afe_data_ == nullptr || afe_iface_ == nullptr) {
+            input_buffer_.clear();
+            return;
+        }
         afe_iface_->feed(afe_data_, input_buffer_.data());
         input_buffer_.erase(input_buffer_.begin(), input_buffer_.begin() + chunk_size);
         /* taskYIELD 唤不醒更低优先级的 IDLE0。AEC 一帧可占满 CPU0 超过看门狗。 */
         lock.unlock();
         vTaskDelay(pdMS_TO_TICKS(1));
         lock.lock();
-        if ((xEventGroupGetBits(event_group_) & kAfeActive) == 0) {
+        if (afe_data_ == nullptr || afe_iface_ == nullptr ||
+            (xEventGroupGetBits(event_group_) & kAfeActive) == 0) {
             return;
         }
     }
@@ -526,15 +546,15 @@ void AfeAudioEngine::ApplyAfeControls() {
     std::lock_guard<std::mutex> lock(input_buffer_mutex_);
     EventBits_t bits = xEventGroupGetBits(event_group_);
     if (wake_detector_ == WakeDetector::kWakeNet) {
-        static bool last_wn = false;
         const bool want_wn = (bits & kWakeWordEnabled) != 0;
-        if (want_wn != last_wn) {
+        if (want_wn != last_wakenet_enabled_) {
             if (want_wn) {
                 afe_iface_->enable_wakenet(afe_data_);
             } else {
                 afe_iface_->disable_wakenet(afe_data_);
             }
-            last_wn = want_wn;
+            last_wakenet_enabled_ = want_wn;
+            ESP_LOGI(TAG, "%s WakeNet on AFE", want_wn ? "Enabled" : "Disabled");
         }
     }
 #if CONFIG_BOARD_TYPE_SILA_P4C5_62 && CONFIG_NODELIO_PANEL
@@ -552,14 +572,13 @@ void AfeAudioEngine::ApplyAfeControls() {
         const bool enable_aec =
             !media_playing && ((device_aec_enabled_.load() && (bits & kVoiceProcessingEnabled)) ||
                                ((bits & kWakeWordEnabled) && codec_->output_enabled()));
-        static bool last_aec = false;
-        if (enable_aec != last_aec) {
+        if (enable_aec != last_aec_enabled_) {
             if (enable_aec) {
                 afe_iface_->enable_aec(afe_data_);
             } else {
                 afe_iface_->disable_aec(afe_data_);
             }
-            last_aec = enable_aec;
+            last_aec_enabled_ = enable_aec;
         }
     }
 #endif
@@ -613,7 +632,7 @@ void AfeAudioEngine::ProcessingTask() {
             continue;
         }
         const uint32_t generation = control_generation_.load();
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+#if (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62) && CONFIG_NODELIO_PANEL
         /* 有限等待：息屏拆 AFE 时能及时看到 kDestroyRequested，避免 portMAX_DELAY 卡死 */
         auto* result = afe_iface_->fetch_with_delay(afe_data_, pdMS_TO_TICKS(100));
         if (xEventGroupGetBits(event_group_) & kDestroyRequested) {

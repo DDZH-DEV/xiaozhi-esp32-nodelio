@@ -289,6 +289,9 @@ private:
     uint32_t news_playback_token_ = 0;
     uint32_t news_playback_start_count_ = 0;
     bool news_tts_stopped_ = false;
+    /** 新闻播队列变空的时刻；0=正在出声。用于缺 tts.stop 时的防抖，避免句间空隙误续段。 */
+    int64_t news_playback_idle_since_us_ = 0;
+    void MaybeSynthesizeNewsTtsStop();
     bool PlayNextSpokenNotify();
 #endif
     TaskHandle_t activation_task_handle_ = nullptr;

@@ -219,13 +219,13 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
     }
 
-    /* 安静层级：普通入口弱底 + 弱字色；仅危险项保留实心红 Pod。 */
+    /* 与应用列表一致：彩色 Pod + 白字形；危险项仍用实心红。 */
     const bool danger = (accent_c == UI_C_DANGER);
     lv_obj_t *pod = lv_obj_create(btn);
     lv_obj_remove_style_all(pod);
     lv_obj_set_size(pod, pod_sz, pod_sz);
     lv_obj_set_style_radius(pod, UI_RADIUS_SM, 0);
-    lv_obj_set_style_bg_color(pod, danger ? UI_DANGER : UI_POD_QUIET, 0);
+    lv_obj_set_style_bg_color(pod, danger ? UI_DANGER : lv_color_hex(accent_c), 0);
     lv_obj_set_style_bg_opa(pod, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(pod, 0, 0);
     lv_obj_clear_flag(pod, LV_OBJ_FLAG_CLICKABLE);
@@ -234,7 +234,7 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_t *g = lv_label_create(pod);
     lv_label_set_text(g, glyph ? glyph : "");
     apply_font(g);
-    lv_obj_set_style_text_color(g, danger ? UI_ON_TILE : UI_TEXT_SUB, 0);
+    lv_obj_set_style_text_color(g, UI_ON_TILE, 0);
     lv_obj_center(g);
     lv_obj_clear_flag(g, LV_OBJ_FLAG_CLICKABLE);
 

@@ -32,7 +32,6 @@
 #include <cstring>
 #include <initializer_list>
 
-LV_FONT_DECLARE(font_material_symbols_20_4);
 LV_FONT_DECLARE(font_material_symbols_30_4);
 
 #define TAG "nl_apps"
@@ -58,7 +57,6 @@ static lv_obj_t *s_page;
 static lv_obj_t *s_list_pane; /* 宽屏可收成左侧轨，给技能卡让位 */
 static lv_obj_t *s_list;
 static lv_obj_t *s_hint;
-static lv_obj_t *s_refresh;
 EXT_RAM_BSS_ATTR static nl_app_item s_items[APP_MAX];
 
 static void with_builtin_daily(nl_app_item* items, int& n) {
@@ -100,6 +98,8 @@ static bool s_loading;
 static bool s_daily_loading;
 static bool s_have_list;
 static bool s_split;
+/** 列表视觉是否左轨；关闭动画拉宽期间保持 true，避免 ROW_WRAP 闪成一行多卡。 */
+static bool s_split_vis;
 static int s_focus_idx = -1;
 
 static constexpr int kAppsPagePadH = 16;
@@ -120,8 +120,15 @@ static int apps_pane_target_w(bool split)
 {
     const int full = apps_body_w() - 2 * kAppsPagePadH;
     if (apps_wide() && split) {
-        /* 分栏左轨单列，把宽度让给右侧技能窗（客服列表等需要更宽）。 */
-        return ui_settings_tile_width(full, true, nullptr);
+        /* P4 左轨固定紧凑宽：只够色 Pod + 两行字，右侧技能窗吃满余量。 */
+        int rail = 220;
+        if (rail > full) {
+            rail = full;
+        }
+        if (rail < 168) {
+            rail = full > 168 ? 168 : full;
+        }
+        return rail;
     }
     return full > 120 ? full : 120;
 }
@@ -160,6 +167,12 @@ static void copy_field(char *dst, size_t n, const cJSON *obj, const char *key)
     if (cJSON_IsString(v) && v->valuestring && n) {
         snprintf(dst, n, "%s", v->valuestring);
     }
+}
+
+/** 应用列表标题与服务端 skills[].name 一致，不做截断改写。 */
+static void copy_app_label(char *dst, size_t n, const cJSON *obj)
+{
+    copy_field(dst, n, obj, "name");
 }
 
 static void set_hint(const char *text)
@@ -445,19 +458,89 @@ static const char *apps_glyph_for(const char *id)
         strstr(id, "gochat") != nullptr || strstr(id, "go-chat") != nullptr) {
         return MATERIAL_SYMBOLS_CONTACT_SUPPORT;
     }
+    if (strstr(id, "codex") != nullptr) {
+        return MATERIAL_SYMBOLS_EDIT_SQUARE; /* 代码工作台 */
+    }
+    if (strstr(id, "deepseek") != nullptr) {
+        return MATERIAL_SYMBOLS_MEMORY; /* 推理 / 算力 */
+    }
+    if (strstr(id, "workbuddy") != nullptr) {
+        return MATERIAL_SYMBOLS_PERSON; /* 协作助手 */
+    }
+    if (strstr(id, "openai") != nullptr || strstr(id, "gpt") != nullptr) {
+        return MATERIAL_SYMBOLS_ROBOT_2; /* 对话模型 */
+    }
     if (strstr(id, "chat") != nullptr) {
         return MATERIAL_SYMBOLS_CHAT_BUBBLE;
     }
     return MATERIAL_SYMBOLS_EXPLORE;
 }
 
+static uint32_t apps_color_for(const char *id)
+{
+    if (!id || !id[0]) {
+        return 0x3D5A80;
+    }
+    if (strstr(id, "builtin.daily") != nullptr || strstr(id, "weather") != nullptr) {
+        return 0x2F80ED; /* 天空蓝：日历与天气 */
+    }
+    if (strstr(id, "builtin.files") != nullptr || strstr(id, "sd") != nullptr) {
+        return 0xF2994A; /* 暖阳橙：文件存储 */
+    }
+    if (strstr(id, "podcast") != nullptr) {
+        return 0x8E44AD; /* 雅致紫：播客 */
+    }
+    if (strstr(id, "radio") != nullptr) {
+        return 0xFF5722; /* 活力赤橙：网络电台 */
+    }
+    if (nodelio_skill_id_is_music(id)) {
+        return 0xFF2D55; /* 音乐粉红：曲库 */
+    }
+    if (strstr(id, "news") != nullptr || strstr(id, "rss") != nullptr) {
+        return 0x00B4D8; /* 清透松石青：RSS与新闻 */
+    }
+    if (strstr(id, "article") != nullptr) {
+        return 0x5B5EA6; /* 文艺青蓝：每日一篇 */
+    }
+    if (strstr(id, "support") != nullptr || strstr(id, "inbox") != nullptr ||
+        strstr(id, "gochat") != nullptr || strstr(id, "go-chat") != nullptr) {
+        return 0x34C759; /* 品牌翡翠绿：智能客服 */
+    }
+    if (strstr(id, "deepseek") != nullptr) {
+        return 0x0284C7; /* 蔚蓝：DeepSeek */
+    }
+    if (strstr(id, "workbuddy") != nullptr) {
+        return 0x7C3AED; /* 极客亮紫：WorkBuddy */
+    }
+    if (strstr(id, "openai") != nullptr || strstr(id, "gpt") != nullptr) {
+        return 0x10A37F; /* OpenAI 标志薄荷绿 */
+    }
+    if (strstr(id, "codex") != nullptr) {
+        return 0x4F46E5; /* 科技深靛蓝：Codex */
+    }
+    if (strstr(id, "chat") != nullptr) {
+        return 0x10B981; /* 消息清新绿：对话 */
+    }
+    /* 未知应用散列到现代调色板 */
+    static const uint32_t k_palette[] = {
+        0x2F80ED, 0x34C759, 0xFF5722, 0x8E44AD,
+        0x00B4D8, 0xF2994A, 0x4F46E5, 0xFF2D55
+    };
+    uint32_t h = 5381;
+    for (const char *p = id; *p; p++) {
+        h = ((h << 5) + h) + (uint8_t)*p;
+    }
+    return k_palette[h % (sizeof(k_palette) / sizeof(k_palette[0]))];
+}
+
 struct app_view_t {
     lv_obj_t *card = nullptr, *pod = nullptr, *icon = nullptr;
-    lv_obj_t *title = nullptr, *subtitle = nullptr;
+    lv_obj_t *text = nullptr, *title = nullptr, *subtitle = nullptr;
     nl_app_item item{};
     int width = 0, height = 0, pod_size = 0, line = 0;
     const lv_font_t* font = nullptr;
     bool focused = false;
+    int8_t rail = -1;
 };
 EXT_RAM_BSS_ATTR static app_view_t s_app_views[APP_MAX];
 static bool s_apps_dirty;
@@ -474,13 +557,56 @@ static void render_list(void)
     }
     NlUiWorkScope work("apps.update");
     s_apps_dirty = false;
-    const int list_w = apps_pane_target_w(s_split);
-    /* 全宽三列；分栏左轨单列。 */
-    const int card_w = ui_settings_tile_width(list_w, s_split && apps_wide(), nullptr);
+    const bool rail = s_split_vis && apps_wide();
+    const int list_w = rail ? apps_pane_target_w(true) : apps_pane_target_w(false);
+    /* 86：5 列图标网格。P4 全宽：6 列居中启动台。P4 分栏：紧凑色 Pod 横条。 */
+    const bool wide_grid = apps_wide() && !rail;
     const int line = nl_ov_ui_line_box();
-    const int card_h = ui_settings_tile_height();
-    const int pod_size = 56;
     const lv_font_t* font = nl_ov_ui_font();
+    const int font_h = nl_ov_ui_font_line_h();
+    const bool large = nodelio_text_scale() == 1;
+    const int gap = wide_grid ? (large ? 28 : 22) : (large ? 10 : 8);
+    int card_w, card_h;
+    const int pod_size = rail ? 52 : (wide_grid ? 72 : 58);
+    if (rail) {
+        card_w = list_w;
+        /* 仅标题，相对色 Pod 垂直居中 */
+        card_h = pod_size + (large ? 16 : 12);
+        /* 单列：关闭动画拉宽时若仍是 ROW_WRAP，会短暂排成一行很多个。 */
+        lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
+                              LV_FLEX_ALIGN_START);
+        lv_obj_set_style_pad_row(s_list, large ? 10 : 8, 0);
+        lv_obj_set_style_pad_column(s_list, 0, 0);
+    } else if (wide_grid) {
+        /* 按可用宽强制 6 列（勿写死小格宽，否则会排成 8 个一行）。首排靠上，两排行距加大。 */
+        constexpr int kWideCols = 6;
+        card_w = (list_w - gap * (kWideCols - 1)) / kWideCols;
+        if (card_w < pod_size + 8) {
+            card_w = pod_size + 8;
+        }
+        const int icon_title_gap = large ? 12 : 10;
+        card_h = 4 + pod_size + icon_title_gap + font_h + 6;
+        lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_ROW_WRAP);
+        lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_START);
+        lv_obj_set_style_pad_top(s_list, 4, 0);
+        lv_obj_set_style_pad_row(s_list, large ? 40 : 32, 0);
+        lv_obj_set_style_pad_column(s_list, gap, 0);
+    } else {
+        /* 方屏固定 5 列，名称最多两行 */
+        const int cols = 5;
+        card_w = (list_w - gap * (cols - 1)) / cols;
+        if (card_w < pod_size + 4) {
+            card_w = pod_size + 4;
+        }
+        card_h = 4 + pod_size + 8 + 2 * font_h + 4;
+        lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_ROW_WRAP);
+        lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
+                              LV_FLEX_ALIGN_START);
+        lv_obj_set_style_pad_row(s_list, large ? 18 : 16, 0);
+        lv_obj_set_style_pad_column(s_list, gap, 0);
+    }
     for (int i = 0; i < APP_MAX; ++i) {
         auto& view = s_app_views[i];
         if (i >= s_item_n) {
@@ -495,19 +621,12 @@ static void render_list(void)
         if (created) {
             view.card = lv_obj_create(s_list);
             lv_obj_remove_style_all(view.card);
-            lv_obj_set_style_bg_opa(view.card, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_opa(view.card, LV_OPA_TRANSP, 0);
             lv_obj_set_style_radius(view.card, UI_RADIUS_MD, 0);
-            ui_style_card(view.card);
-            const bool large = nodelio_text_scale() == 1;
-            lv_obj_set_style_pad_left(view.card, large ? 12 : 10, 0);
-            lv_obj_set_style_pad_right(view.card, large ? 10 : 8, 0);
-            lv_obj_set_style_pad_column(view.card, large ? 14 : 12, 0);
-            lv_obj_set_flex_flow(view.card, LV_FLEX_FLOW_ROW);
-            lv_obj_set_flex_align(view.card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                                  LV_FLEX_ALIGN_CENTER);
             lv_obj_clear_flag(view.card, LV_OBJ_FLAG_SCROLLABLE);
             lv_obj_set_ext_click_area(view.card, 8);
             lv_obj_set_style_bg_color(view.card, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+            lv_obj_set_style_bg_opa(view.card, LV_OPA_40, LV_STATE_PRESSED);
             lv_obj_set_style_translate_y(view.card, 1, LV_STATE_PRESSED);
             // Slots keep their index when cloud items are reordered. The callback
             // resolves the current item instead of retaining a stale item pointer.
@@ -522,39 +641,43 @@ static void render_list(void)
             view.icon = lv_label_create(view.pod);
             lv_obj_set_style_text_font(view.icon, &font_material_symbols_30_4, 0);
             lv_obj_center(view.icon);
-            lv_obj_t* text = lv_obj_create(view.card);
-            lv_obj_remove_style_all(text);
-            lv_obj_set_flex_grow(text, 1);
-            lv_obj_set_height(text, LV_SIZE_CONTENT);
-            lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
-            lv_obj_set_flex_align(text, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START,
-                                  LV_FLEX_ALIGN_START);
-            lv_obj_set_style_pad_row(text, 2, 0);
-            lv_obj_clear_flag(text, LV_OBJ_FLAG_CLICKABLE);
-            view.title = lv_label_create(text);
-            view.subtitle = lv_label_create(text);
+            view.text = lv_obj_create(view.card);
+            lv_obj_remove_style_all(view.text);
+            lv_obj_set_height(view.text, LV_SIZE_CONTENT);
+            lv_obj_set_flex_flow(view.text, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_style_pad_row(view.text, 2, 0);
+            lv_obj_clear_flag(view.text, LV_OBJ_FLAG_CLICKABLE);
+            view.title = lv_label_create(view.text);
+            view.subtitle = lv_label_create(view.text);
             lv_label_set_long_mode(view.title, LV_LABEL_LONG_DOT);
-            lv_obj_set_width(view.title, lv_pct(100));
             lv_label_set_long_mode(view.subtitle, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(view.title, lv_pct(100));
             lv_obj_set_width(view.subtitle, lv_pct(100));
         }
         const bool focused = s_split && i == s_focus_idx;
         const bool paint_chrome = created || s_force_paint || view.focused != focused;
         if (paint_chrome) {
-            ui_style_card(view.card);
-            /* 浅色：未选中白底；点中实心绿配白字。曜夜仍用原来的选中底。 */
-            const bool light = ui_palette_is_dark() == 0;
-            lv_obj_set_style_bg_color(view.card,
-                                      focused ? (light ? UI_ACCENT : UI_SELECTION) : UI_SURFACE, 0);
-            lv_obj_set_style_border_width(view.card, focused && !light ? 1 : 0, 0);
-            lv_obj_set_style_border_color(view.card, focused ? UI_ACCENT : UI_TILE_OFF_BORDER, 0);
-            lv_obj_set_style_border_opa(view.card, focused ? LV_OPA_COVER : LV_OPA_80, 0);
+            if (rail) {
+                ui_style_card(view.card);
+                const bool light = ui_palette_is_dark() == 0;
+                lv_obj_set_style_bg_color(view.card,
+                                          focused ? (light ? UI_ACCENT : UI_SELECTION) : UI_SURFACE, 0);
+                lv_obj_set_style_bg_opa(view.card, LV_OPA_COVER, 0);
+                lv_obj_set_style_border_width(view.card, focused && !light ? 1 : 0, 0);
+                lv_obj_set_style_border_color(view.card, focused ? UI_ACCENT : UI_TILE_OFF_BORDER, 0);
+                lv_obj_set_style_border_opa(view.card, focused ? LV_OPA_COVER : LV_OPA_80, 0);
+            } else {
+                /* 全宽网格：卡片无背景无边框无阴影 */
+                lv_obj_set_style_bg_opa(view.card, LV_OPA_TRANSP, 0);
+                lv_obj_set_style_border_width(view.card, 0, 0);
+                lv_obj_set_style_shadow_width(view.card, 0, 0);
+            }
             view.focused = focused;
         }
         const bool changed = created || s_force_paint || strcmp(view.item.id, item.id) ||
                              strcmp(view.item.name, item.name) ||
                              strcmp(view.item.desc, item.desc) || view.item.enabled != item.enabled;
-        const char* desc = !item.enabled ? "不可用" : (item.desc[0] ? item.desc : "点按打开");
+        const char *desc = !item.enabled ? "不可用" : (item.desc[0] ? item.desc : "点按打开");
         if (changed || paint_chrome) {
             if (item.enabled) {
                 lv_obj_add_flag(view.card, LV_OBJ_FLAG_CLICKABLE);
@@ -563,17 +686,17 @@ static void render_list(void)
             }
             const bool light = ui_palette_is_dark() == 0;
             const bool light_on = light && focused && item.enabled;
-            /* 弱 Pod + accent 字形；选中浅色时反白。 */
-            lv_obj_set_style_bg_color(view.pod,
-                                      light_on ? UI_SURFACE
-                                               : (item.enabled ? UI_POD_QUIET : UI_CAPSULE_OFF),
-                                      0);
+            /* 全宽网格与分栏左轨统一色 Pod；浅色选中时反白字形保对比。 */
+            const lv_color_t pod_color =
+                item.enabled ? lv_color_hex(apps_color_for(item.id)) : UI_CAPSULE_OFF;
+            lv_obj_set_style_bg_color(view.pod, light_on ? UI_SURFACE : pod_color, 0);
             lv_obj_set_style_bg_opa(view.pod, LV_OPA_COVER, 0);
-            lv_label_set_text(view.icon, apps_glyph_for(item.id));
+            lv_obj_set_style_radius(view.pod, UI_RADIUS_SM, 0);
             lv_obj_set_style_text_color(view.icon,
                                         light_on ? UI_ACCENT
-                                                 : (item.enabled ? UI_ACCENT : UI_TEXT_MUTED),
+                                                 : (item.enabled ? lv_color_white() : UI_TEXT_MUTED),
                                         0);
+            lv_label_set_text(view.icon, apps_glyph_for(item.id));
             lv_label_set_text(view.title, item.name[0] ? item.name : item.id);
             lv_label_set_text(view.subtitle, desc);
             lv_obj_set_style_text_color(view.title,
@@ -586,14 +709,67 @@ static void render_list(void)
             view.item = item;
         }
         if (created || changed || view.width != card_w || view.height != card_h ||
-            view.pod_size != pod_size || view.line != line || view.font != font) {
+            view.pod_size != pod_size || view.line != line || view.font != font ||
+            view.rail != (int8_t)rail) {
             lv_obj_set_size(view.card, card_w, card_h);
             lv_obj_set_size(view.pod, pod_size, pod_size);
+            lv_obj_center(view.icon);
             nl_ov_set_font(view.title);
             nl_ov_set_font(view.subtitle);
-            const int font_h = nl_ov_ui_font_line_h();
-            lv_obj_set_height(view.title, font_h);
-            lv_obj_set_height(view.subtitle, font_h);
+            if (rail) {
+                lv_obj_add_flag(view.subtitle, LV_OBJ_FLAG_HIDDEN);
+                lv_label_set_long_mode(view.title, LV_LABEL_LONG_DOT);
+                lv_obj_set_height(view.title, font_h);
+                lv_obj_set_flex_flow(view.card, LV_FLEX_FLOW_ROW);
+                lv_obj_set_flex_align(view.card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                                      LV_FLEX_ALIGN_CENTER);
+                lv_obj_set_style_pad_hor(view.card, 10, 0);
+                lv_obj_set_style_pad_ver(view.card, 0, 0);
+                lv_obj_set_style_pad_column(view.card, 12, 0);
+                lv_obj_set_style_pad_row(view.card, 0, 0);
+                lv_obj_set_flex_grow(view.text, 1);
+                lv_obj_set_width(view.text, 10);
+                lv_obj_set_flex_align(view.text, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START,
+                                      LV_FLEX_ALIGN_CENTER);
+                lv_obj_set_style_text_align(view.title, LV_TEXT_ALIGN_LEFT, 0);
+            } else if (wide_grid) {
+                /* P4 全宽：单行打点；图标与标题间距略加大 */
+                lv_obj_add_flag(view.subtitle, LV_OBJ_FLAG_HIDDEN);
+                lv_label_set_long_mode(view.title, LV_LABEL_LONG_DOT);
+                lv_obj_set_height(view.title, font_h);
+                lv_obj_set_flex_flow(view.card, LV_FLEX_FLOW_COLUMN);
+                lv_obj_set_flex_align(view.card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                                      LV_FLEX_ALIGN_CENTER);
+                lv_obj_set_style_pad_hor(view.card, 0, 0);
+                lv_obj_set_style_pad_top(view.card, 2, 0);
+                lv_obj_set_style_pad_bottom(view.card, 4, 0);
+                lv_obj_set_style_pad_row(view.card, large ? 12 : 10, 0);
+                lv_obj_set_style_pad_column(view.card, 0, 0);
+                lv_obj_set_flex_grow(view.text, 0);
+                lv_obj_set_width(view.text, lv_pct(100));
+                lv_obj_set_flex_align(view.text, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                                      LV_FLEX_ALIGN_CENTER);
+                lv_obj_set_style_text_align(view.title, LV_TEXT_ALIGN_CENTER, 0);
+            } else {
+                /* 86：两行居中；与服务端全名一致，窄列允许换行 */
+                lv_obj_add_flag(view.subtitle, LV_OBJ_FLAG_HIDDEN);
+                lv_label_set_long_mode(view.title, LV_LABEL_LONG_WRAP);
+                lv_obj_set_height(view.title, 2 * font_h);
+                lv_obj_set_flex_flow(view.card, LV_FLEX_FLOW_COLUMN);
+                lv_obj_set_flex_align(view.card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                                      LV_FLEX_ALIGN_CENTER);
+                lv_obj_set_style_pad_hor(view.card, 0, 0);
+                lv_obj_set_style_pad_top(view.card, 4, 0);
+                lv_obj_set_style_pad_bottom(view.card, 4, 0);
+                lv_obj_set_style_pad_row(view.card, 8, 0);
+                lv_obj_set_style_pad_column(view.card, 0, 0);
+                lv_obj_set_flex_grow(view.text, 0);
+                lv_obj_set_width(view.text, lv_pct(100));
+                lv_obj_set_flex_align(view.text, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                                      LV_FLEX_ALIGN_CENTER);
+                lv_obj_set_style_text_align(view.title, LV_TEXT_ALIGN_CENTER, 0);
+            }
+            view.rail = (int8_t)rail;
             view.width = card_w;
             view.height = card_h;
             view.pod_size = pod_size;
@@ -612,15 +788,6 @@ void nl_ov_apps_reapply_appearance(void)
     if (s_hint) {
         lv_obj_set_style_text_color(s_hint, UI_TEXT_MUTED, 0);
     }
-    if (s_refresh) {
-        lv_obj_set_style_bg_color(s_refresh, UI_SURFACE, 0);
-        lv_obj_set_style_bg_color(s_refresh, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
-        lv_obj_set_style_border_color(s_refresh, UI_ACCENT, 0);
-        lv_obj_set_style_shadow_color(s_refresh, UI_ACCENT, 0);
-        if (lv_obj_t *ic = lv_obj_get_child(s_refresh, 0)) {
-            lv_obj_set_style_text_color(ic, UI_ACCENT_SOFT, 0);
-        }
-    }
     if (!s_list) {
         return;
     }
@@ -635,6 +802,7 @@ void nl_ov_apps_reapply_appearance(void)
 static void apps_split_anim_ready(lv_anim_t *a)
 {
     (void)a;
+    s_split_vis = s_split;
     apps_apply_pane(apps_pane_target_w(s_split), s_split);
     render_list();
     nodelio_skill_result_layout();
@@ -648,9 +816,10 @@ static void apps_set_split(bool on, bool animate)
     }
     if (!s_list_pane) {
         s_split = on;
+        s_split_vis = on;
         return;
     }
-    if (s_split == on) {
+    if (s_split == on && s_split_vis == on) {
         return;
     }
     s_split = on;
@@ -660,15 +829,22 @@ static void apps_set_split(bool on, bool animate)
     const int to_w = apps_pane_target_w(on);
     lv_anim_delete(s_list_pane, apps_exec_pane_w);
     if (!animate || !apps_wide() || !s_screen_on || lv_obj_has_flag(s_page, LV_OBJ_FLAG_HIDDEN)) {
+        s_split_vis = on;
         apps_apply_pane(to_w, on);
         render_list();
         nodelio_skill_result_layout();
         nl_ov_apps_layout_chrome();
         return;
     }
-    /* 打开时先收成单列，再把左轨宽度滑到目标，避免整段动画都停在两列。 */
+    /* 开：先切单列再收窄。关：视觉仍单列拉宽，结束再切六列（避免一行多卡闪一下）。 */
     if (on) {
+        s_split_vis = true;
         render_list();
+    } else if (s_list) {
+        s_split_vis = true;
+        lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
+                              LV_FLEX_ALIGN_START);
     }
     int from_w = (int)lv_obj_get_width(s_list_pane);
     if (from_w < 80) {
@@ -887,7 +1063,7 @@ static void fill_snap_from_skills_root(const cJSON *root, nl_app_snap *snap)
             if (!row->id[0] || skill_is_button_only(row->id)) {
                 continue;
             }
-            copy_field(row->name, sizeof(row->name), it, "name");
+            copy_app_label(row->name, sizeof(row->name), it);
             copy_field(row->desc, sizeof(row->desc), it, "description");
             const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
             row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
@@ -915,7 +1091,7 @@ static void fill_snap_from_skills_root(const cJSON *root, nl_app_snap *snap)
                 if (!row->id[0] || skill_is_button_only(row->id)) {
                     continue;
                 }
-                copy_field(row->name, sizeof(row->name), it, "name");
+                copy_app_label(row->name, sizeof(row->name), it);
                 copy_field(row->desc, sizeof(row->desc), it, "summary");
                 const cJSON *en = cJSON_GetObjectItemCaseSensitive(it, "enabled");
                 row->enabled = !cJSON_IsBool(en) || cJSON_IsTrue(en);
@@ -1105,22 +1281,7 @@ lv_obj_t *nl_ov_apps_scroll_obj(void)
 
 void nl_ov_apps_layout_chrome(void)
 {
-    if (!s_refresh) {
-        return;
-    }
-    /* s_page 已被 workspace_reserve 收成左工作区，贴页右下即可；勿再减 result 宽（会漂到屏中）。 */
-    constexpr int kEdge = 14;
-    constexpr int kPagePadH = 16;
-    constexpr int kPagePadV = 8;
-    constexpr int kFabSz = 52; /* 与 SKILL_MINI_SZ 一致 */
-    constexpr int kStackGap = 10;
-    const int ox = kPagePadH - kEdge; /* ≈2，抵消页 pad 后视觉右边距 14 */
-    const int oy_base = -(kEdge - kPagePadV);
-    if (nodelio_skill_mini_fab_visible()) {
-        lv_obj_align(s_refresh, LV_ALIGN_BOTTOM_RIGHT, ox, oy_base - kFabSz - kStackGap);
-    } else {
-        lv_obj_align(s_refresh, LV_ALIGN_BOTTOM_RIGHT, ox, oy_base);
-    }
+    /* 应用列表刷新 FAB 已去掉；保留空实现供音乐球/技能卡回调。 */
 }
 
 void nl_ov_apps_set_visible(bool on)
@@ -1132,10 +1293,6 @@ void nl_ov_apps_set_visible(bool on)
         lv_obj_clear_flag(s_page, LV_OBJ_FLAG_HIDDEN);
         if (s_apps_dirty) {
             render_list();
-        }
-        nl_ov_apps_layout_chrome();
-        if (s_refresh) {
-            lv_obj_move_foreground(s_refresh);
         }
     } else {
         lv_obj_add_flag(s_page, LV_OBJ_FLAG_HIDDEN);
@@ -1465,9 +1622,10 @@ void nl_ov_build_apps(void)
     lv_obj_set_style_bg_opa(s_page, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(s_page, kAppsPagePadH, 0);
     const bool is_wide = apps_wide();
-    lv_obj_set_style_pad_top(s_page, is_wide ? 16 : 32, 0);
+    /* P4 状态栏悬浮不占位：顶垫略紧，首排更靠上仍避开状态栏。 */
+    lv_obj_set_style_pad_top(s_page, is_wide ? (NL_UI_STATUS_H + 4) : 32, 0);
     lv_obj_set_style_pad_bottom(s_page, is_wide ? 8 : 52, 0);
-    lv_obj_set_style_pad_row(s_page, 4, 0);
+    lv_obj_set_style_pad_row(s_page, is_wide ? 8 : 4, 0);
     lv_obj_set_flex_flow(s_page, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(s_page, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_page, LV_OBJ_FLAG_HIDDEN);
@@ -1494,10 +1652,12 @@ void nl_ov_build_apps(void)
     lv_obj_set_flex_grow(s_list, 1);
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    const int apps_gap = nodelio_text_scale() == 1 ? 12 : 10;
-    lv_obj_set_style_pad_row(s_list, apps_gap, 0);
-    lv_obj_set_style_pad_column(s_list, apps_gap, 0);
-    lv_obj_set_style_pad_bottom(s_list, 120, 0); /* 避让右下刷新+音乐球叠放 */
+    const bool large = nodelio_text_scale() == 1;
+    const int apps_gap_col = is_wide ? (large ? 20 : 16) : (large ? 10 : 8);
+    const int apps_gap_row = is_wide ? (large ? 18 : 14) : (large ? 18 : 16);
+    lv_obj_set_style_pad_row(s_list, apps_gap_row, 0);
+    lv_obj_set_style_pad_column(s_list, apps_gap_col, 0);
+    lv_obj_set_style_pad_bottom(s_list, is_wide ? 56 : 72, 0); /* 避让右下音乐球 */
     lv_obj_add_flag(s_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_OFF);
@@ -1506,34 +1666,6 @@ void nl_ov_build_apps(void)
         apps_apply_pane(apps_pane_target_w(true), true);
     }
     render_list();
-
-    /* 右下角浮动刷新（有音乐球时叠在上方） */
-    s_refresh = lv_obj_create(s_page);
-    lv_obj_remove_style_all(s_refresh);
-    lv_obj_set_size(s_refresh, 52, 52);
-    lv_obj_set_style_radius(s_refresh, 26, 0);
-    lv_obj_set_style_bg_color(s_refresh, UI_SURFACE, 0);
-    lv_obj_set_style_bg_opa(s_refresh, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(s_refresh, 2, 0);
-    lv_obj_set_style_border_color(s_refresh, UI_ACCENT, 0);
-    lv_obj_set_style_border_opa(s_refresh, 200, 0);
-    lv_obj_set_style_shadow_width(s_refresh, 0, 0);
-    lv_obj_set_style_shadow_opa(s_refresh, LV_OPA_40, 0);
-    lv_obj_set_style_shadow_color(s_refresh, UI_ACCENT, 0);
-    lv_obj_set_style_bg_color(s_refresh, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
-    lv_obj_set_style_translate_y(s_refresh, 1, LV_STATE_PRESSED);
-    lv_obj_add_flag(s_refresh, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_FLOATING |
-                                               LV_OBJ_FLAG_IGNORE_LAYOUT));
-    lv_obj_set_ext_click_area(s_refresh, 10);
-    lv_obj_add_event_cb(s_refresh, [](lv_event_t *) { nl_ov_apps_refresh(); }, LV_EVENT_CLICKED,
-                        nullptr);
-    lv_obj_t *ric = lv_label_create(s_refresh);
-    lv_obj_set_style_text_font(ric, &font_material_symbols_20_4, 0);
-    lv_label_set_text(ric, MATERIAL_SYMBOLS_REFRESH);
-    lv_obj_set_style_text_color(ric, UI_ACCENT_SOFT, 0);
-    lv_obj_center(ric);
-    nl_ov_apps_layout_chrome();
-    lv_obj_move_foreground(s_refresh);
 }
 
 bool nl_ov_skill_needs_outbound_bridge(const char *skill_id)

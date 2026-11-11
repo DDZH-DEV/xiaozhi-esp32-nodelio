@@ -588,7 +588,8 @@ bool nodelio_voice_session_active(void)
 {
     DeviceState st = Application::GetInstance().GetDeviceState();
     if (st == kDeviceStateConnecting || st == kDeviceStateListening ||
-        st == kDeviceStateSpeaking || st == kDeviceStateNotifying) {
+        st == kDeviceStateSpeaking || st == kDeviceStateNotifying ||
+        st == kDeviceStateActivating) {
         return true;
     }
     /* 入队后、Notifying 前也可能已在播 */

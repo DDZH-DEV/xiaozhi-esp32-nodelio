@@ -235,9 +235,10 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
         SetError(Lang::Strings::SERVER_NOT_CONNECTED,
                  broker_address + ":" + std::to_string(broker_port));
         if (!transport_suspended_ && reconnect_timer_ != nullptr) {
-            ESP_LOGI(TAG, "Initial connect failed, schedule reconnect in %d seconds",
-                     MQTT_RECONNECT_INTERVAL_MS / 1000);
-            esp_timer_start_once(reconnect_timer_, MQTT_RECONNECT_INTERVAL_MS * 1000);
+            const uint32_t retry_ms = 5000;
+            ESP_LOGI(TAG, "Initial connect failed, schedule reconnect in %u seconds",
+                     (unsigned)(retry_ms / 1000));
+            esp_timer_start_once(reconnect_timer_, retry_ms * 1000);
         }
         return false;
     }

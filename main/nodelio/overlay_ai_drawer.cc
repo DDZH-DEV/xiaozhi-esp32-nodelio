@@ -94,6 +94,17 @@ static bool s_ai_user_dismissed;
 /** 用户最小化：抽屉藏起，右下角仅图标；会话与文案仍更新 */
 static bool s_ai_minimized;
 static lv_obj_t *s_ai_mini_ic;
+
+static lv_obj_t *s_ai_drawer_settings_box;
+static lv_obj_t *s_ai_settings_btn;
+static lv_obj_t *s_ai_settings_vol_lbl;
+static lv_obj_t *s_ai_settings_vol_slider;
+static lv_obj_t *s_ai_settings_w_lbl;
+static lv_obj_t *s_ai_settings_w_slider;
+static lv_obj_t *s_ai_settings_color_chips[3];
+static bool s_ai_settings_open;
+static void refresh_ai_quick_settings_ui(void);
+static void toggle_ai_quick_settings(void);
 /** 息屏断网冷唤：CONNECT 晚 1s 再弹紧凑条；听/说提前到达则取消并展开正式抽屉 */
 #define CONNECT_SHOW_DELAY_MS 1000
 static lv_timer_t *s_connect_delay_timer = nullptr;
@@ -232,14 +243,22 @@ void nl_ov_ai_reapply_appearance(void)
                 const uint32_t bn = lv_obj_get_child_count(btns);
                 for (uint32_t i = 0; i < bn; i++) {
                     lv_obj_t *btn = lv_obj_get_child(btns, i);
-                    lv_obj_set_style_bg_color(btn, ai_drawer_btn_bg_color(), 0);
-                    lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
-                    if (lv_obj_t *ic = lv_obj_get_child(btn, 0)) {
-                        lv_obj_set_style_text_color(ic, UI_TEXT_SUB, 0);
+                    if (btn == s_ai_settings_btn && s_ai_settings_open) {
+                        lv_obj_set_style_bg_color(btn, UI_ACCENT, 0);
+                        if (lv_obj_t *ic = lv_obj_get_child(btn, 0)) {
+                            lv_obj_set_style_text_color(ic, lv_color_white(), 0);
+                        }
+                    } else {
+                        lv_obj_set_style_bg_color(btn, ai_drawer_btn_bg_color(), 0);
+                        lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+                        if (lv_obj_t *ic = lv_obj_get_child(btn, 0)) {
+                            lv_obj_set_style_text_color(ic, UI_TEXT_SUB, 0);
+                        }
                     }
                 }
             }
         }
+        refresh_ai_quick_settings_ui();
         for (int i = 0; i < 3; i++) {
             if (s_eq_bars[i]) {
                 lv_obj_set_style_bg_color(s_eq_bars[i],
@@ -292,6 +311,7 @@ static void minimize_ai_drawer(void)
 
 static void expand_ai_drawer(void)
 {
+    s_ai_user_dismissed = false;
     s_ai_minimized = false;
     hide_ai_mini_fab();
     if (!s_ai_drawer || !nl_ov_ai_session_active()) {
@@ -458,11 +478,24 @@ static void apply_drawer_chrome(bool connect_compact)
         if (s_ai_drawer_body) {
             lv_obj_add_flag(s_ai_drawer_body, LV_OBJ_FLAG_HIDDEN);
         }
+        if (s_ai_drawer_settings_box) {
+            lv_obj_add_flag(s_ai_drawer_settings_box, LV_OBJ_FLAG_HIDDEN);
+        }
     } else {
         lv_obj_set_size(s_ai_drawer, nodelio_ai_drawer_width(), UI_AI_DRAWER_H);
         lv_obj_set_style_pad_bottom(s_ai_drawer, 12, 0);
-        if (s_ai_drawer_body) {
-            lv_obj_clear_flag(s_ai_drawer_body, LV_OBJ_FLAG_HIDDEN);
+        if (s_ai_settings_open && s_ai_drawer_settings_box) {
+            lv_obj_clear_flag(s_ai_drawer_settings_box, LV_OBJ_FLAG_HIDDEN);
+            if (s_ai_drawer_body) {
+                lv_obj_add_flag(s_ai_drawer_body, LV_OBJ_FLAG_HIDDEN);
+            }
+        } else {
+            if (s_ai_drawer_body) {
+                lv_obj_clear_flag(s_ai_drawer_body, LV_OBJ_FLAG_HIDDEN);
+            }
+            if (s_ai_drawer_settings_box) {
+                lv_obj_add_flag(s_ai_drawer_settings_box, LV_OBJ_FLAG_HIDDEN);
+            }
         }
     }
     place_ai_drawer();
@@ -564,6 +597,8 @@ static void cancel_connect_delay_timer(void)
 void nl_ov_dismiss_ai_chat(void)
 {
     s_ai_user_dismissed = true;
+    s_ai_farewell_closing = true;
+    s_ai_settings_open = false;
     s_chat_phase = CHAT_IDLE;
     nl_ov_hide_ai_drawer();
 }
@@ -573,6 +608,7 @@ void nl_ov_ai_drawer_force_listen(void)
     s_ai_user_dismissed = false;
     s_ai_farewell_closing = false;
     s_ai_minimized = false;
+    s_ai_settings_open = false;
     hide_ai_mini_fab();
     cancel_connect_delay_timer();
     s_connect_delay_force = true;
@@ -586,7 +622,20 @@ void nl_ov_hide_ai_drawer(void)
 {
     cancel_connect_delay_timer();
     s_ai_minimized = false;
+    s_ai_settings_open = false;
     hide_ai_mini_fab();
+    if (s_ai_drawer_settings_box) {
+        lv_obj_add_flag(s_ai_drawer_settings_box, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_ai_drawer_body) {
+        lv_obj_clear_flag(s_ai_drawer_body, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_ai_settings_btn) {
+        lv_obj_set_style_bg_color(s_ai_settings_btn, ai_drawer_btn_bg_color(), 0);
+        if (lv_obj_t *ic = lv_obj_get_child(s_ai_settings_btn, 0)) {
+            lv_obj_set_style_text_color(ic, UI_TEXT_SUB, 0);
+        }
+    }
     if (s_ai_drawer) {
         lv_obj_add_flag(s_ai_drawer, LV_OBJ_FLAG_HIDDEN);
         apply_drawer_chrome(false); /* 收起时恢复全高，避免下次卡在紧凑条 */
@@ -595,6 +644,68 @@ void nl_ov_hide_ai_drawer(void)
     if (s_ai_hide_timer) {
         lv_timer_del(s_ai_hide_timer);
         s_ai_hide_timer = nullptr;
+    }
+}
+
+static void refresh_ai_quick_settings_ui(void)
+{
+    if (!s_ai_drawer_settings_box) {
+        return;
+    }
+    if (s_ai_settings_vol_slider && s_ai_settings_vol_lbl) {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%d%%", (int)s_volume);
+        lv_label_set_text(s_ai_settings_vol_lbl, buf);
+        lv_slider_set_value(s_ai_settings_vol_slider, s_volume, LV_ANIM_OFF);
+    }
+    if (s_ai_settings_w_slider && s_ai_settings_w_lbl) {
+        char buf[16];
+        uint16_t cur_w = nodelio_ai_drawer_width();
+        std::snprintf(buf, sizeof(buf), "%d", (int)cur_w);
+        lv_label_set_text(s_ai_settings_w_lbl, buf);
+        lv_slider_set_range(s_ai_settings_w_slider, NODELIO_AI_W_MIN, nodelio_ai_drawer_width_max());
+        lv_slider_set_value(s_ai_settings_w_slider, cur_w, LV_ANIM_OFF);
+    }
+    const int preset = (int)nodelio_ai_border_preset();
+    for (int i = 0; i < 3; i++) {
+        if (s_ai_settings_color_chips[i]) {
+            const bool on = (preset == i);
+            lv_obj_set_style_bg_color(s_ai_settings_color_chips[i],
+                                      on ? UI_ACCENT : ai_drawer_btn_bg_color(), 0);
+            lv_obj_set_style_border_color(s_ai_settings_color_chips[i],
+                                          on ? UI_ACCENT : (ui_palette_is_dark() ? lv_color_hex(0x3d4e68) : lv_color_hex(0xd0d7de)), 0);
+            if (lv_obj_t *lbl = lv_obj_get_child(s_ai_settings_color_chips[i], 0)) {
+                lv_obj_set_style_text_color(lbl, on ? lv_color_white() : UI_TEXT_SUB, 0);
+            }
+        }
+    }
+}
+
+static void toggle_ai_quick_settings(void)
+{
+    if (!s_ai_drawer || !s_ai_drawer_body || !s_ai_drawer_settings_box) {
+        return;
+    }
+    s_ai_settings_open = !s_ai_settings_open;
+    if (s_ai_settings_open) {
+        refresh_ai_quick_settings_ui();
+        lv_obj_add_flag(s_ai_drawer_body, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_ai_drawer_settings_box, LV_OBJ_FLAG_HIDDEN);
+        if (s_ai_settings_btn) {
+            lv_obj_set_style_bg_color(s_ai_settings_btn, UI_ACCENT, 0);
+            if (lv_obj_t *ic = lv_obj_get_child(s_ai_settings_btn, 0)) {
+                lv_obj_set_style_text_color(ic, lv_color_white(), 0);
+            }
+        }
+    } else {
+        lv_obj_add_flag(s_ai_drawer_settings_box, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_ai_drawer_body, LV_OBJ_FLAG_HIDDEN);
+        if (s_ai_settings_btn) {
+            lv_obj_set_style_bg_color(s_ai_settings_btn, ai_drawer_btn_bg_color(), 0);
+            if (lv_obj_t *ic = lv_obj_get_child(s_ai_settings_btn, 0)) {
+                lv_obj_set_style_text_color(ic, UI_TEXT_SUB, 0);
+            }
+        }
     }
 }
 
@@ -672,7 +783,7 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
     lv_obj_set_size(hdr_btns, LV_SIZE_CONTENT, UI_AI_DRAWER_BTN_SZ);
     lv_obj_set_flex_flow(hdr_btns, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(hdr_btns, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(hdr_btns, 8, 0);
+    lv_obj_set_style_pad_column(hdr_btns, 6, 0);
     lv_obj_clear_flag(hdr_btns, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(hdr_btns, LV_OBJ_FLAG_CLICKABLE);
 
@@ -686,6 +797,9 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
         lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
         lv_obj_set_style_translate_y(btn, 1, LV_STATE_PRESSED);
         lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_GESTURE_BUBBLE);
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_set_ext_click_area(btn, 12);
         lv_obj_t *ic = lv_label_create(btn);
         lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
@@ -698,18 +812,30 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
         return btn;
     };
 
+    /* 快捷设置：在最小化左边，快速调节音量、宽度与边框颜色 */
+    s_ai_settings_btn = make_hdr_btn(hdr_btns, MATERIAL_SYMBOLS_SETTINGS, [](lv_event_t *) {
+        toggle_ai_quick_settings();
+    });
+
     /* 最小化：会话不停，右下角只留图标；文字不显示 */
     make_hdr_btn(hdr_btns, MATERIAL_SYMBOLS_KEYBOARD_ARROW_DOWN, [](lv_event_t *) {
         minimize_ai_drawer();
     });
+
+    /* 关闭：彻底结束对话会话，锁住弹窗防止尾包/重连再次弹出 */
     make_hdr_btn(hdr_btns, MATERIAL_SYMBOLS_CLOSE, [](lv_event_t *) {
-        /* 先锁住：说话中关窗后，回复字幕/相位刷新不得把抽屉再拉出来 */
         s_ai_user_dismissed = true;
+        s_ai_farewell_closing = true;
+        s_ai_settings_open = false;
+        cancel_connect_delay_timer();
         nl_ov_hide_ai_drawer();
-        auto state = Application::GetInstance().GetDeviceState();
-        if (state == kDeviceStateListening || state == kDeviceStateSpeaking) {
-            Application::GetInstance().ToggleChatState();
-        }
+        Application::GetInstance().Schedule([]() {
+            auto &app = Application::GetInstance();
+            if (app.GetDeviceState() == kDeviceStateSpeaking) {
+                app.AbortSpeaking(kAbortReasonNone);
+            }
+            app.EndVoiceSessionAfterLocalSkill();
+        });
     });
 
     /* 正文区固定高度，可滚；标签按内容增高，展示最近 5 句 */
@@ -730,6 +856,181 @@ void nl_ov_create_ai_drawer(lv_obj_t *parent)
     lv_obj_set_style_text_color(s_ai_drawer_text, UI_TEXT, 0);
     lv_obj_set_style_text_line_space(s_ai_drawer_text, 4, 0);
     lv_obj_align(s_ai_drawer_text, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    /* 快捷设置面板：隐藏在弹窗内，点击 [ ⚙ ] 时切换 */
+    s_ai_drawer_settings_box = lv_obj_create(s_ai_drawer);
+    lv_obj_remove_style_all(s_ai_drawer_settings_box);
+    lv_obj_set_size(s_ai_drawer_settings_box, lv_pct(100), UI_AI_DRAWER_TEXT_H);
+    lv_obj_set_flex_flow(s_ai_drawer_settings_box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_ai_drawer_settings_box, 8, 0);
+    lv_obj_set_style_pad_hor(s_ai_drawer_settings_box, 4, 0);
+    lv_obj_set_style_pad_top(s_ai_drawer_settings_box, 2, 0);
+    lv_obj_set_style_pad_bottom(s_ai_drawer_settings_box, 4, 0);
+    lv_obj_add_flag(s_ai_drawer_settings_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(s_ai_drawer_settings_box, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scroll_dir(s_ai_drawer_settings_box, LV_DIR_VER);
+    lv_obj_clear_flag(s_ai_drawer_settings_box, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_add_flag(s_ai_drawer_settings_box, LV_OBJ_FLAG_HIDDEN);
+
+    // 1. 音量 (Volume)
+    lv_obj_t *vol_row = lv_obj_create(s_ai_drawer_settings_box);
+    lv_obj_remove_style_all(vol_row);
+    lv_obj_set_width(vol_row, lv_pct(100));
+    lv_obj_set_height(vol_row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(vol_row, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(vol_row, 4, 0);
+    lv_obj_clear_flag(vol_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *vol_header = lv_obj_create(vol_row);
+    lv_obj_remove_style_all(vol_header);
+    lv_obj_set_width(vol_header, lv_pct(100));
+    lv_obj_set_height(vol_header, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(vol_header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(vol_header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(vol_header, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *vol_title = lv_label_create(vol_header);
+    lv_label_set_text(vol_title, "音量");
+    nl_ov_set_font(vol_title);
+    lv_obj_set_style_text_color(vol_title, UI_TEXT, 0);
+
+    s_ai_settings_vol_lbl = lv_label_create(vol_header);
+    char vol_buf[16];
+    std::snprintf(vol_buf, sizeof(vol_buf), "%d%%", (int)s_volume);
+    lv_label_set_text(s_ai_settings_vol_lbl, vol_buf);
+    nl_ov_set_font_compact(s_ai_settings_vol_lbl);
+    lv_obj_set_style_text_color(s_ai_settings_vol_lbl, UI_TEXT_MUTED, 0);
+
+    s_ai_settings_vol_slider = lv_slider_create(vol_row);
+    ui_style_slider(s_ai_settings_vol_slider);
+    lv_slider_set_range(s_ai_settings_vol_slider, 0, 100);
+    lv_slider_set_value(s_ai_settings_vol_slider, s_volume, LV_ANIM_OFF);
+    lv_obj_add_event_cb(s_ai_settings_vol_slider, [](lv_event_t *e) {
+        int v = (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e));
+        if (s_ai_settings_vol_lbl) {
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "%d%%", v);
+            lv_label_set_text(s_ai_settings_vol_lbl, buf);
+        }
+        nl_ov_apply_volume((uint8_t)v);
+    }, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_add_event_cb(s_ai_settings_vol_slider, [](lv_event_t *) {
+        nl_ov_persist_ui_prefs(true);
+    }, LV_EVENT_RELEASED, nullptr);
+
+    // 2. 弹窗宽度 (Width)
+    lv_obj_t *w_row = lv_obj_create(s_ai_drawer_settings_box);
+    lv_obj_remove_style_all(w_row);
+    lv_obj_set_width(w_row, lv_pct(100));
+    lv_obj_set_height(w_row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(w_row, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(w_row, 4, 0);
+    lv_obj_clear_flag(w_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *w_header = lv_obj_create(w_row);
+    lv_obj_remove_style_all(w_header);
+    lv_obj_set_width(w_header, lv_pct(100));
+    lv_obj_set_height(w_header, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(w_header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(w_header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(w_header, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *w_title = lv_label_create(w_header);
+    lv_label_set_text(w_title, "弹窗宽度");
+    nl_ov_set_font(w_title);
+    lv_obj_set_style_text_color(w_title, UI_TEXT, 0);
+
+    s_ai_settings_w_lbl = lv_label_create(w_header);
+    char w_buf[16];
+    std::snprintf(w_buf, sizeof(w_buf), "%d", (int)nodelio_ai_drawer_width());
+    lv_label_set_text(s_ai_settings_w_lbl, w_buf);
+    nl_ov_set_font_compact(s_ai_settings_w_lbl);
+    lv_obj_set_style_text_color(s_ai_settings_w_lbl, UI_TEXT_MUTED, 0);
+
+    s_ai_settings_w_slider = lv_slider_create(w_row);
+    ui_style_slider(s_ai_settings_w_slider);
+    lv_slider_set_range(s_ai_settings_w_slider, NODELIO_AI_W_MIN, nodelio_ai_drawer_width_max());
+    lv_slider_set_value(s_ai_settings_w_slider, nodelio_ai_drawer_width(), LV_ANIM_OFF);
+    lv_obj_add_event_cb(s_ai_settings_w_slider, [](lv_event_t *e) {
+        int v = (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e));
+        if (s_ai_settings_w_lbl) {
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "%d", v);
+            lv_label_set_text(s_ai_settings_w_lbl, buf);
+        }
+        s_cfg.ai_w = (uint16_t)v;
+        nodelio_nvs_cache_put_preferences(&s_cfg);
+        nl_ov_ai_apply_metrics();
+    }, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_add_event_cb(s_ai_settings_w_slider, [](lv_event_t *e) {
+        char num[12];
+        std::snprintf(num, sizeof(num), "%d", (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e)));
+        (void)nodelio_panel_ui_set_pref("ai_drawer_w", num, nullptr, 0);
+    }, LV_EVENT_RELEASED, nullptr);
+
+    // 3. 边框颜色 (Border Color)
+    lv_obj_t *c_row = lv_obj_create(s_ai_drawer_settings_box);
+    lv_obj_remove_style_all(c_row);
+    lv_obj_set_width(c_row, lv_pct(100));
+    lv_obj_set_height(c_row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(c_row, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(c_row, 4, 0);
+    lv_obj_clear_flag(c_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *c_title = lv_label_create(c_row);
+    lv_label_set_text(c_title, "边框颜色");
+    nl_ov_set_font(c_title);
+    lv_obj_set_style_text_color(c_title, UI_TEXT, 0);
+
+    lv_obj_t *chips_box = lv_obj_create(c_row);
+    lv_obj_remove_style_all(chips_box);
+    lv_obj_set_width(chips_box, lv_pct(100));
+    lv_obj_set_height(chips_box, 32);
+    lv_obj_set_flex_flow(chips_box, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(chips_box, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(chips_box, 8, 0);
+    lv_obj_clear_flag(chips_box, LV_OBJ_FLAG_SCROLLABLE);
+
+    static const char *k_border_names[] = {"默认", "暖灰", "绿色"};
+    const int cur_preset = (int)nodelio_ai_border_preset();
+    for (int i = 0; i < 3; i++) {
+        const bool on = (cur_preset == i);
+        lv_obj_t *chip = lv_obj_create(chips_box);
+        s_ai_settings_color_chips[i] = chip;
+        lv_obj_remove_style_all(chip);
+        lv_obj_set_flex_grow(chip, 1);
+        lv_obj_set_height(chip, 32);
+        lv_obj_set_style_radius(chip, 8, 0);
+        lv_obj_set_style_bg_color(chip, on ? UI_ACCENT : ai_drawer_btn_bg_color(), 0);
+        lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(chip, 1, 0);
+        lv_obj_set_style_border_color(chip, on ? UI_ACCENT : (ui_palette_is_dark() ? lv_color_hex(0x3d4e68) : lv_color_hex(0xd0d7de)), 0);
+        lv_obj_set_style_border_opa(chip, LV_OPA_80, 0);
+        lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(chip, 8);
+
+        lv_obj_t *lbl = lv_label_create(chip);
+        nl_ov_set_font(lbl);
+        lv_label_set_text(lbl, k_border_names[i]);
+        lv_obj_set_style_text_color(lbl, on ? lv_color_white() : UI_TEXT_SUB, 0);
+        lv_obj_center(lbl);
+        lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(lbl, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+        lv_obj_add_event_cb(chip, [](lv_event_t *e) {
+            int idx = (int)(intptr_t)lv_event_get_user_data(e);
+            s_cfg.ai_bd_i = (uint8_t)idx;
+            if (s_cfg.ai_bd_w == 0) {
+                s_cfg.ai_bd_w = 1;
+            }
+            nodelio_nvs_cache_put_preferences(&s_cfg);
+            paint_ai_drawer_frame();
+            refresh_ai_quick_settings_ui();
+            char num[8];
+            std::snprintf(num, sizeof(num), "%d", idx);
+            (void)nodelio_panel_ui_set_pref("ai_border_c", num, nullptr, 0);
+        }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    }
 
     /* 最小化圆钮：挂 layer_top，右下角仅 mic 图标（避开播放器 mini 最右位） */
     s_ai_mini_fab = lv_obj_create(parent);
@@ -818,8 +1119,9 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
         return;
     }
     if (phase == CHAT_CONNECT) {
-        s_ai_farewell_closing = false;
-        s_ai_user_dismissed = false;
+        if (!s_ai_user_dismissed) {
+            s_ai_farewell_closing = false;
+        }
     } else if (s_ai_user_dismissed && phase != CHAT_IDLE) {
         /* 用户已关窗：本轮听/说只改文案，不再弹出 */
         if (msg_text && msg_text[0] && s_ai_drawer_text) {
@@ -837,7 +1139,6 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
         return;
     }
     if (phase == CHAT_IDLE) {
-        s_ai_user_dismissed = false;
         if (s_speak_text_dirty && s_ai_drawer_text && s_speak_text_pending[0]) {
             lv_label_set_text(s_ai_drawer_text, s_speak_text_pending);
             s_speak_text_dirty = false;
@@ -963,6 +1264,9 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
 
 void nl_ov_show_ai_drawer_session(chat_phase_t phase)
 {
+    s_ai_user_dismissed = false;
+    s_ai_farewell_closing = false;
+    s_ai_minimized = false;
     const char *status = "小智在听…";
     if (phase == CHAT_SPEAK) {
         status = "小智回复";
