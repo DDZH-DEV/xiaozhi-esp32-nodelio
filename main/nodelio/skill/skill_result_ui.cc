@@ -95,8 +95,13 @@ bool skill_player_docked(void)
 int skill_card_h_max(void)
 {
     const auto *p = nodelio_display_profile();
+    const int gap = skill_ui_gap();
+    /* 与设置详情并开：写死铺满上下，不跟全局圆角留白。 */
+    if (skill_flush_with_detail()) {
+        return (int)p->height < SKILL_CARD_H_MIN ? SKILL_CARD_H_MIN : (int)p->height;
+    }
     if (skill_player_docked()) {
-        const int h = (int)p->height - skill_top_y() - SKILL_GAP;
+        const int h = (int)p->height - skill_top_y() - gap;
         return h < SKILL_CARD_H_MIN ? SKILL_CARD_H_MIN : h;
     }
     if (!p->nav_width) {
@@ -106,15 +111,23 @@ int skill_card_h_max(void)
         }
         return h < SKILL_CARD_H_MIN ? SKILL_CARD_H_MIN : h;
     }
+    /* 首页全宽卡：上下各留 gap（贴边模式为 0）。 */
+    if (s_active_tab == NL_TAB_HOME) {
+        int h = (int)p->height - skill_top_y() - gap;
+        if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
+            h = (int)p->height - skill_top_y() - SKILL_NOW_H - 2 * gap;
+        }
+        return h < SKILL_CARD_H_MIN ? SKILL_CARD_H_MIN : h;
+    }
     int h = (int)p->result_max_height + NL_UI_STATUS_H;
     if (s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN)) {
-        const int bottom = SKILL_NOW_H + 3 * SKILL_GAP;
+        const int bottom = SKILL_NOW_H + 3 * gap;
         h = (int)p->height - skill_top_y() - bottom;
     }
     return h < SKILL_CARD_H_MIN ? SKILL_CARD_H_MIN : h;
 }
 
-/** 宽屏：右侧应用宽度。首页给左栏留固定宽，避免启动台被应用列表轨挤扁。 */
+/** 宽屏：技能卡宽度。首页近全宽但左右留缝；应用页仍给左列表留轨。 */
 int skill_panel_w(void)
 {
     const auto *p = nodelio_display_profile();
@@ -122,9 +135,23 @@ int skill_panel_w(void)
         return (int)p->width;
     }
     const int base = (int)p->result_width;
+    const int body = (int)p->width - (int)p->nav_width;
+    const int gap = skill_ui_gap();
+    /* 设置详情并开：应用略宽（约 56%），详情略窄；右侧贴边无右缝。 */
+    if (skill_flush_with_detail()) {
+        int w = (body - SKILL_DETAIL_MID_GAP) * 56 / 100;
+        if (w < base) {
+            w = base;
+        }
+        const int max_w = body - SKILL_DETAIL_MID_GAP - 200;
+        if (max_w > 0 && w > max_w) {
+            w = max_w;
+        }
+        return w > 0 ? w : base;
+    }
     if (s_active_tab == NL_TAB_HOME) {
-        const int home_col = 400;
-        int w = (int)p->width - (int)p->nav_width - home_col - SKILL_GAP;
+        /* 左右各 gap；贴边模式铺满侧轨右侧。 */
+        int w = body - 2 * gap;
         if (w < base) {
             w = base;
         }
@@ -136,7 +163,7 @@ int skill_panel_w(void)
     }
     /* 与设置页相同：左 16 + 卡片 + 右 16，窗口再留屏幕右缘。 */
     const int left = (int)p->nav_width + 16 + rail + 16;
-    int w = (int)p->width - left - SKILL_GAP;
+    int w = (int)p->width - left - gap;
     if (w < base) {
         w = base;
     }
@@ -161,24 +188,38 @@ void style_skill_frame(void)
     }
     lv_obj_set_style_bg_color(s_card, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(s_card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_card, 20, 0);
-    lv_obj_set_style_border_width(s_card, ui_palette_is_dark() ? 1 : 0, 0);
+    /* 并开详情：写死直角。否则跟设置「卡片圆角」。 */
+    const int rad = skill_flush_with_detail() ? 0 : nodelio_card_radius_px();
+    lv_obj_set_style_radius(s_card, rad, 0);
+    lv_obj_set_style_clip_corner(s_card, rad > 0, 0);
+    lv_obj_set_style_border_width(s_card, (rad > 0 && ui_palette_is_dark()) ? 1 : 0, 0);
     lv_obj_set_style_border_color(s_card, UI_BORDER, 0);
     lv_obj_set_style_border_opa(s_card, LV_OPA_70, 0);
-    ui_style_card(s_card);
+    if (rad > 0) {
+        ui_style_card(s_card);
+    } else {
+        lv_obj_set_style_shadow_width(s_card, 0, 0);
+    }
 }
 
 void layout_skill_layers(void)
 {
     const int panel_w = skill_panel_w();
+    const int gap = skill_ui_gap();
     const bool card_up = s_card && !lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN);
     const bool bar_up = s_now_bar && !lv_obj_has_flag(s_now_bar, LV_OBJ_FLAG_HIDDEN);
     const bool wide = nodelio_display_profile()->nav_width != 0;
     const bool dock = wide && card_up && bar_up;
     /* 宽屏：播放条只占右侧技能列，勿再砍左轨应用列表一行高 */
-    const int reserve_bottom = (!wide && bar_up && !card_up) ? (SKILL_NOW_H + 2 * SKILL_GAP) : 0;
-    nl_ov_workspace_reserve(card_up ? (wide ? panel_w + SKILL_GAP : panel_w) : 0,
-                            reserve_bottom);
+    const int reserve_bottom = (!wide && bar_up && !card_up) ? (SKILL_NOW_H + 2 * gap) : 0;
+    /* 并开详情：只留中间缝（应用贴右）；首页左右两缝；仅应用页：右缘缝。 */
+    int wide_reserve = panel_w + gap;
+    if (skill_flush_with_detail()) {
+        wide_reserve = panel_w + SKILL_DETAIL_MID_GAP;
+    } else if (s_active_tab == NL_TAB_HOME) {
+        wide_reserve = panel_w + 2 * gap;
+    }
+    nl_ov_workspace_reserve(card_up ? (wide ? wide_reserve : panel_w) : 0, reserve_bottom);
     int y = wide ? skill_top_y() : 0;
     if (bar_up && !dock) {
         style_now_bar(false);
@@ -188,7 +229,7 @@ void layout_skill_layers(void)
             if (s_now_lbl) {
                 lv_obj_set_width(s_now_lbl, bar_w - 240);
             }
-            lv_obj_align(s_now_bar, LV_ALIGN_BOTTOM_RIGHT, -SKILL_GAP, -SKILL_GAP);
+            lv_obj_align(s_now_bar, LV_ALIGN_BOTTOM_RIGHT, -gap, -gap);
         } else {
             lv_obj_set_size(s_now_bar, panel_w, SKILL_NOW_H);
             if (s_now_lbl) {
@@ -200,8 +241,11 @@ void layout_skill_layers(void)
     }
     if (s_scrim && !lv_obj_has_flag(s_scrim, LV_OBJ_FLAG_HIDDEN)) {
         if (wide) {
-            const int scrim_bottom = (bar_up && !card_up) ? (SKILL_NOW_H + 2 * SKILL_GAP) : 0;
-            lv_obj_set_size(s_scrim, card_up ? panel_w + SKILL_GAP : 0,
+            const int scrim_bottom = (bar_up && !card_up) ? (SKILL_NOW_H + 2 * gap) : 0;
+            const int scrim_w =
+                card_up ? ((s_active_tab == NL_TAB_HOME) ? (panel_w + 2 * gap) : (panel_w + gap))
+                        : 0;
+            lv_obj_set_size(s_scrim, scrim_w,
                             nodelio_display_profile()->height - scrim_bottom);
             lv_obj_align(s_scrim, LV_ALIGN_TOP_RIGHT, 0, 0);
         } else {
@@ -221,24 +265,32 @@ void layout_skill_layers(void)
             lv_obj_set_style_pad_bottom(s_card, dock ? (SKILL_NOW_H + 18) : 12, 0);
         }
         style_skill_frame();
-        lv_obj_align(s_card, wide ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_TOP_LEFT, wide ? -SKILL_GAP : 0, y);
+        /* 并开详情：上下右贴边（x/y=0）；否则右缘留 gap。 */
+        const int x_off = (wide && !skill_flush_with_detail()) ? -gap : 0;
+        lv_obj_align(s_card, wide ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_TOP_LEFT, x_off, y);
     }
     if (dock) {
-        const int bar_w = panel_w - 20;
-        lv_obj_set_width(s_now_bar, bar_w);
+        /* gap=0 / 并开贴边：播放条与外框同宽同齐，禁止再 inset 导致比应用卡更宽。 */
+        const int inner = (gap > 0 && !skill_flush_with_detail()) ? 10 : 0;
+        const int inset = gap + inner;
+        const int bar_w = panel_w - 2 * inner;
+        lv_obj_set_width(s_now_bar, bar_w > 0 ? bar_w : panel_w);
         if (s_now_lbl) {
-            lv_obj_set_width(s_now_lbl, bar_w - 240);
+            lv_obj_set_width(s_now_lbl, (bar_w > 0 ? bar_w : panel_w) - 240);
         }
         style_now_bar(true);
-        /* 贴在外框底边内侧，左右各留 10，和列表合成一块 */
-        lv_obj_align(s_now_bar, LV_ALIGN_BOTTOM_RIGHT, -(SKILL_GAP + 10), -(SKILL_GAP + 10));
+        /* 贴在外框底边内侧；贴边模式 inset=0 */
+        lv_obj_align(s_now_bar, LV_ALIGN_BOTTOM_RIGHT, -inset, -inset);
         lv_obj_move_foreground(s_now_bar);
     }
     if (s_mini_fab && !lv_obj_has_flag(s_mini_fab, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_align(s_mini_fab, LV_ALIGN_BOTTOM_RIGHT, -14, -(NL_UI_TAB_H + 32));
     }
     nl_ov_apps_layout_chrome();
-    nl_ov_settings_sync_columns();
+    /* 详情盖住 hub：勿重排底层列（播歌时 fill_settings_hub 易卡音）。 */
+    if (!s_settings_detail) {
+        nl_ov_settings_sync_columns();
+    }
 }
 
 void nodelio_skill_result_layout(void) { layout_skill_layers(); }
@@ -415,12 +467,21 @@ void clear_ttl(void)
     s_ttl_tmr = nullptr;
 }
 
+void restart_skill_ttl(void);
+
 static void on_ttl(lv_timer_t *t)
 {
     (void)t;
     s_ttl_tmr = nullptr;
     /* 播歌中勿自动关列表：ttl_sec=300 常撞上首曲尾声，表现为「列表突然没了又接着播」 */
     if (nodelio_media_is_playing() || nodelio_media_is_paused()) {
+        return;
+    }
+    /* 新闻/每日一篇朗读中：勿关卡，否则 AbortNewsSpeak 表现为「没读几句就退」 */
+    if (Application::GetInstance().IsNewsReading()) {
+        const char *app = (s_env && s_env->app_id[0]) ? s_env->app_id : "?";
+        ESP_LOGI(TAG, "ttl deferred — news reading app=%s", app);
+        restart_skill_ttl();
         return;
     }
     if (!s_env) {
@@ -454,6 +515,14 @@ void restart_skill_ttl(void)
     if (s_ttl_tmr) {
         lv_timer_set_repeat_count(s_ttl_tmr, 1);
     }
+}
+
+void nodelio_skill_bump_ttl(void)
+{
+    if (!s_have_env || !s_env) {
+        return;
+    }
+    restart_skill_ttl();
 }
 
 static void request_reshuffle(void);
@@ -673,14 +742,17 @@ static int list_row_h(void)
         if (!tall_sub) {
             return SKILL_LIST_ROW_H;
         }
-        /* 客服列表：标题一行，副文两行（IP/客户端，再一行消息预览） */
-        const int sub_lines = 2;
+        /* 工作台会话：单行预览即可，避免宽屏大卡中间留白。客服仍两行副文。 */
+        const int sub_lines =
+            (s_env && nl_workbench_app(s_env->app_id) && strcmp(s_env->app_id, "support.inbox") != 0)
+                ? 1
+                : 2;
         const int font_h = nl_ov_ui_font_line_h();
         int lsp = nl_ov_ui_line_box() - font_h;
         if (lsp < 0) {
             lsp = 0;
         }
-        int h = 16 + font_h + 3 + (font_h * sub_lines + lsp * (sub_lines - 1)) + 6;
+        int h = 12 + font_h + 2 + (font_h * sub_lines + lsp * (sub_lines - 1)) + 4;
         if (h < SKILL_LIST_ROW_H) {
             h = SKILL_LIST_ROW_H;
         }
@@ -1316,6 +1388,87 @@ void on_invoke_action(lv_event_t *e)
         return;
     }
     run_invoke_action(&s_env->tracks[track_idx].invokes[act_idx]);
+}
+
+/** 工作台底栏：content type=action → chips（下一页 / 返回工作区）。 */
+static void on_workbench_footer_chip(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED || !s_env) {
+        return;
+    }
+    const int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= s_env->chip_n) {
+        return;
+    }
+    run_invoke_action(&s_env->chips[idx]);
+}
+
+static void fill_workbench_footer(void)
+{
+    if (!s_dsh_detail_bar || !s_env || !s_env->workbench_picker || s_env->chip_n <= 0) {
+        return;
+    }
+    lv_obj_clean(s_dsh_detail_bar);
+    lv_obj_set_flex_flow(s_dsh_detail_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_dsh_detail_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(s_dsh_detail_bar, 8, 0);
+    lv_obj_set_style_max_height(s_dsh_detail_bar, LV_COORD_MAX, 0);
+    /* 上一页靠左、下一页靠右；禁止 flex_grow 拉成通栏长条。 */
+    auto add_side_btn = [](lv_obj_t *bar, const char *title, int idx) {
+        lv_obj_t *btn = make_text_action_btn(bar, title, on_workbench_footer_chip, (void *)(intptr_t)idx);
+        if (!btn) {
+            return;
+        }
+        lv_obj_set_flex_grow(btn, 0);
+        lv_obj_set_width(btn, LV_SIZE_CONTENT);
+        lv_obj_set_style_min_width(btn, 72, 0);
+        lv_obj_set_style_max_width(btn, 120, 0);
+        lv_obj_set_style_pad_hor(btn, 14, 0);
+        lv_obj_set_height(btn, 36);
+    };
+    auto add_spacer = [](lv_obj_t *bar) {
+        lv_obj_t *pad = lv_obj_create(bar);
+        lv_obj_remove_style_all(pad);
+        lv_obj_set_height(pad, 1);
+        lv_obj_set_flex_grow(pad, 1);
+        lv_obj_clear_flag(pad, LV_OBJ_FLAG_CLICKABLE);
+    };
+    int prev_i = -1;
+    int next_i = -1;
+    int other[NL_ENV_CHIP_MAX];
+    int other_n = 0;
+    for (int i = 0; i < s_env->chip_n && i < NL_ENV_CHIP_MAX; i++) {
+        const char *title = s_env->chips[i].title[0] ? s_env->chips[i].title : "";
+        if (strstr(title, "上一") != nullptr || strstr(title, "上页") != nullptr) {
+            prev_i = i;
+        } else if (strstr(title, "下一") != nullptr || strstr(title, "下页") != nullptr) {
+            next_i = i;
+        } else if (other_n < NL_ENV_CHIP_MAX) {
+            other[other_n++] = i;
+        }
+    }
+    if (prev_i >= 0) {
+        add_side_btn(s_dsh_detail_bar,
+                     s_env->chips[prev_i].title[0] ? s_env->chips[prev_i].title : "上一页", prev_i);
+    } else {
+        add_spacer(s_dsh_detail_bar);
+    }
+    for (int k = 0; k < other_n; k++) {
+        const int i = other[k];
+        add_side_btn(s_dsh_detail_bar, s_env->chips[i].title[0] ? s_env->chips[i].title : "执行", i);
+    }
+    if (prev_i >= 0 && next_i >= 0 && other_n == 0) {
+        add_spacer(s_dsh_detail_bar);
+    }
+    if (next_i >= 0) {
+        add_side_btn(s_dsh_detail_bar,
+                     s_env->chips[next_i].title[0] ? s_env->chips[next_i].title : "下一页", next_i);
+    } else if (prev_i >= 0 || other_n > 0) {
+        add_spacer(s_dsh_detail_bar);
+    }
+    lv_obj_clear_flag(s_dsh_detail_bar, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_height(s_dsh_detail_bar, 48);
 }
 
 /** 「第一个 / 第2个 / 选三」→ 1-based；失败返回 0 */
@@ -2902,10 +3055,10 @@ void fill_list(void)
     }
 
     if (s_card_sub && s_env->workbench_picker) {
-        if (strcmp(s_env->workbench_picker_kind, "workspace") == 0)
+        if (strcmp(s_env->workbench_picker_kind, "session") == 0)
+            lv_label_set_text_fmt(s_card_sub, "顶栏换工作区 · 会话第 %d 页", s_env->workbench_page + 1);
+        else if (strcmp(s_env->workbench_picker_kind, "workspace") == 0)
             lv_label_set_text_fmt(s_card_sub, "选择工作区 · 第 %d 页", s_env->workbench_page + 1);
-        else if (strcmp(s_env->workbench_picker_kind, "session") == 0)
-            lv_label_set_text_fmt(s_card_sub, "选择已有会话 · 第 %d 页", s_env->workbench_page + 1);
         else if (s_env->bridge_id[0])
             lv_label_set_text(s_card_sub, "选择平台 · 点整行进入");
         else
@@ -3080,12 +3233,12 @@ void fill_list(void)
             lv_obj_set_style_text_color(a, support_unread ? UI_WARN : UI_TEXT_MUTED, 0);
             lv_obj_set_width(a, lv_pct(100));
             /* 简介按真实行数定高。客服副文固定两行：来源和预览。 */
-            const int sub_lines = (support_list ||
-                                   (comfortable && s_env->app_id[0] &&
-                                    (nl_workbench_app(s_env->app_id) ||
-                                     strcmp(s_env->app_id, "support.inbox") == 0)))
-                                      ? 2
-                                      : 1;
+            const int sub_lines =
+                support_list ? 2
+                             : ((comfortable && s_env->app_id[0] &&
+                                 strcmp(s_env->app_id, "support.inbox") == 0)
+                                    ? 2
+                                    : 1);
             lv_label_set_long_mode(a, sub_lines > 1 ? LV_LABEL_LONG_WRAP : LV_LABEL_LONG_DOT);
             int cell_w = skill_panel_w();
             if (cols > 1) {
@@ -3173,6 +3326,7 @@ void fill_list(void)
     } else if (s_dsh_phase != DSH_UI_IDLE) {
         dsh_clear_ui_phase();
     }
+    fill_workbench_footer();
     apply_card_chrome();
     /* 在播项可能在折下：卡高确定后滚入视野 */
     if (music_card && s_play_idx >= 0 && s_play_idx < 64 && s_row_btns[s_play_idx] &&

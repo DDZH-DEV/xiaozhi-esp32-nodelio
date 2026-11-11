@@ -80,13 +80,13 @@ static void with_builtin_daily(nl_app_item* items, int& n) {
     items[0] = {};
     snprintf(items[0].id, sizeof(items[0].id), "builtin.daily");
     snprintf(items[0].name, sizeof(items[0].name), "日历与天气");
-    snprintf(items[0].desc, sizeof(items[0].desc), "内置 · 月历 / 15 天天气 / 空气质量");
+    snprintf(items[0].desc, sizeof(items[0].desc), "月历 · 天气 · 空气");
     items[0].enabled = true;
     if (files) {
         items[1] = {};
         snprintf(items[1].id, sizeof(items[1].id), "builtin.files");
         snprintf(items[1].name, sizeof(items[1].name), "文件");
-        snprintf(items[1].desc, sizeof(items[1].desc), "内置 · 内存卡歌曲与照片");
+        snprintf(items[1].desc, sizeof(items[1].desc), "内存卡歌曲与照片");
         items[1].enabled = true;
     }
     n = keep + extra;
@@ -119,7 +119,7 @@ static int apps_pane_target_w(bool split)
 {
     const int full = apps_body_w() - 2 * kAppsPagePadH;
     if (apps_wide() && split) {
-        /* 与设置页单列同宽（整屏 1/5），左右再各留一页边距。 */
+        /* 分栏左轨单列，把宽度让给右侧技能窗（客服列表等需要更宽）。 */
         return ui_settings_tile_width(full, true, nullptr);
     }
     return full > 120 ? full : 120;
@@ -416,14 +416,36 @@ void nl_ov_apps_refresh_daily(void) {
 
 static const char *apps_glyph_for(const char *id)
 {
-    if (id && (strstr(id, "radio.stations") != nullptr || strstr(id, "podcast.latest") != nullptr)) {
+    if (!id || !id[0]) {
+        return MATERIAL_SYMBOLS_EXPLORE;
+    }
+    if (strstr(id, "builtin.daily") != nullptr) {
+        return MATERIAL_SYMBOLS_CALENDAR_MONTH;
+    }
+    if (strstr(id, "builtin.files") != nullptr) {
+        return MATERIAL_SYMBOLS_SD_CARD;
+    }
+    if (strstr(id, "podcast") != nullptr) {
+        return MATERIAL_SYMBOLS_HEADPHONES;
+    }
+    if (strstr(id, "radio") != nullptr) {
         return MATERIAL_SYMBOLS_VOLUME_UP;
     }
-    if (id && strstr(id, "builtin.files") != nullptr) {
-        return MATERIAL_SYMBOLS_PHOTO_CAMERA;
-    }
-    if (id && nodelio_skill_id_is_music(id)) {
+    if (nodelio_skill_id_is_music(id)) {
         return MATERIAL_SYMBOLS_MUSIC_NOTE;
+    }
+    if (strstr(id, "news") != nullptr || strstr(id, "rss") != nullptr) {
+        return MATERIAL_SYMBOLS_LINK;
+    }
+    if (strstr(id, "article") != nullptr) {
+        return MATERIAL_SYMBOLS_MAIL;
+    }
+    if (strstr(id, "support") != nullptr || strstr(id, "inbox") != nullptr ||
+        strstr(id, "gochat") != nullptr || strstr(id, "go-chat") != nullptr) {
+        return MATERIAL_SYMBOLS_CONTACT_SUPPORT;
+    }
+    if (strstr(id, "chat") != nullptr) {
+        return MATERIAL_SYMBOLS_CHAT_BUBBLE;
     }
     return MATERIAL_SYMBOLS_EXPLORE;
 }
@@ -452,10 +474,11 @@ static void render_list(void)
     NlUiWorkScope work("apps.update");
     s_apps_dirty = false;
     const int list_w = apps_pane_target_w(s_split);
+    /* 全宽三列；分栏左轨单列。 */
     const int card_w = ui_settings_tile_width(list_w, s_split && apps_wide(), nullptr);
     const int line = nl_ov_ui_line_box();
     const int card_h = ui_settings_tile_height();
-    const int pod_size = 46;
+    const int pod_size = 56;
     const lv_font_t* font = nl_ov_ui_font();
     for (int i = 0; i < APP_MAX; ++i) {
         auto& view = s_app_views[i];
@@ -493,7 +516,7 @@ static void render_list(void)
                 LV_EVENT_CLICKED, (void*)(intptr_t)i);
             view.pod = lv_obj_create(view.card);
             lv_obj_remove_style_all(view.pod);
-            lv_obj_set_style_radius(view.pod, 12, 0);
+            lv_obj_set_style_radius(view.pod, UI_RADIUS_SM, 0);
             lv_obj_clear_flag(view.pod, LV_OBJ_FLAG_CLICKABLE);
             view.icon = lv_label_create(view.pod);
             lv_obj_set_style_text_font(view.icon, &font_material_symbols_30_4, 0);
@@ -511,7 +534,7 @@ static void render_list(void)
             view.subtitle = lv_label_create(text);
             lv_label_set_long_mode(view.title, LV_LABEL_LONG_DOT);
             lv_obj_set_width(view.title, lv_pct(100));
-            lv_label_set_long_mode(view.subtitle, LV_LABEL_LONG_WRAP);
+            lv_label_set_long_mode(view.subtitle, LV_LABEL_LONG_DOT);
             lv_obj_set_width(view.subtitle, lv_pct(100));
         }
         const bool focused = s_split && i == s_focus_idx;
@@ -539,15 +562,16 @@ static void render_list(void)
             }
             const bool light = ui_palette_is_dark() == 0;
             const bool light_on = light && focused && item.enabled;
+            /* 弱 Pod + accent 字形；选中浅色时反白。 */
             lv_obj_set_style_bg_color(view.pod,
                                       light_on ? UI_SURFACE
-                                               : (item.enabled ? UI_ACCENT : UI_CAPSULE_OFF),
+                                               : (item.enabled ? UI_POD_QUIET : UI_CAPSULE_OFF),
                                       0);
             lv_obj_set_style_bg_opa(view.pod, LV_OPA_COVER, 0);
             lv_label_set_text(view.icon, apps_glyph_for(item.id));
             lv_obj_set_style_text_color(view.icon,
                                         light_on ? UI_ACCENT
-                                                 : (item.enabled ? UI_ON_TILE : UI_TEXT_MUTED),
+                                                 : (item.enabled ? UI_ACCENT : UI_TEXT_MUTED),
                                         0);
             lv_label_set_text(view.title, item.name[0] ? item.name : item.id);
             lv_label_set_text(view.subtitle, desc);
@@ -568,14 +592,7 @@ static void render_list(void)
             nl_ov_set_font(view.subtitle);
             const int font_h = nl_ov_ui_font_line_h();
             lv_obj_set_height(view.title, font_h);
-            /* 副文与应用卡同宽规则：卡宽 - 左右内边距 - 列间距 - 图标底座。
-             * 方屏双列时约 140px，单行会截成「内置 · 月历 /…」，按两行折。 */
-            int sub_w = card_w - 10 - 8 - 16 - pod_size;
-            if (sub_w < 48) {
-                sub_w = 48;
-            }
-            const int sub_cap = font_h * 2 + (line - font_h);
-            lv_obj_set_height(view.subtitle, sub_cap);
+            lv_obj_set_height(view.subtitle, font_h);
             view.width = card_w;
             view.height = card_h;
             view.pod_size = pod_size;
@@ -1447,7 +1464,7 @@ void nl_ov_build_apps(void)
     lv_obj_set_flex_grow(s_list, 1);
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    const int apps_gap = nodelio_text_scale() == 1 ? 12 : UI_GAP;
+    const int apps_gap = nodelio_text_scale() == 1 ? 12 : 10;
     lv_obj_set_style_pad_row(s_list, apps_gap, 0);
     lv_obj_set_style_pad_column(s_list, apps_gap, 0);
     lv_obj_set_style_pad_bottom(s_list, 120, 0); /* 避让右下刷新+音乐球叠放 */

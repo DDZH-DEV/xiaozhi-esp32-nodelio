@@ -546,6 +546,28 @@ static bool notice_store_upsert(const nodelio_panel_notice_t *in, bool persist)
     notice_copy(&item, in);
     notice_normalize_defaults(&item);
 
+    /* panel_replied 只刷新会话，不占未读（含云端对账/磁盘缓存回放） */
+    if (strcmp(item.reason, "panel_replied") == 0) {
+        if (item.coalesce_key[0]) {
+            for (int i = 0; i < s_notice_n; ) {
+                if (s_notice_items[i].coalesce_key[0] &&
+                    strcmp(s_notice_items[i].coalesce_key, item.coalesce_key) == 0) {
+                    if (i + 1 < s_notice_n) {
+                        memmove(&s_notice_items[i], &s_notice_items[i + 1],
+                                sizeof(s_notice_items[0]) * (size_t)(s_notice_n - i - 1));
+                    }
+                    --s_notice_n;
+                    continue;
+                }
+                ++i;
+            }
+            if (persist) {
+                notice_persist_disk_cache();
+            }
+        }
+        return false;
+    }
+
     if (item.notice_id[0] && notice_is_tombstoned(item.notice_id)) {
         return false;
     }
@@ -614,6 +636,32 @@ static bool notice_store_remove_by_id(const char *notice_id, nodelio_panel_notic
         }
     }
     return false;
+}
+
+/* 已回复 quiet 刷新：只拆掉同源未读，不把本条留进消息提醒。 */
+static bool notice_store_remove_by_coalesce_key(const char *coalesce_key)
+{
+    if (!coalesce_key || !coalesce_key[0] || !s_notice_items) {
+        return false;
+    }
+    bool removed = false;
+    for (int i = 0; i < s_notice_n; ) {
+        if (s_notice_items[i].coalesce_key[0] &&
+            strcmp(s_notice_items[i].coalesce_key, coalesce_key) == 0) {
+            if (i + 1 < s_notice_n) {
+                memmove(&s_notice_items[i], &s_notice_items[i + 1],
+                        sizeof(s_notice_items[0]) * (size_t)(s_notice_n - i - 1));
+            }
+            --s_notice_n;
+            removed = true;
+            continue;
+        }
+        ++i;
+    }
+    if (removed) {
+        notice_persist_disk_cache();
+    }
+    return removed;
 }
 
 static bool parse_notice_json_item(const cJSON *obj, nodelio_panel_notice_t *out)
@@ -1138,6 +1186,32 @@ extern "C" void nodelio_panel_ui_notice(const nodelio_panel_notice_t *notice)
     notice_copy(copy, notice);
     notice_normalize_defaults(copy);
     Application::GetInstance().Schedule([copy]() {
+        /* 已回复 quiet：拆同源未读 + 刷新会话卡，本条不进消息提醒未读库 */
+        if (notice_is_quiet_refresh(copy)) {
+            if (copy->notice_id[0] && notice_is_tombstoned(copy->notice_id)) {
+                free(copy);
+                return;
+            }
+            (void)notice_store_remove_by_coalesce_key(copy->coalesce_key);
+            if (copy->notice_id[0]) {
+                (void)notice_store_remove_by_id(copy->notice_id, nullptr);
+            }
+            {
+                DisplayLockGuard lock(nl_ov_disp());
+                if (lock) {
+                    nl_ov_notices_refresh_badge();
+                }
+            }
+            const bool sleeping = Board::GetInstance().IsInSleepMode();
+            if (sleeping && !notice_wants_wake(copy)) {
+                notice_enqueue_deferred(copy);
+                free(copy);
+                return;
+            }
+            notice_present(copy);
+            free(copy);
+            return;
+        }
         /* 先入库去重：若已存在同 notice_id 或已在墓碑中，直接跳过，绝不重复弹 Toast */
         if (!notice_store_upsert(copy, true)) {
             free(copy);

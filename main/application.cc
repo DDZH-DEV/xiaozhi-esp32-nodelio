@@ -329,6 +329,13 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_PLAYBACK_DRAINED) {
 #if CONFIG_NODELIO_PANEL
+            /* 云端偶发不发 tts.stop：喇叭已空仍要推进新闻续段。 */
+            if (news_reading_ && !news_awaiting_mcp_ && !aborted_) {
+                if (news_playback_token_ == 0) {
+                    news_playback_token_ = nodelio_skill_news_read_token();
+                }
+                news_tts_stopped_ = true;
+            }
             FinishNewsReadPlayback();
 #endif
             if (audio_service_.IsPlaybackIdle()) {
@@ -995,7 +1002,13 @@ void Application::InitializeProtocol() {
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
 #if CONFIG_NODELIO_PANEL
-                    if (news_playback_token_ != 0 && !aborted_) {
+                    /* 只念标题时 Sentence 可能未挂 token，仍须收尾续正文。 */
+                    if (!aborted_ &&
+                        (news_playback_token_ != 0 ||
+                         (news_reading_ && !news_awaiting_mcp_))) {
+                        if (news_playback_token_ == 0) {
+                            news_playback_token_ = nodelio_skill_news_read_token();
+                        }
                         news_tts_stopped_ = true;
                         FinishNewsReadPlayback();
                         return;
@@ -2422,14 +2435,25 @@ void Application::CheckNewsReadRequest() {
     nodelio_skill_news_sync_read_btn();
 }
 
+bool Application::PreferNewsContinue() const
+{
+    /* 设备已发续读 detect，或同轮二次 tools/call 时首段仍在等 TTS。 */
+    if (news_read_continue_) {
+        return true;
+    }
+    return news_reading_ && nodelio_skill_news_should_continue();
+}
+
 void Application::OnNewsReadToolCalled() {
     // Called on the application task, only after a validated tools/call is dispatched.
     news_awaiting_mcp_ = false;
     suppress_cloud_tts_until_us_ = 0;
     aborted_ = false;
     news_tts_stopped_ = false;
-    news_playback_token_ = 0;
-    news_playback_start_count_ = audio_service_.GetPlaybackCount();
+    /* 同轮重复 call：保留已有 token / 起播计数，避免把「已在播」判成没播过。 */
+    if (news_playback_token_ == 0) {
+        news_playback_start_count_ = audio_service_.GetPlaybackCount();
+    }
     ESP_LOGI(TAG, "news read: tools/call received, waiting for article result");
     nodelio_skill_news_sync_read_btn();
 }
@@ -2463,11 +2487,15 @@ void Application::FinishNewsReadPlayback() {
     if (!news_tts_stopped_ || !audio_service_.IsPlaybackIdle()) {
         return;
     }
-    const uint32_t token = news_playback_token_;
+    uint32_t token = news_playback_token_;
+    if (!token && news_reading_ && !aborted_) {
+        token = nodelio_skill_news_read_token();
+    }
     news_playback_token_ = 0;
     news_tts_stopped_ = false;
     bool more = false;
     const bool played = audio_service_.GetPlaybackCount() != news_playback_start_count_;
+    /* 只播了标题时 played 也可能为 true；finish_chunk 会把「未匹配正文」收成 more=1。 */
     const bool finished = !aborted_ && nodelio_skill_news_finish_chunk(token, played, &more);
     const DeviceState st = GetDeviceState();
     ESP_LOGI(TAG, "news playback drained: token=%u audio=%d complete=%d more=%d state=%d",
@@ -2688,6 +2716,7 @@ void Application::StartLocalNewsRead(const char *op)
     news_reading_ = true;
     nodelio_panel_ui_set_voice_hint(news_read_continue_ ? "继续读" : "读这篇");
     nodelio_skill_news_sync_read_btn();
+    nodelio_skill_bump_ttl();
 
     if (!protocol_->IsAudioChannelOpened()) {
         const std::string echo = news_read_continue_ ? "调用skill.news续" : "调用skill.news读";

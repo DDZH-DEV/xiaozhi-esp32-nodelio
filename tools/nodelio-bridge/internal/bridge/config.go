@@ -14,7 +14,7 @@ import (
 	"sync"
 )
 
-const Version = "0.4.0"
+const Version = "0.4.3"
 
 type ProviderConfig struct {
 	Enabled       bool   `json:"enabled"`
@@ -32,14 +32,15 @@ type ProviderConfig struct {
 }
 
 type Config struct {
-	SchemaVersion   int                       `json:"schema_version"`
-	BridgeID        string                    `json:"bridge_id"`
-	Name            string                    `json:"name"`
-	Listen          string                    `json:"listen"`
-	HostWS          string                    `json:"host_ws"`
-	PanelID         string                    `json:"panel_device_id"`
-	DefaultProvider string                    `json:"default_provider"`
-	Providers       map[string]ProviderConfig `json:"providers"`
+	SchemaVersion        int                       `json:"schema_version"`
+	BridgeID             string                    `json:"bridge_id"`
+	Name                 string                    `json:"name"`
+	Listen               string                    `json:"listen"`
+	HostWS               string                    `json:"host_ws"`
+	PanelID              string                    `json:"panel_device_id"`
+	DefaultProvider      string                    `json:"default_provider"`
+	AllowInsecureHostWS  bool                      `json:"allow_insecure_host_ws"`
+	Providers            map[string]ProviderConfig `json:"providers"`
 }
 
 // Settings is one atomic private document. The HTTP API never serializes Secrets.
@@ -195,13 +196,13 @@ func ValidateConfig(c Config) error {
 		return errors.New("invalid default provider")
 	}
 	if c.HostWS != "" {
-		if err = validateURL(c.HostWS, true); err != nil {
+		if err = validateURL(c.HostWS, true, c.AllowInsecureHostWS); err != nil {
 			return fmt.Errorf("host_ws: %w", err)
 		}
 	}
 	for id, p := range c.Providers {
 		if id != "dsh" && id != "codex" {
-			if err = validateURL(p.BaseURL, false); err != nil {
+			if err = validateURL(p.BaseURL, false, false); err != nil {
 				return fmt.Errorf("%s base URL: %w", id, err)
 			}
 		}
@@ -222,7 +223,7 @@ func ValidateConfig(c Config) error {
 	return nil
 }
 
-func validateURL(raw string, ws bool) error {
+func validateURL(raw string, ws, allowInsecure bool) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return errors.New("invalid endpoint URL")
@@ -232,6 +233,9 @@ func validateURL(raw string, ws bool) error {
 		secure, plain = "wss", "ws"
 	}
 	if u.Scheme == secure {
+		return nil
+	}
+	if allowInsecure && u.Scheme == plain {
 		return nil
 	}
 	ip := net.ParseIP(u.Hostname())

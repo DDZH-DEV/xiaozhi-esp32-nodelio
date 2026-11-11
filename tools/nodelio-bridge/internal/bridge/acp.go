@@ -76,7 +76,7 @@ func (p *WorkBuddy) runACP(ctx context.Context, t *Task, link, token, instructio
 	if token == "" {
 		return errors.New("WorkBuddy task connection is not ready")
 	}
-	if err := validateURL(link, false); err != nil {
+	if err := validateURL(link, false, false); err != nil {
 		return fmt.Errorf("invalid ACP link: %w", err)
 	}
 	ctx, cancel := context.WithCancel(ctx)

@@ -11,6 +11,7 @@
 #include "offline_cmd.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
+#include "skill_result_ui.h"
 #include "ui_theme.h"
 
 #include <esp_log.h>
@@ -344,8 +345,14 @@ void nl_ov_commit_card_radius(uint8_t rad_px)
             return;
         }
         nl_ov_apply_appearance();
-        char toast[32];
-        std::snprintf(toast, sizeof(toast), "卡片圆角已设为 %dpx", (int)rad_px);
+        /* 宽屏 0px=应用卡贴边：须立刻重排技能卡宽高与圆角。 */
+        nodelio_skill_result_layout();
+        char toast[48];
+        if (nodelio_display_profile()->nav_width && rad_px == 0) {
+            std::snprintf(toast, sizeof(toast), "应用卡贴边（无圆角）");
+        } else {
+            std::snprintf(toast, sizeof(toast), "卡片圆角已设为 %dpx", (int)rad_px);
+        }
         nl_ov_toast(toast);
         nl_ov_open_settings_detail(SET_PAGE_DISP);
     });

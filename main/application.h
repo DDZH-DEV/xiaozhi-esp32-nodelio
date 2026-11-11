@@ -196,10 +196,8 @@ public:
     /** 翻篇：立即掐 TTS/解码，无「已暂停」toast，不发 detect。 */
     void AbortNewsSpeak();
     bool IsNewsReading() const { return news_reading_; }
-    /** 已发「继续读」detect、等 tools/call：云端若误传 op=read 须设备侧改成 continue。 */
-    bool PreferNewsContinue() const {
-        return news_awaiting_mcp_.load() && news_read_continue_;
-    }
+    /** 续读中或已有未读段：云端若误传 op=read 须设备侧改成 continue。 */
+    bool PreferNewsContinue() const;
     /** 新闻列表上屏后：武装「是/读」→ 朗读第一条。 */
     void ArmPendingConfirmReadNews();
     void OnNewsReadToolCalled();  // Application task only; validated MCP dispatch.

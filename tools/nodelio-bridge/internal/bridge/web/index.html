@@ -8,7 +8,8 @@
 <details id="connection-import"><summary>从 APP 导入连接配置</summary><p>在 APP「账号偏好 → 电脑工作台桥」生成凭据并点击“复制连接配置”，将完整内容粘贴到这里。</p><label>连接配置<textarea id="connection-json" rows="3" maxlength="16384" spellcheck="false" autocomplete="off" placeholder="粘贴 APP 复制的连接配置"></textarea></label><button id="import-connection" type="button">填入配置</button><small>填入后点击“保存并应用”连接服务器。</small><p id="import-result" role="status" aria-live="polite"></p></details>
 <div class="grid">
 <label>电脑名称<input id="computer-name" maxlength="40" placeholder="例如：书房电脑"><small>首次连接时使用；之后可在 APP 中重命名。</small></label>
-<label>服务器连接地址（WebSocket）<input id="host-ws" type="url" placeholder="wss://你的服务器/ws/workbench-bridge"><small>粘贴 APP 的“复制地址”内容，以 ws:// 或 wss:// 开头。</small></label>
+<label>服务器连接地址（WebSocket）<input id="host-ws" type="url" placeholder="wss://你的服务器/ws/workbench-bridge"><small>粘贴 APP 的“复制地址”内容，以 ws:// 或 wss:// 开头。公网默认要求 wss://。</small></label>
+<label class="switch-row"><span>允许明文 ws:// 连接公网 Host（不安全，默认关闭）</span><label class="switch"><input id="allow-insecure-host-ws" type="checkbox" aria-label="允许明文公网 Host WS"><span></span></label></label>
 <label>桥凭据（Token）<input id="host-token" type="password" autocomplete="new-password" placeholder="粘贴 APP 的“复制凭据”内容"><small>这里只填凭据；留空保留已保存凭据。</small></label>
 <label>面板 ID（可选）<input id="panel-id"></label><label>未指定时使用<select id="default-provider"><option value="codex">Codex 桌面</option><option value="dsh">DSH</option><option value="openai">OpenAI API 独立会话</option><option value="workbuddy">WorkBuddy</option></select></label>
 </div></section>

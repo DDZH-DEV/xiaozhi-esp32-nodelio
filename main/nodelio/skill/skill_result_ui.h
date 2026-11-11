@@ -128,9 +128,13 @@ bool nodelio_skill_news_prepare_read(void);
 uint32_t nodelio_skill_news_read_token(void);
 uint32_t nodelio_skill_news_on_sentence(const char* text);
 bool nodelio_skill_news_finish_chunk(uint32_t token, bool played_audio, bool* more);
+/** 本段已下发且仍在等 TTS：云端再发 op=read 时应改成 continue（防同轮双调用）。 */
+bool nodelio_skill_news_should_continue(void);
 void nodelio_skill_news_cancel_read(void);
 /** 详情底栏：朗读 / 暂停 / 继续。 */
 void nodelio_skill_news_sync_read_btn(void);
+/** 新闻朗读开始时刷新技能卡空闲 TTL，避免中途被关卡掐掉。 */
+void nodelio_skill_bump_ttl(void);
 
 /** 当前技能是否为 news_list 且卡/播放层仍在前台（语音「下一篇」仅此时命中）。 */
 bool nodelio_skill_news_ui_active(void);

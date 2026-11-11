@@ -1582,9 +1582,9 @@ void nodelio_mcp_register_tools(void)
                 return std::unexpected(std::string("op 须为 prev/next/read/continue/mark_read/skip/close"));
             }
             auto& app = Application::GetInstance();
-            /* 云端常忽略 continue、默认 op=read；设备已声明续读时强制纠正，避免整篇重头念。 */
+            /* 云端常忽略 continue / 同轮连调两次 read；有未读游标时强制 continue。 */
             if (op == "read" && app.PreferNewsContinue()) {
-                ESP_LOGW("nl_mcp", "cloud sent op=read while device requested continue → force continue");
+                ESP_LOGW("nl_mcp", "cloud sent op=read while continue preferred → force continue");
                 op = "continue";
             }
             app.Schedule([]() { Application::GetInstance().OnNewsReadToolCalled(); });

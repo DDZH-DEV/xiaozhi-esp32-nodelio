@@ -3,7 +3,6 @@ package bridge
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"path/filepath"
 	"sort"
@@ -160,6 +159,7 @@ func (c *Codex) read(r *codexReader, id, account string) (Task, error) {
 		return Task{}, errors.New("桌面返回了不匹配的会话")
 	}
 	t := c.task(thread)
+	/* 多取几轮只为队列核对；正文只拼最新一轮，避免详情变成「所有任务」。 */
 	turns, err := r.call("thread/turns/list", map[string]any{"threadId": id, "limit": 3, "itemsView": "full", "sortDirection": "desc"})
 	if err != nil {
 		return Task{}, err
@@ -171,6 +171,7 @@ func (c *Codex) read(r *codexReader, id, account string) (Task, error) {
 	observed := false
 	rows := arr(turns["data"])
 	for i := len(rows) - 1; i >= 0; i-- {
+		var turnBody []string
 		for _, value := range arr(obj(rows[i])["items"]) {
 			item := obj(value)
 			switch str(item["type"]) {
@@ -188,15 +189,19 @@ func (c *Codex) read(r *codexReader, id, account string) (Task, error) {
 					}
 				}
 				text := strings.Join(parts, "\n")
-				body = append(body, "你："+text)
+				turnBody = append(turnBody, "你："+text)
 				// Only a new message ID acknowledges delivery. Repeating an old
 				// instruction, or steering a turn that started earlier, is safe.
 				if hasMarker && marker.RemoteID != "" && itemID != "" && fingerprint(text) == marker.PreviousResponse && !strings.Contains(marker.RemoteID, ","+fingerprint(itemID)+",") {
 					observed = true
 				}
 			case "agentMessage":
-				body = append(body, "助手："+str(item["text"]))
+				turnBody = append(turnBody, "助手："+str(item["text"]))
 			}
+		}
+		/* rows 为 desc：循环到末尾的是最新一轮 */
+		if i == 0 {
+			body = turnBody
 		}
 	}
 	if canTrackIDs {
@@ -327,16 +332,62 @@ func codexAction(app, title string, params map[string]any) map[string]any {
 	params["provider"] = "codex"
 	return map[string]any{"id": "select", "title": title, "run": "invoke", "invoke": map[string]any{"app_id": app, "params": params}}
 }
-func codexRow(id, title, subtitle string, action map[string]any) map[string]any {
+
+/** 底栏按钮：type=action → 固件 chips，勿再塞进 list_item 卡片。 */
+func codexFooter(app, id, title string, params map[string]any) map[string]any {
+	params["provider"] = "codex"
+	return map[string]any{
+		"type": "action", "id": id, "title": title, "run": "invoke",
+		"invoke": map[string]any{"app_id": app, "params": params},
+	}
+}
+
+func codexRow(id, title, subtitle string, actions ...map[string]any) map[string]any {
 	row := map[string]any{"type": "list_item", "id": id, "title": clip(title, 96), "subtitle": clip(subtitle, 120)}
-	if action != nil {
-		row["actions"] = []any{action}
+	out := make([]any, 0, len(actions))
+	for _, a := range actions {
+		if a != nil {
+			out = append(out, a)
+		}
+	}
+	if len(out) > 0 {
+		row["actions"] = out
 	}
 	return row
 }
 
+/** 顶栏横滑工作区：与 DSH 同构，勿再做「工作区卡片页 → 会话」两级下钻。 */
+func (c *Codex) workspaceFilters(paths []string, selected string) []any {
+	list := append([]string{}, paths...)
+	sort.Strings(list)
+	allSelected := selected == "" || selected == "all" || selected == "__all__"
+	bases := map[string]int{}
+	for _, path := range list {
+		bases[strings.ToLower(filepath.Base(path))]++
+	}
+	out := []any{map[string]any{"id": "__all__", "title": "全部", "workspace": "__all__", "selected": allSelected}}
+	for _, path := range list {
+		if len(out) >= 8 {
+			break
+		}
+		ref := c.workspace(path)
+		label := filepath.Base(path)
+		if bases[strings.ToLower(label)] > 1 {
+			parent := filepath.Base(filepath.Dir(path))
+			if parent != "" && parent != "." && parent != string(filepath.Separator) {
+				label = parent + "/" + label
+			}
+		}
+		out = append(out, map[string]any{
+			"id": ref, "title": label, "workspace": ref,
+			"selected": !allSelected && selected == ref,
+		})
+	}
+	return out
+}
+
 func (c *Codex) Browse(ctx context.Context, app string, q Request) map[string]any {
-	if q.Workspace == "__workspaces" {
+	if q.Workspace == "__workspaces" || q.Workspace == "__all__" {
 		q.Workspace = ""
 	}
 	r, _, _, close, err := c.connect(ctx)
@@ -344,122 +395,124 @@ func (c *Codex) Browse(ctx context.Context, app string, q Request) map[string]an
 		return errorEnvelope(app, err)
 	}
 	defer close()
-	items := []any{}
-	kind := "workspace"
-	title := "Codex · 工作区"
-	page := q.Page
-	if page < 0 || page > 40 {
+	if q.Page < 0 || q.Page > 40 {
 		return errorEnvelope(app, errors.New("无效页码"))
 	}
-	display := map[string]any{"card_type": "list", "title": title, "workbench_provider": "codex", "workbench_picker": true, "max_items": 8, "ttl_sec": 120}
-	if q.Workspace == "" {
-		// Discover recent workspace directories through the official API, never SQLite.
-		paths := map[string]bool{}
-		cursor := ""
-		count := 0
-		for n := 0; n < 2; n++ {
-			doc, err := r.call("thread/list", codexListParams("", cursor, 100))
-			if err != nil {
-				return errorEnvelope(app, err)
-			}
-			for _, value := range arr(doc["data"]) {
-				thread := obj(value)
-				path := str(thread["cwd"])
-				if path != "" {
-					paths[path] = true
-				}
-				count++
-			}
-			cursor = str(doc["nextCursor"])
-			if cursor == "" {
-				break
-			}
-		}
-		list := make([]string, 0, len(paths))
-		for path := range paths {
-			list = append(list, path)
-		}
-		sort.Strings(list)
-		if page*5 >= len(list) {
-			page = 0
-		}
-		end := (page + 1) * 5
-		if end > len(list) {
-			end = len(list)
-		}
-		for _, path := range list[page*5 : end] {
-			ref := c.workspace(path)
-			items = append(items, codexRow("__"+ref, filepath.Base(path), path, codexAction(app, "进入", map[string]any{"workspace": ref})))
-		}
-		for _, delta := range []int{-1, 1} {
-			next := page + delta
-			if next >= 0 && next*5 < len(list) {
-				label := "下一页工作区"
-				if delta < 0 {
-					label = "上一页工作区"
-				}
-				items = append(items, codexRow(fmt.Sprintf("__page_%d", next), label, "", codexAction(app, label, map[string]any{"page": next})))
-			}
-		}
-		if len(items) == 0 {
-			items = append(items, codexRow("__empty", "尚无本地工作区", "请先在 Codex 桌面创建会话，再刷新", nil))
-		}
-		// Allow access to older conversations even when their cwd is outside the recent window.
-		items = append(items, codexRow("__all", "全部会话", fmt.Sprintf("工作区来自最近 %d 条会话；更早记录在这里", count), codexAction(app, "查看", map[string]any{"workspace": "all"})))
-	} else {
-		kind = "session"
-		cursor := ""
-		previous := ""
-		page = 0
-		c.mu.Lock()
-		path, ok := c.workspaces[q.Workspace]
-		saved, pageOK := c.pages[q.Cursor]
-		c.mu.Unlock()
-		if q.Workspace != "all" && !ok {
-			return errorEnvelope(app, errors.New("工作区选择已过期，请返回工作区重新选择"))
-		}
-		if q.Cursor != "" {
-			if !pageOK || saved.Workspace != q.Workspace {
-				return errorEnvelope(app, errors.New("分页已过期，请刷新会话列表"))
-			}
-			cursor = saved.Cursor
-			previous = saved.Previous
-			page = saved.Number
-		}
-		doc, err := r.call("thread/list", codexListParams(path, cursor, 5))
+
+	/* 扫最近会话目录 → 顶栏 chips（官方 API，不碰 SQLite）。 */
+	pathSet := map[string]bool{}
+	scanCursor := ""
+	for n := 0; n < 2; n++ {
+		doc, err := r.call("thread/list", codexListParams("", scanCursor, 100))
 		if err != nil {
 			return errorEnvelope(app, err)
 		}
 		for _, value := range arr(doc["data"]) {
-			task := c.task(obj(value))
-			key := sessionKey("codex", task.ID)
-			items = append(items, codexRow(key, task.Title, statusLabel(task.Status)+" · "+task.Body, codexAction(app, "查看", map[string]any{"session": key})))
-		}
-		if page > 0 {
-			items = append(items, codexRow("__previous", "上一页会话", "", codexAction(app, "上一页", map[string]any{"workspace": q.Workspace, "cursor": previous})))
-		}
-		if cursor = str(doc["nextCursor"]); cursor != "" {
-			ref := NewID()
-			c.mu.Lock()
-			if len(c.pages) >= 256 {
-				c.pages = map[string]codexPage{}
+			if path := str(obj(value)["cwd"]); path != "" {
+				pathSet[path] = true
 			}
-			c.pages[ref] = codexPage{q.Workspace, cursor, q.Cursor, page + 1}
-			c.mu.Unlock()
-			items = append(items, codexRow("__next", "下一页会话", "", codexAction(app, "下一页", map[string]any{"workspace": q.Workspace, "cursor": ref})))
 		}
-		items = append(items, codexRow("__workspaces", "返回工作区", "", codexAction(app, "返回", map[string]any{})))
-		display["filters"] = codexFilters(q.Workspace)
-		display["title"] = "Codex · 会话"
+		scanCursor = str(doc["nextCursor"])
+		if scanCursor == "" {
+			break
+		}
 	}
-	display["workbench_picker_kind"] = kind
-	display["workbench_page"] = page
-	return map[string]any{"schema_version": 1, "request_id": NewID(), "app_id": app, "status": "ok", "content": items, "display": display, "spoken": map[string]any{"text": "请选择" + map[string]string{"workspace": "桌面工作区", "session": "已有会话"}[kind], "language": "zh-CN"}}
+	paths := make([]string, 0, len(pathSet))
+	for path := range pathSet {
+		paths = append(paths, path)
+	}
+
+	wsKey := q.Workspace
+	if wsKey == "all" {
+		wsKey = ""
+	}
+	cwd := ""
+	if wsKey != "" {
+		c.mu.Lock()
+		path, ok := c.workspaces[wsKey]
+		c.mu.Unlock()
+		if !ok {
+			return errorEnvelope(app, errors.New("工作区选择已过期，请点顶栏重新选择"))
+		}
+		cwd = path
+	}
+
+	cursor := ""
+	previous := ""
+	page := 0
+	if q.Cursor != "" {
+		c.mu.Lock()
+		saved, pageOK := c.pages[q.Cursor]
+		c.mu.Unlock()
+		if !pageOK || saved.Workspace != wsKey {
+			return errorEnvelope(app, errors.New("分页已过期，请刷新会话列表"))
+		}
+		cursor = saved.Cursor
+		previous = saved.Previous
+		page = saved.Number
+	}
+
+	doc, err := r.call("thread/list", codexListParams(cwd, cursor, 5))
+	if err != nil {
+		return errorEnvelope(app, err)
+	}
+	items := []any{}
+	for _, value := range arr(doc["data"]) {
+		task := c.task(obj(value))
+		key := sessionKey("codex", task.ID)
+		view := codexAction(app, "查看", map[string]any{"session": key, "workspace": wsKey})
+		resume := map[string]any{
+			"id": "resume", "title": "续聊", "run": "invoke",
+			"invoke": map[string]any{"app_id": app, "params": map[string]any{"arm": true, "session": key, "provider": "codex", "workspace": wsKey}},
+		}
+		/* 副文只留最后一条预览，勿把整段历史塞进列表。 */
+		items = append(items, codexRow(key, task.Title, statusLabel(task.Status)+" · "+clip(task.Body, 96), view, resume))
+	}
+	if len(items) == 0 {
+		hint := "请先在 Codex 桌面创建会话，再刷新"
+		if cwd != "" {
+			hint = "该工作区暂无会话 · 可点顶栏「全部」或换一个目录"
+		}
+		items = append(items, codexRow("__empty", "暂无会话", hint))
+	}
+	if page > 0 {
+		items = append(items, codexFooter(app, "__previous", "上一页", map[string]any{"workspace": wsKey, "cursor": previous}))
+	}
+	if next := str(doc["nextCursor"]); next != "" {
+		ref := NewID()
+		c.mu.Lock()
+		if len(c.pages) >= 256 {
+			c.pages = map[string]codexPage{}
+		}
+		c.pages[ref] = codexPage{wsKey, next, q.Cursor, page + 1}
+		c.mu.Unlock()
+		params := map[string]any{"cursor": ref}
+		if wsKey != "" {
+			params["workspace"] = wsKey
+		}
+		items = append(items, codexFooter(app, "__next", "下一页", params))
+	}
+
+	display := map[string]any{
+		"card_type": "list", "title": "Codex · 会话", "density": "comfortable",
+		"workbench_provider": "codex", "workbench_picker": true,
+		"workbench_picker_kind": "session", "workbench_page": page,
+		"filters": c.workspaceFilters(paths, wsKey), "max_items": 8, "ttl_sec": 120,
+	}
+	return map[string]any{
+		"schema_version": 1, "request_id": NewID(), "app_id": app, "status": "ok",
+		"content": items, "display": display,
+		"spoken": map[string]any{"text": "横滑选工作区，下方是会话列表", "language": "zh-CN"},
+	}
 }
 
+/** 详情/投递回包的精简顶栏：回到列表筛选。 */
 func codexFilters(workspace string) []any {
-	if workspace == "" {
-		return []any{}
+	if workspace == "" || workspace == "all" || workspace == "__all__" {
+		return []any{map[string]any{"id": "__all__", "title": "全部", "workspace": "__all__", "selected": true}}
 	}
-	return []any{map[string]any{"id": workspace, "title": "当前工作区", "workspace": workspace, "selected": true}, map[string]any{"id": "__workspaces", "title": "换工作区", "workspace": "__workspaces"}}
+	return []any{
+		map[string]any{"id": workspace, "title": "当前工作区", "workspace": workspace, "selected": true},
+		map[string]any{"id": "__all__", "title": "全部", "workspace": "__all__", "selected": false},
+	}
 }

@@ -350,17 +350,59 @@ uint32_t nodelio_skill_news_read_token(void) {
     return lock && news_read_is_current() ? s_news_read_progress.token() : 0;
 }
 
+/** 云端常先念标题；标题不在正文 chunk 里，Sentence 会失败。仍挂上 token 以便 drain 续读。 */
+static bool news_title_preamble(const char* text)
+{
+    if (!text || !text[0] || !s_speak_title[0] || !s_news_read_progress.waiting()) {
+        return false;
+    }
+    if (s_news_read_progress.MatchedOffset() != s_speak_off_prev) {
+        return false;
+    }
+    const size_t tlen = strlen(s_speak_title);
+    if (tlen < 2) {
+        return false;
+    }
+    /* 「标题」或「标题。」都算前缀命中 */
+    if (strncmp(text, s_speak_title, tlen) != 0) {
+        return false;
+    }
+    const char* rest = text + tlen;
+    while (*rest) {
+        const unsigned char c = static_cast<unsigned char>(*rest);
+        if (c <= 0x20 || c == '.' || c == '!' || c == '?') {
+            rest++;
+            continue;
+        }
+        /* UTF-8 「。」「！」「？」 */
+        if ((c == 0xE3 && strncmp(rest, "。", 3) == 0) ||
+            (c == 0xEF && (strncmp(rest, "！", 3) == 0 || strncmp(rest, "？", 3) == 0))) {
+            rest += 3;
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
 uint32_t nodelio_skill_news_on_sentence(const char* text) {
     DisplayLockGuard lock(nl_ov_disp());
     size_t byte_offset = 0;
-    if (!lock || !text || !news_read_is_current() ||
-        !s_news_read_progress.Sentence(text, byte_offset)) {
+    if (!lock || !text || !news_read_is_current()) {
         return 0;
     }
-    if (nodelio_panel_ui_screen_on()) {
-        news_scroll_to_byte(byte_offset);
+    if (s_news_read_progress.Sentence(text, byte_offset)) {
+        if (nodelio_panel_ui_screen_on()) {
+            news_scroll_to_byte(byte_offset);
+        }
+        return s_news_read_progress.token();
     }
-    return s_news_read_progress.token();
+    if (news_title_preamble(text)) {
+        ESP_LOGI(TAG, "news sentence: title preamble armed token=%u",
+                 (unsigned)s_news_read_progress.token());
+        return s_news_read_progress.token();
+    }
+    return 0;
 }
 
 bool nodelio_skill_news_finish_chunk(uint32_t token, bool played_audio, bool* more) {
@@ -369,10 +411,16 @@ bool nodelio_skill_news_finish_chunk(uint32_t token, bool played_audio, bool* mo
     if (!lock || !news_read_is_current()) {
         return false;
     }
+    /* token=0：只念了标题 / 未匹配正文。用当前等待段 token 收尾，避免永远不续。 */
+    if (!token && played_audio && s_news_read_progress.waiting()) {
+        token = s_news_read_progress.token();
+    }
     bool finished = s_news_read_progress.Finish(token, played_audio, next);
     /* 云端常在段中停 TTS。游标已落到最后一句末尾，接着请求未读尾巴，不把这段判失败取消。 */
-    const bool same = token && token == s_news_read_progress.token();
-    if (!finished && played_audio && same && s_news_read_progress.HasUnplayedTail()) {
+    const uint32_t cur = s_news_read_progress.token();
+    const bool same = token && (token == cur || (!cur && s_news_read_progress.unfinished()));
+    if (!finished && played_audio && same &&
+        (s_news_read_progress.HasUnplayedTail() || s_news_read_progress.waiting())) {
         s_news_read_progress.ReleaseWait();
         next = true;
         finished = true;
@@ -388,6 +436,17 @@ bool nodelio_skill_news_finish_chunk(uint32_t token, bool played_audio, bool* mo
         *more = next;
     }
     return true;
+}
+
+bool nodelio_skill_news_should_continue(void)
+{
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock || !news_read_is_current()) {
+        return false;
+    }
+    /* 仅「本段已 Begin、等 TTS」：挡住同轮二次 op=read 重切 chunk。
+     * 不含 paused/unfinished，否则用户再说「朗读」无法从头重读。 */
+    return s_news_read_progress.waiting() && s_speak_off > s_speak_off_prev;
 }
 
 void nodelio_skill_news_cancel_read(void) {
@@ -480,6 +539,28 @@ static bool news_format_plain_chunk(char *out, size_t out_len, bool with_title)
         snprintf(out, out_len, "%s", piece);
     }
     heap_caps_free(piece);
+    return out[0] != '\0';
+}
+
+/** 重发当前已 Begin 的段，勿再 take/Begin（同轮重复 tools/call 会毁掉 token）。 */
+static bool news_replay_active_chunk(char *out, size_t out_len, bool with_title)
+{
+    if (!out || out_len == 0 || !s_speak_body || s_speak_off <= s_speak_off_prev) {
+        return false;
+    }
+    if (!s_news_read_progress.waiting()) {
+        return false;
+    }
+    out[0] = '\0';
+    const size_t take = s_speak_off - s_speak_off_prev;
+    if (with_title && s_speak_title[0]) {
+        snprintf(out, out_len, "%s\n%.*s", s_speak_title, (int)take, s_speak_body + s_speak_off_prev);
+    } else {
+        snprintf(out, out_len, "%.*s", (int)take, s_speak_body + s_speak_off_prev);
+    }
+    ESP_LOGI(TAG, "news chunk replay: token=%u begin=%u end=%u",
+             (unsigned)s_news_read_progress.token(), (unsigned)s_speak_off_prev,
+             (unsigned)s_speak_off);
     return out[0] != '\0';
 }
 
@@ -1455,9 +1536,8 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
                 if (s_speak_body && strcmp(s_speak_id, id) == 0) {
                     const size_t matched = s_news_read_progress.MatchedOffset();
                     if (matched < s_speak_off) {
-                        /* 当前段尚未播完（或刚拉取 0 句已播）：返回本段未读部分，勿回【等】导致模型停读追问 */
-                        s_speak_off = matched > s_speak_off_prev ? matched : s_speak_off_prev;
-                        return news_format_chunk(out, out_len, s_speak_off == 0);
+                        /* 当前段尚未播完：原样重发，禁止再 Begin 换 token。 */
+                        return news_replay_active_chunk(out, out_len, s_speak_off_prev == 0);
                     }
                     /* 当前段文本已全部由 TTS 匹配下发，仅剩喇叭尾音在排空：直接切入下一段 */
                 }
@@ -1490,12 +1570,12 @@ bool nodelio_skill_news_action(const char *op, char *out, size_t out_len)
             }
             idx = s_news_detail;
             gen = s_news_gen;
-            /* 若「读」与「调用skill.news读」双触发，首段刚加载且尚未播报任何句子，直接重发首段 */
+            /* 同轮重复 tools/call：首段已 Begin 且尚无句子匹配 → 原样重发，勿换 token。 */
             if (s_speak_body && strcmp(s_speak_id, s_env->news[idx].id) == 0 &&
                 s_news_read_progress.waiting() &&
-                s_news_read_progress.MatchedOffset() == s_speak_off_prev) {
-                s_speak_off = s_speak_off_prev;
-                return news_format_chunk(out, out_len, s_speak_off_prev == 0);
+                s_news_read_progress.MatchedOffset() == s_speak_off_prev &&
+                s_speak_off > s_speak_off_prev) {
+                return news_replay_active_chunk(out, out_len, s_speak_off_prev == 0);
             }
         }
         return news_load_spoken(idx, gen, out, out_len, true);

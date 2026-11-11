@@ -13,7 +13,7 @@
 | 旋转 | `sw_rotate` + **`CONFIG_LVGL_PORT_ENABLE_PPA=y`**（输出旋转）；禁止关掉 port PPA 指望 CPU 旋转撑住 |
 | Vendor 绘制 PPA | `CONFIG_LV_USE_PPA=n` / `LV_USE_PPA_IMG=n`；板级 `NODELIO_P4_PPA_FILL` 仅接管大块不透明 fill，与 port 旋转客户端分离 |
 | OS / draw unit | `CONFIG_LV_OS_NONE=y`，`DRAW_SW_DRAW_UNIT_CNT=1`；不启双 draw unit |
-| XIP | `CONFIG_SPIRAM_XIP_FROM_PSRAM=y`（`sdkconfig.defaults.esp32p4`） |
+| XIP | **本板关** `CONFIG_SPIRAM_XIP_FROM_PSRAM=n`（`config.json` 覆盖 defaults）。开着时 P4+Hosted 易在 `i2s_channel_read`/`memcpy` 偶发 Load access fault（IDFGH-18624） |
 
 物理 452×1280、逻辑旋转 90°、时序与内存粗算见板级 [README](../main/boards/sila/sila-p4c5-62/README.md)。
 

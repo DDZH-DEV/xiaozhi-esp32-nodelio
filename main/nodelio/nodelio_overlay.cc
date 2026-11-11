@@ -505,7 +505,9 @@ static void status_bar_hide_now(void)
     s_nav_shown = false;
     nl_ov_nav_chrome_sync();
     if (s_status_bar) {
-        if (s_cfg.status_bar_mode == 1 && s_screen_on && s_visible) {
+        const bool keep_for_unread =
+            s_screen_on && s_visible && nodelio_panel_ui_notice_unread_count() > 0;
+        if ((s_cfg.status_bar_mode == 1 || keep_for_unread) && s_screen_on && s_visible) {
             lv_obj_clear_flag(s_status_bar, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(s_status_bar, LV_OBJ_FLAG_HIDDEN);
@@ -548,7 +550,9 @@ void nl_ov_status_bar_apply_mode(void)
     if (!s_status_bar) {
         return;
     }
-    if (s_cfg.status_bar_mode == 1) {
+    const bool keep_for_unread =
+        s_screen_on && s_visible && nodelio_panel_ui_notice_unread_count() > 0;
+    if (s_cfg.status_bar_mode == 1 || keep_for_unread) {
         if (s_screen_on && s_visible) {
             lv_obj_clear_flag(s_status_bar, LV_OBJ_FLAG_HIDDEN);
             lv_obj_move_foreground(s_status_bar);
@@ -601,7 +605,7 @@ static void fill_build_stamp(char *out, size_t out_len)
     std::snprintf(out, out_len, "V%s", NODELIO_BUILD_STAMP);
 }
 
-static void status_bar_relayout(void)
+void nl_ov_status_bar_relayout(void)
 {
     if (s_brand_lbl) {
         lv_obj_align(s_brand_lbl, LV_ALIGN_LEFT_MID, NL_STATUS_LEFT_PAD, NL_STATUS_Y);
@@ -609,7 +613,7 @@ static void status_bar_relayout(void)
     if (s_status_lbl && s_brand_lbl) {
         lv_obj_align_to(s_status_lbl, s_brand_lbl, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
     }
-    /* 右起：电池、云、WiFi、时钟。无电池时云贴最右。 */
+    /* 右起：电池、云、WiFi、时钟、未读。无电池时云贴最右。 */
     lv_obj_t *anchor = nullptr;
     if (s_batt_lbl && !lv_obj_has_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_align(s_batt_lbl, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD, NL_STATUS_Y);
@@ -629,9 +633,24 @@ static void status_bar_relayout(void)
     }
     if (s_clock_lbl && anchor) {
         lv_obj_align_to(s_clock_lbl, anchor, LV_ALIGN_OUT_LEFT_MID, -14, 0);
+        anchor = s_clock_lbl;
     } else if (s_clock_lbl) {
         lv_obj_align(s_clock_lbl, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD - 40, NL_STATUS_Y);
+        anchor = s_clock_lbl;
     }
+    lv_obj_t *badge = nl_ov_notices_badge();
+    if (badge && !lv_obj_has_flag(badge, LV_OBJ_FLAG_HIDDEN)) {
+        if (anchor) {
+            lv_obj_align_to(badge, anchor, LV_ALIGN_OUT_LEFT_MID, -10, 0);
+        } else {
+            lv_obj_align(badge, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD, NL_STATUS_Y);
+        }
+    }
+}
+
+static void status_bar_relayout(void)
+{
+    nl_ov_status_bar_relayout();
 }
 
 static void refresh_clock_lbl(void)
@@ -1050,13 +1069,18 @@ void nl_ov_workspace_reserve(int right, int bottom) {
     if (s_settings)
         lv_obj_set_size(s_settings, w, h);
     if (s_settings_detail) {
+        /* 贴边直角；与技能卡的中间缝由 right（含一格 gap）保证，勿圆角/clip（大面裁切拖音频）。 */
         lv_obj_set_size(s_settings_detail, w, p->height - bottom);
         lv_obj_align(s_settings_detail, LV_ALIGN_TOP_LEFT, p->nav_width, 0);
+        lv_obj_set_style_radius(s_settings_detail, 0, 0);
+        lv_obj_set_style_clip_corner(s_settings_detail, false, 0);
+        lv_obj_set_style_border_width(s_settings_detail, 0, 0);
+        lv_obj_set_style_bg_color(s_settings_detail, UI_BG, 0);
     }
     nl_ov_connect_relayout();
     nl_ov_apps_reserve_bottom(bottom);
-    /* 首页固定保持 full_w，不触发 nl_ov_fill_home 重排，避免卡片变形与重刷卡顿 */
-    if (settings_w_changed && s_settings && !s_building) {
+    /* 首页固定保持 full_w；详情盖住 hub 时勿重排底层（省 ~百 ms，避免播歌卡）。 */
+    if (settings_w_changed && s_settings && !s_building && !s_settings_detail) {
         lv_obj_update_layout(s_settings);
         nl_ov_settings_sync_columns();
     }

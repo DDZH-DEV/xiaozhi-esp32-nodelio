@@ -566,6 +566,21 @@ bool nodelio_envelope_parse(const char *json, nl_content_envelope_t *out)
             if (out->tracks[out->track_n].title[0] == '\0') {
                 continue;
             }
+            /* 旧桥把「下一页/返回」做成 list_item：剥到 chips 做底栏，不当卡片。 */
+            {
+                const char *tid = out->tracks[out->track_n].id;
+                const bool nav = tid[0] == '_' && tid[1] == '_' &&
+                                 (strcmp(tid, "__next") == 0 || strcmp(tid, "__previous") == 0 ||
+                                  strcmp(tid, "__workspaces") == 0 ||
+                                  strncmp(tid, "__page_", 7) == 0);
+                if (nav) {
+                    if (out->tracks[out->track_n].invoke_n > 0 && out->chip_n < NL_ENV_CHIP_MAX) {
+                        out->chips[out->chip_n++] = out->tracks[out->track_n].invokes[0];
+                    }
+                    memset(&out->tracks[out->track_n], 0, sizeof(out->tracks[out->track_n]));
+                    continue;
+                }
+            }
             /* 会话详情：list_item.body → envelope.detail_body（仅取第一条） */
             if (out->detail_body == NULL) {
                 const cJSON *body = cJSON_GetObjectItemCaseSensitive(item, "body");

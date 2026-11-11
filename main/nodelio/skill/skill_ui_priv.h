@@ -49,14 +49,38 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 
 #define SKILL_CARD_W (nodelio_display_profile()->result_width)
 /* result_max_height 仍按「顶栏占位」算。顶栏现已透明且空闲隐藏，开面板时把这段高度加回去。
- * 有 now_playing 条时须再扣 SKILL_NOW_H+SKILL_GAP，否则卡底会画出屏外。 */
+ * 有 now_playing 条时须再扣 SKILL_NOW_H+skill_ui_gap()，否则卡底会画出屏外。 */
 #define SKILL_CARD_H_MAX (nodelio_display_profile()->result_max_height + NL_UI_STATUS_H)
 #define SKILL_NOW_H 88
 #define SKILL_GAP 12
-/** 顶栏不占位，面板从屏顶留白起排。 */
+/**
+ * 设置详情 + 应用卡并开：应用写死贴上下右、无圆角（与全局「卡片圆角」无关）。
+ * 仅宽屏；方屏无并排。
+ */
+static inline bool skill_flush_with_detail(void)
+{
+    return nodelio_display_profile()->nav_width != 0 && s_settings_detail != nullptr;
+}
+/** 并开时中间缝；应用右侧贴边故不再留右缝。 */
+#define SKILL_DETAIL_MID_GAP 12
+/**
+ * 宽屏应用卡外边距。设置「卡片圆角=0」时贴边无缝（便于对比靠边效果）。
+ * 方屏仍用 SKILL_GAP。并开详情时外边距强制 0。
+ */
+static inline int skill_ui_gap(void)
+{
+    if (skill_flush_with_detail()) {
+        return 0;
+    }
+    if (nodelio_display_profile()->nav_width != 0 && nodelio_card_radius_px() == 0) {
+        return 0;
+    }
+    return SKILL_GAP;
+}
+/** 顶栏不占位，面板从屏顶留白起排（贴边模式为 0）。 */
 static inline int skill_top_y(void)
 {
-    return SKILL_GAP;
+    return skill_ui_gap();
 }
 #define SKILL_CARD_H_MIN 180
 #define SKILL_BORDER_OPA 200

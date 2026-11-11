@@ -172,8 +172,9 @@ void AudioService::Start() {
 
     esp_timer_start_periodic(audio_power_timer_, 1000000);
 
-#if CONFIG_BOARD_TYPE_SILA_86
-    /* RGB full_refresh + AFE 时原 opus=2 易饿死 → 播音断续 */
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+    /* 墙板：出声硬期限。铁律 audio_output(6)@Core1 > notify_*(5)@Core1 > LVGL；
+     * 禁止把 notify 提到 ≥6（会饿穿 I2S）。原 opus=2 易断续。 */
     constexpr UBaseType_t kOutPrio = 6;
     constexpr UBaseType_t kOpusPrio = 6;
 #else
@@ -192,10 +193,9 @@ void AudioService::Start() {
         "audio_input", 2048 * 3, this, 6, &audio_input_task_handle_, 0);
 
     /* Start the audio output task */
-#if CONFIG_BOARD_TYPE_SILA_86
-    /* 输出任务喂 6×240 帧（~30ms）的 I2S DMA，是硬期限任务：钉 Core1，
-     * Core0 上 WiFi(23)/lwIP 的突发曾把它拖过 30ms → 爆音；同核 notify_http
-     * 已降到 5，解码突发随时可被输出抢占。 */
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+    /* 喂 I2S DMA（约数十 ms 缓冲）：钉 Core1，躲开 Core0 WiFi/lwIP；
+     * prio 高于同核 notify_http(5)，解码突发可被输出抢占。 */
     xTaskCreatePinnedToCore(
         [](void* arg) {
             AudioService* audio_service = (AudioService*)arg;

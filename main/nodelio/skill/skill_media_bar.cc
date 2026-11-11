@@ -37,18 +37,25 @@ void style_now_bar(bool docked)
         return;
     }
     if (docked) {
+        /* 并开详情或圆角=0：直角；否则小圆角，勿固定 12 戳出应用框。 */
+        const int rad = (skill_flush_with_detail() || nodelio_card_radius_px() == 0) ? 0 : UI_RADIUS_SM;
         lv_obj_set_style_shadow_width(s_now_bar, 0, 0);
         lv_obj_set_style_shadow_opa(s_now_bar, LV_OPA_TRANSP, 0);
         lv_obj_set_style_bg_color(s_now_bar, UI_PANEL, 0);
         lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(s_now_bar, UI_RADIUS_SM, 0);
+        lv_obj_set_style_radius(s_now_bar, rad, 0);
         lv_obj_set_style_border_width(s_now_bar, 0, 0);
         return;
     }
+    const int float_rad = nodelio_card_radius_px() > 0 ? nodelio_card_radius_px() : 0;
     lv_obj_set_style_bg_color(s_now_bar, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_now_bar, 16, 0);
-    ui_style_card(s_now_bar);
+    lv_obj_set_style_radius(s_now_bar, float_rad > 0 ? float_rad : 0, 0);
+    if (float_rad > 0) {
+        ui_style_card(s_now_bar);
+    } else {
+        lv_obj_set_style_shadow_width(s_now_bar, 0, 0);
+    }
     lv_obj_set_style_border_width(s_now_bar, ui_palette_is_dark() ? 1 : 0, 0);
     lv_obj_set_style_border_side(s_now_bar, LV_BORDER_SIDE_FULL, 0);
     lv_obj_set_style_border_color(s_now_bar, UI_BORDER, 0);

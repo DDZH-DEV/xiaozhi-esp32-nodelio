@@ -142,6 +142,9 @@ int nodelio_card_radius_px(void);
 #define UI_SURFACE lv_color_hex(UI_C_SURFACE)
 #define UI_SURFACE_PRESSED lv_color_hex(UI_C_SURFACE_PRESSED)
 #define UI_SURFACE_OFF lv_color_hex(UI_C_SURFACE_OFF)
+/** 设置/应用 Icon Pod 弱底（安静层级，非彩虹色块）。 */
+#define UI_C_POD_QUIET UI_C_SURFACE_PRESSED
+#define UI_POD_QUIET UI_SURFACE_PRESSED
 #define UI_PANEL lv_color_hex(UI_C_PANEL)
 #define UI_BORDER lv_color_hex(UI_C_BORDER)
 #define UI_SHADOW lv_color_hex(UI_C_SHADOW)
@@ -210,7 +213,7 @@ int nodelio_card_radius_px(void);
 #define UI_TILE_TRANS_MS 120
 #define UI_TILE_ICON_POP_MS 120
 #define UI_TILE_SPIN_MS 900
-#define UI_SETTINGS_TILE_H 72
+#define UI_SETTINGS_TILE_H 84
 #define UI_NAV_H 40
 #define UI_NAV_BACK_W 64
 #define UI_BTN_H 48

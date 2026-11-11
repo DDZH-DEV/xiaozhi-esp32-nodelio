@@ -22,12 +22,13 @@ function connectionFields(raw) {
   const credential=doc.bridge_token.trim(), panel=doc.panel_device_id.trim();
   if(!/^[a-f0-9]{64}$/i.test(credential)) throw new Error('桥凭据格式不正确，请重新从 APP 复制。');
   if(panel.length>128 || /[\x00-\x1f\x7f]/.test(panel)) throw new Error('墙板绑定信息格式不正确。');
-  return {host:doc.host_ws.trim(),token:credential,panel,name:typeof doc.name==='string'?doc.name.slice(0,40):''};
+  return {host:doc.host_ws.trim(),token:credential,panel,name:typeof doc.name==='string'?doc.name.slice(0,40):'',allowInsecure:!!doc.allow_insecure_host_ws};
 }
 $('import-connection').onclick=()=>{
   try {
     const fields=connectionFields(val('connection-json'));
     $('host-ws').value=fields.host;$('host-token').value=fields.token;$('panel-id').value=fields.panel;
+    $('allow-insecure-host-ws').checked=fields.allowInsecure;
     if(fields.name)$('computer-name').value=fields.name;clearSecrets.delete('host_token');$('connection-json').value='';$('connection-import').open=false;
     $('import-result').textContent='';message('连接信息已填入。请确认服务器地址，再点击“保存并应用”。');$('host-ws').focus();
   } catch(e) { $('import-result').textContent=e.message; }
@@ -36,6 +37,7 @@ async function load() {
   activeWorkspace="";
   const doc=await api('/api/config');config=doc.config; const p=config.providers;
   $('computer-name').value=config.name||'';$('host-ws').value=config.host_ws; $('panel-id').value=config.panel_device_id; $('default-provider').value=config.default_provider;
+  $('allow-insecure-host-ws').checked=!!config.allow_insecure_host_ws;
   for(const id of ['codex','dsh','openai','workbuddy']) $(id+'-enabled').checked=p[id].enabled;
   for(const [id,key] of [['dsh-workspace','workspace'],['dsh-endpoint','endpoint_file'],['dsh-home','dsh_home']]) $(id).value=p.dsh[key]||'';
   for(const [id,key] of [['codex-executable','executable'],['codex-home','codex_home'],['codex-socket','control_socket']]) $(id).value=p.codex[key]||'';
@@ -51,6 +53,7 @@ async function startup(){const s=await api('/api/startup');$('startup').checked=
 $('settings').addEventListener('submit',async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;try{
   if(val('host-ws') && !/^wss?:\/\//i.test(val('host-ws')))throw new Error('服务器连接地址应以 ws:// 或 wss:// 开头；生成的凭据请填到“桥凭据（Token）”。');
   config.name=val('computer-name');config.host_ws=val('host-ws');config.panel_device_id=val('panel-id');config.default_provider=val('default-provider');
+  config.allow_insecure_host_ws=$('allow-insecure-host-ws').checked;
   for(const id of ['codex','dsh','openai','workbuddy'])config.providers[id].enabled=$(id+'-enabled').checked;
   Object.assign(config.providers.dsh,{workspace:val('dsh-workspace'),model:val('dsh-model'),permission:val('dsh-permission'),endpoint_file:val('dsh-endpoint'),dsh_home:val('dsh-home'),agent_preset:val('dsh-agent')||'standard'});
   Object.assign(config.providers.codex,{executable:val('codex-executable'),codex_home:val('codex-home'),control_socket:val('codex-socket'),mode:val('codex-mode')});

@@ -67,24 +67,26 @@ static void ensure_notice_badge(void)
     if (s_notice_badge) {
         return;
     }
-    s_notice_badge = lv_button_create(lv_layer_top());
+    /* 挂状态栏右侧（时间旁），避免顶中漂浮压住设置/应用卡。 */
+    lv_obj_t *parent = s_status_bar ? s_status_bar : lv_layer_top();
+    s_notice_badge = lv_button_create(parent);
     if (!s_notice_badge) {
         return;
     }
     lv_obj_remove_style_all(s_notice_badge);
-    lv_obj_add_flag(s_notice_badge, LV_OBJ_FLAG_FLOATING);
+    if (parent == lv_layer_top()) {
+        lv_obj_add_flag(s_notice_badge, LV_OBJ_FLAG_FLOATING);
+    }
     lv_obj_add_flag(s_notice_badge, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(s_notice_badge, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_notice_badge, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_ext_click_area(s_notice_badge, 12);
-    lv_obj_set_size(s_notice_badge, LV_SIZE_CONTENT, 28);
-    lv_obj_set_style_pad_hor(s_notice_badge, 12, 0);
-    lv_obj_set_style_pad_ver(s_notice_badge, 4, 0);
-    lv_obj_set_style_radius(s_notice_badge, 14, 0);
+    lv_obj_set_size(s_notice_badge, LV_SIZE_CONTENT, 24);
+    lv_obj_set_style_pad_hor(s_notice_badge, 8, 0);
+    lv_obj_set_style_pad_ver(s_notice_badge, 2, 0);
+    lv_obj_set_style_radius(s_notice_badge, 12, 0);
     lv_obj_set_style_bg_opa(s_notice_badge, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(s_notice_badge, 1, 0);
-    lv_obj_set_style_border_color(s_notice_badge, lv_color_white(), 0);
-    lv_obj_set_style_border_opa(s_notice_badge, LV_OPA_30, 0);
+    lv_obj_set_style_border_width(s_notice_badge, 0, 0);
     lv_obj_set_flex_flow(s_notice_badge, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(s_notice_badge, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
@@ -93,6 +95,11 @@ static void ensure_notice_badge(void)
     s_notice_badge_lbl = lv_label_create(s_notice_badge);
     nl_ov_set_font_compact(s_notice_badge_lbl);
     lv_obj_set_style_text_color(s_notice_badge_lbl, UI_ON_TILE, 0);
+}
+
+lv_obj_t *nl_ov_notices_badge(void)
+{
+    return s_notice_badge;
 }
 
 void nl_ov_notices_refresh_badge(void)
@@ -107,9 +114,10 @@ void nl_ov_notices_refresh_badge(void)
     const int n = nodelio_panel_ui_notice_unread_count();
     if (n <= 0 || !s_visible || !s_screen_on) {
         lv_obj_add_flag(s_notice_badge, LV_OBJ_FLAG_HIDDEN);
+        nl_ov_status_bar_relayout();
     } else {
-        char buf[36];
-        std::snprintf(buf, sizeof(buf), LV_SYMBOL_BELL " %d 条未读", n);
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), "未读 %d", n);
         lv_label_set_text(s_notice_badge_lbl, buf);
         nl_ov_set_font_compact(s_notice_badge_lbl);
         lv_color_t bg = UI_ACCENT;
@@ -119,9 +127,13 @@ void nl_ov_notices_refresh_badge(void)
             bg = UI_WARN;
         }
         lv_obj_set_style_bg_color(s_notice_badge, bg, 0);
-        lv_obj_align(s_notice_badge, LV_ALIGN_TOP_MID, 0, 4);
         lv_obj_clear_flag(s_notice_badge, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(s_notice_badge);
+        /* 有未读时亮一下状态栏，避免角标随顶栏自动隐藏后看不见。 */
+        if (s_status_bar) {
+            lv_obj_clear_flag(s_status_bar, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(s_status_bar);
+        }
+        nl_ov_status_bar_relayout();
     }
     if (nl_ov_notices_visible()) {
         fill_notice_rows();

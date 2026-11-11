@@ -125,7 +125,7 @@ void ui_style_card(lv_obj_t *obj)
 
 int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out)
 {
-    const int gap = (nodelio_text_scale() == 1) ? 12 : UI_GAP;
+    const int gap = (nodelio_text_scale() == 1) ? 12 : 10;
     const auto *profile = nodelio_display_profile();
     if (avail < 160) {
         avail = (int)profile->width - (int)profile->nav_width - 16 * 2;
@@ -143,8 +143,8 @@ int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out)
         }
         return tile_w;
     }
-    const int max_cols = profile->nav_width ? 4 : 2;
-    /* 方屏（底栏）固定两列：480 宽扣边距后每列约 218~220，大字档 gap=12 时会跌破 220 退成单列。 */
+    /* 宽屏：规范三列；方屏底栏仍两列。 */
+    const int max_cols = profile->nav_width ? 3 : 2;
     const int min_tile = profile->nav_width ? 220 : 160;
     int columns = max_cols;
     while (columns > 1) {
@@ -164,9 +164,10 @@ int ui_settings_tile_height(void)
 {
     const int line = nl_ov_ui_line_box();
     const bool large = nodelio_text_scale() == 1;
-    int tile_h = (large ? 14 : 10) + line + (large ? 6 : 4) + line * 2 + (large ? 14 : 10);
-    if (tile_h < (large ? 80 : UI_SETTINGS_TILE_H)) {
-        tile_h = (large ? 80 : UI_SETTINGS_TILE_H);
+    /* 标题 1 行 + 副文 1 行（短状态值），略增高吃掉宽屏下半空洞。 */
+    int tile_h = (large ? 14 : 12) + line + (large ? 6 : 4) + line + (large ? 14 : 12);
+    if (tile_h < (large ? 88 : UI_SETTINGS_TILE_H)) {
+        tile_h = (large ? 88 : UI_SETTINGS_TILE_H);
     }
     return tile_h;
 }
@@ -183,7 +184,7 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
 
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);
-    /* 标题 1 行 + 副文 2 行。大字档行框变高，卡片跟着长，避免副文被底边裁掉。 */
+    /* 标题 1 行 + 副文 1 行。 */
     const int tile_h = ui_settings_tile_height();
     lv_obj_set_size(btn, tile_w, tile_h);
     lv_obj_set_ext_click_area(btn, 6);
@@ -202,7 +203,7 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_set_style_pad_right(btn, large ? 10 : 8, 0);
     lv_obj_set_style_pad_top(btn, 0, 0);
     lv_obj_set_style_pad_bottom(btn, 0, 0);
-    const int pod_sz = 46;
+    const int pod_sz = 56;
     const int col_gap = large ? 14 : 12;
     lv_obj_set_style_pad_column(btn, col_gap, 0);
 
@@ -218,22 +219,22 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
     }
 
+    /* 安静层级：普通入口弱底 + 弱字色；仅危险项保留实心红 Pod。 */
+    const bool danger = (accent_c == UI_C_DANGER);
     lv_obj_t *pod = lv_obj_create(btn);
     lv_obj_remove_style_all(pod);
     lv_obj_set_size(pod, pod_sz, pod_sz);
     lv_obj_set_style_radius(pod, UI_RADIUS_SM, 0);
-    lv_obj_set_style_bg_color(pod, lv_color_hex(accent_c), 0);
+    lv_obj_set_style_bg_color(pod, danger ? UI_DANGER : UI_POD_QUIET, 0);
     lv_obj_set_style_bg_opa(pod, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(pod, 0, 0);
-    lv_obj_set_style_border_color(pod, lv_color_hex(accent_c), 0);
-    lv_obj_set_style_border_opa(pod, 90, 0);
     lv_obj_clear_flag(pod, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(pod, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *g = lv_label_create(pod);
     lv_label_set_text(g, glyph ? glyph : "");
     apply_font(g);
-    lv_obj_set_style_text_color(g, UI_ON_TILE, 0);
+    lv_obj_set_style_text_color(g, danger ? UI_ON_TILE : UI_TEXT_SUB, 0);
     lv_obj_center(g);
     lv_obj_clear_flag(g, LV_OBJ_FLAG_CLICKABLE);
 
@@ -248,15 +249,6 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_clear_flag(text, LV_OBJ_FLAG_SCROLLABLE);
 
     const int font_h = nl_ov_ui_font_line_h();
-    /* 副文可用宽 = 卡宽 - 左右内边距 - 列间距 - 图标底座（有右图标再让出位置）。
-     * 方屏双列 + 大字档只有 ~140px，一行装不下「重新拉取首页控件」，须折两行。 */
-    int sub_w = tile_w - 10 - 8 - col_gap - pod_sz;
-    if (right_icon && right_icon[0]) {
-        sub_w -= font_h + 8;
-    }
-    if (sub_w < 48) {
-        sub_w = 48;
-    }
 
     lv_obj_t *t = lv_label_create(text);
     lv_label_set_text(t, title ? title : "");
@@ -270,12 +262,10 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
 
     lv_obj_t *s = lv_label_create(text);
     lv_label_set_text(s, sub ? sub : "");
-    /* 副文最多两行：折行 + 溢出打点。卡高由 ui_settings_tile_height() 按两行留，
-     * 单行文案只占一行高，整组仍在卡内垂直居中。 */
-    lv_label_set_long_mode(s, LV_LABEL_LONG_WRAP);
+    /* 短状态值单行打点；长说明放到详情页。 */
+    lv_label_set_long_mode(s, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s, lv_pct(100));
-    const int sub_cap = font_h * 2 + (nl_ov_ui_line_box() - font_h);
-    lv_obj_set_height(s, sub_cap);
+    lv_obj_set_height(s, font_h);
     apply_font(s);
     lv_obj_set_style_text_align(s, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_color(s, UI_TEXT_MUTED, 0);

@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/gorilla/websocket"
+	"io"
+	"log/slog"
 	"net/http"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type Host struct {
@@ -58,10 +61,16 @@ func (h *Host) Run(ctx context.Context) {
 	backoff := time.Second
 	for ctx.Err() == nil {
 		s := h.e.Config.Snapshot()
-		if s.Config.HostWS != "" && s.Secrets["host_token"] != "" {
-			if h.connection(ctx, s) {
-				backoff = time.Second
+		ws := strings.TrimSpace(s.Config.HostWS)
+		tok := strings.TrimSpace(s.Secrets["host_token"])
+		if ws == "" || tok == "" {
+			if ws == "" {
+				slog.Info("host ws skipped: host_ws empty")
+			} else {
+				slog.Info("host ws skipped: host_token empty; paste bridge credential from APP")
 			}
+		} else if h.connection(ctx, s) {
+			backoff = time.Second
 		}
 		timer := time.NewTimer(backoff)
 	wait:
@@ -93,11 +102,17 @@ func (h *Host) connection(parent context.Context, s Settings) bool {
 	dialer := websocket.Dialer{HandshakeTimeout: 8 * time.Second, Proxy: http.ProxyFromEnvironment}
 	c, resp, err := dialer.DialContext(ctx, s.Config.HostWS, http.Header{"X-Bridge-Token": []string{s.Secrets["host_token"]}})
 	if err != nil {
+		status, body := 0, ""
 		if resp != nil {
+			status = resp.StatusCode
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 			resp.Body.Close()
+			body = strings.TrimSpace(string(b))
 		}
+		slog.Warn("host ws dial failed", "url", s.Config.HostWS, "status", status, "error", err.Error(), "body", body)
 		return false
 	}
+	slog.Info("host ws connected", "url", s.Config.HostWS)
 	defer c.Close()
 	stop := context.AfterFunc(ctx, func() { c.Close() })
 	defer stop()

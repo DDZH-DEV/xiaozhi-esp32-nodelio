@@ -163,6 +163,10 @@ void nl_ov_apply_appearance(void);
 void nl_ov_toast(const char *msg);
 /** 技能卡、配网、设置详情抬完之后调用：状态栏压在这些弹窗上，小智和提示条再压在状态栏上。 */
 void nl_ov_raise_chrome(void);
+/** 状态栏图标与未读角标重排（时间旁）。 */
+void nl_ov_status_bar_relayout(void);
+/** 消息未读角标控件；未创建时返回 NULL。 */
+lv_obj_t *nl_ov_notices_badge(void);
 
 static inline bool nl_ov_cfg_http_ready(nodelio_nvs_config_t *out, bool toast)
 {
