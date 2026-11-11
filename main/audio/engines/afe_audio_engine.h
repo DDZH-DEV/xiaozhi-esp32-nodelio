@@ -26,6 +26,9 @@ public:
     ~AfeAudioEngine() override;
 
     bool Initialize(AudioCodec* codec, int frame_duration_ms, srmodel_list_t* models_list) override;
+    bool Deinitialize() override;
+    void PreferWakeAfe(bool want) override;
+    bool HasAfeInstance() const override { return afe_data_ != nullptr; }
     void Feed(std::vector<int16_t>&& data) override;
 
     void EnableWakeWordDetection(bool enable) override;
@@ -59,6 +62,7 @@ private:
     static constexpr EventBits_t kVoiceProcessingEnabled = 1 << 1;
     static constexpr EventBits_t kAfeActive = 1 << 2;
     static constexpr EventBits_t kLocalCommandEnabled = 1 << 3;
+    static constexpr EventBits_t kDestroyRequested = 1 << 4;
     /* 单位是 StackType_t。P4 上 WakeNet 卷积栈更深。 */
 #if CONFIG_IDF_TARGET_ESP32P4
     static constexpr size_t kProcessingTaskStackSize = 8192;
@@ -88,6 +92,9 @@ private:
     // uses it to reject a fetch result produced before a disable/re-enable cycle.
     std::atomic<uint32_t> control_generation_{0};
     WakeDetector wake_detector_ = WakeDetector::kNone;
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    bool prefer_wake_afe_ = false;
+#endif
 
     std::unique_ptr<CustomWakeWord> custom_wake_word_;
     std::vector<std::string> wake_words_;

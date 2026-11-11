@@ -57,6 +57,13 @@ if errorlevel 1 (
   powershell -NoProfile -Command ^
     "$c=Get-Content sdkconfig -Raw; if ($c -notmatch 'CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT') { $c=$c.TrimEnd()+[Environment]::NewLine+'CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT=y'+[Environment]::NewLine }; $c=$c -replace '# CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT is not set','CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT=y'; Set-Content sdkconfig -Value $c -Encoding ascii -NoNewline"
 )
+REM Offload WiFi/LwIP, .ext_ram.bss, and >64B mallocs to 8MB PSRAM to preserve internal DMA SRAM
+findstr /b /c:"CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y" sdkconfig >nul
+if errorlevel 1 (
+  echo [sila-86] enabling PSRAM offload for WiFi/LwIP, .ext_ram.bss, and malloc threshold
+  powershell -NoProfile -Command ^
+    "$c=Get-Content sdkconfig -Raw; $c=$c -replace '# CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP is not set','CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y'; $c=$c -replace '# CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY is not set','CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y'; $c=$c -replace 'CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=\d+','CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=64'; $c=$c -replace 'CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=\d+','CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768'; Set-Content sdkconfig -Value $c -Encoding ascii -NoNewline"
+)
 echo [sila-86] build stamp (code-change day serial) ...
 python "%REPO%\scripts\nodelio_build_stamp.py" --root "%REPO%"
 if errorlevel 1 (

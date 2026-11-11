@@ -5,6 +5,7 @@
 #include "panel_ui.h"
 
 #include <cJSON.h>
+#include <esp_attr.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -29,7 +30,7 @@ static const char *TAG = "nl_diol";
 #define DIOL_PROBE_STACK 8192
 #define DIOL_PROBE_MAX 32
 
-static struct {
+EXT_RAM_BSS_ATTR static struct {
     char id[40];
     int64_t fail_ms;
     uint8_t fails;

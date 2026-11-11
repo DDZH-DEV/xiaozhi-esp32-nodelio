@@ -9,6 +9,7 @@
 #include "jpg/jpeg_to_image.h"
 #include "ui_image_preview.h"
 
+#include <esp_attr.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 
@@ -123,7 +124,7 @@ int bubble_max_side(void)
     return side;
 }
 
-ImgSlot s_imgs[kImgSlots];
+EXT_RAM_BSS_ATTR ImgSlot s_imgs[kImgSlots];
 uint32_t s_img_gen = 1;
 lv_font_t s_chat_font{};
 

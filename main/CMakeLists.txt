@@ -1165,8 +1165,25 @@ if(CONFIG_BOARD_TYPE_SILA_86)
                              )
 endif()
 
+# SILA P4C5-62 is Hosted WiFi + MIPI DSI LcdDisplay + Es8389AudioCodec only.
+# Keep es8389_audio_codec.cc; drop unused codecs/modems/displays under WHOLE_ARCHIVE.
+if(CONFIG_BOARD_TYPE_SILA_P4C5_62)
+    list(REMOVE_ITEM SOURCES "audio/codecs/no_audio_codec.cc"
+                             "audio/codecs/box_audio_codec.cc"
+                             "audio/codecs/es8311_audio_codec.cc"
+                             "audio/codecs/es8374_audio_codec.cc"
+                             "audio/codecs/es8388_audio_codec.cc"
+                             "audio/codecs/dummy_audio_codec.cc"
+                             "display/oled_display.cc"
+                             "display/emote_display.cc"
+                             "boards/common/ml307_board.cc"
+                             "boards/common/nt26_board.cc"
+                             "boards/common/dual_network_board.cc"
+                             )
+endif()
+
 # Include EspVideo if target is ESP32S3 or ESP32P4
-if((CONFIG_IDF_TARGET_ESP32S3 OR CONFIG_IDF_TARGET_ESP32P4) AND NOT CONFIG_BOARD_TYPE_SILA_86)
+if((CONFIG_IDF_TARGET_ESP32S3 OR CONFIG_IDF_TARGET_ESP32P4) AND NOT CONFIG_BOARD_TYPE_SILA_86 AND NOT CONFIG_BOARD_TYPE_SILA_P4C5_62)
     list(APPEND SOURCES "boards/common/esp_video.cc"
                         "boards/common/rndis_board.cc"
                         )

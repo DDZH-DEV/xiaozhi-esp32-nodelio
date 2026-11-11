@@ -19,6 +19,7 @@
 #include "wifi_provision.h"
 
 #include <cJSON.h>
+#include <esp_attr.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
@@ -58,7 +59,7 @@ static lv_obj_t *s_list_pane; /* 宽屏可收成左侧轨，给技能卡让位 *
 static lv_obj_t *s_list;
 static lv_obj_t *s_hint;
 static lv_obj_t *s_refresh;
-static nl_app_item s_items[APP_MAX];
+EXT_RAM_BSS_ATTR static nl_app_item s_items[APP_MAX];
 
 static void with_builtin_daily(nl_app_item* items, int& n) {
     int keep = 0;
@@ -458,7 +459,7 @@ struct app_view_t {
     const lv_font_t* font = nullptr;
     bool focused = false;
 };
-static app_view_t s_app_views[APP_MAX];
+EXT_RAM_BSS_ATTR static app_view_t s_app_views[APP_MAX];
 static bool s_apps_dirty;
 static bool s_force_paint;
 
@@ -796,10 +797,26 @@ static void load_disk_cache(void)
     free(json);
 }
 
-static void apply_snap(nl_app_snap *snap)
+/** @param skills_json 成功时的 /panel/skills 原文（PSRAM，所有权转给本函数）；失败可空 */
+static void apply_snap(nl_app_snap *snap, char *skills_json)
 {
-    Application::GetInstance().Schedule([snap]() {
+    Application::GetInstance().Schedule([snap, skills_json]() {
         s_loading = false;
+        auto feed_home_pins = [skills_json]() mutable {
+            if (!skills_json) {
+                nl_ov_home_skills_invalidate();
+                return;
+            }
+            cJSON *root = cJSON_Parse(skills_json);
+            heap_caps_free(skills_json);
+            skills_json = nullptr;
+            if (root) {
+                nl_ov_home_skills_ingest_skills_root(root);
+                cJSON_Delete(root);
+            } else {
+                nl_ov_home_skills_invalidate();
+            }
+        };
         if (snap->err[0]) {
             DisplayLockGuard lock(nl_ov_disp());
             if (lock) {
@@ -812,6 +829,11 @@ static void apply_snap(nl_app_snap *snap)
                     nl_ov_toast(snap->err);
                 }
             }
+            if (skills_json) {
+                heap_caps_free(skills_json);
+            } else {
+                nl_ov_home_skills_invalidate();
+            }
             free(snap);
             return;
         }
@@ -822,6 +844,7 @@ static void apply_snap(nl_app_snap *snap)
             if (lock) {
                 set_hint(s_item_n > 0 ? "点按打开" : "暂无已安装应用");
             }
+            feed_home_pins();
             free(snap);
             return;
         }
@@ -832,7 +855,7 @@ static void apply_snap(nl_app_snap *snap)
         }
         s_have_list = true;
         persist_list();
-        nl_ov_home_skills_invalidate();
+        feed_home_pins();
         {
             DisplayLockGuard lock(nl_ov_disp());
             if (lock) {
@@ -1010,7 +1033,7 @@ void nl_ov_apps_refresh(void)
                 }
                 if (!buf) {
                     snprintf(snap->err, sizeof(snap->err), "内存不足");
-                    apply_snap(snap);
+                    apply_snap(snap, nullptr);
                     free(cfg);
                     return;
                 }
@@ -1035,6 +1058,7 @@ void nl_ov_apps_refresh(void)
                     }
                     ESP_LOGW(TAG, "list skills attempt %u status=%d err=%d", attempt + 1, status, err);
                 }
+                char *skills_json = nullptr;
                 if (err != ESP_OK || (status != 200 && status != 201)) {
                     snprintf(snap->err, sizeof(snap->err), "加载失败");
                     ESP_LOGW(TAG, "list skills status=%d err=%d", status, err);
@@ -1046,11 +1070,17 @@ void nl_ov_apps_refresh(void)
                     } else {
                         fill_snap_from_skills_root(root, snap);
                         cJSON_Delete(root);
+                        const size_t blen = strlen(buf) + 1;
+                        skills_json = static_cast<char *>(
+                            heap_caps_malloc(blen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                        if (skills_json) {
+                            memcpy(skills_json, buf, blen);
+                        }
                     }
                 }
                 free(buf);
                 free(cfg);
-                apply_snap(snap);
+                apply_snap(snap, skills_json);
             },
             cfgp, [](void* p) { free(p); })) {
         free(cfgp);

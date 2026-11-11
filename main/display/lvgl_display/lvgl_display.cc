@@ -378,8 +378,14 @@ bool LvglDisplay::SnapshotToJpeg(std::string& jpeg_data, int quality, void* targ
         return false;
     }
 
-    // Clear output string and use callback version to avoid pre-allocating large memory blocks
+    // Clear output string and pre-reserve in PSRAM (> ALWAYSINTERNAL threshold)
+    // to prevent small exponential std::string reallocations from fragmenting internal DMA SRAM.
     jpeg_data.clear();
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62
+    jpeg_data.reserve(65536);
+#else
+    jpeg_data.reserve(32768);
+#endif
 
     // Use callback-based JPEG encoder to further save memory
     bool ret =

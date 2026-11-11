@@ -16,6 +16,11 @@ public:
     virtual ~AudioEngine() = default;
 
     virtual bool Initialize(AudioCodec* codec, int frame_duration_ms, srmodel_list_t* models_list) = 0;
+    /** 释放 AFE 实例与处理任务（保留引擎对象/回调）。默认空操作。 */
+    virtual bool Deinitialize() { return true; }
+    /** sila-86：仅空闲唤醒需要 AFE；云会话裸上行时勿重建。默认忽略。 */
+    virtual void PreferWakeAfe(bool want) { (void)want; }
+    virtual bool HasAfeInstance() const { return false; }
     virtual void Feed(std::vector<int16_t>&& data) = 0;
 
     virtual void EnableWakeWordDetection(bool enable) = 0;

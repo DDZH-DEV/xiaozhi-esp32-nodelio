@@ -1,4 +1,5 @@
 #include "overlay_priv.h"
+#include <esp_attr.h>
 #include "panel_jobs.h"
 #include "ui_work_stats.h"
 
@@ -342,7 +343,7 @@ typedef struct {
     bool on;
     bool valid;
 } tile_vis_mem_t;
-static tile_vis_mem_t s_tile_vis[NL_TILE_VIS_MAX];
+EXT_RAM_BSS_ATTR static tile_vis_mem_t s_tile_vis[NL_TILE_VIS_MAX];
 
 /** 记录磁贴开态；返回是否 OFF→ON 上升沿（用于图标弹跳）。 */
 static bool tile_vis_on_rising(const char *widget_id, bool now_on)
@@ -485,7 +486,7 @@ static bool tile_visual_unchanged(lv_obj_t* tile, const tile_visual_state_t& sta
         lv_obj_t* object;
         tile_visual_state_t state;
     };
-    static entry entries[64]{};
+    EXT_RAM_BSS_ATTR static entry entries[64]{};
     entry* empty = nullptr;
     for (auto& e : entries) {
         if (e.object == tile) {

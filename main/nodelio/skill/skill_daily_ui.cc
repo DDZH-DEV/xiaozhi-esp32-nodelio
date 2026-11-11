@@ -1,5 +1,6 @@
 #include "skill_ui_priv.h"
 #include "almanac.h"
+#include <esp_attr.h>
 
 /* Built-in daily view. No polling task or calendar dependency. */
 static uint32_t s_daily_generation;
@@ -12,8 +13,8 @@ static int s_daily_focus; /* 年月日，0 表示停在月历 */
 /** 当日天气 RAM 缓存：打开时先上屏，再后台刷新。 */
 static bool s_wx_cache_ok;
 static int s_wx_cache_day; /* YYYYMMDD */
-static nl_env_daily_t s_wx_cache_daily;
-static char s_wx_cache_spoken[NL_ENV_SPOKEN];
+EXT_RAM_BSS_ATTR static nl_env_daily_t s_wx_cache_daily;
+EXT_RAM_BSS_ATTR static char s_wx_cache_spoken[NL_ENV_SPOKEN];
 
 /** 月历圆点：当前查看年月的有提醒日期（bit d = 日 d）。 */
 static uint32_t s_rem_day_bits;
@@ -29,7 +30,7 @@ struct daily_rem_item {
     char recur[12];
     bool missed;
 };
-static daily_rem_item s_rem_day_items[kDailyRemMax];
+EXT_RAM_BSS_ATTR static daily_rem_item s_rem_day_items[kDailyRemMax];
 static int s_rem_day_n;
 static int s_rem_day_key; /* 已加载的 focus 日 YYYYMMDD */
 

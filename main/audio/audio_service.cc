@@ -1,4 +1,5 @@
 #include "audio_service.h"
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <algorithm>
 #include <cstring>
@@ -183,6 +184,27 @@ void AudioService::Start() {
 #endif
 
 #if CONFIG_USE_AUDIO_PROCESSOR
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    /* 86 墙板：audio_input(6KB) + audio_output(4KB) + opus_codec(24KB) 栈全部放 PSRAM，
+     * 一次性归还 34.8KB 连续片内 SRAM，避免开机即被音频任务栈吃空。 */
+    xTaskCreatePinnedToCoreWithCaps(
+        [](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->AudioInputTask();
+            vTaskDeleteWithCaps(NULL);
+        },
+        "audio_input", 2048 * 3, this, 6, &audio_input_task_handle_, 0,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+    xTaskCreatePinnedToCoreWithCaps(
+        [](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->AudioOutputTask();
+            vTaskDeleteWithCaps(NULL);
+        },
+        "audio_output", 2048 * 2, this, kOutPrio, &audio_output_task_handle_, 1,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
     /* Start the audio input task */
     xTaskCreatePinnedToCore(
         [](void* arg) {
@@ -193,9 +215,7 @@ void AudioService::Start() {
         "audio_input", 2048 * 3, this, 6, &audio_input_task_handle_, 0);
 
     /* Start the audio output task */
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
-    /* 喂 I2S DMA（约数十 ms 缓冲）：钉 Core1，躲开 Core0 WiFi/lwIP；
-     * prio 高于同核 notify_http(5)，解码突发可被输出抢占。 */
+#if CONFIG_NODELIO_PANEL && CONFIG_BOARD_TYPE_SILA_P4C5_62
     xTaskCreatePinnedToCore(
         [](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
@@ -211,6 +231,7 @@ void AudioService::Start() {
             vTaskDelete(NULL);
         },
         "audio_output", 2048 * 2, this, kOutPrio, &audio_output_task_handle_);
+#endif
 #endif
 #else
     /* Start the audio input task */
@@ -233,6 +254,16 @@ void AudioService::Start() {
 #endif
 
     /* Start the opus codec task */
+#if (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62) && CONFIG_NODELIO_PANEL
+    xTaskCreateWithCaps(
+        [](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->OpusCodecTask();
+            vTaskDeleteWithCaps(NULL);
+        },
+        "opus_codec", 2048 * 12, this, kOpusPrio, &opus_codec_task_handle_,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
     xTaskCreate(
         [](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
@@ -240,6 +271,7 @@ void AudioService::Start() {
             vTaskDelete(NULL);
         },
         "opus_codec", 2048 * 12, this, kOpusPrio, &opus_codec_task_handle_);
+#endif
 }
 
 void AudioService::Stop() {
@@ -969,6 +1001,15 @@ void AudioService::EnableWakeWordDetection(bool enable) {
             codec_->EnableOutput(true);
             codec_->EnableOutput(false);
         }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        /* 空闲唤醒才建 AFE；raw 会话后 initialized 但无实例时强制再 Init。 */
+        if (audio_engine_) {
+            audio_engine_->PreferWakeAfe(true);
+            if (audio_engine_initialized_ && !audio_engine_->HasAfeInstance()) {
+                audio_engine_initialized_ = false;
+            }
+        }
+#endif
         if (!InitializeAudioEngine()) {
             xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
             return;
@@ -1014,6 +1055,27 @@ void AudioService::ReleaseWakeWordResources() {
 #endif
 }
 
+void AudioService::ReleaseAudioEngine() {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    if (!audio_engine_initialized_ || !audio_engine_) {
+        return;
+    }
+    EnableWakeWordDetection(false);
+    EnableVoiceProcessing(false);
+    EnableLocalCommandMode(false);
+    if (!audio_engine_->Deinitialize()) {
+        ESP_LOGW(TAG, "ReleaseAudioEngine: Deinitialize failed");
+        return;
+    }
+    audio_engine_initialized_ = false;
+    ESP_LOGI(TAG, "audio engine released free=%u largest=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+#else
+    (void)0;
+#endif
+}
+
 void AudioService::EnableVoiceProcessing(bool enable) {
     ESP_LOGD(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
 
@@ -1023,6 +1085,12 @@ void AudioService::EnableVoiceProcessing(bool enable) {
             codec_->EnableOutput(true);
             codec_->EnableOutput(false);
         }
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        /* 云会话裸上行：禁止为开麦重建 WakeNet/AEC。 */
+        if (audio_engine_) {
+            audio_engine_->PreferWakeAfe(false);
+        }
+#endif
         if (!InitializeAudioEngine()) {
             return;
         }

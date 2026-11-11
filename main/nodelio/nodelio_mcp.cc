@@ -952,9 +952,12 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t* cfg, const std::strin
             return std::unexpected(std::string("内存不足，未发送"));
         }
         const cJSON *jop = cJSON_GetObjectItemCaseSensitive(body, "op");
-        const bool kb_lookup = cJSON_IsString(jop) && jop->valuestring &&
-                               strcmp(jop->valuestring, "kb_lookup") == 0;
-        if (!kb_lookup) {
+        const bool no_card_op =
+            cJSON_IsString(jop) && jop->valuestring &&
+            (strcmp(jop->valuestring, "kb_lookup") == 0 ||
+             strcmp(jop->valuestring, "analytics_summary") == 0 ||
+             strcmp(jop->valuestring, "site_stats") == 0);
+        if (!no_card_op) {
             uint64_t cid = 0;
             if (!nodelio_skill_support_conversation_id(&cid) || cid == 0) {
                 cJSON_Delete(body);
@@ -2090,6 +2093,8 @@ void nodelio_mcp_register_tools(void)
         "工作台查询用对应 .status；params 可带 computer=电脑名称，select_computer=true "
         "选择电脑。派活含 operation=task 和 instruction；续聊保留返回的 session，不得改投电脑。"
         "业务FAQ/知识库：support.inbox params={\"op\":\"kb_lookup\",\"text\":\"问题\"}（无需先开客服卡）。"
+        "访问统计：support.inbox params={\"op\":\"analytics_summary\",\"range\":\"day|week|month\"}"
+        "（无需开卡；也可 text 说今天/本周/本月访问）。"
         "客服卡已开时 skill_id=support.inbox，params 只带 text=口令转写（固件补 conversation_id 与 op=draft），勿直接发访客。"
         "听歌须 open_app(曲库)；旧 dsh.task 仍兼容；"
         "列表已开随便放→transport play。",

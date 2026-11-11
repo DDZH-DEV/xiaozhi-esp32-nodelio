@@ -143,6 +143,8 @@ public:
 
     void EnableWakeWordDetection(bool enable);
     void ReleaseWakeWordResources();
+    /** sila-86：息屏时拆掉 AFE 还片内 DRAM；亮屏后再 Initialize。P4 勿用。 */
+    void ReleaseAudioEngine();
     void EnableVoiceProcessing(bool enable);
     void EnableLocalCommandMode(bool enable);
     void EnableAudioTesting(bool enable);

@@ -81,6 +81,7 @@ public:
         : LcdDisplay(io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT), backlight_(backlight) {
         lvgl_port_cfg_t port_config = ESP_LVGL_PORT_INIT_CONFIG();
         port_config.task_stack = 16384;
+        port_config.task_stack_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
         port_config.task_affinity = 1;  /* LVGL on core1; Hosted/audio stay free to use core0 */
         ESP_ERROR_CHECK(lvgl_port_init(&port_config));
         bool fill_acceleration = false;

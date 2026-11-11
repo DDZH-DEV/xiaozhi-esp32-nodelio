@@ -258,6 +258,13 @@ void Application::Initialize() {
     }
 #endif
 
+#if CONFIG_NODELIO_PANEL && CONFIG_BOARD_TYPE_SILA_86
+    /* RGB FB 在 PSRAM：首帧 reveal 后稍歇再起 WiFi，错开 Flash/射频与 LCD DMA，减轻开机闪屏 */
+    constexpr int kBootWifiSettleMs = 300;
+    ESP_LOGI(TAG, "boot: settle %d ms before wifi (rgb underrun)", kBootWifiSettleMs);
+    vTaskDelay(pdMS_TO_TICKS(kBootWifiSettleMs));
+#endif
+
     // Start network asynchronously
     ESP_LOGI(TAG, "boot: start network");
 #if CONFIG_NODELIO_PANEL
@@ -548,10 +555,6 @@ void Application::ActivationTask() {
     ESP_LOGI(TAG, "boot: activation begin");
 #if CONFIG_NODELIO_PANEL
     nodelio_log_heap("activation begin");
-#endif
-#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-    /* AFE 创建前占 12KB 片内坑；播中武装唤醒时再释放，减轻碎片导致 largest 过小 */
-    (void)nodelio_wake_dram_reserve();
 #endif
     // Create OTA object for activation process
     ota_ = std::make_unique<Ota>();
@@ -995,6 +998,10 @@ void Application::InitializeProtocol() {
                     ESP_LOGI(TAG, "cloud tts start (pending_dsh=%d)",
                              pending_confirm_open_dsh_ ? 1 : 0);
                     news_tts_stopped_ = false;
+#if CONFIG_BOARD_TYPE_SILA_86
+                    /* TTS 包常早于 Speaking 态；先拆 AFE 给 UDP pbuf。 */
+                    audio_service_.ReleaseAudioEngine();
+#endif
 #endif
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
@@ -1548,6 +1555,7 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     /* 唤醒路径会先放预留；点按/客服自己说走这里，进 UDP 前同样放开。 */
     (void)nodelio_wake_dram_release_for_arm();
+    audio_service_.ReleaseAudioEngine();
     ESP_LOGI(TAG, "wake dram before listen largest=%u",
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 #endif
@@ -1801,9 +1809,10 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 
     if (!protocol_->IsAudioChannelOpened()) {
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
-        /* 唤醒坑专供播中武装；云对话 UDP/AES 更吃连续块，进会话前必须释放 */
+        /* 唤醒坑 + AFE 都让给云对话 UDP/AES；会话期裸上行，回 Idle 再重建唤醒。 */
         (void)nodelio_wake_dram_release_for_arm();
         nodelio_offline_cmd_yield_for_cloud_audio();
+        audio_service_.ReleaseAudioEngine();
         ESP_LOGI(TAG, "wake dram before hello largest=%u",
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 #endif
@@ -1956,16 +1965,15 @@ void Application::HandleStateChangedEvent() {
 
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
             if (aec_mode_ == kAecOff) {
-                /* 云端 TTS 期间：关 voice + 关唤醒 AFE（与 Notifying 同策略）。
-                 * 若此时再 EnableWakeWord，AFE/AEC 重配共享 I2S，易把问候弄成全程哑音。 */
-                audio_service_.EnableVoiceProcessing(false);
-                audio_service_.EnableWakeWordDetection(false);
+                /* 云端 TTS：必须真正拆掉 AFE（不只 disable），否则 largest≈2KB，
+                 * LwIP/UDP 收不到 Opus → 屏上有字喇叭无声。 */
+                audio_service_.ReleaseAudioEngine();
                 if (auto* codec = board.GetAudioCodec()) {
                     codec->EnableOutput(true);
-                    ESP_LOGI(TAG, "speaking: output on vol=%d (wake off for cloud TTS)",
-                             codec->output_volume());
+                    ESP_LOGI(TAG, "speaking: AFE released output on vol=%d largest=%u",
+                             codec->output_volume(),
+                             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
                 }
-                /* 关唤醒后 audio_input 异步关麦会再动共享 I2S；下一拍再 unmute 一次 */
                 Schedule([this]() {
                     if (GetDeviceState() != kDeviceStateSpeaking) {
                         return;

@@ -7,6 +7,7 @@
 
 #include <cJSON.h>
 
+#include <esp_attr.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -39,9 +40,9 @@ struct lyric_job_t {
     char device_key[65];
 };
 
-lyric_line_t s_lines[kLineMax];
+EXT_RAM_BSS_ATTR lyric_line_t s_lines[kLineMax];
 /* 只在 nl_lyric 里写。不能放进 lyric_worker 栈：100 行约 8.8KB，任务栈只有 8KB。 */
-lyric_line_t s_parse_lines[kLineMax];
+EXT_RAM_BSS_ATTR lyric_line_t s_parse_lines[kLineMax];
 int s_line_n = 0;
 bool s_synced = false;
 uint32_t s_gen = 0;

@@ -22,7 +22,10 @@
 
 #define TAG "AfeAudioEngine"
 
-#if CONFIG_USE_AUDIO_PROCESSOR
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+/* 86 墙板：云会话片内堆留给 UDP/AES；语音上行走裸 PCM，AFE 只给空闲唤醒。 */
+static constexpr bool kUseAfeForVoiceProcessing = false;
+#elif CONFIG_USE_AUDIO_PROCESSOR
 static constexpr bool kUseAfeForVoiceProcessing = true;
 #else
 static constexpr bool kUseAfeForVoiceProcessing = false;
@@ -57,8 +60,7 @@ AfeAudioEngine::~AfeAudioEngine() {
 
 bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
                                 srmodel_list_t* models_list) {
-    if (afe_data_ != nullptr || (codec_ != nullptr && !kUseAfeForVoiceProcessing &&
-                                 wake_detector_ == WakeDetector::kNone)) {
+    if (afe_data_ != nullptr) {
         return true;
     }
     if (codec == nullptr) {
@@ -113,6 +115,7 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
         }
     } else if (wakenet_model_name != nullptr) {
         wake_detector_ = WakeDetector::kWakeNet;
+        wake_words_.clear();
         for (int i = 0; i < models_->num; ++i) {
             char* name = models_->model_name[i];
             if (name == nullptr || strncmp(name, ESP_WN_PREFIX, strlen(ESP_WN_PREFIX)) != 0) {
@@ -137,9 +140,19 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
 #endif
     }
 
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    const bool needs_afe = prefer_wake_afe_ && wake_detector_ != WakeDetector::kNone;
+#else
     const bool needs_afe = kUseAfeForVoiceProcessing || wake_detector_ != WakeDetector::kNone;
+#endif
     if (!needs_afe) {
-        ESP_LOGI(TAG, "Initialized as raw engine because AFE features are disabled");
+        ESP_LOGI(TAG, "Initialized as raw engine (wake_afe=%d voice_afe=%d)",
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+                 prefer_wake_afe_ ? 1 : 0,
+#else
+                 (wake_detector_ != WakeDetector::kNone) ? 1 : 0,
+#endif
+                 kUseAfeForVoiceProcessing ? 1 : 0);
         return true;
     }
 
@@ -259,14 +272,17 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
         return false;
     }
 
-    processing_task_ = xTaskCreateStatic(
-        [](void* arg) {
-            auto* engine = static_cast<AfeAudioEngine*>(arg);
-            engine->ProcessingTask();
-            vTaskDelete(nullptr);
-        },
-        "audio_afe", kProcessingTaskStackSize, this, 3, processing_task_stack_,
-        processing_task_buffer_);
+    if (processing_task_ == nullptr) {
+        xEventGroupClearBits(event_group_, kDestroyRequested);
+        processing_task_ = xTaskCreateStatic(
+            [](void* arg) {
+                auto* engine = static_cast<AfeAudioEngine*>(arg);
+                engine->ProcessingTask();
+                vTaskDelete(nullptr);
+            },
+            "audio_afe", kProcessingTaskStackSize, this, 3, processing_task_stack_,
+            processing_task_buffer_);
+    }
     if (processing_task_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create AFE processing task, internal free=%u largest=%u",
                  heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -286,6 +302,64 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
     ESP_LOGI(TAG, "After AFE create: free=%u min=%u largest=%u",
              heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+             heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    return true;
+}
+
+void AfeAudioEngine::PreferWakeAfe(bool want) {
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    prefer_wake_afe_ = want;
+#else
+    (void)want;
+#endif
+}
+
+bool AfeAudioEngine::Deinitialize()
+{
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    prefer_wake_afe_ = false;
+#endif
+    if (afe_data_ == nullptr) {
+        return true;
+    }
+    ESP_LOGI(TAG, "Deinitialize AFE begin free=%u largest=%u",
+             heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+
+    xEventGroupClearBits(event_group_, kWakeWordEnabled | kVoiceProcessingEnabled |
+                                           kLocalCommandEnabled | kAfeActive);
+    if (custom_wake_word_) {
+        custom_wake_word_->Stop();
+    }
+    control_generation_.fetch_add(1);
+    {
+        std::lock_guard<std::mutex> lock(input_buffer_mutex_);
+        input_buffer_.clear();
+    }
+    xEventGroupSetBits(event_group_, kDestroyRequested);
+
+    for (int i = 0; i < 50 && processing_task_ != nullptr; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if (processing_task_ != nullptr) {
+        ESP_LOGW(TAG, "Deinitialize: processing task still alive");
+        xEventGroupClearBits(event_group_, kDestroyRequested);
+        return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    {
+        std::lock_guard<std::mutex> lock(input_buffer_mutex_);
+        if (afe_data_ != nullptr && afe_iface_ != nullptr) {
+            afe_iface_->destroy(afe_data_);
+        }
+        afe_data_ = nullptr;
+        afe_iface_ = nullptr;
+    }
+    wake_words_.clear();
+    xEventGroupClearBits(event_group_, kDestroyRequested);
+    ESP_LOGI(TAG, "Deinitialize AFE done free=%u largest=%u",
+             heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     return true;
 }
@@ -505,7 +579,11 @@ void AfeAudioEngine::ApplyPendingReset() {
 void AfeAudioEngine::ProcessingTask() {
     bool last_output_enabled = false;
     while (true) {
-        xEventGroupWaitBits(event_group_, kAfeActive, pdFALSE, pdTRUE, portMAX_DELAY);
+        EventBits_t wait = xEventGroupWaitBits(event_group_, kAfeActive | kDestroyRequested, pdFALSE,
+                                               pdFALSE, portMAX_DELAY);
+        if (wait & kDestroyRequested) {
+            break;
+        }
         ApplyPendingReset();
         if ((xEventGroupGetBits(event_group_) & kAfeActive) == 0) {
             continue;
@@ -531,8 +609,19 @@ void AfeAudioEngine::ProcessingTask() {
             // so they are applied here, in the task that owns the fetch side.
             ApplyAfeControls();
         }
+        if (afe_data_ == nullptr || afe_iface_ == nullptr) {
+            continue;
+        }
         const uint32_t generation = control_generation_.load();
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+        /* 有限等待：息屏拆 AFE 时能及时看到 kDestroyRequested，避免 portMAX_DELAY 卡死 */
+        auto* result = afe_iface_->fetch_with_delay(afe_data_, pdMS_TO_TICKS(100));
+        if (xEventGroupGetBits(event_group_) & kDestroyRequested) {
+            break;
+        }
+#else
         auto* result = afe_iface_->fetch_with_delay(afe_data_, portMAX_DELAY);
+#endif
         if (generation != control_generation_.load() ||
             (xEventGroupGetBits(event_group_) & kAfeActive) == 0) {
             // A disable/re-enable may make an old blocked fetch return after the
@@ -564,6 +653,7 @@ void AfeAudioEngine::ProcessingTask() {
             HandleVoiceResult(result);
         }
     }
+    processing_task_ = nullptr;
 }
 
 void AfeAudioEngine::HandleWakeWordResult(const afe_fetch_result_t* result) {

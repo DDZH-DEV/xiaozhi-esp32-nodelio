@@ -78,6 +78,14 @@ MCP 小于 2KB 都不能保证硬件 AES 分配成功。原 MCP 预算仅保留�
 1. 实机：绑定 → 触屏控家（勾 K3）→ 语音「开灯/回家」（勾 K5）
 2. K4 断网口令（ESP-SR，与小智 AFE 互斥）
 
+## 云 TTS 无声与 AFE 占堆（2026-11-11）
+
+日志特征：有 `cloud tts start` / `<< 你好呀～`，开机 `pcm out` 有峰值，但**没有**
+`UDP first audio rx` / `cloud audio rx`；AFE 创建后 `largest` 常只剩 ~2KB。
+
+根因：只 `disable` 唤醒不会归还片内堆，LwIP 收不到 Opus。86 现改为：进云会话 /
+`tts start` / Speaking 时 `ReleaseAudioEngine()`；会话期语音上行走裸 PCM；回 Idle 再重建唤醒 AFE。
+
 ## 冷启动首轮回复无声排查（2026-10-29）
 
 13:06:43 构建的日志中，MQTT 工具列表分页全部完成，首轮有 `cloud tts start` 和
@@ -244,3 +252,26 @@ HTTP、解码器和输出队列，覆盖 64kbit/s 慢流、短文件尾部、队
 和 `media wake interrupt armed` 的顺序及耗时，检查 AFE 溢出、掉音和内部堆。
 日志中的切台 MQTT/TLS 重连、HTTP 超时和 `ESP_MP3_DEC: Not supported format`
 还需分别确认；本补丁没有改变传输恢复策略，也不声称解决所有源格式兼容问题。
+
+---
+
+## SILA-86 片内内存（DIRAM/DMA）架构级治理与避坑规则（2026-11-11）
+
+### 1. 现象与根本原因
+在 86 板实机运行中，用户遇到“开机内存吃空”、“无法语音唤醒”、“无法截屏（`POST image abort: dma_largest=1024`）”等问题。
+经分析 `build/xiaozhi.map` 符号表与运行时内存账本，发现根因并非硬件 PSRAM 不足（PSRAM 仍有 4.2MB 空余），而是片内 DIRAM（总数仅 ~340KB）被不合理的任务栈与静态段挤占吞噬，导致片内可用 DMA 连续块几乎归零：
+1. **任务栈错误堆在片内**：`AudioService` 的 `audio_input` (6KB)、`audio_output` (4KB)、`opus_codec` (24KB) 直接使用 `xTaskCreate`，强行霸占了 34KB 片内 SRAM。
+2. **大静态缓存占满 `.bss`**：歌词缓存 `s_lines`+`s_parse_lines` (17.6KB)、应用列表 `s_items`+`s_app_views` (7.5KB)、天气日历 (3.3KB)、磁贴记录 (2.4KB) 等未经 PSRAM 隔离，全堆在片内 `.bss`（占 `libmain.a` 约 60KB）。
+3. **RGB Bounce Buffer 擅自放大**：扩大到 40 行双缓冲吃掉 76.8KB 纯片内 DMA。
+4. **小对象碎片化**：`ALWAYSINTERNAL=1024` 导致日常小于 1KB 的 `std::string` 和 `cJSON` 优先分割片内堆。
+5. **截图动态切碎 DMA**：`SnapshotToJpeg` 编码时 `std::string` 未调用 `reserve()`，在回调中做小块内存翻倍扩容，刚好将剩余 2KB DMA 切碎至 1024B，导致图片上传检查 `dma < 1536` 必败。
+6. **误判 AFE 生命周期**：此前在息屏时错误注销 AFE，导致墙板黑屏状态下彻底无法语音唤醒。
+
+### 2. 核心架构治理与代码铁律
+1. **任务栈 PSRAM 化**：`AudioService` 必须使用 `xTaskCreateWithCaps(..., MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)`，将大栈任务完全放入 PSRAM。
+2. **非 DMA 静态大数组一律 `EXT_RAM_BSS_ATTR`**：开启 `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y`，将超过 1KB 的纯业务静态缓存放入 PSRAM `.ext_ram.bss`。
+3. **Wi-Fi 与 LwIP 动态分流**：开启 `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`，防止协议栈挤占片内 DMA。
+4. **收紧片内分配门槛**：`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=64`，普通动态对象全部走 PSRAM，保持片内堆平整无碎片。
+5. **RGB Bounce Buffer 上限**：`RGB_BOUNCE_BUFFER_SIZE` 严格锁定 `DISPLAY_WIDTH * 30`（双缓冲 57.6KB），严禁改大。
+6. **截图预留**：`SnapshotToJpeg` 在编码前强制 `jpeg_data.reserve(32768)`，确保大缓冲一次性在 PSRAM 就位，不污染片内 DMA。
+7. **AFE 全天候常驻**：86 墙板全天候保持 WakeNet 常驻，黑屏随时可唤醒；**严禁息屏销毁 AFE**！仅在云端 TTS 播放（Speaking 态）时拆 AFE 腾出连续堆收 UDP，会话回 Idle 立即占回重建。

@@ -358,8 +358,7 @@ extern "C" void nodelio_panel_ui_announce_spoken_playlist(const char *text, cons
 extern "C" void nodelio_panel_ui_skills_changed(void)
 {
     Application::GetInstance().Schedule([]() {
-        nl_ov_home_skills_invalidate();
-        nl_ov_home_skills_ensure_fetched();
+        /* 只拉一次 /panel/skills；apps_refresh 成功后把同一份 JSON 喂给首页钉选，避免双 GET 撕 DMA */
         nl_ov_apps_refresh();
     });
 }

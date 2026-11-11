@@ -10,6 +10,7 @@
 #include "nodelio_http.h"
 #include "panel_jobs.h"
 #include "ui_widgets.h"
+#include "wake_dram.h"
 #include "wifi_provision.h"
 
 #include <esp_heap_caps.h>
@@ -181,6 +182,7 @@ void nl_ov_build_diagnostics(lv_obj_t* body) {
 struct shot_job {
     std::string *jpeg;
     nodelio_nvs_config_t cfg;
+    bool reclaim_shot;
 };
 
 static void capture_and_upload_screenshot(void)
@@ -198,18 +200,38 @@ static void capture_and_upload_screenshot(void)
     if (!nl_ov_cfg_http_ready(&shot_cfg, true)) {
         return;
     }
-    const size_t dram_before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    const size_t dma_before = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+    /* AFE/MQTT 后 DMA 常碎到 <1.5KB。唤醒 12KB 坑常被放掉且占不回；改借常驻 shot 2KB DMA 坑。 */
+    bool borrowed_shot = false;
+    size_t dram_before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    size_t dma_before = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+    if (dma_before < 1536) {
+        const size_t freed = nodelio_shot_dma_release();
+        if (freed > 0) {
+            borrowed_shot = true;
+            dram_before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+            dma_before = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+            ESP_LOGI(TAG, "screenshot borrowed shot_dma=%u → dma=%u dram=%u", (unsigned)freed,
+                     (unsigned)dma_before, (unsigned)dram_before);
+        }
+    }
+    auto reclaim_shot = [&]() {
+        if (borrowed_shot) {
+            (void)nodelio_shot_dma_try_reclaim();
+            borrowed_shot = false;
+        }
+    };
     /* WiFi 發送要一塊能放下 MSS 的 DMA。內部堆還有 7KB 也不代表 DMA 夠。 */
     if (dma_before < 1536) {
-        ESP_LOGW(TAG, "screenshot skip: dma_largest=%u dram_largest=%u", (unsigned)dma_before,
-                 (unsigned)dram_before);
+        ESP_LOGW(TAG, "screenshot skip: dma_largest=%u dram_largest=%u shot_held=%d",
+                 (unsigned)dma_before, (unsigned)dram_before, nodelio_shot_dma_held() ? 1 : 0);
+        reclaim_shot();
         nl_ov_toast("内存过碎，稍后再截");
         return;
     }
     /* JPEG 在 LVGL 线程生成；HTTP 必须扔后台，否则堵 UI / 撑爆 LVGL 栈 */
     auto *jpeg = new (std::nothrow) std::string();
     if (!jpeg) {
+        reclaim_shot();
         nl_ov_toast("内存不足");
         return;
     }
@@ -219,6 +241,7 @@ static void capture_and_upload_screenshot(void)
     if (!disp->SnapshotToJpeg(*jpeg, quality, snap) || jpeg->empty()) {
         ESP_LOGW(TAG, "SnapshotToJpeg failed q=%d dram=%u", quality, (unsigned)dram_before);
         delete jpeg;
+        reclaim_shot();
         nl_ov_toast("截屏生成失败");
         return;
     }
@@ -228,11 +251,14 @@ static void capture_and_upload_screenshot(void)
     auto *job = static_cast<shot_job *>(heap_caps_malloc(sizeof(shot_job), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!job) {
         delete jpeg;
+        reclaim_shot();
         nl_ov_toast("无法上传");
         return;
     }
     job->jpeg = jpeg;
     job->cfg = shot_cfg;
+    job->reclaim_shot = borrowed_shot;
+    borrowed_shot = false;
     nl_ov_toast("正在上传截图…");
     if (!nodelio::SubmitPanelJob(
             nodelio::PanelJobLane::Background,
@@ -304,19 +330,31 @@ static void capture_and_upload_screenshot(void)
                 if (job->jpeg) {
                     delete job->jpeg;
                 }
+                const bool need_reclaim = job->reclaim_shot;
                 heap_caps_free(job);
+                if (need_reclaim) {
+                    (void)nodelio_shot_dma_try_reclaim();
+                }
             },
             job,
             [](void* p) {
                 auto* a = static_cast<shot_job*>(p);
+                const bool need_reclaim = a->reclaim_shot;
                 delete a->jpeg;
-                free(a);
+                heap_caps_free(a);
+                if (need_reclaim) {
+                    (void)nodelio_shot_dma_try_reclaim();
+                }
             },
             0, "screenshot")) {
         if (job->jpeg) {
             delete job->jpeg;
         }
+        const bool need_reclaim = job->reclaim_shot;
         heap_caps_free(job);
+        if (need_reclaim) {
+            (void)nodelio_shot_dma_try_reclaim();
+        }
         nl_ov_toast("无法上传");
     }
 }

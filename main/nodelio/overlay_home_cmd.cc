@@ -10,6 +10,7 @@
 #include "panel_ui.h"
 #include "ui_theme.h"
 
+#include <esp_attr.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -577,7 +578,7 @@ struct cmd_pending_t {
     int64_t deadline_us;
 };
 
-static cmd_pending_t s_cmd_pending[NL_CMD_PENDING_MAX];
+EXT_RAM_BSS_ATTR static cmd_pending_t s_cmd_pending[NL_CMD_PENDING_MAX];
 static lv_timer_t *s_pending_timer;
 static uint32_t s_cmd_sequence;
 

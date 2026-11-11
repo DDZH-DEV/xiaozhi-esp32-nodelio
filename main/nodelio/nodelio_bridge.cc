@@ -203,7 +203,8 @@ static bool s_deferred_cloud;
 static void deferred_cloud_task(void *arg)
 {
     (void)arg;
-    uint32_t delay_ms = 2000;
+    /* 首次延时 10 秒，避开小智 MQTT TLS 握手窗口与 DMA 争抢 */
+    uint32_t delay_ms = 10000;
     for (int i = 0; i < 48; i++) { /* ~15min 内退避重试 */
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
         if (nodelio_layout_cloud_ready() &&
