@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sdkconfig.h"
 #include "skill_result_ui.h"
 #include "news_read_progress.h"
 #include "panel_jobs.h"
@@ -86,8 +87,24 @@ static inline int skill_top_y(void)
 #define SKILL_BORDER_OPA 200
 #define SKILL_SCRIM_OPA 170
 #define SKILL_EQ_N 4
+#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+/* 508：顶栏收紧，把高度让给列表/内容 */
+#define SKILL_CTRL_SZ 36
+#define SKILL_PLAY_CTRL_SZ 36
+#define SKILL_CARD_PAD 8
+#define SKILL_CARD_PAD_ROW 4
+#define SKILL_HDR_TXT_PAD_ROW 0
+#define SKILL_LIST_HDR_BUDGET 40
+#define SKILL_LIST_CHROME_PAD 20 /* pad×2 + pad_row */
+#else
 #define SKILL_CTRL_SZ 44
 #define SKILL_PLAY_CTRL_SZ 48
+#define SKILL_CARD_PAD 12
+#define SKILL_CARD_PAD_ROW 8
+#define SKILL_HDR_TXT_PAD_ROW 2
+#define SKILL_LIST_HDR_BUDGET 48
+#define SKILL_LIST_CHROME_PAD 32 /* card pad_all×2 + pad_row */
+#endif
 #define SKILL_MINI_SZ 52
 #define SKILL_ANIM_MS 280
 #define SKILL_ANIM_SLIDE 28
@@ -101,8 +118,6 @@ static inline int skill_top_y(void)
 #define SKILL_LIST_ROW_H 68
 /* 曲库：标题 + 艺人各一行；左右圆标同尺寸。矮屏有 now_playing 时靠动态行数分页 */
 #define SKILL_MUSIC_ROW_H 64
-#define SKILL_LIST_HDR_BUDGET 48
-#define SKILL_LIST_CHROME_PAD 32 /* card pad_all×2 + pad_row */
 #define NEWS_ARTICLE_CAP (20 * 1024)
 /* JSON 转义后的正文预算；预留标题、提示及 MCP/session 包装，总包控制在 2KB 内。 */
 #define NEWS_MCP_CHUNK 640

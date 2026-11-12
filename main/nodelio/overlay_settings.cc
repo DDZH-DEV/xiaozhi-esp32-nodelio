@@ -1675,15 +1675,24 @@ void nl_ov_open_settings_detail(set_page_id_t page)
 static void settings_tile(lv_obj_t *parent, const char *glyph, const char *title, const char *sub,
                           uint32_t accent, const char *right_icon, lv_event_cb_t cb)
 {
+#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+    const bool force_single_col = false;
+#else
+    const bool force_single_col =
+        nodelio_display_profile()->nav_width != 0 && nodelio_skill_result_card_visible();
+#endif
     const char* symbol = material_symbols_get_utf8(glyph);
     auto* tile = ui_make_settings_tile(parent, symbol ? symbol : MATERIAL_SYMBOLS_EXPLORE, title,
-                                       sub, accent, right_icon, cb, false);
+                                       sub, accent, right_icon, cb, force_single_col);
     auto* icon = lv_obj_get_child(lv_obj_get_child(tile, 0), 0);
-    /* 分组行 Pod 约 40–44，用 20 档字形避免裁切 */
+#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+    lv_obj_set_style_text_font(icon, &font_material_symbols_30_4, 0);
+#else
     lv_obj_set_style_text_font(icon, &font_material_symbols_20_4, 0);
+#endif
 }
 
-/** 去掉分组内最后一行底部分割线。 */
+#if !CONFIG_BOARD_TYPE_SILA_P4C5_508
 static void hub_section_seal(lv_obj_t *sec)
 {
     if (!sec) {
@@ -1698,6 +1707,7 @@ static void hub_section_seal(lv_obj_t *sec)
         lv_obj_set_style_border_width(last, 0, 0);
     }
 }
+#endif
 
 static int s_hub_host_w = -1;
 static int s_hub_single = -1;
@@ -1709,7 +1719,19 @@ static void fill_settings_hub(void)
     }
     const lv_coord_t keep_y = lv_obj_get_scroll_y(s_settings);
     lv_obj_clean(s_settings);
-    /* 分组列表：常用 / 连接 / 系统，单列全宽行（替代多列磁贴墙）。 */
+#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+    /* 508：两列磁贴墙。 */
+    lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(s_settings, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    const int set_gap = nodelio_text_scale() == 1 ? 12 : 10;
+    lv_obj_set_style_pad_row(s_settings, set_gap, 0);
+    lv_obj_set_style_pad_column(s_settings, set_gap, 0);
+    lv_obj_set_style_pad_left(s_settings, 16, 0);
+    lv_obj_set_style_pad_right(s_settings, 16, 0);
+    lv_obj_set_style_pad_top(s_settings, 28, 0);
+    lv_obj_set_style_pad_bottom(s_settings, 54, 0);
+#else
+    /* 分组列表：常用 / 连接 / 系统，单列全宽行。 */
     lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s_settings, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     const int set_gap = nodelio_text_scale() == 1 ? 16 : 14;
@@ -1720,6 +1742,7 @@ static void fill_settings_hub(void)
     lv_obj_set_style_pad_right(s_settings, 16, 0);
     lv_obj_set_style_pad_top(s_settings, is_wide ? 16 : 28, 0);
     lv_obj_set_style_pad_bottom(s_settings, is_wide ? 20 : 54, 0);
+#endif
     lv_obj_set_style_bg_color(s_settings, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_settings, LV_OPA_COVER, 0);
     lv_obj_set_scroll_dir(s_settings, LV_DIR_VER);
@@ -1731,10 +1754,15 @@ static void fill_settings_hub(void)
     std::snprintf(bri_sub, sizeof(bri_sub), "%d%% · %d%% · %s", s_brightness, s_volume,
                   nl_ov_ui_mode_name(s_cfg.ui_mode));
 
+#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+    lv_obj_t *host = s_settings;
+#else
     lv_obj_t *sec = ui_make_settings_section(s_settings, "常用");
-    settings_tile(sec, "brightness_6", "显示与声音", bri_sub, UI_C_INFO, nullptr,
+    lv_obj_t *host = sec;
+#endif
+    settings_tile(host, "brightness_6", "显示与声音", bri_sub, UI_C_INFO, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_DISP); });
-    settings_tile(sec, "home", "控家",
+    settings_tile(host, "home", "控家",
                   nodelio_controls_enabled() ? "已开启" : "已关闭", UI_C_SUCCESS, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_CTRL); });
     {
@@ -1746,7 +1774,7 @@ static void fill_settings_hub(void)
             std::snprintf(pwr_sub, sizeof(pwr_sub), "%ds · 不断网",
                           (int)nodelio_idle_sleep_seconds());
         }
-        settings_tile(sec, "power_settings_new", "省电", pwr_sub, UI_C_WARN, nullptr,
+        settings_tile(host, "power_settings_new", "省电", pwr_sub, UI_C_WARN, nullptr,
                       [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_POWER); });
     }
     {
@@ -1754,30 +1782,34 @@ static void fill_settings_hub(void)
         std::snprintf(media_sub, sizeof(media_sub), "%s · %d%%",
                       nodelio_media_sleep_enabled() ? "可息屏" : "常亮",
                       (int)nodelio_media_wake_duck_pct());
-        settings_tile(sec, "music_note", "播放器", media_sub, UI_C_PURPLE, nullptr,
+        settings_tile(host, "music_note", "播放器", media_sub, UI_C_PURPLE, nullptr,
                       [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_MEDIA); });
     }
+#if !CONFIG_BOARD_TYPE_SILA_P4C5_508
     hub_section_seal(sec);
-
     sec = ui_make_settings_section(s_settings, "连接");
-    settings_tile(sec, "wifi", "网络与连接", "WiFi · 服务器", 0x00B4D8, nullptr,
+    host = sec;
+#endif
+    settings_tile(host, "wifi", "网络与连接", "WiFi · 服务器", 0x00B4D8, nullptr,
                   [](lv_event_t*) { nl_ov_open_connect(); });
     settings_tile(
-        sec, "refresh", "刷新布局", "重新拉取", 0xF2994A, nullptr,
+        host, "refresh", "刷新布局", "重新拉取", 0xF2994A, nullptr,
         [](lv_event_t*) { (void)nodelio_panel_ui_set_pref("layout_sync", "", nullptr, 0); });
     {
         char voice_sub[40];
         std::snprintf(voice_sub, sizeof(voice_sub), "%s · %ds",
                       nodelio_xiaozhi_enabled() ? "小智" : "无云",
                       (int)nodelio_listen_idle_seconds());
-        settings_tile(sec, "mic", "语音助手", voice_sub, 0x8E44AD, nullptr,
+        settings_tile(host, "mic", "语音助手", voice_sub, 0x8E44AD, nullptr,
                       [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_VOICE); });
     }
+#if !CONFIG_BOARD_TYPE_SILA_P4C5_508
     hub_section_seal(sec);
-
     sec = ui_make_settings_section(s_settings, "系统");
+    host = sec;
+#endif
 #if CONFIG_FIRMWARE_OTA_ENABLED
-    settings_tile(sec, "cloud_download", "检查固件更新", "检查更新", 0x0284C7, nullptr,
+    settings_tile(host, "cloud_download", "检查固件更新", "检查更新", 0x0284C7, nullptr,
                   [](lv_event_t*) {
                       char err[64];
                       if (nodelio_panel_ui_set_pref("fw_check", "", err, sizeof(err)) != ESP_OK &&
@@ -1786,13 +1818,15 @@ static void fill_settings_hub(void)
                       }
                   });
 #endif
-    settings_tile(sec, "info", "设备信息", "状态", 0x3D5A80, nullptr,
+    settings_tile(host, "info", "设备信息", "状态", 0x3D5A80, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_SYS); });
-    settings_tile(sec, "build", "硬件自检", "触摸 · 麦", 0x5B5EA6, nullptr,
+    settings_tile(host, "build", "硬件自检", "触摸 · 麦", 0x5B5EA6, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_DIAGNOSTICS); });
-    settings_tile(sec, "restart_alt", "恢复出厂", "清空并重启", UI_C_DANGER, nullptr,
+    settings_tile(host, "restart_alt", "恢复出厂", "清空并重启", UI_C_DANGER, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_RESET); });
+#if !CONFIG_BOARD_TYPE_SILA_P4C5_508
     hub_section_seal(sec);
+#endif
 
     s_hub_host_w = (int)lv_obj_get_width(s_settings);
     s_hub_single =

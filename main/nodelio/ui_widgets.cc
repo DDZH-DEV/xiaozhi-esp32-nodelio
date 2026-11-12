@@ -2,6 +2,7 @@
 #include <cmath>
 #include "board_info.h"
 #include "nvs_config.h"
+#include "sdkconfig.h"
 
 void nl_ov_set_font(lv_obj_t *obj);
 int nl_ov_ui_line_box(void);
@@ -175,10 +176,54 @@ lv_obj_t *ui_make_settings_section(lv_obj_t *parent, const char *title)
     return card;
 }
 
+int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out)
+{
+    const int gap = (nodelio_text_scale() == 1) ? 12 : 10;
+    const auto *profile = nodelio_display_profile();
+    if (avail < 160) {
+        avail = (int)profile->width - (int)profile->nav_width - 16 * 2;
+    }
+    if (force_single_col) {
+        int tile_w = (int)profile->width / 5;
+        if (tile_w < 160) {
+            tile_w = 160;
+        }
+        if (tile_w > avail) {
+            tile_w = avail;
+        }
+        if (columns_out) {
+            *columns_out = 1;
+        }
+        return tile_w;
+    }
+    /* 宽屏三列；方屏（含 508）两列。 */
+    const int max_cols = profile->nav_width ? 3 : 2;
+    const int min_tile = profile->nav_width ? 220 : 160;
+    int columns = max_cols;
+    while (columns > 1) {
+        const int tw = (avail - gap * (columns - 1)) / columns;
+        if (tw >= min_tile) {
+            break;
+        }
+        columns--;
+    }
+    if (columns_out) {
+        *columns_out = columns;
+    }
+    return (avail - gap * (columns - 1)) / columns;
+}
+
 int ui_settings_tile_height(void)
 {
     const int line = nl_ov_ui_line_box();
     const bool large = nodelio_text_scale() == 1;
+#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+    /* 两列磁贴：略增高。 */
+    int tile_h = (large ? 14 : 12) + line + (large ? 6 : 4) + line + (large ? 14 : 12);
+    if (tile_h < (large ? 88 : UI_SETTINGS_TILE_H)) {
+        tile_h = (large ? 88 : UI_SETTINGS_TILE_H);
+    }
+#else
     /* 分组内行：标题 1 行 + 副文 1 行。 */
     int tile_h = (large ? 14 : 12) + line + (large ? 4 : 2) + line + (large ? 14 : 12);
     if (tile_h < (large ? 80 : 72)) {
@@ -187,6 +232,7 @@ int ui_settings_tile_height(void)
     if (tile_h < UI_SETTINGS_TILE_H - 8) {
         tile_h = UI_SETTINGS_TILE_H - 8;
     }
+#endif
     return tile_h;
 }
 
@@ -194,18 +240,33 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
                                 const char *sub, uint32_t accent_c, const char *right_icon,
                                 lv_event_cb_t cb, bool force_single_col)
 {
-    (void)force_single_col;
     ui_styles_init();
 
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);
     const int tile_h = ui_settings_tile_height();
+    const bool large = nodelio_text_scale() == 1;
+#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+    int avail = parent ? (int)lv_obj_get_content_width(parent) : 0;
+    const int tile_w = ui_settings_tile_width(avail, force_single_col, nullptr);
+    lv_obj_set_size(btn, tile_w, tile_h);
+    lv_obj_set_style_bg_color(btn, UI_TILE_OFF, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(btn, UI_RADIUS_MD, 0);
+    ui_style_card(btn);
+    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_style_border_color(btn, UI_TILE_OFF_BORDER, 0);
+    lv_obj_set_style_border_opa(btn, LV_OPA_80, 0);
+    const int pad_l = large ? 12 : 10;
+    const int pad_r = large ? 10 : 8;
+    const int pod_sz = 56;
+    const int col_gap = large ? 14 : 12;
+    lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(btn, lv_color_hex(accent_c), LV_STATE_PRESSED);
+#else
+    (void)force_single_col;
     lv_obj_set_width(btn, lv_pct(100));
     lv_obj_set_height(btn, tile_h);
-    lv_obj_set_ext_click_area(btn, 6);
-    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
-
     /* 分组内 inset 行：无独立投影，靠底部分割线分层。 */
     lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
     lv_obj_set_style_radius(btn, 0, 0);
@@ -213,17 +274,21 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_set_style_border_width(btn, 1, 0);
     lv_obj_set_style_border_color(btn, UI_TILE_OFF_BORDER, 0);
     lv_obj_set_style_border_opa(btn, LV_OPA_40, 0);
-    const bool large = nodelio_text_scale() == 1;
-    lv_obj_set_style_pad_left(btn, large ? 14 : 12, 0);
-    lv_obj_set_style_pad_right(btn, large ? 12 : 10, 0);
-    lv_obj_set_style_pad_top(btn, 0, 0);
-    lv_obj_set_style_pad_bottom(btn, 0, 0);
+    const int pad_l = large ? 14 : 12;
+    const int pad_r = large ? 12 : 10;
     const int pod_sz = large ? 44 : 40;
     const int col_gap = large ? 14 : 12;
-    lv_obj_set_style_pad_column(btn, col_gap, 0);
-
     lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_STATE_PRESSED);
+#endif
+    lv_obj_set_ext_click_area(btn, 6);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_left(btn, pad_l, 0);
+    lv_obj_set_style_pad_right(btn, pad_r, 0);
+    lv_obj_set_style_pad_top(btn, 0, 0);
+    lv_obj_set_style_pad_bottom(btn, 0, 0);
+    lv_obj_set_style_pad_column(btn, col_gap, 0);
 
     lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);

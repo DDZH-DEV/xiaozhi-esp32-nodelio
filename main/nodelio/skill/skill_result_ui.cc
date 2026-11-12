@@ -1,5 +1,6 @@
 #include "skill_ui_priv.h"
 #include "skill_support_ui.h"
+#include "sdkconfig.h"
 
 lv_obj_t *s_scrim = nullptr;
 lv_obj_t *s_card = nullptr;
@@ -184,7 +185,7 @@ void style_skill_frame(void)
         lv_obj_set_style_radius(s_card, 0, 0);
         lv_obj_set_style_border_width(s_card, 0, 0);
         lv_obj_set_style_shadow_width(s_card, 0, 0);
-        lv_obj_set_style_pad_all(s_card, 12, 0);
+        lv_obj_set_style_pad_all(s_card, SKILL_CARD_PAD, 0);
         return;
     }
     lv_obj_set_style_bg_color(s_card, UI_SURFACE, 0);
@@ -263,7 +264,7 @@ void layout_skill_layers(void)
             const int h = wide ? skill_card_h_max() : (nodelio_display_profile()->height - y);
             lv_obj_set_height(s_card, h);
             lv_obj_set_style_max_height(s_card, h, 0);
-            lv_obj_set_style_pad_bottom(s_card, dock ? (SKILL_NOW_H + 18) : 12, 0);
+            lv_obj_set_style_pad_bottom(s_card, dock ? (SKILL_NOW_H + 18) : SKILL_CARD_PAD, 0);
         }
         style_skill_frame();
         /* 并开详情：上下右贴边（x/y=0）；否则右缘留 gap。 */
@@ -667,10 +668,12 @@ static int list_cols(void)
         return SKILL_LIST_COLS;
     }
     const bool music = s_env && strcmp(s_env->card_type, "music_list") == 0;
-    /* 方屏曲库强制单列：点整行播，歌名可读（86/508）。宽屏仍可双列。 */
+#if CONFIG_BOARD_TYPE_SILA_86
+    /* 86 方屏曲库强制单列：点整行播，歌名可读。508 720 宽仍双列。 */
     if (music && !nodelio_display_profile()->nav_width) {
         return SKILL_LIST_COLS;
     }
+#endif
     /* 双列只在文字还够宽时成立（无行内播放钮后按序号圆标留宽）。 */
     const int mark = music ? music_end_sz() : 22;
     const int pad_hor = music ? 10 : 6;
@@ -807,7 +810,7 @@ static int list_page_rows(void)
     }
     const int row_h = list_row_h();
     const int gap = 4;
-    const int hdr_budget = nl_ov_ui_font_line_h() * 2 + 12;
+    const int hdr_budget = nl_ov_ui_font_line_h() * 2 + SKILL_CARD_PAD;
     int chrome = SKILL_LIST_CHROME_PAD;
     if (skill_player_docked()) {
         chrome += SKILL_NOW_H + 6;
@@ -2452,8 +2455,8 @@ static void ensure_card(void)
                     wide ? SKILL_CARD_H_MAX : nodelio_display_profile()->height);
     lv_obj_align(s_card, wide ? LV_ALIGN_TOP_MID : LV_ALIGN_TOP_LEFT, 0, wide ? skill_top_y() : 0);
     style_skill_frame();
-    lv_obj_set_style_pad_all(s_card, 12, 0);
-    lv_obj_set_style_pad_row(s_card, 8, 0);
+    lv_obj_set_style_pad_all(s_card, SKILL_CARD_PAD, 0);
+    lv_obj_set_style_pad_row(s_card, SKILL_CARD_PAD_ROW, 0);
     lv_obj_set_flex_flow(s_card, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(s_card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_card, LV_OBJ_FLAG_HIDDEN);
@@ -2473,9 +2476,9 @@ static void ensure_card(void)
     lv_obj_set_flex_grow(hdr_txt, 1);
     lv_obj_set_height(hdr_txt, LV_SIZE_CONTENT);
     lv_obj_set_style_min_width(hdr_txt, 0, 0);
-    lv_obj_set_style_pad_right(hdr_txt, 12, 0);
+    lv_obj_set_style_pad_right(hdr_txt, SKILL_CARD_PAD, 0);
     lv_obj_set_flex_flow(hdr_txt, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(hdr_txt, 2, 0);
+    lv_obj_set_style_pad_row(hdr_txt, SKILL_HDR_TXT_PAD_ROW, 0);
 
     s_title_row = lv_obj_create(hdr_txt);
     lv_obj_remove_style_all(s_title_row);
@@ -2539,8 +2542,8 @@ static void ensure_card(void)
 
     lv_obj_t *xbtn = lv_obj_create(s_hdr_btns);
     lv_obj_remove_style_all(xbtn);
-    lv_obj_set_size(xbtn, 44, 44);
-    lv_obj_set_style_radius(xbtn, wide ? 22 : 0, 0);
+    lv_obj_set_size(xbtn, SKILL_CTRL_SZ, SKILL_CTRL_SZ);
+    lv_obj_set_style_radius(xbtn, wide ? (SKILL_CTRL_SZ / 2) : 0, 0);
     lv_obj_set_style_bg_color(xbtn, UI_CAPSULE_OFF, 0);
     lv_obj_set_style_bg_opa(xbtn, LV_OPA_COVER, 0);
     lv_obj_add_flag(xbtn, LV_OBJ_FLAG_CLICKABLE);
@@ -2826,7 +2829,7 @@ void apply_card_chrome(void)
             nl_ov_set_font(label);
             lv_label_set_text(label, "换电脑");
             lv_obj_set_width(s_hdr_mid_btn, nl_ov_ui_font_line_h() * 3 + 16);
-            lv_obj_set_height(s_hdr_mid_btn, 48);
+            lv_obj_set_height(s_hdr_mid_btn, SKILL_PLAY_CTRL_SZ);
             lv_obj_center(label);
             if (s_env->workbench_picker && !s_env->bridge_id[0])
                 lv_obj_add_flag(s_hdr_mid_btn, LV_OBJ_FLAG_HIDDEN);
@@ -2856,18 +2859,18 @@ void apply_card_chrome(void)
     }
     if (s_close_btn) {
         if (s_hdr_minimal) {
-            /* 脱离头部行，直接浮在结果卡右上角顶死，零边距；尺寸 44 保证可点。 */
+            /* 脱离头部行，直接浮在结果卡右上角顶死；尺寸跟控制钮一致。 */
             lv_obj_set_parent(s_close_btn, s_card);
             lv_obj_add_flag(s_close_btn, LV_OBJ_FLAG_FLOATING);
-            lv_obj_set_size(s_close_btn, 44, 44);
-            lv_obj_align(s_close_btn, LV_ALIGN_TOP_RIGHT, 12, -12);
+            lv_obj_set_size(s_close_btn, SKILL_CTRL_SZ, SKILL_CTRL_SZ);
+            lv_obj_align(s_close_btn, LV_ALIGN_TOP_RIGHT, SKILL_CARD_PAD, -SKILL_CARD_PAD);
             lv_obj_set_style_radius(s_close_btn, 0, 0);
             /* 提到最前，避免被后建的列表盖住。 */
             lv_obj_move_to_index(s_close_btn, -1);
         } else if (s_hdr_btns && lv_obj_get_parent(s_close_btn) != s_hdr_btns) {
             lv_obj_set_parent(s_close_btn, s_hdr_btns);
             lv_obj_clear_flag(s_close_btn, LV_OBJ_FLAG_FLOATING);
-            lv_obj_set_size(s_close_btn, 44, 44);
+            lv_obj_set_size(s_close_btn, SKILL_CTRL_SZ, SKILL_CTRL_SZ);
         }
     }
 
@@ -2879,7 +2882,7 @@ void apply_card_chrome(void)
     if (compact && !dock) {
         lv_obj_set_height(s_card, LV_SIZE_CONTENT);
         lv_obj_set_style_max_height(s_card, hmax, 0);
-        lv_obj_set_style_pad_bottom(s_card, 12, 0);
+        lv_obj_set_style_pad_bottom(s_card, SKILL_CARD_PAD, 0);
         if (s_card_list) {
             lv_obj_set_flex_grow(s_card_list, 0);
             lv_obj_set_height(s_card_list, LV_SIZE_CONTENT);
@@ -2899,8 +2902,8 @@ void apply_card_chrome(void)
         }
     }
     /* 日历用更紧的内边距，把省下来的高度全给网格。 */
-    lv_obj_set_style_pad_all(s_card, s_hdr_minimal ? 8 : 12, 0);
-    lv_obj_set_style_pad_row(s_card, s_hdr_minimal ? 0 : 8, 0);
+    lv_obj_set_style_pad_all(s_card, s_hdr_minimal ? 6 : SKILL_CARD_PAD, 0);
+    lv_obj_set_style_pad_row(s_card, s_hdr_minimal ? 0 : SKILL_CARD_PAD_ROW, 0);
     /* pad_all 会清掉底边距。播放条叠在框底，列表要留出它的高度，最后几条才能滚上来。 */
     if (dock) {
         lv_obj_set_style_pad_bottom(s_card, SKILL_NOW_H + 18, 0);

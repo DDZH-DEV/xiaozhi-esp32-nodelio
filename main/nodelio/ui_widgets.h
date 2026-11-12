@@ -19,11 +19,13 @@ lv_color_t ui_color_on(lv_color_t background);
 
 /** 设置 hub 分组卡：白底圆角容器，返回挂行的父对象。 */
 lv_obj_t *ui_make_settings_section(lv_obj_t *parent, const char *title);
+/** 磁贴墙列宽（508 两列等）；force_single_col 时取整屏约 1/5。 */
+int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out);
 /** 分组内行高（标题 1 行 + 副文 1 行，不低于 UI_SETTINGS_TILE_H）。 */
 int ui_settings_tile_height(void);
 
-/** 设置 hub 分组内一行：左 Icon Pod · 右标题/副文；铺满 section。
- *  force_single_col 保留兼容（现已始终单列）。 */
+/** 设置入口卡：左 Icon Pod · 右标题/副文。
+ *  508 为两列磁贴墙；其它板为分组内全宽行。force_single_col：宽屏技能卡占右时左侧单列。 */
 lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char *title,
                                 const char *sub, uint32_t accent_c, const char *right_icon,
                                 lv_event_cb_t cb, bool force_single_col);

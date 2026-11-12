@@ -576,10 +576,11 @@ static void render_list(void)
     const bool sila86 = apps_sila86();
     const int gap = wide_grid ? (large ? 28 : 22) : (large ? 10 : 8);
     int card_w, card_h;
-    /* 86 大字：略缩 Pod，把宽度留给两行标题 */
-    const int pod_size = rail ? 52 : (wide_grid ? 72 : (sila86 && large ? 52 : 58));
-    /* 508 方屏：色块内字形放大（字库最大 30，用 transform 约 1.45×） */
-    const int icon_scale = (!rail && !wide_grid && !sila86) ? 372 : LV_SCALE_NONE;
+    /* 86 大字：略缩 Pod，把宽度留给两行标题；508 方屏加大色 Pod。
+     * 禁止 transform 放大位图图标（会糊）；字库最大 30，居中留白。 */
+    const int pod_size =
+        rail ? 52 : (wide_grid ? 72 : (sila86 && large ? 52 : (sila86 ? 58 : 84)));
+    const int icon_scale = LV_SCALE_NONE;
     if (rail) {
         card_w = list_w;
         /* 仅标题，相对色 Pod 垂直居中 */
