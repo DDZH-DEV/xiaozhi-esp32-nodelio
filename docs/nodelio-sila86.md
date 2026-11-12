@@ -18,10 +18,17 @@ WiFi SoftAP stays with Xiaozhi. NodeLio does **not** own STA.
 
 ## Build / flash
 脚本在 `main/boards/sila/sila-86/`（仓库根不再放 `nodelio-*.bat`）。
+
+| 硬件 | 背光 | 命令 |
+|------|------|------|
+| 方案 A / R4（SY7200 接死 3.3V） | 常亮，`FIXED_BACKLIGHT=y` | `nodelio-build.bat` / `nodelio-flash.bat` |
+| 方案 B / IP5306+RY3730 | IO13 PWM 可调 | `nodelio-build.bat pwm` / `nodelio-flash.bat pwm` |
+
+**可调背光板刷了默认（R4）固件会全黑**：固件走 `NoopBacklight`，从不拉高 IO13。
 ```bat
 cd /d D:\xz25\main\boards\sila\sila-86
-nodelio-build.bat
-nodelio-flash.bat
+nodelio-build.bat pwm
+nodelio-flash.bat pwm
 nodelio-monitor.bat
 ```
 

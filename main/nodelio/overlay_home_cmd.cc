@@ -2,6 +2,7 @@
 #include "panel_jobs.h"
 
 #include "application.h"
+#include "diol_lan.h"
 #include "display.h"
 #include "layout_cache.h"
 #include "nodelio_http.h"
@@ -1027,17 +1028,32 @@ extern "C" void nodelio_panel_ui_snapshot_set_lan(const char *device_id, const c
     }
     d->lan_control = lan_control;
     d->pass_required = has_pass;
+    /* snapshot_add 已 memset，d->ip 恒空；须对照 sticky 旧地址判变更 */
+    const nl_dev_cache_t *prev = lan_sticky_find(device_id);
+    char new_ip[48] = {0};
     if (ip && ip[0]) {
-        std::snprintf(d->ip, sizeof(d->ip), "%s", ip);
+        std::snprintf(new_ip, sizeof(new_ip), "%s", ip);
+    }
+    if (new_ip[0]) {
+        std::snprintf(d->ip, sizeof(d->ip), "%s", new_ip);
     } else {
         d->ip[0] = '\0';
     }
     if (!lan_control) {
         return;
     }
+    const bool ip_changed =
+        prev && prev->ip[0] && new_ip[0] && std::strcmp(prev->ip, new_ip) != 0;
+    if (ip_changed) {
+        /* 云端改了局域网地址：清死 IP 退避，勿沿用旧地址 sticky 在线态 */
+        nodelio_diol_notify_ip_changed(device_id);
+        d->online = false;
+        d->ch_n = 0;
+        d->power[0] = '\0';
+        return;
+    }
     /* 忽略云端 online=false / stub 通道：恢复上次探测态。
      * 首次见默认离线（黑）：勿乐观在线，否则重刷/冷启动死设备会先黄再黑。 */
-    const nl_dev_cache_t *prev = lan_sticky_find(device_id);
     if (prev) {
         d->online = prev->online;
         if (prev->power[0]) {

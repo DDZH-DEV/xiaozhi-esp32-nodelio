@@ -15,6 +15,9 @@ extern "C" {
  */
 void nodelio_diol_probe_all_from_cache(void);
 
+/** snapshot IP 变更：清失败退避并排队重探，避免死旧 IP 长退避挡新地址。 */
+void nodelio_diol_notify_ip_changed(const char *device_id);
+
 /**
  * 开机安静期：hold=true 时探测任务空转（可排队，不发 HTTP）。
  * 小智 TLS MQTT 握手与 DIOL 短 TCP 并行会砸坏 PSRAM 堆（tlsf assert）。

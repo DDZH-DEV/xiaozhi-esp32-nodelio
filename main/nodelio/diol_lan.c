@@ -474,6 +474,19 @@ void nodelio_diol_probe_all_from_cache(void)
     ESP_LOGI(TAG, "probe scheduled%s (ui already sticky)", s_probe_hold ? " (held)" : "");
 }
 
+void nodelio_diol_notify_ip_changed(const char *device_id)
+{
+    if (!device_id || !device_id[0]) {
+        return;
+    }
+    diol_fail_clear(device_id);
+    ensure_probe_task();
+    if (s_probe_task) {
+        s_probe_pending = true;
+    }
+    ESP_LOGI(TAG, "ip changed %s — fail cleared, probe queued", device_id);
+}
+
 esp_err_t nodelio_diol_try_command(const nl_bind_t *bind, const char *value_str, int *http_status)
 {
     if (http_status) {

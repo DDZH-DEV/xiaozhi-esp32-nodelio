@@ -2,6 +2,15 @@
 setlocal
 chcp 65001 >nul
 rem SILA-86 - build only
+rem   nodelio-build.bat          方案 A / R4：SY7200 常亮（FIXED_BACKLIGHT=y）
+rem   nodelio-build.bat pwm      方案 B / IP5306+RY3730：IO13 PWM 可调背光
+rem 可调背光板刷了 R4 固件会全黑（NoopBacklight 不推 IO13）。
+
+set "BL_MODE=r4"
+if /I "%~1"=="pwm" set "BL_MODE=pwm"
+if /I "%~1"=="b" set "BL_MODE=pwm"
+if /I "%~1"=="r4" set "BL_MODE=r4"
+if /I "%~1"=="a" set "BL_MODE=r4"
 
 set "REPO=D:\xz25"
 set "IDF_PATH=D:\Espressif\frameworks\esp-idf-v6.1"
@@ -18,7 +27,11 @@ findstr /b /c:"CONFIG_BOARD_TYPE_SILA_86=y" sdkconfig >nul
 if errorlevel 1 (
   echo [sila-86] sdkconfig is not SILA_86. Reconfigure esp32s3 via build.py.
   echo [sila-86] this fullcleans the current build directory.
-  python scripts\build.py sila/sila-86 --name sila-86
+  if /I "%BL_MODE%"=="pwm" (
+    python scripts\build.py sila/sila-86 --name sila-86-pwm
+  ) else (
+    python scripts\build.py sila/sila-86 --name sila-86
+  )
   if errorlevel 1 exit /b 1
   echo [sila-86] sync panel OTA manifest + bin to Z-Y ...
   python "%REPO%\scripts\nodelio_sync_panel_ota.py" --root "%REPO%"
@@ -28,6 +41,7 @@ if errorlevel 1 (
   )
   exit /b 0
 )
+echo [sila-86] backlight mode=%BL_MODE%
 REM idf.py build ignores config.json sdkconfig_append; patch WiFi RX; disable MultiNet (~4MB PSRAM)
 findstr /b /c:"CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16" sdkconfig >nul
 if errorlevel 1 (
@@ -50,12 +64,24 @@ if errorlevel 1 (
     "$c=Get-Content sdkconfig -Raw; $c=$c -replace '(?m)^CONFIG_MBEDTLS_HARDWARE_AES=.*\r?\n?',''; $c=$c.TrimEnd()+[Environment]::NewLine+'# CONFIG_MBEDTLS_HARDWARE_AES is not set'+[Environment]::NewLine; Set-Content sdkconfig -Value $c -Encoding ascii -NoNewline"
   if errorlevel 1 exit /b 1
 )
-REM R4 SY7200 always-on backlight (scheme B / RY3730: remove this line)
-findstr /b /c:"CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT=y" sdkconfig >nul
-if errorlevel 1 (
-  echo [sila-86] enabling FIXED_BACKLIGHT ^(R4 SY7200 always-on^)
-  powershell -NoProfile -Command ^
-    "$c=Get-Content sdkconfig -Raw; if ($c -notmatch 'CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT') { $c=$c.TrimEnd()+[Environment]::NewLine+'CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT=y'+[Environment]::NewLine }; $c=$c -replace '# CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT is not set','CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT=y'; Set-Content sdkconfig -Value $c -Encoding ascii -NoNewline"
+if /I "%BL_MODE%"=="pwm" (
+  rem 方案 B：必须关掉 FIXED，否则 PwmBacklight 不编进、IO13 不亮 → 黑屏
+  findstr /b /c:"# CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT is not set" sdkconfig >nul
+  if errorlevel 1 (
+    echo [sila-86] disabling FIXED_BACKLIGHT ^(scheme B IO13 PWM^)
+    powershell -NoProfile -Command ^
+      "$c=Get-Content sdkconfig -Raw; $c=$c -replace '(?m)^CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT=y\r?\n?',''; $c=$c -replace '(?m)^# CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT is not set\r?\n?',''; $c=$c.TrimEnd()+[Environment]::NewLine+'# CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT is not set'+[Environment]::NewLine; Set-Content sdkconfig -Value $c -Encoding ascii -NoNewline"
+  ) else (
+    echo [sila-86] FIXED_BACKLIGHT already off ^(scheme B^)
+  )
+) else (
+  rem 方案 A / R4：SY7200 常亮；IO13=KEY，禁止 LEDC
+  findstr /b /c:"CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT=y" sdkconfig >nul
+  if errorlevel 1 (
+    echo [sila-86] enabling FIXED_BACKLIGHT ^(R4 SY7200 always-on^)
+    powershell -NoProfile -Command ^
+      "$c=Get-Content sdkconfig -Raw; $c=$c -replace '(?m)^# CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT is not set\r?\n?',''; if ($c -notmatch 'CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT=y') { $c=$c.TrimEnd()+[Environment]::NewLine+'CONFIG_NODELIO_SILA86_FIXED_BACKLIGHT=y'+[Environment]::NewLine }; Set-Content sdkconfig -Value $c -Encoding ascii -NoNewline"
+  )
 )
 REM Offload WiFi/LwIP, .ext_ram.bss, and >64B mallocs to 8MB PSRAM to preserve internal DMA SRAM
 findstr /b /c:"CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y" sdkconfig >nul
