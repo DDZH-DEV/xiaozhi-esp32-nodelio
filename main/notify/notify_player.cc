@@ -29,7 +29,7 @@
 
 namespace {
 constexpr int kHttpTimeoutMs = 15000;
-#if CONFIG_BOARD_TYPE_SILA_P4C5_62
+#if (CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
 /* P4 PSRAM 充裕：加大读块，少系统调用、直播更稳 */
 constexpr size_t kHttpReadBufferSize = 8192;
 #else
@@ -60,7 +60,7 @@ constexpr size_t kMp3ResyncMinAvail = 2048;
 /** P4：加厚 MP3/M4A 垫片（电台/播客）；86 / host 测仍用上方保守常量。 */
 static size_t Mp3CompressedPrefetchBytes()
 {
-#if defined(CONFIG_BOARD_TYPE_SILA_P4C5_62) && CONFIG_BOARD_TYPE_SILA_P4C5_62
+#if (CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     return 48 * 1024; /* ~6s @64kbps */
 #else
     return kCompressedPrefetchBytes;
@@ -68,7 +68,7 @@ static size_t Mp3CompressedPrefetchBytes()
 }
 static size_t Mp3PendingHighWatermark()
 {
-#if defined(CONFIG_BOARD_TYPE_SILA_P4C5_62) && CONFIG_BOARD_TYPE_SILA_P4C5_62
+#if (CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     return 256 * 1024;
 #else
     return kPendingHighWatermark;
@@ -76,7 +76,7 @@ static size_t Mp3PendingHighWatermark()
 }
 static size_t Mp3PendingLowWatermark()
 {
-#if defined(CONFIG_BOARD_TYPE_SILA_P4C5_62) && CONFIG_BOARD_TYPE_SILA_P4C5_62
+#if (CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     return 48 * 1024;
 #else
     return kPendingLowWatermark;
@@ -84,7 +84,7 @@ static size_t Mp3PendingLowWatermark()
 }
 static uint32_t Mp3WarmupMs()
 {
-#if defined(CONFIG_BOARD_TYPE_SILA_P4C5_62) && CONFIG_BOARD_TYPE_SILA_P4C5_62
+#if (CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     return 5000;
 #else
     return kMp3WarmupMs;
@@ -92,7 +92,7 @@ static uint32_t Mp3WarmupMs()
 }
 static uint32_t Mp3StageMaxMs()
 {
-#if defined(CONFIG_BOARD_TYPE_SILA_P4C5_62) && CONFIG_BOARD_TYPE_SILA_P4C5_62
+#if (CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     return 14000;
 #else
     return kMp3StageMaxMs;

@@ -9,9 +9,14 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <charconv>
+#include <cstdio>
 #include <cstring>
 #include <system_error>
 #include "assets/lang_config.h"
+#if CONFIG_NODELIO_PANEL
+#include "panel_ui.h"
+#include "xz_activation.h"
+#endif
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
 #include "offline_cmd.h"
 #include <freertos/FreeRTOS.h>
@@ -129,7 +134,20 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     if (endpoint.empty()) {
         ESP_LOGW(TAG, "MQTT endpoint is not specified");
         if (report_error) {
+#if CONFIG_NODELIO_PANEL
+            char act_code[32] = {};
+            if (nodelio_xz_activation_get(act_code, sizeof(act_code), nullptr, 0)) {
+                char err[96];
+                std::snprintf(err, sizeof(err), "未绑定小智\n激活码 %s", act_code);
+                SetError(err);
+                nodelio_panel_ui_toast_defer(err);
+            } else {
+                SetError(Lang::Strings::SERVER_NOT_FOUND);
+                nodelio_panel_ui_toast_defer("未绑定小智，请到设置查看激活码");
+            }
+#else
             SetError(Lang::Strings::SERVER_NOT_FOUND);
+#endif
         }
         return false;
     }

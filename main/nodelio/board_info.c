@@ -17,6 +17,22 @@ static const nodelio_display_profile_t s_profile = {
     .result_max_height = 396,
     .chat_bottom = 80,
 };
+#elif CONFIG_BOARD_TYPE_SILA_P4C5_508
+#define NL_BOARD_ID "sila_p4c5_508"
+#define NL_WIDTH 720
+#define NL_HEIGHT 720
+static const nodelio_display_profile_t s_profile = {
+    .id = "square_720x720",
+    .width = NL_WIDTH,
+    .height = NL_HEIGHT,
+    .grid_cols = 6,
+    .grid_rows = 6,
+    .nav_width = 0,
+    .network_sleep = true,
+    .result_width = 620,
+    .result_max_height = 640,
+    .chat_bottom = 72,
+};
 #else
 #define NL_BOARD_ID "sila_86"
 #define NL_WIDTH 480

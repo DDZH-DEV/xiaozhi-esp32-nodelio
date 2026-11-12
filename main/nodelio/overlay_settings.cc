@@ -22,6 +22,7 @@
 #include "ui_widgets.h"
 #include "wifi_manager.h"
 #include "wifi_provision.h"
+#include "xz_activation.h"
 #if __has_include("nodelio_build_stamp.h")
 #include "nodelio_build_stamp.h"
 #endif
@@ -1398,6 +1399,52 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_label_set_long_mode(srv_hint, LV_LABEL_LONG_WRAP);
         nl_ov_set_font(srv_hint);
         lv_obj_set_style_text_color(srv_hint, UI_TEXT_TIP, 0);
+
+        /* 未绑定小智：常驻激活码（三块 sila 屏共用本页） */
+        {
+            Settings mqtt_rd("mqtt", false);
+            const bool has_mqtt = !mqtt_rd.GetString("endpoint").empty();
+            char act_code[32] = {};
+            char act_msg[96] = {};
+            const bool has_code =
+                nodelio_xz_activation_get(act_code, sizeof(act_code), act_msg, sizeof(act_msg));
+            if (!has_mqtt && has_code) {
+                lv_obj_t *act_title = lv_label_create(srv_card);
+                lv_label_set_text(act_title, "小智激活码");
+                nl_ov_set_font(act_title);
+                lv_obj_set_style_text_color(act_title, UI_TEXT_DIM, 0);
+
+                lv_obj_t *act_code_lbl = lv_label_create(srv_card);
+                lv_label_set_text(act_code_lbl, act_code);
+                nl_ov_set_font_title(act_code_lbl);
+                lv_obj_set_style_text_color(act_code_lbl, UI_ACCENT, 0);
+                lv_obj_set_style_text_letter_space(act_code_lbl, 4, 0);
+                lv_obj_set_width(act_code_lbl, lv_pct(100));
+
+                lv_obj_t *act_hint = lv_label_create(srv_card);
+                lv_label_set_text(act_hint, act_msg[0] ? act_msg
+                                                       : "请在小智 App / 控制台绑定此设备");
+                lv_obj_set_width(act_hint, lv_pct(100));
+                lv_label_set_long_mode(act_hint, LV_LABEL_LONG_WRAP);
+                nl_ov_set_font(act_hint);
+                lv_obj_set_style_text_color(act_hint, UI_TEXT_TIP, 0);
+            } else if (!has_mqtt) {
+                lv_obj_t *need = lv_label_create(srv_card);
+                lv_label_set_text(need, "尚未拿到激活码，点下方刷新");
+                lv_obj_set_width(need, lv_pct(100));
+                lv_label_set_long_mode(need, LV_LABEL_LONG_WRAP);
+                nl_ov_set_font(need);
+                lv_obj_set_style_text_color(need, UI_TEXT_TIP, 0);
+            }
+
+            if (!has_mqtt) {
+                lv_obj_t *refresh_btn =
+                    ui_make_text_btn(srv_card, "刷新激活码", 1, [](lv_event_t *) {
+                        Application::GetInstance().RequestVoiceActivationRefresh(false);
+                    });
+                lv_obj_set_style_margin_top(refresh_btn, 4, 0);
+            }
+        }
 
         lv_obj_t *save_btn = ui_make_text_btn(srv_card, "保存并重连", 0, [](lv_event_t *) {
             const int mode =

@@ -2,7 +2,7 @@
 """NodeLio 墙板构建号：按源码指纹升号，非每次编译都涨。
 
 格式：YYYYMMDD.NNN（当天首次改代码为 001，同日再改递增；换日重置为 001）
-sila_86 与 sila_p4c5_62 各记各的序号，互不占用。
+各 board_id 各记各的序号，互不占用。
 内容未变 → 复用该板上次构建号（重编不涨号）
 """
 from __future__ import annotations
@@ -19,6 +19,7 @@ SCAN_GLOBS = ("**/*.c", "**/*.cc", "**/*.cpp", "**/*.h", "**/*.hpp", "**/*.inc")
 BOARD_SCAN = {
     "sila_86": ("main/nodelio", "main/boards/sila"),
     "sila_p4c5_62": ("main/nodelio", "main/boards/sila/sila-p4c5-62"),
+    "sila_p4c5_508": ("main/nodelio", "main/boards/sila/sila-p4c5-508"),
 }
 SKIP_NAMES = {"nodelio_build_stamp.h"}
 

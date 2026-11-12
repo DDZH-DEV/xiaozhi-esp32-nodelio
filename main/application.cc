@@ -22,10 +22,12 @@
 #include "nvs_config.h"
 #include "offline_cmd.h"
 #include "offline_cmd_map.h"
+#include "overlay_priv.h"
 #include "panel_ui.h"
 #include "skill_result_ui.h"
 #include "wake_dram.h"
 #include "wifi_provision.h"
+#include "xz_activation.h"
 #endif
 
 #include <atomic>
@@ -531,7 +533,7 @@ void Application::HandleActivationDoneEvent() {
     SystemInfo::PrintHeapStats();
     SetDeviceState(kDeviceStateIdle);
 
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     /* 墙板跳过开机 OTA，server_time 不再来自 CheckVersion；SNTP 异步补上，见 nl_time.c */
     has_server_time_ = nodelio_time_valid();
 #else
@@ -570,6 +572,15 @@ void Application::HandleActivationDoneEvent() {
 #if CONFIG_NODELIO_PANEL
     /* bridge 已在 NetworkConnected 启动；此处幂等补一次（防漏） */
     Schedule([]() { (void)nodelio_bridge_start(); });
+    /* 无 mqtt.endpoint 时后台拉一次语音 OTA，把激活码落入设置页（不阻塞、不整夜 Activate） */
+    if (nodelio_xiaozhi_enabled()) {
+        Settings mqtt("mqtt", false);
+        if (mqtt.GetString("endpoint").empty()) {
+            Schedule([]() { Application::GetInstance().RequestVoiceActivationRefresh(true); });
+        } else {
+            nodelio_xz_activation_clear();
+        }
+    }
 #endif
 }
 
@@ -584,7 +595,7 @@ void Application::ActivationTask() {
     // Check for new assets version
     CheckAssetsVersion();
 
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     /*
      * 墙板开机不做 OTA 检查（省电/省时）。设置页「检查更新」手工触发
      * RequestManualFirmwareCheck：拉 http://z-y.site/works/sila-panel-update.json，
@@ -808,7 +819,7 @@ void Application::InitializeProtocol() {
 
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     /*
      * 墙板跳过开机 CheckVersion，ota_->HasMqttConfig()/HasWebsocketConfig() 恒为 false，
      * 继续用它们选协议会一律落到「默认 MQTT」。这两个配置本来就落在 NVS（mqtt/websocket
@@ -3358,6 +3369,7 @@ void Application::RequestVoiceServerApply(bool official, std::string custom_url)
                 return;
             }
 
+            nodelio_xz_activation_apply_from_ota(ota);
             if (ota.HasActivationCode()) {
                 char tip[96];
                 snprintf(tip, sizeof(tip), "激活码 %s", ota.GetActivationCode().c_str());
@@ -3368,6 +3380,7 @@ void Application::RequestVoiceServerApply(bool official, std::string custom_url)
                         snprintf(body, sizeof(body), "%s\n%s", msg.c_str(), code.c_str());
                         Application::GetInstance().Alert(Lang::Strings::ACTIVATION, body, "link",
                                                          Lang::Sounds::OGG_ACTIVATION);
+                        nl_ov_open_settings_detail(SET_PAGE_VOICE);
                     });
             }
 
@@ -3389,7 +3402,8 @@ void Application::RequestVoiceServerApply(bool official, std::string custom_url)
                     }
                 }
                 if (!activated) {
-                    nodelio_panel_ui_toast_defer("等待激活超时，请绑定后再试");
+                    nodelio_xz_activation_apply_from_ota(ota);
+                    nodelio_panel_ui_toast_defer("等待激活超时，请到设置查看激活码");
                     busy = false;
                     vTaskDelete(nullptr);
                     return;
@@ -3402,14 +3416,19 @@ void Application::RequestVoiceServerApply(bool official, std::string custom_url)
                     vTaskDelete(nullptr);
                     return;
                 }
+                nodelio_xz_activation_apply_from_ota(ota);
             }
 
             if (!ota.HasMqttConfig() && !ota.HasWebsocketConfig()) {
-                nodelio_panel_ui_toast_defer("未拿到语音配置，请检查服务器");
+                nodelio_xz_activation_apply_from_ota(ota);
+                nodelio_panel_ui_toast_defer(ota.HasActivationCode()
+                                                 ? "请用激活码绑定后再保存重连"
+                                                 : "未拿到语音配置，请检查服务器");
                 busy = false;
                 vTaskDelete(nullptr);
                 return;
             }
+            nodelio_xz_activation_clear();
 
             nodelio_panel_ui_toast_defer("已切换，即将重启");
             Application::GetInstance().Schedule([]() {
@@ -3424,6 +3443,73 @@ void Application::RequestVoiceServerApply(bool official, std::string custom_url)
         delete args;
         busy = false;
         nodelio_panel_ui_toast_defer("切换任务启动失败");
+    }
+}
+
+void Application::RequestVoiceActivationRefresh(bool quiet) {
+    static std::atomic<bool> busy{false};
+    if (busy.exchange(true)) {
+        if (!quiet) {
+            nodelio_panel_ui_toast_defer("正在刷新激活码…");
+        }
+        return;
+    }
+    if (!quiet) {
+        nodelio_panel_ui_toast_defer("正在获取激活码…");
+    }
+    struct Args {
+        bool quiet;
+    };
+    auto* args = new Args{quiet};
+    BaseType_t ok = xTaskCreate(
+        [](void* arg) {
+            std::unique_ptr<Args> a(static_cast<Args*>(arg));
+            const std::string fetch_url = Ota::GetVoiceOtaUrl();
+            Ota ota;
+            auto check = ota.FetchVoiceServer(fetch_url);
+            if (!check) {
+                ESP_LOGW(TAG, "activation refresh fetch failed: %s", check.error().ToString().c_str());
+                if (!a->quiet) {
+                    nodelio_panel_ui_toast_defer("获取激活码失败");
+                }
+                busy = false;
+                vTaskDelete(nullptr);
+                return;
+            }
+            nodelio_xz_activation_apply_from_ota(ota);
+            if (ota.HasMqttConfig() || ota.HasWebsocketConfig()) {
+                if (!a->quiet) {
+                    nodelio_panel_ui_toast_defer("已绑定，请保存并重连");
+                }
+                busy = false;
+                vTaskDelete(nullptr);
+                return;
+            }
+            if (ota.HasActivationCode()) {
+                if (!a->quiet) {
+                    char tip[96];
+                    snprintf(tip, sizeof(tip), "激活码 %s", ota.GetActivationCode().c_str());
+                    nodelio_panel_ui_toast_defer(tip);
+                    Application::GetInstance().Schedule([]() {
+                        nl_ov_open_settings_detail(SET_PAGE_VOICE);
+                    });
+                } else {
+                    ESP_LOGI(TAG, "activation code cached for settings: %s",
+                             ota.GetActivationCode().c_str());
+                }
+            } else if (!a->quiet) {
+                nodelio_panel_ui_toast_defer("服务器未返回激活码");
+            }
+            busy = false;
+            vTaskDelete(nullptr);
+        },
+        "xz_act", 4096 * 3, args, 2, nullptr);
+    if (ok != pdPASS) {
+        delete args;
+        busy = false;
+        if (!quiet) {
+            nodelio_panel_ui_toast_defer("刷新任务启动失败");
+        }
     }
 }
 #endif

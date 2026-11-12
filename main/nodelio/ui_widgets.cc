@@ -104,7 +104,7 @@ void ui_style_card(lv_obj_t *obj)
     if (!obj) {
         return;
     }
-#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_BOARD_TYPE_SILA_P4C5_62
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508
     /* S3 无 PPA；P4 还要做 90° 旋转。卡片高斯阴影会让滚动每帧重算 Alpha。 */
     lv_obj_set_style_shadow_width(obj, 0, 0);
     return;

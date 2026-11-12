@@ -173,7 +173,7 @@ void AudioService::Start() {
 
     esp_timer_start_periodic(audio_power_timer_, 1000000);
 
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     /* 墙板：出声硬期限。铁律 audio_output(6)@Core1 > notify_*(5)@Core1 > LVGL；
      * 禁止把 notify 提到 ≥6（会饿穿 I2S）。原 opus=2 易断续。 */
     constexpr UBaseType_t kOutPrio = 6;
@@ -215,7 +215,7 @@ void AudioService::Start() {
         "audio_input", 2048 * 3, this, 6, &audio_input_task_handle_, 0);
 
     /* Start the audio output task */
-#if CONFIG_NODELIO_PANEL && CONFIG_BOARD_TYPE_SILA_P4C5_62
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     xTaskCreatePinnedToCore(
         [](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
@@ -254,7 +254,7 @@ void AudioService::Start() {
 #endif
 
     /* Start the opus codec task */
-#if (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62) && CONFIG_NODELIO_PANEL
+#if (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508) && CONFIG_NODELIO_PANEL
     xTaskCreateWithCaps(
         [](void* arg) {
             AudioService* audio_service = (AudioService*)arg;

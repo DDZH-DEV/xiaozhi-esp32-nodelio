@@ -186,7 +186,7 @@ static const lv_font_t *ui_font_theme(void)
 
 static const lv_font_t *ui_font_base(void)
 {
-#if CONFIG_BOARD_TYPE_SILA_P4C5_62
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508
     /* 6.2" 约 220ppi，14px 普惠远读太小。标准档用主题字库，不另挂一套点阵。 */
     if (const lv_font_t *theme = ui_font_theme()) {
         return theme;

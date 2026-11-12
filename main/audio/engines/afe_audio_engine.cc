@@ -13,7 +13,7 @@
 #include "audio_service.h"
 #include "wake_words/custom_wake_word.h"
 
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
 #include "media_player.h"
 #endif
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
@@ -174,7 +174,7 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms,
         return false;
     }
 
-#if CONFIG_BOARD_TYPE_SILA_P4C5_62 && CONFIG_NODELIO_PANEL
+#if (CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508) && CONFIG_NODELIO_PANEL
     /* P4 墙板：有参考麦也会建 AEC3；空闲唤醒 FEED 时 AEC/FFT 偶发 Load/Store fault。
      * 板级全双工 AEC 未验收前不创建 AEC 模块（仍用 MR 格式喂 WakeNet）。 */
     afe_config->aec_init = false;
@@ -373,7 +373,7 @@ void AfeAudioEngine::Feed(std::vector<int16_t>&& data) {
     if ((bits & kVoiceProcessingEnabled) && !kUseAfeForVoiceProcessing) {
         OutputRawAudio(data);
     }
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     /* 点歌时默认丢麦帧，避免 FEED 抢核导致开声卡顿；播中已武装唤醒则必须继续喂，
      * 否则 EnableWakeWord 只是假开（log 有 armed 但永远检不到）。 */
     if (nodelio_media_is_playing() && (bits & kWakeWordEnabled) == 0) {
@@ -557,7 +557,7 @@ void AfeAudioEngine::ApplyAfeControls() {
             ESP_LOGI(TAG, "%s WakeNet on AFE", want_wn ? "Enabled" : "Disabled");
         }
     }
-#if CONFIG_BOARD_TYPE_SILA_P4C5_62 && CONFIG_NODELIO_PANEL
+#if (CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508) && CONFIG_NODELIO_PANEL
     /* aec_init=false：管道无 AEC，勿反复 enable/disable */
     (void)bits;
 #else
@@ -615,7 +615,7 @@ void AfeAudioEngine::ProcessingTask() {
                 afe_control_dirty_ = true;
             }
         }
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
         static bool last_media_playing = false;
         const bool media_playing = nodelio_media_is_playing();
         if (media_playing != last_media_playing) {
@@ -632,7 +632,7 @@ void AfeAudioEngine::ProcessingTask() {
             continue;
         }
         const uint32_t generation = control_generation_.load();
-#if (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62) && CONFIG_NODELIO_PANEL
+#if (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508) && CONFIG_NODELIO_PANEL
         /* 有限等待：息屏拆 AFE 时能及时看到 kDestroyRequested，避免 portMAX_DELAY 卡死 */
         auto* result = afe_iface_->fetch_with_delay(afe_data_, pdMS_TO_TICKS(100));
         if (xEventGroupGetBits(event_group_) & kDestroyRequested) {

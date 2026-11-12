@@ -2,7 +2,7 @@
 #include "system_info.h"
 #include "settings.h"
 #include "assets/lang_config.h"
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
 #if __has_include("nodelio_build_stamp.h")
 #include "nodelio_build_stamp.h"
 #endif
@@ -40,7 +40,7 @@ static constexpr int kOtaHttpTimeoutMs = 15000;
 
 Ota::Ota() {
     /* 墙板开机跳过 CheckVersion，current_version_ 只能在这里取，供「版本」提示用。 */
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     /* 升级比较以构建号 YYYYMMDD.NNN 为准（改代码才涨）；小智 PROJECT_VER 仍在 app_desc 里不动。 */
     current_version_ = NODELIO_BUILD_STAMP;
 #else
@@ -78,7 +78,7 @@ std::string Ota::GetCheckVersionUrl() {
     Settings settings("wifi", false);
     std::string url = settings.GetString("ota_url");
     if (url.empty()) {
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
         /* 墙板走自建清单，不走 api.tenclass.net。按 board_id 取自己的包。
          * 已写入 sdkconfig 的旧文件名改指向现用清单，避免增量编译仍请求 86 专用地址。 */
 #if defined(CONFIG_NODELIO_PANEL_OTA_URL)
@@ -87,8 +87,10 @@ std::string Ota::GetCheckVersionUrl() {
             url = CONFIG_NODELIO_PANEL_OTA_URL;
         }
 #endif
-        if (url.empty()) {
-            url = "http://z-y.site/works/sila-panel-update.json";
+        /* 清单走源站 IP（避开板端 DNS / CDN 旧缓存）；Open 前需带 Host: z-y.site。
+         * 固件 bin 仍用清单里的 cdn-file URL。 */
+        if (url.find("sila-panel-update.json") != std::string::npos || url.empty()) {
+            url = "http://111.230.227.107/works/sila-panel-update.json";
         }
 #else
         url = CONFIG_OTA_URL;
@@ -284,7 +286,7 @@ NetworkResult<> Ota::CheckVersion() {
     auto app_desc = esp_app_get_description();
 
     // Check if there is a new firmware version available
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     current_version_ = NODELIO_BUILD_STAMP;
     ESP_LOGI(TAG, "Current build stamp: %s (app_desc=%s)", current_version_.c_str(),
              app_desc ? app_desc->version : "?");
@@ -302,9 +304,12 @@ NetworkResult<> Ota::CheckVersion() {
     auto http = SetupHttp();
     std::string data;
 
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     /* 静态清单：只 GET JSON，不 POST 小智系统信息 */
     ESP_LOGI(TAG, "Panel OTA manifest: %s", url.c_str());
+    if (url.find("111.230.227.107") != std::string::npos) {
+        http->SetHeader("Host", "z-y.site");
+    }
     if (auto opened = http->Open("GET", url); !opened) {
         ESP_LOGE(TAG, "Failed to open HTTP connection: %s", opened.error().ToString().c_str());
         return opened;
@@ -345,7 +350,7 @@ NetworkResult<> Ota::CheckVersion() {
         return std::unexpected(NetworkError::ProtocolError());
     }
 
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     /* 只读 boards.<board_id>.firmware。86 旧清单没有 boards 时才回退顶层 firmware。 */
     has_activation_code_ = false;
     has_activation_challenge_ = false;
@@ -355,6 +360,8 @@ NetworkResult<> Ota::CheckVersion() {
     has_new_version_ = false;
 #if CONFIG_BOARD_TYPE_SILA_P4C5_62
     const char* board_id = "sila_p4c5_62";
+#elif CONFIG_BOARD_TYPE_SILA_P4C5_508
+    const char* board_id = "sila_p4c5_508";
 #else
     const char* board_id = "sila_86";
 #endif
@@ -779,7 +786,7 @@ esp_err_t Ota::Activate() {
         return ESP_FAIL;
     }
 
-#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62)
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     /* 墙板 GetCheckVersionUrl 指向固件清单；激活必须打语音 OTA。 */
     std::string url = GetVoiceOtaUrl();
 #else

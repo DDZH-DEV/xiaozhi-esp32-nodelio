@@ -743,6 +743,11 @@ elseif(CONFIG_BOARD_TYPE_SILA_P4C5_62)
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
     set(BUILTIN_ICON_FONT font_material_symbols_20_4)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
+elseif(CONFIG_BOARD_TYPE_SILA_P4C5_508)
+    set(BOARD_DIR "sila/sila-p4c5-508")
+    set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
+    set(BUILTIN_ICON_FONT font_material_symbols_20_4)
+    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
 elseif(CONFIG_BOARD_TYPE_SEEED_STUDIO_SENSECAP_WATCHER)
     set(BOARD_DIR "sensecap-watcher")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_30_4)
@@ -967,6 +972,7 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/overlay_home_skills.cc"
         "nodelio/overlay_connect.cc"
         "nodelio/overlay_settings.cc"
+        "nodelio/xz_activation.cc"
         "nodelio/panel_prefs.cc"
         "nodelio/overlay_diagnostics.cc"
         "nodelio/overlay_notices.cc"
@@ -1165,9 +1171,9 @@ if(CONFIG_BOARD_TYPE_SILA_86)
                              )
 endif()
 
-# SILA P4C5-62 is Hosted WiFi + MIPI DSI LcdDisplay + Es8389AudioCodec only.
+# SILA P4C5 boards: Hosted WiFi + MIPI DSI LcdDisplay + Es8389AudioCodec only.
 # Keep es8389_audio_codec.cc; drop unused codecs/modems/displays under WHOLE_ARCHIVE.
-if(CONFIG_BOARD_TYPE_SILA_P4C5_62)
+if(CONFIG_BOARD_TYPE_SILA_P4C5_62 OR CONFIG_BOARD_TYPE_SILA_P4C5_508)
     list(REMOVE_ITEM SOURCES "audio/codecs/no_audio_codec.cc"
                              "audio/codecs/box_audio_codec.cc"
                              "audio/codecs/es8311_audio_codec.cc"
@@ -1183,7 +1189,7 @@ if(CONFIG_BOARD_TYPE_SILA_P4C5_62)
 endif()
 
 # Include EspVideo if target is ESP32S3 or ESP32P4
-if((CONFIG_IDF_TARGET_ESP32S3 OR CONFIG_IDF_TARGET_ESP32P4) AND NOT CONFIG_BOARD_TYPE_SILA_86 AND NOT CONFIG_BOARD_TYPE_SILA_P4C5_62)
+if((CONFIG_IDF_TARGET_ESP32S3 OR CONFIG_IDF_TARGET_ESP32P4) AND NOT CONFIG_BOARD_TYPE_SILA_86 AND NOT CONFIG_BOARD_TYPE_SILA_P4C5_62 AND NOT CONFIG_BOARD_TYPE_SILA_P4C5_508)
     list(APPEND SOURCES "boards/common/esp_video.cc"
                         "boards/common/rndis_board.cc"
                         )
@@ -1273,8 +1279,8 @@ idf_component_register(SRCS ${SOURCES}
                         ${MAIN_PRIV_REQUIRES_EXTRA}
                     )
 
-# P4 息屏停 DPI：要用 DSI 私有头和 DW_GDMA。只加给这块板。
-if(CONFIG_BOARD_TYPE_SILA_P4C5_62 AND NOT CMAKE_BUILD_EARLY_EXPANSION)
+# P4 息屏停 DPI / JD9365TX Generic Write：要用 DSI 私有头和 DW_GDMA。
+if((CONFIG_BOARD_TYPE_SILA_P4C5_62 OR CONFIG_BOARD_TYPE_SILA_P4C5_508) AND NOT CMAKE_BUILD_EARLY_EXPANSION)
     target_include_directories(${COMPONENT_LIB} PRIVATE
         "${IDF_PATH}/components/esp_lcd/dsi"
         "${IDF_PATH}/components/esp_lcd/interface")
@@ -1310,6 +1316,8 @@ if(CONFIG_NODELIO_PANEL AND NOT CMAKE_BUILD_EARLY_EXPANSION)
     set(NODELIO_STAMP_H ${CMAKE_CURRENT_SOURCE_DIR}/nodelio/nodelio_build_stamp.h)
     if(CONFIG_BOARD_TYPE_SILA_P4C5_62)
         set(NODELIO_STAMP_BOARD sila_p4c5_62)
+    elseif(CONFIG_BOARD_TYPE_SILA_P4C5_508)
+        set(NODELIO_STAMP_BOARD sila_p4c5_508)
     else()
         set(NODELIO_STAMP_BOARD sila_86)
     endif()

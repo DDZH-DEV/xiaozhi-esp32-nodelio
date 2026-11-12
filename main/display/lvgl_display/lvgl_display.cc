@@ -381,7 +381,7 @@ bool LvglDisplay::SnapshotToJpeg(std::string& jpeg_data, int quality, void* targ
     // Clear output string and pre-reserve in PSRAM (> ALWAYSINTERNAL threshold)
     // to prevent small exponential std::string reallocations from fragmenting internal DMA SRAM.
     jpeg_data.clear();
-#if CONFIG_BOARD_TYPE_SILA_P4C5_62
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508
     jpeg_data.reserve(65536);
 #else
     jpeg_data.reserve(32768);

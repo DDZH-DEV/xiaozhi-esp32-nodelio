@@ -11,6 +11,6 @@ alwaysApply: false
 - **sila-p4c5-62 原理图**先读 `main/boards/sila/sila-p4c5-62/SCH_P4X_2026-10-13.md`，禁止再解析同目录 PDF。图上两路差分麦（MIC1/MIC2）加两套 MICBIAS、两片 NS4150B；朝向不在图上。固件采集仍是 MR（左麦 + 内部 DAC 参考），右槽不是第二支麦。PGA 请求值 40 已是 36.5 dB 最高档。GPIO 以该板 `config.h` 为准。
 - 动态技能（少改固件加第三方能力）：`docs/panel-skills.md` / PLAN 阶段 L。
 - UI：`main/nodelio/ui_theme.h` + `ui_widgets.*`；禁止散落裸 hex。
-- **Flash / 功能落点**：分区 `partitions/v2/16m.csv`；app=`xiaozhi.bin`（ota_0）、资源=`generated_assets.bin`（含 srmodels+字库）；板级 `boards/sila/sila-86/`，控家 `main/nodelio/`，离线口令 `offline_cmd*.c`。SILA 已裁 camera/4G/OLED/Emote。详见 `NodeLio/.codex/rules/esp32-idf-panel.md` §4.1 与本仓 `AGENTS.md`。
+- **Flash / 功能落点**：86 分区 `partitions/v2/16m.csv`；P4 用 `nodelio-p4c5-*.csv`（508 16m=`nodelio-p4c5-508-16m.csv`）；app=`xiaozhi.bin`（ota_0）；板级 `boards/sila/sila-{86,p4c5-62,p4c5-508}/`，控家 `main/nodelio/`。详见 `NodeLio/.codex/rules/esp32-idf-panel.md` 与本仓 `AGENTS.md`。
 - **禁止**代烧录；本机编不过 OOM 时用 `idf.py build -- -j2`。
 - 语音翻屏/滚屏/关弹窗硬约束见本仓库 `AGENTS.md`「语音导航」；`goto_page` 不关技能弹窗；聆听中禁止 `StopNotification` 收尾。

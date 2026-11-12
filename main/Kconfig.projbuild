@@ -450,6 +450,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_SILA_P4C5_62
         bool "SILA-P4C5 6.2-inch (P4X v3, AXS15260, bring-up)"
         depends on IDF_TARGET_ESP32P4
+    config BOARD_TYPE_SILA_P4C5_508
+        bool "SILA-P4C5 5.08-inch (P4X v3, JD9365TX 720x720 In-Cell)"
+        depends on IDF_TARGET_ESP32P4
     config BOARD_TYPE_SPOTPEAR_ESP32_S3_1_28_BOX
         bool "Spotpear ESP32-S3 1.28 Box"
         depends on IDF_TARGET_ESP32S3
@@ -1189,7 +1192,7 @@ menu "TAIJIPAI_S3_CONFIG"
 endmenu
 
 menu "NodeLio Panel"
-    depends on BOARD_TYPE_SILA_86 || BOARD_TYPE_SILA_P4C5_62
+    depends on BOARD_TYPE_SILA_86 || BOARD_TYPE_SILA_P4C5_62 || BOARD_TYPE_SILA_P4C5_508
 
     config NODELIO_P4_PPA_FILL
         bool "P4 experiment: synchronous PPA fill draw unit"
@@ -1223,12 +1226,12 @@ menu "NodeLio Panel"
     config NODELIO_SD_MUSIC
         bool "TF/SD card music library (Slot0)"
         depends on NODELIO_PANEL
-        default y if BOARD_TYPE_SILA_P4C5_62
+        default y if BOARD_TYPE_SILA_P4C5_62 || BOARD_TYPE_SILA_P4C5_508
         default n
         help
             Read audio files from the board SD/TF slot and play them locally.
-            Only boards that declare SdCardPins can use it; the P4C5-62 panel
-            owns SDMMC Slot0 while Hosted keeps Slot1. Requires the board to
+            Only boards that declare SdCardPins can use it; the P4C5 panels
+            own SDMMC Slot0 while Hosted keeps Slot1. Requires the board to
             publish pins through Board::GetSdCardPins().
 
     config NODELIO_PANEL
@@ -1301,10 +1304,10 @@ menu "NodeLio Panel"
     config NODELIO_PANEL_OTA_URL
         string "SILA panel OTA manifest URL"
         depends on NODELIO_PANEL
-        default "http://z-y.site/works/sila-panel-update.json"
+        default "http://111.230.227.107/works/sila-panel-update.json"
         help
-            Static JSON boards.sila_86 / boards.sila_p4c5_62, each with
-            firmware.version (YYYYMMDD.NNN) and firmware.url.
+            Static JSON boards.sila_86 / boards.sila_p4c5_62 / boards.sila_p4c5_508,
+            each with firmware.version (YYYYMMDD.NNN) and firmware.url.
             Compared against NODELIO_BUILD_STAMP (not Xiaozhi PROJECT_VER).
             A board only installs its own entry.
 endmenu

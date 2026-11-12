@@ -125,6 +125,11 @@ public:
      * 否则写入 custom_url 再 POST。成功后重启；需激活码时 toast 提示，失败不重启。
      */
     void RequestVoiceServerApply(bool official, std::string custom_url = {});
+    /**
+     * 设置页：仅拉语音 OTA 刷新激活码并落盘；不重启、不做整夜 Activate。
+     * quiet=true 用于开机后台补码（少 toast）。
+     */
+    void RequestVoiceActivationRefresh(bool quiet = false);
 #endif
     bool CanEnterSleepMode();
     /** 须在主任务调用：息屏断网前挂起协议；亮屏后恢复. */

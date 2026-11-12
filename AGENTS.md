@@ -101,6 +101,7 @@ Keep detailed or fast-changing information in those files, not here. Add a neste
 |----------|------|------|
 | `sila_86` | `main/boards/sila/sila-86/` | S3；480×480；ES8311+ES7210；板级 `nodelio-*.bat`；强制软件 AES |
 | `sila_p4c5_62` | `main/boards/sila/sila-p4c5-62/` | P4+C5 Hosted；逻辑 1280×452；**ES8389 必留**；grid 默认 10×3 |
+| `sila_p4c5_508` | `main/boards/sila/sila-p4c5-508/` | P4+C5 Hosted；720×720 JD9365TX In-Cell；默认 16m 专属分区；grid 6×6 |
 
 - **type_code**：`WALL_PANEL`；硬件用 `board_id`。**禁止**为换屏新开 type_code；**禁止**改 sila-86 引脚迁就 P4。
 - **计划/协议**：`D:\SITES\NodeLio\ESP32-IDF\`（`hw-constraints.md`、`board-hal.md`、`panel-skills.md`）
@@ -125,7 +126,7 @@ Keep detailed or fast-changing information in those files, not here. Add a neste
 - 曲库两来源：云端 `music.search` 与内存卡 `music.sd`（`main/nodelio/skill/sd_library.cc`，仅 `CONFIG_NODELIO_SD_MUSIC` 的板有卡）。
   列表已在屏时「播放第 N 首」必须设备侧点播（`self.skill.transport op=play index=N`），
   **禁止**重新 invoke music.search（服务端会换一批，用户听到别的歌）。细节见 `docs/nodelio-media-library.md`。
-- 分区：`partitions/v2/16m.csv`。86：`main/boards/sila/sila-86/nodelio-*.bat`。62：`main/boards/sila/sila-p4c5-62/nodelio-*.bat`，**勿套用 86 裁掉 es8389**。
+- 分区：86 用 `partitions/v2/16m.csv`；62 用 `nodelio-p4c5-{16,32}m.csv`；508 16m 用 `nodelio-p4c5-508-16m.csv`。板级 bat：`sila-86` / `sila-p4c5-62` / `sila-p4c5-508`；P4 **勿套用 86 裁掉 es8389**。
 - 曜夜微晶 + Icon Pod；APP 与实机按 **display_profile** 1:1（480 方屏 vs 1280×452 侧轨）。
 
 ### 调度 / 口令 / 截图 / 播放 / 语音

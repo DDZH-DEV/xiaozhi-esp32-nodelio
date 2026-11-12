@@ -2,10 +2,11 @@
 """把当前构建号与 xiaozhi.bin 写入 Z-Y 面板 OTA 清单里对应的 board_id。
 
 清单：D:/SITES/Z-Y/public/works/sila-panel-update.json
-  boards.sila_86        …/iot-firmwares/esp32s3-sila-86/xiaozhi-{stamp}.bin
-  boards.sila_p4c5_62   …/iot-firmwares/esp32p4-sila-p4c5-62/xiaozhi-{stamp}.bin
+  boards.sila_86         …/iot-firmwares/esp32s3-sila-86/xiaozhi-{stamp}.bin
+  boards.sila_p4c5_62    …/iot-firmwares/esp32p4-sila-p4c5-62/xiaozhi-{stamp}.bin
+  boards.sila_p4c5_508   …/iot-firmwares/esp32p4-sila-p4c5-508/xiaozhi-{stamp}.bin
 
-只改本次 --board 的条目，另一块板的 url / version 保留。
+只改本次 --board 的条目，其它板的 url / version 保留。
 sila_86 另写一份旧文件 esp32s3-slia-86-update.json，给定居旧固件。
 """
 from __future__ import annotations
@@ -31,12 +32,17 @@ BOARDS = {
         "bin_dir": Path("iot-firmwares") / "esp32p4-sila-p4c5-62",
         "cdn": "https://cdn-file.z-y.site/works/iot-firmwares/esp32p4-sila-p4c5-62",
     },
+    "sila_p4c5_508": {
+        "chip": "esp32p4",
+        "bin_dir": Path("iot-firmwares") / "esp32p4-sila-p4c5-508",
+        "cdn": "https://cdn-file.z-y.site/works/iot-firmwares/esp32p4-sila-p4c5-508",
+    },
 }
 
 NOTES = (
-    "设备只读 boards[board_id]（sila_86 / sila_p4c5_62）。"
-    "version 为构建号 YYYYMMDD.NNN；url 是 ota_0 用的 xiaozhi.bin，禁止两板互刷。"
-    "sila_p4c5_62 对应 32m 变体；16m 槽更小，不要拿 32m 包去刷。"
+    "设备只读 boards[board_id]（sila_86 / sila_p4c5_62 / sila_p4c5_508）。"
+    "version 为构建号 YYYYMMDD.NNN；url 是 ota_0 用的 xiaozhi.bin，禁止跨板互刷。"
+    "sila_p4c5_62 对应 32m；sila_p4c5_508 对应 16m；分区不同不要错刷。"
     "已出厂的 86 旧固件仍请求 esp32s3-slia-86-update.json。"
 )
 
