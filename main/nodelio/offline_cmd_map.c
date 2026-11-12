@@ -1708,6 +1708,39 @@ static bool phrase_wants_news_read_offer(const char *phrase)
            strstr(phrase, "article") != NULL || strstr(phrase, "每日一文") != NULL;
 }
 
+/** 句中已点名朗读：跳过「要读吗」，上屏后直接读。 */
+static bool phrase_already_wants_news_read(const char *phrase)
+{
+    if (!phrase || !phrase[0] || !phrase_wants_news_read_offer(phrase)) {
+        return false;
+    }
+    if (strstr(phrase, "不读") || strstr(phrase, "别读") || strstr(phrase, "不用读") ||
+        strstr(phrase, "不朗读") || strstr(phrase, "要不要读")) {
+        return false;
+    }
+    for (const char *q = phrase; (q = strstr(q, "不要读")) != NULL; ++q) {
+        if (q < phrase + 3 ||
+            !((unsigned char)q[-3] == 0xE8 && (unsigned char)q[-2] == 0xA6 &&
+              (unsigned char)q[-1] == 0x81)) {
+            return false;
+        }
+    }
+    return strstr(phrase, "读新闻") != NULL || strstr(phrase, "朗读") != NULL ||
+           strstr(phrase, "念新闻") != NULL || strstr(phrase, "读一下") != NULL ||
+           strstr(phrase, "读一篇") != NULL || strstr(phrase, "读美文") != NULL ||
+           strstr(phrase, "读文章") != NULL || strstr(phrase, "开始读") != NULL ||
+           (strcmp(phrase, "读") == 0) || (strstr(phrase, "念一下") != NULL);
+}
+
+static void arm_news_followup_for_phrase(const char *phrase)
+{
+    if (phrase_already_wants_news_read(phrase)) {
+        nodelio_panel_ui_arm_news_auto_read();
+    } else if (phrase_wants_news_read_offer(phrase)) {
+        nodelio_panel_ui_arm_news_read_offer();
+    }
+}
+
 bool nodelio_offline_query_keeps_listening(const char *query)
 {
     if (!query || !query[0]) {
@@ -1863,10 +1896,21 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
     if (nodelio_skill_news_ui_active()) {
         char news_phrase[96];
         strip_app_query(news_phrase, sizeof(news_phrase), phrase);
-        const bool decline = strstr(news_phrase, "不要读") || strstr(news_phrase, "不用读") ||
-                             strstr(news_phrase, "别读") || strstr(news_phrase, "不读") ||
-                             strstr(news_phrase, "不朗读") || strstr(news_phrase, "不要朗读") ||
-                             strstr(news_phrase, "不用朗读");
+        /* 「要不要读」含「不要读」子串，须排除；否则抱怨句被当拒绝。 */
+        bool decline = strstr(news_phrase, "不用读") || strstr(news_phrase, "别读") ||
+                       strstr(news_phrase, "不读") || strstr(news_phrase, "不朗读") ||
+                       strstr(news_phrase, "不要朗读") || strstr(news_phrase, "不用朗读");
+        if (!decline) {
+            for (const char *q = news_phrase; (q = strstr(q, "不要读")) != NULL; ++q) {
+                /* 前一字是「要」→「要不要读」，不是拒绝 */
+                if (q < news_phrase + 3 ||
+                    !((unsigned char)q[-3] == 0xE8 && (unsigned char)q[-2] == 0xA6 &&
+                      (unsigned char)q[-1] == 0x81)) {
+                    decline = true;
+                    break;
+                }
+            }
+        }
         if (decline) {
             return false;
         }
@@ -1881,9 +1925,22 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
             news_op = "prev";
         } else if (strstr(phrase, "读这篇") || strstr(phrase, "朗读") || strstr(phrase, "念一下") ||
                    strstr(phrase, "读一下") || strstr(phrase, "念这篇") || strstr(phrase, "读吧") ||
-                   strstr(phrase, "开始读") || strstr(phrase, "要读") ||
-                   strcmp(news_phrase, "读") == 0) {
+                   strstr(phrase, "开始读") || strcmp(news_phrase, "读") == 0) {
             news_op = "read";
+        } else {
+            /* 「要读」但排除「要不要读」「不要读」 */
+            for (const char *q = phrase; (q = strstr(q, "要读")) != NULL; ++q) {
+                if (q >= phrase + 3 && (unsigned char)q[-3] == 0xE4 &&
+                    (unsigned char)q[-2] == 0xB8 && (unsigned char)q[-1] == 0x8D) {
+                    continue; /* 不要读 */
+                }
+                if (q >= phrase + 3 && (unsigned char)q[-3] == 0xE8 &&
+                    (unsigned char)q[-2] == 0xA6 && (unsigned char)q[-1] == 0x81) {
+                    continue; /* 要 + 要读 = 要不要读 的后半 */
+                }
+                news_op = "read";
+                break;
+            }
         }
         if (news_op) {
             ESP_LOGI(TAG, "system phrase → news %s", news_op);
@@ -1949,9 +2006,9 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
                      cmd == NL_OC_MEDIA_RESUME);
             }
         }
-        /* 换一篇 / 打开每日一篇：同新闻，开卡后追问要不要读 */
+        /* 换一篇 / 打开每日一篇：同新闻，开卡后追问或直接读 */
         if (cmd == NL_OC_APP_QUOTE) {
-            nodelio_panel_ui_arm_news_read_offer();
+            arm_news_followup_for_phrase(phrase);
             if (end_session) {
                 *end_session = false;
             }
@@ -2014,8 +2071,8 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
         if (keep_cloud_tts) {
             *keep_cloud_tts = keep_cloud;
         }
-        if (keep_listen && !keep_cloud && phrase_wants_news_read_offer(phrase)) {
-            nodelio_panel_ui_arm_news_read_offer();
+        if (keep_listen && !keep_cloud) {
+            arm_news_followup_for_phrase(phrase);
         }
         return true;
     }
@@ -2031,8 +2088,8 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
         if (keep_cloud_tts) {
             *keep_cloud_tts = keep_cloud;
         }
-        if (keep_listen && !keep_cloud && phrase_wants_news_read_offer(phrase)) {
-            nodelio_panel_ui_arm_news_read_offer();
+        if (keep_listen && !keep_cloud) {
+            arm_news_followup_for_phrase(phrase);
         }
         return true;
     }
@@ -2048,8 +2105,8 @@ bool nodelio_offline_try_system_phrase(const char *phrase, bool *end_session, bo
         if (keep_cloud_tts) {
             *keep_cloud_tts = keep_cloud;
         }
-        if (keep_listen && !keep_cloud && phrase_wants_news_read_offer(phrase)) {
-            nodelio_panel_ui_arm_news_read_offer();
+        if (keep_listen && !keep_cloud) {
+            arm_news_followup_for_phrase(phrase);
         }
         return true;
     }

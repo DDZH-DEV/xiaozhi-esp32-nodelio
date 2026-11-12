@@ -63,10 +63,33 @@ static bool s_wifi_scanning;
 static lv_obj_t *s_hist_row;
 static lv_obj_t *s_hist_hint;
 static lv_obj_t *s_ta_screenshot = nullptr;
+static lv_obj_t *s_saved_hint = nullptr;
+static lv_obj_t *s_saved_list = nullptr;
 
 static void on_wifi_scan_btn(lv_event_t *e);
 static void rebuild_server_hist_chips(void);
+static void rebuild_saved_wifi_list(void);
+static void wifi_list_hide(void);
 static const char *proto_btn_text(void);
+
+static const char *default_port_cstr(bool https)
+{
+    return https ? "443" : "8899";
+}
+
+static bool ssid_in_saved_list(const char *ssid)
+{
+    if (!ssid || !ssid[0]) {
+        return false;
+    }
+    const auto &list = SsidManager::GetInstance().GetSsidList();
+    for (const auto &item : list) {
+        if (item.ssid == ssid) {
+            return true;
+        }
+    }
+    return false;
+}
 
 static void on_hist_chip(lv_event_t *e)
 {
@@ -88,7 +111,8 @@ static void on_hist_chip(lv_event_t *e)
         lv_textarea_set_text(s_ta_host, ent->host);
     }
     if (s_ta_port) {
-        lv_textarea_set_text(s_ta_port, ent->port[0] ? ent->port : "8899");
+        lv_textarea_set_text(s_ta_port,
+                             ent->port[0] ? ent->port : default_port_cstr(ent->https != 0));
     }
     if (s_ta_owner && ent->owner[0]) {
         lv_textarea_set_text(s_ta_owner, ent->owner);
@@ -123,7 +147,7 @@ static void rebuild_server_hist_chips(void)
         }
         char label[120];
         std::snprintf(label, sizeof(label), "%s%s:%s", ent->https ? "S " : "", ent->host,
-                      ent->port[0] ? ent->port : "8899");
+                      ent->port[0] ? ent->port : default_port_cstr(ent->https != 0));
         lv_obj_t *chip = lv_obj_create(s_hist_row);
         lv_obj_remove_style_all(chip);
         lv_obj_set_height(chip, 36);
@@ -448,6 +472,112 @@ static void wifi_list_hide(void)
     lv_obj_clean(s_wifi_list);
 }
 
+static void on_saved_pick(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    const int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    const auto &list = SsidManager::GetInstance().GetSsidList();
+    if (idx < 0 || idx >= (int)list.size() || !s_ta_ssid) {
+        return;
+    }
+    lv_textarea_set_text(s_ta_ssid, list[idx].ssid.c_str());
+    if (s_ta_pass) {
+        lv_textarea_set_text(s_ta_pass, "");
+    }
+    wifi_list_hide();
+    nl_ov_kb_set_visible(false);
+    nl_ov_toast("已选已存网络，密码可留空");
+}
+
+static void on_saved_del(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    const int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    Application::GetInstance().Schedule([idx]() {
+        SsidManager::GetInstance().RemoveSsid(idx);
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            rebuild_saved_wifi_list();
+            nl_ov_toast("已删除");
+        }
+    });
+}
+
+static void rebuild_saved_wifi_list(void)
+{
+    if (!s_saved_list) {
+        return;
+    }
+    lv_obj_clean(s_saved_list);
+    const auto &list = SsidManager::GetInstance().GetSsidList();
+    if (list.empty()) {
+        lv_obj_add_flag(s_saved_list, LV_OBJ_FLAG_HIDDEN);
+        if (s_saved_hint) {
+            lv_obj_add_flag(s_saved_hint, LV_OBJ_FLAG_HIDDEN);
+        }
+        return;
+    }
+    if (s_saved_hint) {
+        lv_obj_clear_flag(s_saved_hint, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_clear_flag(s_saved_list, LV_OBJ_FLAG_HIDDEN);
+    for (size_t i = 0; i < list.size(); i++) {
+        lv_obj_t *row = lv_obj_create(s_saved_list);
+        lv_obj_set_width(row, lv_pct(100));
+        lv_obj_set_height(row, 40);
+        lv_obj_set_style_bg_color(row, UI_FIELD, 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_radius(row, UI_RADIUS_XS, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_style_pad_column(row, 4, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *pick = lv_obj_create(row);
+        lv_obj_remove_style_all(pick);
+        lv_obj_set_height(pick, lv_pct(100));
+        lv_obj_set_flex_grow(pick, 1);
+        lv_obj_set_style_pad_hor(pick, 10, 0);
+        lv_obj_add_flag(pick, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_ext_click_area(pick, UI_EXT_CLICK);
+        lv_obj_add_event_cb(pick, on_saved_pick, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_t *lbl = lv_label_create(pick);
+        char line[48];
+        if (i == 0) {
+            std::snprintf(line, sizeof(line), "%.28s ·默认", list[i].ssid.c_str());
+        } else {
+            std::snprintf(line, sizeof(line), "%.32s", list[i].ssid.c_str());
+        }
+        lv_label_set_text(lbl, line);
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_CLIP);
+        lv_obj_set_width(lbl, lv_pct(100));
+        nl_ov_set_font(lbl);
+        lv_obj_set_style_text_color(lbl, i == 0 ? UI_ACCENT : UI_TEXT, 0);
+        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+        lv_obj_t *del = lv_button_create(row);
+        lv_obj_set_width(del, 48);
+        lv_obj_set_height(del, 36);
+        lv_obj_set_style_bg_color(del, UI_BACK_BTN, 0);
+        lv_obj_set_style_bg_color(del, UI_FIELD, LV_STATE_PRESSED);
+        lv_obj_set_style_radius(del, UI_RADIUS_XS, 0);
+        lv_obj_set_style_shadow_width(del, 0, 0);
+        lv_obj_set_ext_click_area(del, UI_EXT_CLICK);
+        lv_obj_add_event_cb(del, on_saved_del, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_t *dl = lv_label_create(del);
+        lv_label_set_text(dl, "删");
+        nl_ov_set_font(dl);
+        lv_obj_set_style_text_color(dl, UI_TEXT_SUB, 0);
+        lv_obj_center(dl);
+    }
+}
+
 void nl_ov_kb_set_visible(bool on)
 {
     if (!s_kb) {
@@ -639,7 +769,7 @@ static void persist_connect_job(nl_conn_save_job_t *job)
     nodelio_nvs_cache_get(&cfg);
     char new_url[sizeof(cfg.server_url)];
     std::snprintf(new_url, sizeof(new_url), "%s://%s:%s", job->https ? "https" : "http", job->host,
-                  job->port[0] ? job->port : "8899");
+                  job->port[0] ? job->port : default_port_cstr(job->https != 0));
     const bool server_changed =
         std::strcmp(cfg.server_url, new_url) != 0 || std::strcmp(cfg.owner, job->owner) != 0;
     std::snprintf(cfg.server_url, sizeof(cfg.server_url), "%s", new_url);
@@ -767,7 +897,7 @@ static bool persist_connect_from_form(bool reboot)
         }
         return false;
     }
-    if (job->ssid[0] && !job->pass[0] && std::strcmp(job->ssid, s_cfg.wifi_ssid) != 0) {
+    if (job->ssid[0] && !job->pass[0] && !ssid_in_saved_list(job->ssid)) {
         heap_caps_free(job);
         if (reboot) {
             nl_ov_toast("新网络请填密码");
@@ -775,7 +905,7 @@ static bool persist_connect_from_form(bool reboot)
         return false;
     }
     if (!job->port[0]) {
-        std::snprintf(job->port, sizeof(job->port), "8899");
+        std::snprintf(job->port, sizeof(job->port), "%s", default_port_cstr(s_https));
     }
     job->https = s_https ? 1 : 0;
     job->reboot = reboot ? 1 : 0;
@@ -838,6 +968,7 @@ void nl_ov_open_connect(void)
         lv_label_set_text(s_scan_btn_lbl, "扫描");
     }
     rebuild_server_hist_chips();
+    rebuild_saved_wifi_list();
     nl_ov_kb_set_visible(false);
     lv_obj_clear_flag(s_connect, LV_OBJ_FLAG_HIDDEN);
     if (s_tabbar && !nodelio_display_profile()->nav_width) {
@@ -961,7 +1092,29 @@ void nl_ov_build_connect(void)
     lv_textarea_set_placeholder_text(s_ta_pass, "输入密码");
     wire_ta_input(s_ta_pass);
 
-    lv_obj_t *srv_card = conn_section("服务器");
+    s_saved_hint = lv_label_create(wifi_card);
+    lv_label_set_text(s_saved_hint, "已存网络（点选回填，可删）");
+    nl_ov_set_font(s_saved_hint);
+    lv_obj_set_style_text_color(s_saved_hint, UI_TEXT_DIM, 0);
+    lv_obj_add_flag(s_saved_hint, LV_OBJ_FLAG_HIDDEN);
+
+    s_saved_list = lv_obj_create(wifi_card);
+    lv_obj_set_width(s_saved_list, lv_pct(100));
+    lv_obj_set_height(s_saved_list, 132); /* 约 3 行，限高免顶掉服务器区 */
+    lv_obj_set_style_bg_color(s_saved_list, UI_PANEL, 0);
+    lv_obj_set_style_bg_opa(s_saved_list, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_saved_list, 1, 0);
+    lv_obj_set_style_border_color(s_saved_list, UI_BORDER, 0);
+    lv_obj_set_style_radius(s_saved_list, UI_RADIUS_SM, 0);
+    lv_obj_set_style_pad_all(s_saved_list, 4, 0);
+    lv_obj_set_style_pad_row(s_saved_list, 2, 0);
+    lv_obj_set_flex_flow(s_saved_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(s_saved_list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(s_saved_list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(s_saved_list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_add_flag(s_saved_list, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *srv_card = conn_section("NodeLio 服务器");
     lv_obj_t *proto_row = lv_obj_create(srv_card);
     lv_obj_set_width(proto_row, lv_pct(100));
     lv_obj_set_height(proto_row, LV_SIZE_CONTENT);
@@ -979,6 +1132,9 @@ void nl_ov_build_connect(void)
             s_https = !s_https;
             if (s_proto_lbl) {
                 lv_label_set_text(s_proto_lbl, proto_btn_text());
+            }
+            if (s_ta_port) {
+                lv_textarea_set_text(s_ta_port, default_port_cstr(s_https));
             }
         });
     s_proto_lbl = lv_obj_get_child(proto_btn, 0);
@@ -1004,11 +1160,19 @@ void nl_ov_build_connect(void)
     s_ta_port = lv_textarea_create(proto_row);
     style_ta(s_ta_port);
     lv_obj_set_width(s_ta_port, connect_square_layout() ? 66 : 72);
-    lv_textarea_set_placeholder_text(s_ta_port, "8899");
+    lv_textarea_set_placeholder_text(s_ta_port, default_port_cstr(s_https));
     lv_textarea_set_max_length(s_ta_port, 5);
     lv_textarea_set_text(s_ta_port, port);
     lv_textarea_set_accepted_chars(s_ta_port, "0123456789");
     wire_ta_input(s_ta_port);
+
+    add_field_label(srv_card, "绑定码");
+    s_ta_owner = lv_textarea_create(srv_card);
+    style_ta(s_ta_owner);
+    lv_obj_set_width(s_ta_owner, lv_pct(100));
+    lv_textarea_set_max_length(s_ta_owner, sizeof(s_cfg.owner) - 1);
+    lv_textarea_set_text(s_ta_owner, s_cfg.owner);
+    wire_ta_input(s_ta_owner);
 
     s_hist_hint = lv_label_create(srv_card);
     lv_label_set_text(s_hist_hint, "历史服务器（点选回填）");
@@ -1030,14 +1194,6 @@ void nl_ov_build_connect(void)
     lv_obj_add_flag(s_hist_row, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t *dev_card = conn_section("设备");
-    add_field_label(dev_card, "绑定码");
-    s_ta_owner = lv_textarea_create(dev_card);
-    style_ta(s_ta_owner);
-    lv_obj_set_width(s_ta_owner, lv_pct(100));
-    lv_textarea_set_max_length(s_ta_owner, sizeof(s_cfg.owner) - 1);
-    lv_textarea_set_text(s_ta_owner, s_cfg.owner);
-    wire_ta_input(s_ta_owner);
-
     add_field_label(dev_card, "截屏接收地址（留空同服务器）");
     s_ta_screenshot = lv_textarea_create(dev_card);
     style_ta(s_ta_screenshot);
@@ -1120,6 +1276,7 @@ void nl_ov_build_connect(void)
         lv_obj_set_width(s_conn_tip, lv_pct(100));
     }
     rebuild_server_hist_chips();
+    rebuild_saved_wifi_list();
 }
 
 static void on_ap_pick(lv_event_t *e)
@@ -1297,6 +1454,13 @@ void nl_ov_connect_reapply_appearance(void)
             lv_obj_set_style_bg_color(s_wifi_list, UI_PANEL, 0);
             lv_obj_set_style_border_color(s_wifi_list, UI_BORDER, 0);
         }
+        if (s_saved_list) {
+            lv_obj_set_style_bg_color(s_saved_list, UI_PANEL, 0);
+            lv_obj_set_style_border_color(s_saved_list, UI_BORDER, 0);
+        }
+        if (s_saved_hint) {
+            lv_obj_set_style_text_color(s_saved_hint, UI_TEXT_DIM, 0);
+        }
         if (s_hist_hint) {
             lv_obj_set_style_text_color(s_hist_hint, UI_TEXT_DIM, 0);
         }
@@ -1307,7 +1471,8 @@ void nl_ov_connect_reapply_appearance(void)
                 lv_obj_t *ch = lv_obj_get_child(s_connect_scroll, i);
                 if (ch == s_conn_tip) {
                     lv_obj_set_style_text_color(ch, UI_TEXT_TIP, 0);
-                } else if (ch != s_hist_hint && lv_obj_check_type(ch, &lv_label_class)) {
+                } else if (ch != s_hist_hint && ch != s_saved_hint &&
+                           lv_obj_check_type(ch, &lv_label_class)) {
                     lv_obj_set_style_text_color(ch, UI_TEXT_DIM, 0);
                 }
             }
@@ -1376,6 +1541,7 @@ void nl_ov_connect_reapply_appearance(void)
         paint_connect_action(s_scan_btn_lbl);
         paint_connect_action(s_proto_lbl);
         rebuild_server_hist_chips();
+        rebuild_saved_wifi_list();
     }
     if (!s_kb) {
         return;

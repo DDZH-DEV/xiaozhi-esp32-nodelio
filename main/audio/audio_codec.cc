@@ -5,6 +5,9 @@
 #include <esp_log.h>
 #include <cstring>
 #include <driver/i2s_common.h>
+#if CONFIG_NODELIO_PANEL
+#include "application.h"
+#endif
 
 #define TAG "AudioCodec"
 
@@ -47,8 +50,16 @@ void AudioCodec::SetOutputRoute(int route) {
     }
     output_route_ = route;
     ESP_LOGI(TAG, "Set output route to %d", output_route_);
+#if CONFIG_NODELIO_PANEL
+    /* P4 LVGL 栈在 PSRAM，禁止在回调里 nvs_commit */
+    Application::GetInstance().Schedule([r = output_route_]() {
+        Settings settings("audio", true);
+        settings.SetInt("output_route", r);
+    });
+#else
     Settings settings("audio", true);
     settings.SetInt("output_route", output_route_);
+#endif
 }
 
 void AudioCodec::SetOutputVolumeTransient(int volume) {
@@ -59,8 +70,15 @@ void AudioCodec::SetOutputVolumeTransient(int volume) {
 void AudioCodec::SetOutputVolume(int volume) {
     output_volume_ = volume;
     ESP_LOGI(TAG, "Set output volume to %d", output_volume_);
+#if CONFIG_NODELIO_PANEL
+    Application::GetInstance().Schedule([v = output_volume_]() {
+        Settings settings("audio", true);
+        settings.SetInt("output_volume", v);
+    });
+#else
     Settings settings("audio", true);
     settings.SetInt("output_volume", output_volume_);
+#endif
 }
 
 void AudioCodec::SetInputGain(float gain) {

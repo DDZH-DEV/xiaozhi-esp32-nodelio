@@ -6,7 +6,6 @@
 #include "board_info.h"
 #include "display.h"
 #include "ota.h"
-#include "settings.h"
 #include "sdkconfig.h"
 #include "fonts/font_puhui_14_1.h"
 #include "layout_cache.h"
@@ -319,18 +318,23 @@ static lv_obj_t *sys_kv_row(lv_obj_t *parent, const char *key, const char *val_i
     lv_obj_set_width(row, lv_pct(100));
     lv_obj_set_height(row, 28);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 12, 0);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *k = lv_label_create(row);
     lv_label_set_text(k, key);
     nl_ov_set_font(k);
     lv_obj_set_style_text_color(k, UI_TEXT_MUTED, 0);
+    lv_obj_set_style_min_width(k, LV_SIZE_CONTENT, 0);
 
     lv_obj_t *v = lv_label_create(row);
     lv_label_set_text(v, val_init ? val_init : "-");
-    lv_obj_set_width(v, 200);
-    lv_label_set_long_mode(v, LV_LABEL_LONG_CLIP);
+    /* 占满标签右侧剩余宽度，禁止写死 200 导致宽屏仍裁 URL */
+    lv_obj_set_width(v, 10);
+    lv_obj_set_flex_grow(v, 1);
+    lv_obj_set_style_min_width(v, 0, 0);
+    lv_label_set_long_mode(v, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
     nl_ov_set_font(v);
     lv_obj_set_style_text_color(v, UI_TEXT, 0);
@@ -1292,10 +1296,11 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_obj_set_style_pad_all(srv_card, 16, 0);
         lv_obj_set_style_pad_row(srv_card, 12, 0);
 
-        Settings wifi_rd("wifi", false);
-        const std::string stored_ota = wifi_rd.GetString("ota_url");
-        const bool is_official = stored_ota.empty() || stored_ota == CONFIG_OTA_URL;
-        const std::string cur_voice = is_official ? std::string(CONFIG_OTA_URL) : stored_ota;
+        /* 禁止在 LVGL(PSRAM) 栈上 Settings/nvs_open；只用 RAM 缓存 */
+        char stored_ota[160] = {};
+        nodelio_xz_voice_get_ota_url(stored_ota, sizeof(stored_ota));
+        const bool is_official = stored_ota[0] == '\0' || std::strcmp(stored_ota, CONFIG_OTA_URL) == 0;
+        const std::string cur_voice = is_official ? std::string(CONFIG_OTA_URL) : std::string(stored_ota);
 
         s_voice_mode_row = lv_obj_create(srv_card);
         lv_obj_remove_style_all(s_voice_mode_row);
@@ -1402,8 +1407,7 @@ void nl_ov_open_settings_detail(set_page_id_t page)
 
         /* 未绑定小智：常驻激活码（三块 sila 屏共用本页） */
         {
-            Settings mqtt_rd("mqtt", false);
-            const bool has_mqtt = !mqtt_rd.GetString("endpoint").empty();
+            const bool has_mqtt = nodelio_xz_voice_has_mqtt();
             char act_code[32] = {};
             char act_msg[96] = {};
             const bool has_code =
@@ -1671,14 +1675,28 @@ void nl_ov_open_settings_detail(set_page_id_t page)
 static void settings_tile(lv_obj_t *parent, const char *glyph, const char *title, const char *sub,
                           uint32_t accent, const char *right_icon, lv_event_cb_t cb)
 {
-    /* 宽屏右侧被技能卡占住时，左侧入口改单列铺满；窄屏技能卡是全屏模态，不走此分支。 */
-    const bool force_single_col =
-        nodelio_display_profile()->nav_width != 0 && nodelio_skill_result_card_visible();
     const char* symbol = material_symbols_get_utf8(glyph);
     auto* tile = ui_make_settings_tile(parent, symbol ? symbol : MATERIAL_SYMBOLS_EXPLORE, title,
-                                       sub, accent, right_icon, cb, force_single_col);
+                                       sub, accent, right_icon, cb, false);
     auto* icon = lv_obj_get_child(lv_obj_get_child(tile, 0), 0);
-    lv_obj_set_style_text_font(icon, &font_material_symbols_30_4, 0);
+    /* 分组行 Pod 约 40–44，用 20 档字形避免裁切 */
+    lv_obj_set_style_text_font(icon, &font_material_symbols_20_4, 0);
+}
+
+/** 去掉分组内最后一行底部分割线。 */
+static void hub_section_seal(lv_obj_t *sec)
+{
+    if (!sec) {
+        return;
+    }
+    const uint32_t n = lv_obj_get_child_count(sec);
+    if (n == 0) {
+        return;
+    }
+    lv_obj_t *last = lv_obj_get_child(sec, n - 1);
+    if (last) {
+        lv_obj_set_style_border_width(last, 0, 0);
+    }
 }
 
 static int s_hub_host_w = -1;
@@ -1691,16 +1709,16 @@ static void fill_settings_hub(void)
     }
     const lv_coord_t keep_y = lv_obj_get_scroll_y(s_settings);
     lv_obj_clean(s_settings);
-    /* 浏览态按宽度折列；技能卡打开时 settings_tile 强制单列。 */
-    lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_ROW_WRAP);
+    /* 分组列表：常用 / 连接 / 系统，单列全宽行（替代多列磁贴墙）。 */
+    lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s_settings, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    const int set_gap = nodelio_text_scale() == 1 ? 12 : 10;
+    const int set_gap = nodelio_text_scale() == 1 ? 16 : 14;
     lv_obj_set_style_pad_row(s_settings, set_gap, 0);
-    lv_obj_set_style_pad_column(s_settings, set_gap, 0);
+    lv_obj_set_style_pad_column(s_settings, 0, 0);
     const bool is_wide = nodelio_display_profile()->nav_width > 0;
     lv_obj_set_style_pad_left(s_settings, 16, 0);
     lv_obj_set_style_pad_right(s_settings, 16, 0);
-    lv_obj_set_style_pad_top(s_settings, is_wide ? 16 : 32, 0);
+    lv_obj_set_style_pad_top(s_settings, is_wide ? 16 : 28, 0);
     lv_obj_set_style_pad_bottom(s_settings, is_wide ? 20 : 54, 0);
     lv_obj_set_style_bg_color(s_settings, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_settings, LV_OPA_COVER, 0);
@@ -1713,10 +1731,10 @@ static void fill_settings_hub(void)
     std::snprintf(bri_sub, sizeof(bri_sub), "%d%% · %d%% · %s", s_brightness, s_volume,
                   nl_ov_ui_mode_name(s_cfg.ui_mode));
 
-    /* 入口 Pod 分色（与应用列表同风）；仅恢复出厂用危险红。 */
-    settings_tile(s_settings, "brightness_6", "显示与声音", bri_sub, UI_C_INFO, nullptr,
+    lv_obj_t *sec = ui_make_settings_section(s_settings, "常用");
+    settings_tile(sec, "brightness_6", "显示与声音", bri_sub, UI_C_INFO, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_DISP); });
-    settings_tile(s_settings, "home", "控家",
+    settings_tile(sec, "home", "控家",
                   nodelio_controls_enabled() ? "已开启" : "已关闭", UI_C_SUCCESS, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_CTRL); });
     {
@@ -1728,7 +1746,7 @@ static void fill_settings_hub(void)
             std::snprintf(pwr_sub, sizeof(pwr_sub), "%ds · 不断网",
                           (int)nodelio_idle_sleep_seconds());
         }
-        settings_tile(s_settings, "power_settings_new", "省电", pwr_sub, UI_C_WARN, nullptr,
+        settings_tile(sec, "power_settings_new", "省电", pwr_sub, UI_C_WARN, nullptr,
                       [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_POWER); });
     }
     {
@@ -1736,24 +1754,30 @@ static void fill_settings_hub(void)
         std::snprintf(media_sub, sizeof(media_sub), "%s · %d%%",
                       nodelio_media_sleep_enabled() ? "可息屏" : "常亮",
                       (int)nodelio_media_wake_duck_pct());
-        settings_tile(s_settings, "music_note", "播放器", media_sub, UI_C_PURPLE, nullptr,
+        settings_tile(sec, "music_note", "播放器", media_sub, UI_C_PURPLE, nullptr,
                       [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_MEDIA); });
     }
-    settings_tile(s_settings, "wifi", "网络与连接", "WiFi · 服务器", 0x00B4D8, nullptr,
+    hub_section_seal(sec);
+
+    sec = ui_make_settings_section(s_settings, "连接");
+    settings_tile(sec, "wifi", "网络与连接", "WiFi · 服务器", 0x00B4D8, nullptr,
                   [](lv_event_t*) { nl_ov_open_connect(); });
     settings_tile(
-        s_settings, "refresh", "刷新布局", "重新拉取", 0xF2994A, nullptr,
+        sec, "refresh", "刷新布局", "重新拉取", 0xF2994A, nullptr,
         [](lv_event_t*) { (void)nodelio_panel_ui_set_pref("layout_sync", "", nullptr, 0); });
     {
         char voice_sub[40];
         std::snprintf(voice_sub, sizeof(voice_sub), "%s · %ds",
                       nodelio_xiaozhi_enabled() ? "小智" : "无云",
                       (int)nodelio_listen_idle_seconds());
-        settings_tile(s_settings, "mic", "语音助手", voice_sub, 0x8E44AD, nullptr,
+        settings_tile(sec, "mic", "语音助手", voice_sub, 0x8E44AD, nullptr,
                       [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_VOICE); });
     }
+    hub_section_seal(sec);
+
+    sec = ui_make_settings_section(s_settings, "系统");
 #if CONFIG_FIRMWARE_OTA_ENABLED
-    settings_tile(s_settings, "cloud_download", "检查固件更新", "检查更新", 0x0284C7, nullptr,
+    settings_tile(sec, "cloud_download", "检查固件更新", "检查更新", 0x0284C7, nullptr,
                   [](lv_event_t*) {
                       char err[64];
                       if (nodelio_panel_ui_set_pref("fw_check", "", err, sizeof(err)) != ESP_OK &&
@@ -1762,12 +1786,14 @@ static void fill_settings_hub(void)
                       }
                   });
 #endif
-    settings_tile(s_settings, "info", "设备信息", "状态", 0x3D5A80, nullptr,
+    settings_tile(sec, "info", "设备信息", "状态", 0x3D5A80, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_SYS); });
-    settings_tile(s_settings, "build", "硬件自检", "触摸 · 麦", 0x5B5EA6, nullptr,
+    settings_tile(sec, "build", "硬件自检", "触摸 · 麦", 0x5B5EA6, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_DIAGNOSTICS); });
-    settings_tile(s_settings, "restart_alt", "恢复出厂", "清空并重启", UI_C_DANGER, nullptr,
+    settings_tile(sec, "restart_alt", "恢复出厂", "清空并重启", UI_C_DANGER, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_RESET); });
+    hub_section_seal(sec);
+
     s_hub_host_w = (int)lv_obj_get_width(s_settings);
     s_hub_single =
         (nodelio_display_profile()->nav_width != 0 && nodelio_skill_result_card_visible()) ? 1 : 0;

@@ -123,51 +123,69 @@ void ui_style_card(lv_obj_t *obj)
 #endif
 }
 
-int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out)
+lv_obj_t *ui_make_settings_section(lv_obj_t *parent, const char *title)
 {
-    const int gap = (nodelio_text_scale() == 1) ? 12 : 10;
-    const auto *profile = nodelio_display_profile();
-    if (avail < 160) {
-        avail = (int)profile->width - (int)profile->nav_width - 16 * 2;
+    ui_styles_init();
+    lv_obj_t *wrap = lv_obj_create(parent);
+    lv_obj_remove_style_all(wrap);
+    lv_obj_set_width(wrap, lv_pct(100));
+    lv_obj_set_height(wrap, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(wrap, 8, 0);
+    lv_obj_clear_flag(wrap, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    if (title && title[0]) {
+        lv_obj_t *hdr = lv_obj_create(wrap);
+        lv_obj_remove_style_all(hdr);
+        lv_obj_set_width(hdr, lv_pct(100));
+        lv_obj_set_height(hdr, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(hdr, 6, 0);
+        lv_obj_set_style_pad_left(hdr, 4, 0);
+        lv_obj_clear_flag(hdr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+        lv_obj_t *bar = lv_obj_create(hdr);
+        lv_obj_remove_style_all(bar);
+        lv_obj_set_size(bar, 3, 13);
+        lv_obj_set_style_bg_color(bar, UI_ACCENT, 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(bar, 2, 0);
+
+        lv_obj_t *t = lv_label_create(hdr);
+        lv_label_set_text(t, title);
+        apply_font(t);
+        lv_obj_set_style_text_color(t, UI_TEXT_SUB, 0);
     }
-    if (force_single_col) {
-        int tile_w = (int)profile->width / 5;
-        if (tile_w < 160) {
-            tile_w = 160;
-        }
-        if (tile_w > avail) {
-            tile_w = avail;
-        }
-        if (columns_out) {
-            *columns_out = 1;
-        }
-        return tile_w;
-    }
-    /* 宽屏：规范三列；方屏底栏仍两列。 */
-    const int max_cols = profile->nav_width ? 3 : 2;
-    const int min_tile = profile->nav_width ? 220 : 160;
-    int columns = max_cols;
-    while (columns > 1) {
-        const int tw = (avail - gap * (columns - 1)) / columns;
-        if (tw >= min_tile) {
-            break;
-        }
-        columns--;
-    }
-    if (columns_out) {
-        *columns_out = columns;
-    }
-    return (avail - gap * (columns - 1)) / columns;
+
+    lv_obj_t *card = lv_obj_create(wrap);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_width(card, lv_pct(100));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(card, UI_SURFACE, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
+    lv_obj_set_style_border_width(card, ui_palette_is_dark() ? 1 : 0, 0);
+    lv_obj_set_style_border_color(card, UI_TILE_OFF_BORDER, 0);
+    lv_obj_set_style_border_opa(card, LV_OPA_80, 0);
+    ui_style_card(card);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(card, 0, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    return card;
 }
 
 int ui_settings_tile_height(void)
 {
     const int line = nl_ov_ui_line_box();
     const bool large = nodelio_text_scale() == 1;
-    /* 标题 1 行 + 副文 1 行（短状态值），略增高吃掉宽屏下半空洞。 */
-    int tile_h = (large ? 14 : 12) + line + (large ? 6 : 4) + line + (large ? 14 : 12);
-    if (tile_h < (large ? 88 : UI_SETTINGS_TILE_H)) {
-        tile_h = (large ? 88 : UI_SETTINGS_TILE_H);
+    /* 分组内行：标题 1 行 + 副文 1 行。 */
+    int tile_h = (large ? 14 : 12) + line + (large ? 4 : 2) + line + (large ? 14 : 12);
+    if (tile_h < (large ? 80 : 72)) {
+        tile_h = (large ? 80 : 72);
+    }
+    if (tile_h < UI_SETTINGS_TILE_H - 8) {
+        tile_h = UI_SETTINGS_TILE_H - 8;
     }
     return tile_h;
 }
@@ -176,42 +194,36 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
                                 const char *sub, uint32_t accent_c, const char *right_icon,
                                 lv_event_cb_t cb, bool force_single_col)
 {
+    (void)force_single_col;
     ui_styles_init();
-
-    /* 浏览态按容器宽度分列。技能卡打开时左卡固定为整屏 1/5，不把剩余区域拉满。 */
-    int avail = parent ? (int)lv_obj_get_content_width(parent) : 0;
-    const int tile_w = ui_settings_tile_width(avail, force_single_col, nullptr);
 
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);
-    /* 标题 1 行 + 副文 1 行。 */
     const int tile_h = ui_settings_tile_height();
-    lv_obj_set_size(btn, tile_w, tile_h);
+    lv_obj_set_width(btn, lv_pct(100));
+    lv_obj_set_height(btn, tile_h);
     lv_obj_set_ext_click_area(btn, 6);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_set_style_bg_color(btn, UI_TILE_OFF, 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(btn, UI_RADIUS_MD, 0);
-    ui_style_card(btn);
+    /* 分组内 inset 行：无独立投影，靠底部分割线分层。 */
+    lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(btn, 0, 0);
+    lv_obj_set_style_border_side(btn, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_set_style_border_width(btn, 1, 0);
     lv_obj_set_style_border_color(btn, UI_TILE_OFF_BORDER, 0);
+    lv_obj_set_style_border_opa(btn, LV_OPA_40, 0);
     const bool large = nodelio_text_scale() == 1;
-    lv_obj_set_style_border_opa(btn, LV_OPA_80, 0);
-    lv_obj_set_style_pad_left(btn, large ? 12 : 10, 0);
-    lv_obj_set_style_pad_right(btn, large ? 10 : 8, 0);
+    lv_obj_set_style_pad_left(btn, large ? 14 : 12, 0);
+    lv_obj_set_style_pad_right(btn, large ? 12 : 10, 0);
     lv_obj_set_style_pad_top(btn, 0, 0);
     lv_obj_set_style_pad_bottom(btn, 0, 0);
-    const int pod_sz = 56;
+    const int pod_sz = large ? 44 : 40;
     const int col_gap = large ? 14 : 12;
     lv_obj_set_style_pad_column(btn, col_gap, 0);
 
     lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
-    lv_obj_set_style_border_color(btn, lv_color_hex(accent_c), LV_STATE_PRESSED);
-#if !CONFIG_IDF_TARGET_ESP32S3
-    lv_obj_set_style_translate_y(btn, 1, LV_STATE_PRESSED);
-#endif
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_STATE_PRESSED);
 
     lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -219,7 +231,6 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
     }
 
-    /* 与应用列表一致：彩色 Pod + 白字形；危险项仍用实心红。 */
     const bool danger = (accent_c == UI_C_DANGER);
     lv_obj_t *pod = lv_obj_create(btn);
     lv_obj_remove_style_all(pod);
@@ -242,6 +253,7 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_remove_style_all(text);
     lv_obj_set_height(text, LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(text, 1);
+    lv_obj_set_style_min_width(text, 0, 0);
     lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(text, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(text, 2, 0);
@@ -262,7 +274,6 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
 
     lv_obj_t *s = lv_label_create(text);
     lv_label_set_text(s, sub ? sub : "");
-    /* 短状态值单行打点；长说明放到详情页。 */
     lv_label_set_long_mode(s, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s, lv_pct(100));
     lv_obj_set_height(s, font_h);

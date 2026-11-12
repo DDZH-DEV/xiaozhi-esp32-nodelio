@@ -122,6 +122,9 @@ void nodelio_panel_ui_news_read_local(const char *op);
 void nodelio_panel_ui_arm_news_read_offer(void);
 /** 消费一次武装；未武装返回 false。 */
 bool nodelio_panel_ui_take_news_read_offer(void);
+/** 「读新闻」等已含朗读意图：列表上屏后直接读，不追问。 */
+void nodelio_panel_ui_arm_news_auto_read(void);
+bool nodelio_panel_ui_take_news_auto_read(void);
 /** audio_url 非空 → StartNotification；否则仅 toast/上屏。 */
 void nodelio_panel_ui_announce_spoken_ex(const char *text, const char *audio_url);
 /** 多段 WAV 连续播（urls[0..n)）；n≤0 则退回 toast。 */

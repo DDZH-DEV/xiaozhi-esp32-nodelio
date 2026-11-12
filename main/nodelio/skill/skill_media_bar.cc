@@ -26,14 +26,23 @@ void style_now_bar(bool docked)
     if (!wide) {
         lv_obj_set_style_shadow_width(s_now_bar, 0, 0);
         lv_obj_set_style_shadow_opa(s_now_bar, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_bg_color(s_now_bar, UI_SURFACE, 0);
-        lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(s_now_bar, 0, 0);
+        lv_obj_set_style_bg_opa(s_now_bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_hor(s_now_bar, 14, 0);
+        if (docked) {
+            /* 方屏嵌卡底：顶部分隔线，凹进列表框 */
+            lv_obj_set_style_bg_color(s_now_bar, UI_PANEL, 0);
+            lv_obj_set_style_border_width(s_now_bar, 1, 0);
+            lv_obj_set_style_border_side(s_now_bar, LV_BORDER_SIDE_TOP, 0);
+            lv_obj_set_style_border_color(s_now_bar, UI_BORDER, 0);
+            lv_obj_set_style_border_opa(s_now_bar, LV_OPA_60, 0);
+            return;
+        }
+        lv_obj_set_style_bg_color(s_now_bar, UI_SURFACE, 0);
         lv_obj_set_style_border_width(s_now_bar, 1, 0);
-        lv_obj_set_style_border_side(s_now_bar, LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_border_side(s_now_bar, LV_BORDER_SIDE_TOP, 0);
         lv_obj_set_style_border_color(s_now_bar, UI_BORDER, 0);
         lv_obj_set_style_border_opa(s_now_bar, LV_OPA_60, 0);
-        lv_obj_set_style_pad_hor(s_now_bar, 14, 0);
         return;
     }
     if (docked) {
@@ -115,6 +124,24 @@ void on_mini_fab(lv_event_t *e)
     expand_from_fab();
 }
 
+static lv_obj_t *music_row_from_idx_label(lv_obj_t *lbl)
+{
+    if (!lbl) {
+        return nullptr;
+    }
+    lv_obj_t *pod = lv_obj_get_parent(lbl);
+    return pod ? lv_obj_get_parent(pod) : nullptr;
+}
+
+static void paint_music_row_bg(lv_obj_t *row, bool playing)
+{
+    if (!row) {
+        return;
+    }
+    lv_obj_set_style_bg_color(
+        row, playing ? UI_SELECTION : (ui_palette_is_dark() ? UI_FIELD : UI_SURFACE), 0);
+}
+
 /* 播放器关闭时恢复列表序号，避免耳机图标一直占着当前行 */
 void clear_play_mark(void)
 {
@@ -125,6 +152,7 @@ void clear_play_mark(void)
     if (s_row_idx_labels[s_play_idx]) {
         if (s_env && strcmp(s_env->card_type, "music_list") == 0) {
             paint_music_mark(s_row_idx_labels[s_play_idx], false, s_play_idx);
+            paint_music_row_bg(music_row_from_idx_label(s_row_idx_labels[s_play_idx]), false);
         } else {
             char idx_buf[16];
             snprintf(idx_buf, sizeof(idx_buf), "%d", s_play_idx + 1);
@@ -156,13 +184,14 @@ void update_row_icon(int idx)
     if (s_row_idx_labels[idx]) {
         if (s_env && strcmp(s_env->card_type, "music_list") == 0) {
             paint_music_mark(s_row_idx_labels[idx], true, idx);
+            paint_music_row_bg(music_row_from_idx_label(s_row_idx_labels[idx]), true);
         } else {
             lv_obj_set_style_text_font(s_row_idx_labels[idx], &font_material_symbols_20_4, 0);
             lv_label_set_text(s_row_idx_labels[idx], MATERIAL_SYMBOLS_HEADPHONES);
             lv_obj_set_style_text_color(s_row_idx_labels[idx], UI_ACCENT, 0);
         }
     }
-    /* 更新播放按钮：改为暂停图标 */
+    /* 更新播放按钮：改为暂停图标（曲库已无行内钮） */
     if (s_row_btns[idx]) {
         lv_obj_t *lbl = lv_obj_get_child(s_row_btns[idx], 0);
         if (lbl) {
@@ -180,13 +209,14 @@ void play_at(int idx)
     if (idx < 0 || idx >= s_env->track_n || !s_env->tracks[idx].playback_url[0]) {
         return;
     }
-    /* 恢复上一首的图标 */
+    /* 恢复上一首的图标 / 行底色 */
     if (s_play_idx >= 0 && s_play_idx < 64) {
         DisplayLockGuard lock(nl_ov_disp());
         if (lock) {
             if (s_row_idx_labels[s_play_idx]) {
                 if (strcmp(s_env->card_type, "music_list") == 0) {
                     paint_music_mark(s_row_idx_labels[s_play_idx], false, s_play_idx);
+                    paint_music_row_bg(music_row_from_idx_label(s_row_idx_labels[s_play_idx]), false);
                 } else {
                     char idx_buf[16];
                     snprintf(idx_buf, sizeof(idx_buf), "%d", s_play_idx + 1);

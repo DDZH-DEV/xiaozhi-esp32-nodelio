@@ -572,6 +572,7 @@ void Application::HandleActivationDoneEvent() {
 #if CONFIG_NODELIO_PANEL
     /* bridge 已在 NetworkConnected 启动；此处幂等补一次（防漏） */
     Schedule([]() { (void)nodelio_bridge_start(); });
+    nodelio_xz_activation_load();
     /* 无 mqtt.endpoint 时后台拉一次语音 OTA，把激活码落入设置页（不阻塞、不整夜 Activate） */
     if (nodelio_xiaozhi_enabled()) {
         Settings mqtt("mqtt", false);
@@ -588,6 +589,8 @@ void Application::ActivationTask() {
     ESP_LOGI(TAG, "boot: activation begin");
 #if CONFIG_NODELIO_PANEL
     nodelio_log_heap("activation begin");
+    /* 尽早灌 RAM，设置页打开语音助手不再碰 NVS */
+    nodelio_xz_activation_load();
 #endif
     // Create OTA object for activation process
     ota_ = std::make_unique<Ota>();
@@ -605,6 +608,7 @@ void Application::ActivationTask() {
      * 时，刚 OTA 上来的镜像处于 PENDING_VERIFY，不确认就会在下次重启回滚。
      */
     ota_->MarkCurrentVersionValid();
+    nodelio_xz_activation_load(); /* 早于 UI：语音页只读 RAM，禁 LVGL 栈 nvs_open */
     ESP_LOGI(TAG, "skip xiaozhi OTA check on boot (manual check in settings)");
 #else
     // Check for new firmware version
@@ -2480,11 +2484,9 @@ void Application::CheckNewsReadRequest() {
 
 bool Application::PreferNewsContinue() const
 {
-    /* 设备已发续读 detect，或同轮二次 tools/call 时首段仍在等 TTS。 */
-    if (news_read_continue_) {
-        return true;
-    }
-    return news_reading_ && nodelio_skill_news_should_continue();
+    /* 仅本机 Finish 后发的续读 detect。首段 tools/call 后、TTS 未至时
+     * should_continue 也为真，若据此改成 continue 会重放同段并提前 stop。 */
+    return news_read_continue_;
 }
 
 void Application::OnNewsReadToolCalled() {
@@ -2529,7 +2531,8 @@ void Application::OnNewsReadSentence(const char* text) {
     }
 }
 
-/** 云端偶发不发 tts.stop：仅在已 Listening，或喇叭连续空闲 ≥800ms 时合成 stop。 */
+/** 云端偶发不发 tts.stop：喇叭连续空闲才合成 stop。
+ *  本段字幕未对齐完时加长等待，避免句间 UDP 空隙把第一段掐成「只念两句」。 */
 void Application::MaybeSynthesizeNewsTtsStop() {
     if (news_tts_stopped_ || !news_reading_ || news_awaiting_mcp_ || aborted_) {
         return;
@@ -2542,20 +2545,21 @@ void Application::MaybeSynthesizeNewsTtsStop() {
         news_playback_idle_since_us_ = esp_timer_get_time();
         return;
     }
-    const DeviceState st = GetDeviceState();
-    constexpr int64_t kIdleGraceUs = 800000; /* 800ms：撑过句间 / UDP 空隙 */
-    const bool listening = st == kDeviceStateListening;
-    const bool idle_long =
-        (esp_timer_get_time() - news_playback_idle_since_us_) >= kIdleGraceUs;
-    if (!listening && !idle_long) {
+    const bool lagging = nodelio_skill_news_has_unplayed_tail();
+    const bool speaking = GetDeviceState() == kDeviceStateSpeaking;
+    /* 对齐完：1.5s；未念完/仍 Speaking：3.2s（云端句间常 >1s） */
+    const int64_t grace_ms = (lagging || speaking) ? 3200 : 1500;
+    const int64_t idle_ms =
+        (esp_timer_get_time() - news_playback_idle_since_us_) / 1000;
+    if (idle_ms < grace_ms) {
         return;
     }
     if (news_playback_token_ == 0) {
         news_playback_token_ = nodelio_skill_news_read_token();
     }
     news_tts_stopped_ = true;
-    ESP_LOGW(TAG, "news read: synthesize tts.stop (listening=%d idle_ms=%lld)", listening ? 1 : 0,
-             (long long)((esp_timer_get_time() - news_playback_idle_since_us_) / 1000));
+    ESP_LOGW(TAG, "news read: synthesize tts.stop (state=%d idle_ms=%lld lag=%d)",
+             (int)GetDeviceState(), (long long)idle_ms, lagging ? 1 : 0);
 }
 
 void Application::FinishNewsReadPlayback() {
@@ -3087,12 +3091,52 @@ void Application::ArmPendingConfirmReadNews()
     ESP_LOGI(TAG, "arm pending_confirm_read_news");
 }
 
+bool Application::ShouldAcceptCloudNewsRead() const
+{
+    /* 本机已发 detect 等 tools/call：放行。追问「要读吗」期间拦截云端抢先 read。 */
+    if (news_awaiting_mcp_.load()) {
+        return true;
+    }
+    return !pending_confirm_read_news_;
+}
+
+static bool utf8_prev_char_is_yao(const char *start, const char *hit)
+{
+    /* 「要」(E8 A6 81) +「不要读」=「要不要读」，不能当拒绝。 */
+    if (!start || !hit || hit < start + 3) {
+        return false;
+    }
+    const unsigned char *p = reinterpret_cast<const unsigned char *>(hit - 3);
+    return p[0] == 0xE8 && p[1] == 0xA6 && p[2] == 0x81;
+}
+
+static bool phrase_has_news_decline(const char *buf)
+{
+    if (!buf || !buf[0]) {
+        return false;
+    }
+    if (strcmp(buf, "不") == 0 || strcmp(buf, "不用") == 0 || strcmp(buf, "不要") == 0 ||
+        strcmp(buf, "不用了") == 0 || strcmp(buf, "算了") == 0 || strcmp(buf, "否") == 0) {
+        return true;
+    }
+    if (strstr(buf, "不用读") || strstr(buf, "别读") || strstr(buf, "不读") ||
+        strstr(buf, "不朗读") || strstr(buf, "不要朗读") || strstr(buf, "不用朗读")) {
+        return true;
+    }
+    for (const char *q = buf; (q = strstr(q, "不要读")) != nullptr; ++q) {
+        if (!utf8_prev_char_is_yao(buf, q)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool Application::TryConfirmReadNewsFromStt(const char *text)
 {
     if (!pending_confirm_read_news_ || !text || !text[0]) {
         return false;
     }
-    char buf[48];
+    char buf[64];
     size_t n = 0;
     for (const char *p = text; *p && n + 1 < sizeof(buf); ++p) {
         unsigned char c = (unsigned char)*p;
@@ -3110,39 +3154,53 @@ bool Application::TryConfirmReadNewsFromStt(const char *text)
         buf[n++] = *p;
     }
     buf[n] = '\0';
-    const bool yes =
+    const bool no = phrase_has_news_decline(buf);
+    /* 短答肯定；勿对长句裸匹配「读」（「要不要读/有点重复」会误伤） */
+    const bool yes_short =
         strcmp(buf, "是的") == 0 || strcmp(buf, "是") == 0 || strcmp(buf, "好的") == 0 ||
         strcmp(buf, "好") == 0 || strcmp(buf, "嗯") == 0 || strcmp(buf, "行") == 0 ||
         strcmp(buf, "可以") == 0 || strcmp(buf, "要") == 0 || strcmp(buf, "对") == 0 ||
         strcmp(buf, "读") == 0 || strcmp(buf, "读吧") == 0 || strcmp(buf, "读取") == 0 ||
-        strstr(buf, "读这篇") != nullptr || strstr(buf, "读一下") != nullptr ||
-        strstr(buf, "朗读") != nullptr || strstr(buf, "念一下") != nullptr ||
-        strstr(buf, "要读") != nullptr || strstr(buf, "读第一") != nullptr;
-    const bool no = strcmp(buf, "不") == 0 || strcmp(buf, "不用") == 0 ||
-                    strcmp(buf, "不要") == 0 || strcmp(buf, "不用了") == 0 ||
-                    strcmp(buf, "算了") == 0 || strcmp(buf, "否") == 0 ||
-                    strstr(buf, "不用读") != nullptr || strstr(buf, "别读") != nullptr ||
-                    strstr(buf, "不要读") != nullptr || strstr(buf, "不读") != nullptr ||
-                    strstr(buf, "不朗读") != nullptr || strstr(buf, "不要朗读") != nullptr ||
-                    strstr(buf, "不用朗读") != nullptr;
+        strcmp(buf, "念") == 0;
+    const bool yes_phrase = strstr(buf, "读这篇") != nullptr || strstr(buf, "读一下") != nullptr ||
+                            strstr(buf, "读新闻") != nullptr || strstr(buf, "开始读") != nullptr ||
+                            strstr(buf, "朗读") != nullptr || strstr(buf, "念一下") != nullptr ||
+                            strstr(buf, "念这篇") != nullptr || strstr(buf, "读第一") != nullptr;
+    /* 「要读」但排除「要不要读」 */
+    bool yes_yaodu = false;
+    for (const char *q = buf; (q = strstr(q, "要读")) != nullptr; ++q) {
+        if (q == buf || !utf8_prev_char_is_yao(buf, q)) {
+            /* 「不要读」里的「要读」：前一字是「不」 */
+            if (q >= buf + 3) {
+                const unsigned char *p = reinterpret_cast<const unsigned char *>(q - 3);
+                if (p[0] == 0xE4 && p[1] == 0xB8 && p[2] == 0x8D) { /* 不 */
+                    continue;
+                }
+            }
+            yes_yaodu = true;
+            break;
+        }
+    }
+    const bool yes = yes_short || yes_phrase || yes_yaodu;
     ESP_LOGI(TAG, "confirm_read_news pending=1 stt='%s' norm='%s' yes=%d no=%d", text, buf,
              yes ? 1 : 0, no ? 1 : 0);
-    if (no) {
+    if (no && !yes) {
         pending_confirm_read_news_ = false;
         nodelio_panel_ui_toast("好的");
         SuppressCloudTts(2000);
         ContinueListeningAfterLocalSkill();
         return true;
     }
-    if (!yes) {
+    if (yes && !no) {
         pending_confirm_read_news_ = false;
-        return false;
+        SuppressCloudTts(5000);
+        // prepare_read selects the first item only when no article is selected.
+        // Preserve an article the user opened by touch while the read offer was pending.
+        StartLocalNewsRead("read");
+        return true;
     }
-    pending_confirm_read_news_ = false;
-    // prepare_read selects the first item only when no article is selected.
-    // Preserve an article the user opened by touch while the read offer was pending.
-    StartLocalNewsRead("read");
-    return true;
+    /* 歧义（要不要读）或闲聊：保持 pending，交给云端 */
+    return false;
 }
 
 bool Application::TryConfirmOpenDshFromStt(const char *text)
@@ -3344,7 +3402,8 @@ void Application::RequestVoiceServerApply(bool official, std::string custom_url)
     };
     auto* args = new Args{official, std::move(custom_url)};
     nodelio_panel_ui_toast_defer(official ? "正在连接官方小智…" : "正在连接自定义服务器…");
-    BaseType_t ok = xTaskCreate(
+    /* 栈必须 INTERNAL：FetchVoiceServer / NVS 会关 flash cache */
+    BaseType_t ok = xTaskCreateWithCaps(
         [](void* arg) {
             std::unique_ptr<Args> a(static_cast<Args*>(arg));
             std::string fetch_url;
@@ -3353,9 +3412,11 @@ void Application::RequestVoiceServerApply(bool official, std::string custom_url)
                 if (a->official) {
                     wifi.EraseKey("ota_url");
                     fetch_url = CONFIG_OTA_URL;
+                    nodelio_xz_voice_set_ota_url_cache("");
                 } else {
                     fetch_url = a->url;
                     wifi.SetString("ota_url", fetch_url);
+                    nodelio_xz_voice_set_ota_url_cache(fetch_url.c_str());
                 }
             }
 
@@ -3365,7 +3426,7 @@ void Application::RequestVoiceServerApply(bool official, std::string custom_url)
                 ESP_LOGW(TAG, "voice server fetch failed: %s", check.error().ToString().c_str());
                 nodelio_panel_ui_toast_defer("连接失败，请检查地址");
                 busy = false;
-                vTaskDelete(nullptr);
+                vTaskDeleteWithCaps(nullptr);
                 return;
             }
 
@@ -3405,7 +3466,7 @@ void Application::RequestVoiceServerApply(bool official, std::string custom_url)
                     nodelio_xz_activation_apply_from_ota(ota);
                     nodelio_panel_ui_toast_defer("等待激活超时，请到设置查看激活码");
                     busy = false;
-                    vTaskDelete(nullptr);
+                    vTaskDeleteWithCaps(nullptr);
                     return;
                 }
                 /* 激活后再拉一次，拿到 mqtt/websocket */
@@ -3413,7 +3474,7 @@ void Application::RequestVoiceServerApply(bool official, std::string custom_url)
                 if (!again) {
                     nodelio_panel_ui_toast_defer("激活成功但拉取配置失败");
                     busy = false;
-                    vTaskDelete(nullptr);
+                    vTaskDeleteWithCaps(nullptr);
                     return;
                 }
                 nodelio_xz_activation_apply_from_ota(ota);
@@ -3425,10 +3486,11 @@ void Application::RequestVoiceServerApply(bool official, std::string custom_url)
                                                  ? "请用激活码绑定后再保存重连"
                                                  : "未拿到语音配置，请检查服务器");
                 busy = false;
-                vTaskDelete(nullptr);
+                vTaskDeleteWithCaps(nullptr);
                 return;
             }
             nodelio_xz_activation_clear();
+            nodelio_xz_voice_set_has_mqtt(true);
 
             nodelio_panel_ui_toast_defer("已切换，即将重启");
             Application::GetInstance().Schedule([]() {
@@ -3436,9 +3498,9 @@ void Application::RequestVoiceServerApply(bool official, std::string custom_url)
                 Application::GetInstance().Reboot();
             });
             busy = false;
-            vTaskDelete(nullptr);
+            vTaskDeleteWithCaps(nullptr);
         },
-        "xz_srv", 4096 * 4, args, 2, nullptr);
+        "xz_srv", 4096 * 4, args, 2, nullptr, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (ok != pdPASS) {
         delete args;
         busy = false;
@@ -3461,10 +3523,13 @@ void Application::RequestVoiceActivationRefresh(bool quiet) {
         bool quiet;
     };
     auto* args = new Args{quiet};
-    BaseType_t ok = xTaskCreate(
+    BaseType_t ok = xTaskCreateWithCaps(
         [](void* arg) {
             std::unique_ptr<Args> a(static_cast<Args*>(arg));
-            const std::string fetch_url = Ota::GetVoiceOtaUrl();
+            char cached[160] = {};
+            nodelio_xz_voice_get_ota_url(cached, sizeof(cached));
+            const std::string fetch_url =
+                cached[0] ? std::string(cached) : std::string(CONFIG_OTA_URL);
             Ota ota;
             auto check = ota.FetchVoiceServer(fetch_url);
             if (!check) {
@@ -3473,7 +3538,7 @@ void Application::RequestVoiceActivationRefresh(bool quiet) {
                     nodelio_panel_ui_toast_defer("获取激活码失败");
                 }
                 busy = false;
-                vTaskDelete(nullptr);
+                vTaskDeleteWithCaps(nullptr);
                 return;
             }
             nodelio_xz_activation_apply_from_ota(ota);
@@ -3482,7 +3547,7 @@ void Application::RequestVoiceActivationRefresh(bool quiet) {
                     nodelio_panel_ui_toast_defer("已绑定，请保存并重连");
                 }
                 busy = false;
-                vTaskDelete(nullptr);
+                vTaskDeleteWithCaps(nullptr);
                 return;
             }
             if (ota.HasActivationCode()) {
@@ -3501,9 +3566,9 @@ void Application::RequestVoiceActivationRefresh(bool quiet) {
                 nodelio_panel_ui_toast_defer("服务器未返回激活码");
             }
             busy = false;
-            vTaskDelete(nullptr);
+            vTaskDeleteWithCaps(nullptr);
         },
-        "xz_act", 4096 * 3, args, 2, nullptr);
+        "xz_act", 4096 * 3, args, 2, nullptr, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (ok != pdPASS) {
         delete args;
         busy = false;

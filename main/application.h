@@ -205,6 +205,9 @@ public:
     bool PreferNewsContinue() const;
     /** 新闻列表上屏后：武装「是/读」→ 朗读第一条。 */
     void ArmPendingConfirmReadNews();
+    bool IsPendingConfirmReadNews() const { return pending_confirm_read_news_; }
+    /** 本机已发「调用 skill.news」detect 时允许云端 tools/call；追问确认中则否。 */
+    bool ShouldAcceptCloudNewsRead() const;
     void OnNewsReadToolCalled();  // Application task only; validated MCP dispatch.
 #endif
     

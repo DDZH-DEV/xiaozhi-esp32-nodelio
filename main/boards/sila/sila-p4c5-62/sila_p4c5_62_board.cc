@@ -342,6 +342,14 @@ private:
                     asleep_.store(next_asleep);
                     if (next_asleep) {
                         backlight_.SetBrightness(0);
+#if CONFIG_NODELIO_PANEL
+                        /* 勿停 DPI：AXS 触摸与扫描时钟耦合。空闲未播只关功放减滋滋。 */
+                        if (!nodelio_media_is_playing()) {
+                            if (auto* codec = GetAudioCodec()) {
+                                codec->EnableOutput(false);
+                            }
+                        }
+#endif
                     } else {
                         backlight_.RestoreBrightness();
                     }

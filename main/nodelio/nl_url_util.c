@@ -29,16 +29,21 @@ void nl_url_parse_server(const char *url, char *host, size_t host_len, char *por
         host[0] = '\0';
     }
     if (port && port_len) {
-        snprintf(port, port_len, "8899");
+        port[0] = '\0';
     }
     if (https) {
         *https = false;
     }
     if (!url || !url[0] || !host || host_len == 0) {
+        if (port && port_len) {
+            snprintf(port, port_len, "8899");
+        }
         return;
     }
     const char *p = url;
+    bool is_https = false;
     if (strncmp(p, "https://", 8) == 0) {
+        is_https = true;
         if (https) {
             *https = true;
         }
@@ -59,11 +64,16 @@ void nl_url_parse_server(const char *url, char *host, size_t host_len, char *por
     }
     memcpy(host, p, hn);
     host[hn] = '\0';
-    if (colon && colon[1] && port && port_len) {
+    if (!port || port_len == 0) {
+        return;
+    }
+    if (colon && colon[1]) {
         size_t pn = 0;
         for (const char *q = colon + 1; *q && *q != '/' && pn + 1 < port_len; q++) {
             port[pn++] = *q;
         }
         port[pn] = '\0';
+    } else {
+        snprintf(port, port_len, "%s", is_https ? "443" : "8899");
     }
 }

@@ -256,6 +256,14 @@ private:
                     asleep_.store(next_asleep);
                     if (next_asleep) {
                         backlight_.SetBrightness(0);
+#if CONFIG_NODELIO_PANEL
+                        /* 停 DPI 唤醒后画面错位，暂不关扫描（同 62）。空闲未播只关 PA。 */
+                        if (!nodelio_media_is_playing()) {
+                            if (auto* codec = GetAudioCodec()) {
+                                codec->EnableOutput(false);
+                            }
+                        }
+#endif
                     } else {
                         backlight_.RestoreBrightness();
                     }

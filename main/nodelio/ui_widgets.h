@@ -17,14 +17,13 @@ void ui_style_card(lv_obj_t *obj);
 /** Contrast-safe foreground for user-defined solid layout colors. */
 lv_color_t ui_color_on(lv_color_t background);
 
-/** 与设置页同一套卡片宽。avail 为去掉页边距后的内容宽；force_single_col 时取整屏 1/5。
- *  columns_out 可空。 */
-int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out);
-/** 与设置页同一套卡片高（标题 1 行 + 副文 1 行，不低于 UI_SETTINGS_TILE_H）。 */
+/** 设置 hub 分组卡：白底圆角容器，返回挂行的父对象。 */
+lv_obj_t *ui_make_settings_section(lv_obj_t *parent, const char *title);
+/** 分组内行高（标题 1 行 + 副文 1 行，不低于 UI_SETTINGS_TILE_H）。 */
 int ui_settings_tile_height(void);
 
-/** 设置页入口：卡内左右（左 Icon Pod · 右标题/副文），列数按容器宽自适应。
- *  force_single_col：宽屏右窗被技能卡占用时传 true，左侧改单列铺满。 */
+/** 设置 hub 分组内一行：左 Icon Pod · 右标题/副文；铺满 section。
+ *  force_single_col 保留兼容（现已始终单列）。 */
 lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char *title,
                                 const char *sub, uint32_t accent_c, const char *right_icon,
                                 lv_event_cb_t cb, bool force_single_col);

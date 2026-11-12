@@ -1735,7 +1735,24 @@ bool nodelio_skill_support_apply_cloud_replies(const char *const *replies, int n
         strcmp(s_env->card_type, "support_thread") != 0 || !nodelio_skill_result_card_visible()) {
         return false;
     }
-    nl_env_invoke_action_t kept[NL_ENV_CHIP_MAX];
+    /* chip 含 params_json[384]，两份 ×8 ≈9KB；main 任务栈约 8KB，必须走堆。 */
+    constexpr size_t kChipBytes = sizeof(nl_env_invoke_action_t) * NL_ENV_CHIP_MAX;
+    auto *kept = static_cast<nl_env_invoke_action_t *>(
+        heap_caps_malloc(kChipBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!kept) {
+        kept = static_cast<nl_env_invoke_action_t *>(malloc(kChipBytes));
+    }
+    auto *next = static_cast<nl_env_invoke_action_t *>(
+        heap_caps_malloc(kChipBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!next) {
+        next = static_cast<nl_env_invoke_action_t *>(malloc(kChipBytes));
+    }
+    if (!kept || !next) {
+        free(kept);
+        free(next);
+        ESP_LOGW(TAG, "cloud replies: no mem for chip scratch");
+        return false;
+    }
     int kept_n = 0;
     for (int i = 0; i < s_env->chip_n && i < NL_ENV_CHIP_MAX; ++i) {
         const char *id = s_env->chips[i].id;
@@ -1749,11 +1766,12 @@ bool nodelio_skill_support_apply_cloud_replies(const char *const *replies, int n
         use = NL_ENV_CHIP_MAX - kept_n;
     }
     if (use <= 0) {
+        free(kept);
+        free(next);
         return false;
     }
     const uint64_t cid = s_env->conversation_id;
     const uint64_t mid = s_env->message_id;
-    nl_env_invoke_action_t next[NL_ENV_CHIP_MAX];
     int w = 0;
     for (int i = 0; i < use && w < NL_ENV_CHIP_MAX; ++i) {
         if (!replies[i] || !replies[i][0]) {
@@ -1770,6 +1788,8 @@ bool nodelio_skill_support_apply_cloud_replies(const char *const *replies, int n
         w++;
     }
     if (w <= 0) {
+        free(kept);
+        free(next);
         return false;
     }
     for (int i = 0; i < kept_n && w < NL_ENV_CHIP_MAX; ++i) {
@@ -1780,6 +1800,8 @@ bool nodelio_skill_support_apply_cloud_replies(const char *const *replies, int n
     }
     s_env->chip_n = w;
     s_env->cloud_suggest = false;
+    free(kept);
+    free(next);
     fill_action_bar();
     return true;
 }

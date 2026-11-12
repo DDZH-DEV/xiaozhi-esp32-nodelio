@@ -130,6 +130,8 @@ uint32_t nodelio_skill_news_on_sentence(const char* text);
 bool nodelio_skill_news_finish_chunk(uint32_t token, bool played_audio, bool* more);
 /** 本段已下发且仍在等 TTS：云端再发 op=read 时应改成 continue（防同轮双调用）。 */
 bool nodelio_skill_news_should_continue(void);
+/** 当前朗读段还有字幕未对齐的正文（句间空隙勿合成 tts.stop）。 */
+bool nodelio_skill_news_has_unplayed_tail(void);
 void nodelio_skill_news_cancel_read(void);
 /** 详情底栏：朗读 / 暂停 / 继续。 */
 void nodelio_skill_news_sync_read_btn(void);

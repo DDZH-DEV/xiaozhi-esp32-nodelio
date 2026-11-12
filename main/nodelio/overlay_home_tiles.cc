@@ -1946,10 +1946,17 @@ static bool launcher_is_side_column(void)
     return w > 0 && w < full - 40;
 }
 
+static bool launcher_is_sila86(void)
+{
+    const auto *b = nodelio_board_get();
+    return b && b->info.board_id && strcmp(b->info.board_id, "sila_86") == 0;
+}
+
 static lv_obj_t *make_launcher_card(lv_obj_t *parent, const char *icon, const char *title,
                                     const char *subtitle, lv_event_cb_t on_click, bool side,
                                     bool half)
 {
+    const bool large = nodelio_text_scale() >= 1;
     lv_obj_t *card = lv_obj_create(parent);
     lv_obj_remove_style_all(card);
     if (half) {
@@ -1957,11 +1964,11 @@ static lv_obj_t *make_launcher_card(lv_obj_t *parent, const char *icon, const ch
         lv_obj_set_width(card, 10);
         lv_obj_set_flex_grow(card, 1);
         lv_obj_set_style_min_width(card, 0, 0);
-        lv_obj_set_height(card, 88);
     } else {
         lv_obj_set_width(card, lv_pct(100));
-        lv_obj_set_height(card, side ? 72 : 88);
     }
+    /* 按内容撑开，避免半宽卡副文被固定高度裁切 */
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(card, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
@@ -1970,6 +1977,7 @@ static lv_obj_t *make_launcher_card(lv_obj_t *parent, const char *icon, const ch
     lv_obj_set_style_border_opa(card, LV_OPA_80, 0);
     ui_style_card(card);
     lv_obj_set_style_pad_hor(card, 14, 0);
+    lv_obj_set_style_pad_ver(card, side ? 12 : (large ? 16 : 14), 0);
     lv_obj_set_style_pad_column(card, 12, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1998,28 +2006,31 @@ static lv_obj_t *make_launcher_card(lv_obj_t *parent, const char *icon, const ch
     lv_obj_t *col = lv_obj_create(card);
     lv_obj_remove_style_all(col);
     lv_obj_set_flex_grow(col, 1);
+    lv_obj_set_style_min_width(col, 0, 0);
     lv_obj_set_height(col, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_row(col, 4, 0);
+    lv_obj_set_style_pad_row(col, large ? 2 : 4, 0);
     lv_obj_clear_flag(col, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
+    /* line_box = 字高 + 行距余量，避免大字档基线把笔画裁进盒底 */
+    const int line_box = nl_ov_ui_line_box();
     lv_obj_t *tit = lv_label_create(col);
     nl_ov_set_font(tit);
     lv_label_set_text(tit, title);
     lv_obj_set_style_text_color(tit, UI_TEXT, 0);
     lv_label_set_long_mode(tit, LV_LABEL_LONG_DOT);
     lv_obj_set_width(tit, lv_pct(100));
+    lv_obj_set_height(tit, line_box);
 
     lv_obj_t *sub = lv_label_create(col);
     nl_ov_set_font(sub);
     lv_label_set_text(sub, subtitle);
     lv_obj_set_style_text_color(sub, UI_TEXT_MUTED, 0);
+    /* 单行打点，避免半宽卡把长句折成三行再裁切 */
     lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
     lv_obj_set_width(sub, lv_pct(100));
-    if (side) {
-        lv_obj_set_height(sub, nl_ov_ui_font_line_h());
-    }
+    lv_obj_set_height(sub, line_box);
     return card;
 }
 
@@ -2057,8 +2068,8 @@ static void fill_home_launcher(void)
     lv_obj_t *title = lv_label_create(hdr);
     nl_ov_set_font(title);
     lv_label_set_text(title, "启动台");
-    /* 标题落在 36px 黑底顶栏里，浅色字才读得清 */
-    lv_obj_set_style_text_color(title, UI_ON_TILE, 0);
+    /* 标题在内容区画布上，跟正文同色（浅色勿用 ON_TILE 白字） */
+    lv_obj_set_style_text_color(title, UI_TEXT, 0);
 
     lv_obj_t *hint = lv_label_create(hdr);
     nl_ov_set_font(hint);
@@ -2082,26 +2093,36 @@ static void fill_home_launcher(void)
     /* C3：已钉技能磁贴（技能通道，非 panel/command） */
     nl_ov_home_skills_append_launcher(s_home);
 
+    /* 86 大字：半宽并排易裁副文，改竖排通栏；508/P4 仍半宽或侧栏。 */
+    const bool sila86_large = launcher_is_sila86() && nodelio_text_scale() >= 1;
+    const bool half = !side && !sila86_large;
     lv_obj_t *card_parent = s_home;
     if (!side) {
         card_parent = lv_obj_create(s_home);
         lv_obj_remove_style_all(card_parent);
         lv_obj_set_width(card_parent, lv_pct(100));
         lv_obj_set_height(card_parent, LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(card_parent, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(card_parent, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(card_parent, 12, 0);
+        if (sila86_large) {
+            lv_obj_set_flex_flow(card_parent, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(card_parent, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                                  LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_row(card_parent, 10, 0);
+        } else {
+            lv_obj_set_flex_flow(card_parent, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(card_parent, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                                  LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_column(card_parent, 12, 0);
+        }
         lv_obj_clear_flag(card_parent, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
     }
     make_launcher_card(
         card_parent, MATERIAL_SYMBOLS_EXPLORE, "全部应用",
-        side ? "技能列表 · 可钉选" : "打开技能列表 · 手机可钉选或挂画布",
-        [](lv_event_t *) { nl_ov_show_page(NL_TAB_APPS); }, side, !side);
+        side ? "技能列表 · 可钉选" : "技能列表 · 可钉选或挂画布",
+        [](lv_event_t *) { nl_ov_show_page(NL_TAB_APPS); }, side, half);
 
     make_launcher_card(card_parent, MATERIAL_SYMBOLS_MIC, "进入对话",
-                       side ? "唤醒助手" : "唤醒助手 · 语音控家或提问",
-                       [](lv_event_t *) { nodelio_overlay_show_chat(); }, side, !side);
+                       side ? "唤醒助手" : "唤醒助手 · 语音控家",
+                       [](lv_event_t *) { nodelio_overlay_show_chat(); }, side, half);
     if (s_have_layout && s_layout && s_layout->layout_version > 0) {
         nodelio_panel_ui_mark_home_filled(s_layout->layout_version);
     }

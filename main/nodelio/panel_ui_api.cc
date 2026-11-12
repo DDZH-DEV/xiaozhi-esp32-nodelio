@@ -271,9 +271,11 @@ extern "C" void nodelio_panel_ui_news_read_local(const char *op)
 }
 
 static bool s_news_read_offer_armed = false;
+static bool s_news_auto_read_armed = false;
 
 extern "C" void nodelio_panel_ui_arm_news_read_offer(void)
 {
+    s_news_auto_read_armed = false;
     s_news_read_offer_armed = true;
     ESP_LOGI(TAG, "arm news read offer");
 }
@@ -284,6 +286,22 @@ extern "C" bool nodelio_panel_ui_take_news_read_offer(void)
         return false;
     }
     s_news_read_offer_armed = false;
+    return true;
+}
+
+extern "C" void nodelio_panel_ui_arm_news_auto_read(void)
+{
+    s_news_read_offer_armed = false;
+    s_news_auto_read_armed = true;
+    ESP_LOGI(TAG, "arm news auto read");
+}
+
+extern "C" bool nodelio_panel_ui_take_news_auto_read(void)
+{
+    if (!s_news_auto_read_armed) {
+        return false;
+    }
+    s_news_auto_read_armed = false;
     return true;
 }
 

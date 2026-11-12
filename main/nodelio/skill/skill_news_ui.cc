@@ -449,6 +449,17 @@ bool nodelio_skill_news_should_continue(void)
     return s_news_read_progress.waiting() && s_speak_off > s_speak_off_prev;
 }
 
+bool nodelio_skill_news_has_unplayed_tail(void)
+{
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock || !news_read_is_current()) {
+        return false;
+    }
+    return s_news_read_progress.HasUnplayedTail() ||
+           (s_news_read_progress.waiting() &&
+            s_news_read_progress.MatchedOffset() < s_news_read_progress.EndOffset());
+}
+
 void nodelio_skill_news_cancel_read(void) {
     DisplayLockGuard lock(nl_ov_disp());
     if (lock) {
@@ -1357,7 +1368,8 @@ void fill_news(void)
         lv_obj_t *row = lv_obj_create(s_card_list);
         lv_obj_remove_style_all(row);
         lv_obj_set_width(row, lv_pct(100));
-        lv_obj_set_height(row, 82);
+        /* 随标题/meta 撑开；禁行内滚动，避免上滑被行抢走 */
+        lv_obj_set_height(row, LV_SIZE_CONTENT);
         lv_obj_set_style_bg_color(row, ui_palette_is_dark() ? UI_FIELD : UI_SURFACE, 0);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(row, 14, 0);
@@ -1365,12 +1377,11 @@ void fill_news(void)
         lv_obj_set_style_border_color(row, UI_TILE_OFF_BORDER, 0);
         lv_obj_set_style_border_opa(row, LV_OPA_60, 0);
         lv_obj_set_style_pad_hor(row, 12, 0);
-        lv_obj_set_style_pad_ver(row, 8, 0);
+        lv_obj_set_style_pad_ver(row, 10, 0);
         lv_obj_set_style_pad_column(row, 12, 0);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-        /* 行高固定。标题超出时默认仍可滚这一行，上滑会先吃掉手势，列表推不下去。 */
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_event_cb(row, on_news_row, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_obj_set_style_bg_color(row, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
@@ -1397,7 +1408,7 @@ void fill_news(void)
         lv_obj_set_height(txt, LV_SIZE_CONTENT);
         lv_obj_set_style_min_width(txt, 0, 0);
         lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_style_pad_row(txt, 5, 0);
+        lv_obj_set_style_pad_row(txt, 4, 0);
         lv_obj_clear_flag(txt, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_clear_flag(txt, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -1405,16 +1416,13 @@ void fill_news(void)
         nl_ov_set_font(t);
         lv_label_set_text(t, n->title);
         lv_obj_set_style_text_color(t, UI_TEXT, 0);
-        /* 标题最多两行；高度按实际行数自撑，单行标题不再顶在卡内上沿 */
+        /* 单行打点，避免宽够仍把「等」挤到第二行；行卡用 SIZE_CONTENT */
         lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
         lv_obj_set_width(t, lv_pct(100));
         {
             const lv_font_t *font = lv_obj_get_style_text_font(t, LV_PART_MAIN);
-            const int lh = font ? (int)lv_font_get_line_height(font) : 16;
-            const int lsp = nl_ov_ui_line_box() - lh;
-            lv_obj_set_height(t, LV_SIZE_CONTENT);
-            /* 上限含行距：恰好两行不再触发 DOT，三行起才省略 */
-            lv_obj_set_style_max_height(t, lh * 2 + (lsp > 0 ? lsp : 0), 0);
+            const int lh = font ? (int)lv_font_get_line_height(font) : nl_ov_ui_font_line_h();
+            lv_obj_set_height(t, lh);
         }
 
         char when[24];
@@ -1433,6 +1441,7 @@ void fill_news(void)
         lv_obj_set_style_text_color(a, UI_TEXT_MUTED, 0);
         lv_label_set_long_mode(a, LV_LABEL_LONG_DOT);
         lv_obj_set_width(a, lv_pct(100));
+        lv_obj_set_height(a, nl_ov_ui_font_line_h());
     }
 }
 

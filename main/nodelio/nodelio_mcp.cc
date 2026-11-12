@@ -1585,7 +1585,18 @@ void nodelio_mcp_register_tools(void)
                 return std::unexpected(std::string("op 须为 prev/next/read/continue/mark_read/skip/close"));
             }
             auto& app = Application::GetInstance();
-            /* 云端常忽略 continue / 同轮连调两次 read；有未读游标时强制 continue。 */
+            /* 拦截重复/抢先 read 时禁止 tools/call error：云端会 Unknown error + goodbye 退会话。
+             * 回【等】：本机 tts_looks_like_news_instruction 会丢弃，不当正文念。 */
+            if ((op == "read" || op == "continue") && !app.ShouldAcceptCloudNewsRead()) {
+                ESP_LOGI("nl_mcp", "soft-drop cloud skill.news op=%s (waiting user confirm)",
+                         op.c_str());
+                return std::string("【等】");
+            }
+            if (op == "read" && nodelio_skill_news_should_continue() && !app.PreferNewsContinue()) {
+                ESP_LOGI("nl_mcp", "soft-drop duplicate cloud skill.news read (waiting first TTS)");
+                return std::string("【等】");
+            }
+            /* 本机已发续读 detect 后：云端若仍传 read 则改成 continue。 */
             if (op == "read" && app.PreferNewsContinue()) {
                 ESP_LOGW("nl_mcp", "cloud sent op=read while continue preferred → force continue");
                 op = "continue";

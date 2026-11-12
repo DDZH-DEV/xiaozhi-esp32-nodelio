@@ -110,6 +110,13 @@ static bool apps_wide(void)
     return nodelio_display_profile()->nav_width != 0;
 }
 
+/** 仅 sila-86（480 方屏）；508/P4 不走此分支。 */
+static bool apps_sila86(void)
+{
+    const auto *b = nodelio_board_get();
+    return b && b->info.board_id && strcmp(b->info.board_id, "sila_86") == 0;
+}
+
 static int apps_body_w(void)
 {
     const auto *p = nodelio_display_profile();
@@ -564,10 +571,15 @@ static void render_list(void)
     const int line = nl_ov_ui_line_box();
     const lv_font_t* font = nl_ov_ui_font();
     const int font_h = nl_ov_ui_font_line_h();
-    const bool large = nodelio_text_scale() == 1;
+    /* 0=标准；1/2 同大字库，间距按 ≥1 */
+    const bool large = nodelio_text_scale() >= 1;
+    const bool sila86 = apps_sila86();
     const int gap = wide_grid ? (large ? 28 : 22) : (large ? 10 : 8);
     int card_w, card_h;
-    const int pod_size = rail ? 52 : (wide_grid ? 72 : 58);
+    /* 86 大字：略缩 Pod，把宽度留给两行标题 */
+    const int pod_size = rail ? 52 : (wide_grid ? 72 : (sila86 && large ? 52 : 58));
+    /* 508 方屏：色块内字形放大（字库最大 30，用 transform 约 1.45×） */
+    const int icon_scale = (!rail && !wide_grid && !sila86) ? 372 : LV_SCALE_NONE;
     if (rail) {
         card_w = list_w;
         /* 仅标题，相对色 Pod 垂直居中 */
@@ -594,17 +606,21 @@ static void render_list(void)
         lv_obj_set_style_pad_row(s_list, large ? 40 : 32, 0);
         lv_obj_set_style_pad_column(s_list, gap, 0);
     } else {
-        /* 方屏固定 5 列，名称最多两行 */
-        const int cols = 5;
+        /* 方屏默认 5 列；86 大字改 4 列，避免窄列把全名拆成怪换行。标题高含行距。 */
+        const int cols = (sila86 && large) ? 4 : 5;
+        const int title_h = font_h + line; /* 两行：line_h + (line_h+line_space) */
+        const int icon_gap = (sila86 && large) ? 6 : 8;
         card_w = (list_w - gap * (cols - 1)) / cols;
         if (card_w < pod_size + 4) {
             card_w = pod_size + 4;
         }
-        card_h = 4 + pod_size + 8 + 2 * font_h + 4;
+        card_h = 4 + pod_size + icon_gap + title_h + 4;
         lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_ROW_WRAP);
         lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
                               LV_FLEX_ALIGN_START);
-        lv_obj_set_style_pad_row(s_list, large ? 18 : 16, 0);
+        /* 508 行距略收；86 保持原样 */
+        const int row_gap = sila86 ? (large ? 14 : 16) : (large ? 8 : 6);
+        lv_obj_set_style_pad_row(s_list, row_gap, 0);
         lv_obj_set_style_pad_column(s_list, gap, 0);
     }
     for (int i = 0; i < APP_MAX; ++i) {
@@ -714,6 +730,11 @@ static void render_list(void)
             lv_obj_set_size(view.card, card_w, card_h);
             lv_obj_set_size(view.pod, pod_size, pod_size);
             lv_obj_center(view.icon);
+            lv_obj_update_layout(view.icon);
+            lv_obj_set_style_transform_pivot_x(view.icon, lv_obj_get_width(view.icon) / 2, 0);
+            lv_obj_set_style_transform_pivot_y(view.icon, lv_obj_get_height(view.icon) / 2, 0);
+            lv_obj_set_style_transform_scale_x(view.icon, icon_scale, 0);
+            lv_obj_set_style_transform_scale_y(view.icon, icon_scale, 0);
             nl_ov_set_font(view.title);
             nl_ov_set_font(view.subtitle);
             if (rail) {
@@ -751,17 +772,19 @@ static void render_list(void)
                                       LV_FLEX_ALIGN_CENTER);
                 lv_obj_set_style_text_align(view.title, LV_TEXT_ALIGN_CENTER, 0);
             } else {
-                /* 86：两行居中；与服务端全名一致，窄列允许换行 */
+                /* 方屏：两行居中；全名不截断。86 大字行高含 line_space，避免第二行被裁。 */
+                const int title_h = font_h + line;
+                const int icon_gap = (sila86 && large) ? 6 : 8;
                 lv_obj_add_flag(view.subtitle, LV_OBJ_FLAG_HIDDEN);
                 lv_label_set_long_mode(view.title, LV_LABEL_LONG_WRAP);
-                lv_obj_set_height(view.title, 2 * font_h);
+                lv_obj_set_height(view.title, title_h);
                 lv_obj_set_flex_flow(view.card, LV_FLEX_FLOW_COLUMN);
                 lv_obj_set_flex_align(view.card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                                       LV_FLEX_ALIGN_CENTER);
-                lv_obj_set_style_pad_hor(view.card, 0, 0);
+                lv_obj_set_style_pad_hor(view.card, sila86 && large ? 2 : 0, 0);
                 lv_obj_set_style_pad_top(view.card, 4, 0);
                 lv_obj_set_style_pad_bottom(view.card, 4, 0);
-                lv_obj_set_style_pad_row(view.card, 8, 0);
+                lv_obj_set_style_pad_row(view.card, icon_gap, 0);
                 lv_obj_set_style_pad_column(view.card, 0, 0);
                 lv_obj_set_flex_grow(view.text, 0);
                 lv_obj_set_width(view.text, lv_pct(100));
@@ -1598,6 +1621,15 @@ bool nl_ov_apps_open_by_query(const char *query)
         return false;
     }
     ESP_LOGI(TAG, "open_by_query invoke sid=%s", plan.sid);
+    /* 新闻/每日一篇已在前台：云端二次 open_app 勿再 invoke，否则列表重刷并再问「要读吗」 */
+    if (nodelio_skill_news_ui_active() &&
+        (strstr(query, "新闻") || strstr(query, "news") || strstr(query, "一篇") ||
+         strstr(query, "美文") || strstr(query, "article") || strstr(plan.sid, "news") ||
+         strstr(plan.sid, "daily") || strstr(plan.sid, "article") ||
+         strcmp(plan.sid, "builtin.daily") == 0)) {
+        ESP_LOGI(TAG, "open_by_query: news already open, skip re-invoke sid=%s", plan.sid);
+        return true;
+    }
     if (strcmp(plan.sid, "builtin.daily") == 0) {
         for (int i = 0; i < s_item_n; ++i) {
             if (strcmp(s_items[i].id, plan.sid) == 0) {
@@ -1652,7 +1684,7 @@ void nl_ov_build_apps(void)
     lv_obj_set_flex_grow(s_list, 1);
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    const bool large = nodelio_text_scale() == 1;
+    const bool large = nodelio_text_scale() >= 1;
     const int apps_gap_col = is_wide ? (large ? 20 : 16) : (large ? 10 : 8);
     const int apps_gap_row = is_wide ? (large ? 18 : 14) : (large ? 18 : 16);
     lv_obj_set_style_pad_row(s_list, apps_gap_row, 0);
