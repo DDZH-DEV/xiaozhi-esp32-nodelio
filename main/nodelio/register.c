@@ -195,7 +195,10 @@ esp_err_t nodelio_device_register(nodelio_nvs_config_t *cfg)
               cJSON_AddStringToObject(dp, "id", profile->id) &&
               cJSON_AddNumberToObject(dp, "cols", profile->grid_cols) &&
               cJSON_AddNumberToObject(dp, "rows", profile->grid_rows) &&
-              cJSON_AddNumberToObject(dp, "nav_width", profile->nav_width);
+              cJSON_AddNumberToObject(dp, "nav_width", profile->nav_width) &&
+              cJSON_AddStringToObject(dp, "shell_style",
+                                      profile->shell_style ? profile->shell_style : "classic") &&
+              cJSON_AddNumberToObject(dp, "dock_width", profile->dock_width);
     cJSON* feature_array = ok ? cJSON_CreateStringArray(features, 4) : NULL;
     if (!feature_array || !cJSON_AddItemToObject(config, "features", feature_array)) {
         cJSON_Delete(feature_array);

@@ -18,6 +18,7 @@
 #include "panel_ui.h"
 #include "ssid_manager.h"
 #include "system_info.h"
+#include "ui_dock.h"
 #include "ui_theme.h"
 #include "ui_widgets.h"
 #include "wifi_manager.h"
@@ -2159,7 +2160,7 @@ static void build_home_view(void) {
     lv_obj_set_style_pad_top(s_home, NL_UI_HOME_PAD_V, 0);
     lv_obj_set_style_pad_bottom(s_home, NL_UI_HOME_PAD_V, 0);
     lv_obj_set_style_bg_color(s_home, UI_BG, 0);
-    lv_obj_set_style_bg_opa(s_home, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(s_home, ui_palette_is_immersive() ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_home, LV_OBJ_FLAG_SCROLLABLE);
 
     if (!s_have_layout || !s_layout) {
@@ -2282,7 +2283,7 @@ static void build_home_view(void) {
     lv_coord_t area_w = lv_obj_get_content_width(s_home);
     lv_coord_t area_h = lv_obj_get_content_height(s_home);
     if (area_w < 40) {
-        area_w = nodelio_display_profile()->width - nodelio_display_profile()->nav_width -
+        area_w = nodelio_display_profile()->width - nl_dock_left_inset() -
                  2 * NL_UI_HOME_PAD_H;
     }
     if (area_h < 40) {

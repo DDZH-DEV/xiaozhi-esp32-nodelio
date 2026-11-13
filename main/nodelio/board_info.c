@@ -16,6 +16,11 @@ static const nodelio_display_profile_t s_profile = {
     .result_width = 720,
     .result_max_height = 396,
     .chat_bottom = 80,
+    .shell_style = "immersive",
+    .dock_width = 76,
+    .dock_rect = {16, 16, 76, 420},
+    .hero_rect = {108, 16, 468, 420},
+    .list_rect = {592, 16, 672, 420},
 };
 #elif CONFIG_BOARD_TYPE_SILA_P4C5_508
 #define NL_BOARD_ID "sila_p4c5_508"
@@ -32,6 +37,11 @@ static const nodelio_display_profile_t s_profile = {
     .result_width = 620,
     .result_max_height = 640,
     .chat_bottom = 72,
+    .shell_style = "immersive",
+    .dock_width = 68,
+    .dock_rect = {12, 16, 68, 688},
+    .hero_rect = {92, 16, 612, 310},
+    .list_rect = {92, 338, 612, 366},
 };
 #else
 #define NL_BOARD_ID "sila_86"
@@ -48,6 +58,11 @@ static const nodelio_display_profile_t s_profile = {
     .result_width = 412,
     .result_max_height = 424,
     .chat_bottom = 52,
+    .shell_style = "classic",
+    .dock_width = 0,
+    .dock_rect = {0, 0, 0, 0},
+    .hero_rect = {0, 0, 0, 0},
+    .list_rect = {0, 0, 0, 0},
 };
 #endif
 

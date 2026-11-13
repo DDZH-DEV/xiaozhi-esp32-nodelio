@@ -1,4 +1,5 @@
 #include "ui_theme.h"
+#include "sdkconfig.h"
 
 /* 浅色实心绿用 #1b7a40：计划里的 #1f8f4a 配白字只有 4.13:1，白字主按钮过不了 4.5。
  * 提示色与弱文同为 #6b6560：#8a847c 在白卡片上约 3.7:1。 */
@@ -12,6 +13,7 @@ static const ui_palette_t k_light = {
     0x94a3b8, 0xd6dce5, 0xdcfce7, 0xf3e8ff, 0xfef3c7, 0xe0f2fe, 0xffffff, 0x16a34a,
     0xd0d7de, 0x0284c7, 0xd97706, 0xe2e6ea, 0x16a34a, 0x0284c7, 0xd97706, 0x7c3aed,
     0x16a34a, 0xe2e6ea, 0xd0d7de, 0xdcfce7, 0x0f172a,
+    0xd0d7de, 255,      0xffffff, 0x0f172a, 0x16a34a, 0x0f172a, 0x334155, 0x64748b,
 };
 
 /* 曜夜微晶（升级大厂微光质感）：深邃环境冷黑底 + 晶透发光微边框 + 高对比图标徽章 */
@@ -23,21 +25,53 @@ static const ui_palette_t k_dark = {
     0x5f7188, 0x19212d, 0x0f3b25, 0x281645, 0x38240d, 0x0d3654, 0x151b24, 0x34c759,
     0x232d3d, 0x38bdf8, 0xf59e0b, 0x1f2735, 0x34c759, 0x38bdf8, 0xf59e0b, 0xa855f7,
     0x34c759, 0x1f2735, 0x202630, 0x2a384c, 0x000000,
+    0x232d3d, 255,      0xffffff, 0x000000, 0x2ee066, 0xf8fafc, 0xc5d1e0, 0x5f7188,
+};
+
+/* 沉浸毛玻璃（P4 62 / 508 专属）：深森绿黑底（段3 叠壁纸）+ 14% 微白光边 + 白色胶囊 Dock + 荧光绿高亮 */
+static const ui_palette_t k_immersive = {
+    0x080f0c, 0x101c16, 0x182a21, 0x0d1712, 0x0c1511, 0x263b30, 0x122019, 0x1a2e24,
+    0xffffff, 0xd0dfd6, 0x9eaba2, 0x6e8075, 0x5e6d64, 0x9eaba2, 0xffffff, 0x000000,
+    0xe8fff0, 0xe8f6ff, 0x163828, 0x34c759, 0x6ee08a, 0x248a3d, 0x193826, 0x34c759,
+    0xffb340, 0xff453a, 0x38bdf8, 0xc084fc, 0x3d1717, 0xfecaca, 0x193826, 0x1a2620,
+    0x5e6d64, 0x16241d, 0x123d26, 0x281645, 0x38240d, 0x0d3654, 0x101c16, 0x34c759,
+    0x263b30, 0x38bdf8, 0xf59e0b, 0x182820, 0x34c759, 0x38bdf8, 0xf59e0b, 0xa855f7,
+    0x2ee066, 0x182820, 0x1a2620, 0x20382b, 0x000000,
+    0xffffff, 36,       0xffffff, 0x000000, 0x2ee066, 0xffffff, 0x9eaba2, 0x5e6d64,
 };
 
 static int s_mode;
 
 extern "C" const ui_palette_t *ui_palette(void)
 {
-    return s_mode ? &k_dark : &k_light;
+    if (s_mode == UI_MODE_IMMERSIVE) {
+        return &k_immersive;
+    }
+    return s_mode == UI_MODE_DARK ? &k_dark : &k_light;
 }
 
 extern "C" void ui_palette_set(int mode)
 {
-    s_mode = mode == 1 ? 1 : 0;
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508
+    if (mode == UI_MODE_IMMERSIVE) {
+        s_mode = UI_MODE_IMMERSIVE;
+        return;
+    }
+#endif
+    s_mode = mode == UI_MODE_DARK ? UI_MODE_DARK : UI_MODE_LIGHT;
+}
+
+extern "C" int ui_palette_mode(void)
+{
+    return s_mode;
 }
 
 extern "C" int ui_palette_is_dark(void)
 {
-    return s_mode == 1;
+    return s_mode != UI_MODE_LIGHT;
+}
+
+extern "C" int ui_palette_is_immersive(void)
+{
+    return s_mode == UI_MODE_IMMERSIVE;
 }

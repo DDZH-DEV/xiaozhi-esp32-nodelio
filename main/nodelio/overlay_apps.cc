@@ -808,6 +808,7 @@ void nl_ov_apps_reapply_appearance(void)
 {
     if (s_page) {
         lv_obj_set_style_bg_color(s_page, UI_BG, 0);
+        lv_obj_set_style_bg_opa(s_page, ui_palette_is_immersive() ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
     }
     if (s_hint) {
         lv_obj_set_style_text_color(s_hint, UI_TEXT_MUTED, 0);
@@ -1652,7 +1653,7 @@ void nl_ov_build_apps(void)
     lv_obj_remove_style_all(s_page);
     lv_obj_set_size(s_page, lv_pct(100), lv_pct(100));
     lv_obj_set_style_bg_color(s_page, UI_BG, 0);
-    lv_obj_set_style_bg_opa(s_page, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(s_page, ui_palette_is_immersive() ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(s_page, kAppsPagePadH, 0);
     const bool is_wide = apps_wide();
     /* P4 状态栏悬浮不占位：顶垫略紧，首排更靠上仍避开状态栏。 */

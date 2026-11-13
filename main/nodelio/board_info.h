@@ -9,6 +9,13 @@ extern "C" {
 #endif
 
 typedef struct {
+    int16_t x;
+    int16_t y;
+    uint16_t w;
+    uint16_t h;
+} nodelio_rect_t;
+
+typedef struct {
     const char* id;
     uint16_t width;
     uint16_t height;
@@ -19,6 +26,11 @@ typedef struct {
     uint16_t result_width;
     uint16_t result_max_height;
     uint16_t chat_bottom;
+    const char* shell_style; /* "classic" | "immersive" */
+    uint16_t dock_width;     /* 沉浸胶囊 Dock 宽（不动 nav_width 宽屏语义） */
+    nodelio_rect_t dock_rect;
+    nodelio_rect_t hero_rect;
+    nodelio_rect_t list_rect;
 } nodelio_display_profile_t;
 
 const nodelio_display_profile_t* nodelio_display_profile(void);

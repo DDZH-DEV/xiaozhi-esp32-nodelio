@@ -66,12 +66,26 @@ typedef struct {
     uint32_t tile_badge_offline;
     uint32_t tab_glow;
     uint32_t shadow;
+    uint32_t glass_border;
+    uint32_t glass_border_opa;
+    uint32_t dock_bg;
+    uint32_t dock_shadow;
+    uint32_t neon;
+    uint32_t text_on_glass;
+    uint32_t text_on_glass_sub;
+    uint32_t text_on_glass_muted;
 } ui_palette_t;
 
+#define UI_MODE_LIGHT 0
+#define UI_MODE_DARK 1
+#define UI_MODE_IMMERSIVE 2
+
 const ui_palette_t *ui_palette(void);
-/** 0=浅色（默认） 1=曜夜。其它值按浅色。 */
+/** 0=浅色（默认） 1=曜夜 2=沉浸（仅 P4 板）。其它值按浅色。 */
 void ui_palette_set(int mode);
+int ui_palette_mode(void);
 int ui_palette_is_dark(void);
+int ui_palette_is_immersive(void);
 /** 卡片圆角像素：4 / 16 / 22，实现在 nvs_config.c。 */
 int nodelio_card_radius_px(void);
 
@@ -137,6 +151,14 @@ int nodelio_card_radius_px(void);
 #define UI_C_TILE_BADGE_OFF (ui_palette()->tile_badge_off)
 #define UI_C_TILE_BADGE_OFFLINE (ui_palette()->tile_badge_offline)
 #define UI_C_TAB_GLOW (ui_palette()->tab_glow)
+#define UI_C_GLASS_BORDER (ui_palette()->glass_border)
+#define UI_GLASS_BORDER_OPA ((lv_opa_t)(ui_palette()->glass_border_opa))
+#define UI_C_DOCK_BG (ui_palette()->dock_bg)
+#define UI_C_DOCK_SHADOW (ui_palette()->dock_shadow)
+#define UI_C_NEON (ui_palette()->neon)
+#define UI_C_TEXT_ON_GLASS (ui_palette()->text_on_glass)
+#define UI_C_TEXT_ON_GLASS_SUB (ui_palette()->text_on_glass_sub)
+#define UI_C_TEXT_ON_GLASS_MUTED (ui_palette()->text_on_glass_muted)
 
 #define UI_BG lv_color_hex(UI_C_BG)
 #define UI_SURFACE lv_color_hex(UI_C_SURFACE)
@@ -198,6 +220,13 @@ int nodelio_card_radius_px(void);
 #define UI_TILE_BADGE_OFF lv_color_hex(UI_C_TILE_BADGE_OFF)
 #define UI_TILE_BADGE_OFFLINE lv_color_hex(UI_C_TILE_BADGE_OFFLINE)
 #define UI_TAB_GLOW lv_color_hex(UI_C_TAB_GLOW)
+#define UI_GLASS_BORDER lv_color_hex(UI_C_GLASS_BORDER)
+#define UI_DOCK_BG lv_color_hex(UI_C_DOCK_BG)
+#define UI_DOCK_SHADOW lv_color_hex(UI_C_DOCK_SHADOW)
+#define UI_NEON lv_color_hex(UI_C_NEON)
+#define UI_TEXT_ON_GLASS lv_color_hex(UI_C_TEXT_ON_GLASS)
+#define UI_TEXT_ON_GLASS_SUB lv_color_hex(UI_C_TEXT_ON_GLASS_SUB)
+#define UI_TEXT_ON_GLASS_MUTED lv_color_hex(UI_C_TEXT_ON_GLASS_MUTED)
 
 /* ---- geometry（8px 网格） ----------------------------------------------- */
 #define UI_RADIUS 20

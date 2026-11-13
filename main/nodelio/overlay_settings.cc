@@ -670,7 +670,13 @@ void nl_ov_open_settings_detail(set_page_id_t page)
             lv_obj_set_style_text_color(route_hint, UI_TEXT_TIP, 0);
         }
 
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508
+        const uint8_t mode_cur = s_cfg.ui_mode > 2 ? 0 : s_cfg.ui_mode;
+        constexpr int k_mode_cnt = 3;
+#else
         const uint8_t mode_cur = s_cfg.ui_mode == 1 ? 1 : 0;
+        constexpr int k_mode_cnt = 2;
+#endif
         lv_obj_t *mode_band = audio_ctrl_band(body, "外观", nl_ov_ui_mode_name(mode_cur), nullptr);
         lv_obj_t *mode_row = lv_obj_create(mode_band);
         lv_obj_remove_style_all(mode_row);
@@ -681,8 +687,8 @@ void nl_ov_open_settings_detail(set_page_id_t page)
                               LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(mode_row, 8, 0);
         lv_obj_clear_flag(mode_row, LV_OBJ_FLAG_SCROLLABLE);
-        static const char *k_mode[] = {"浅色", "深色"};
-        for (int i = 0; i < 2; i++) {
+        static const char *k_mode[] = {"浅色", "深色", "沉浸"};
+        for (int i = 0; i < k_mode_cnt; i++) {
             const bool on = mode_cur == (uint8_t)i;
             lv_obj_t *chip = lv_obj_create(mode_row);
             lv_obj_remove_style_all(chip);
@@ -1806,7 +1812,7 @@ static void fill_settings_hub(void)
     lv_obj_set_style_pad_bottom(s_settings, is_wide ? 20 : 54, 0);
 #endif
     lv_obj_set_style_bg_color(s_settings, UI_BG, 0);
-    lv_obj_set_style_bg_opa(s_settings, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(s_settings, ui_palette_is_immersive() ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
     lv_obj_set_scroll_dir(s_settings, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_settings, LV_SCROLLBAR_MODE_OFF);
     lv_obj_clear_flag(s_settings, LV_OBJ_FLAG_SCROLL_ELASTIC);

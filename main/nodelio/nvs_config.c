@@ -166,6 +166,15 @@ static uint8_t clamp_u8(uint8_t v, uint8_t lo, uint8_t hi, uint8_t def)
     return v;
 }
 
+static uint8_t clamp_ui_mode(uint8_t mode)
+{
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508
+    return mode > 2 ? 0 : mode;
+#else
+    return mode == 1 ? 1 : 0;
+#endif
+}
+
 static void apply_defaults(nodelio_nvs_config_t *out)
 {
     if (!out) {
@@ -211,9 +220,7 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     if (out->text_scale > NODELIO_TEXT_SCALE_MAX) {
         out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
     }
-    if (out->ui_mode > 1) {
-        out->ui_mode = 0;
-    }
+    out->ui_mode = clamp_ui_mode(out->ui_mode);
     if (out->notice_sound > 3) {
         out->notice_sound = 1;
     }
@@ -294,9 +301,7 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     if (out->text_scale > NODELIO_TEXT_SCALE_MAX) {
         out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
     }
-    if (out->ui_mode > 1) {
-        out->ui_mode = 0;
-    }
+    out->ui_mode = clamp_ui_mode(out->ui_mode);
     if (out->notice_sound > 3) {
         out->notice_sound = 1;
     }
@@ -631,7 +636,7 @@ static esp_err_t save_config_impl(void *ctx) {
     NL_ACCUM(nvs_set_u16(h, "md_pause", tmp->media_pause_s));
     NL_ACCUM(nvs_set_u8(h, "md_duck", tmp->media_wake_duck_pct));
     NL_ACCUM(nvs_set_u8(h, "txt_scl", tmp->text_scale));
-    NL_ACCUM(nvs_set_u8(h, "ui_mode", tmp->ui_mode > 1 ? 0 : tmp->ui_mode));
+    NL_ACCUM(nvs_set_u8(h, "ui_mode", clamp_ui_mode(tmp->ui_mode)));
     NL_ACCUM(nvs_set_u8(h, "nt_snd", tmp->notice_sound > 3 ? 1 : tmp->notice_sound));
     NL_ACCUM(nvs_set_u8(h, "nt_rep", tmp->notice_repeat ? 1 : 0));
     NL_ACCUM(nvs_set_u8(h, "ai_pos", tmp->ai_pos_set ? 1 : 0));
@@ -993,7 +998,7 @@ uint8_t nodelio_ui_mode(void)
     if (!s_ram_ok) {
         return 0;
     }
-    return s_ram.ui_mode == 1 ? 1 : 0;
+    return clamp_ui_mode(s_ram.ui_mode);
 }
 
 uint16_t nodelio_ai_drawer_width_max(void)
@@ -1080,7 +1085,7 @@ uint8_t nodelio_ai_shadow_width(void)
 #if CONFIG_IDF_TARGET_ESP32S3
         return 0;
 #else
-        return s_ram_ok && s_ram.ui_mode == 1 ? 0 : NODELIO_AI_SH_DEFAULT;
+        return s_ram_ok && s_ram.ui_mode != 0 ? 0 : NODELIO_AI_SH_DEFAULT;
 #endif
     }
     return s_ram.ai_sh_w;

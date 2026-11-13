@@ -18,6 +18,9 @@
 #include "media_player.h"
 #include "skill_result_ui.h"
 #include "ui_theme.h"
+#include "ui_backdrop.h"
+#include "ui_dock.h"
+#include "ui_probe.h"
 #include "ui_widgets.h"
 #include "wifi_provision.h"
 #if __has_include("nodelio_build_stamp.h")
@@ -404,6 +407,8 @@ void nl_ov_apply_appearance(void)
         lv_obj_set_style_bg_color(s_root, UI_BG, 0);
         lv_obj_set_style_text_color(s_root, UI_TEXT, 0);
     }
+    nl_backdrop_sync(s_root);
+    const lv_opa_t page_opa = ui_palette_is_immersive() ? LV_OPA_TRANSP : LV_OPA_COVER;
     if (s_status_bar) {
         lv_obj_set_style_bg_color(s_status_bar, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_status_bar, LV_OPA_50, 0);
@@ -421,11 +426,14 @@ void nl_ov_apply_appearance(void)
         lv_obj_set_style_bg_color(s_tabbar, UI_PANEL, 0);
         lv_obj_set_style_border_color(s_tabbar, UI_BORDER, 0);
     }
+    nl_dock_sync(s_tabbar, s_body, s_tab, s_visible);
     if (s_home) {
         lv_obj_set_style_bg_color(s_home, UI_BG, 0);
+        lv_obj_set_style_bg_opa(s_home, page_opa, 0);
     }
     if (s_settings) {
         lv_obj_set_style_bg_color(s_settings, UI_BG, 0);
+        lv_obj_set_style_bg_opa(s_settings, page_opa, 0);
     }
     if (s_fab) {
         lv_obj_set_style_bg_color(s_fab, UI_ACCENT, 0);
@@ -485,6 +493,11 @@ void nl_ov_nav_chrome_sync(void)
 {
     const bool rail = nodelio_display_profile()->nav_width != 0;
     const bool on = s_visible && s_screen_on && s_nav_shown;
+    if (ui_palette_is_immersive()) {
+        nl_dock_sync(s_tabbar, s_body, s_tab, s_visible);
+        nl_ov_home_dots_set_visible(on);
+        return;
+    }
     if (s_tabbar) {
         if (rail) {
             if (s_visible) {
@@ -1063,6 +1076,7 @@ void nl_ov_show_page(int tab)
             ui_tab_set_checked(s_tab_btns[i], i == tab);
         }
     }
+    nl_dock_sync(s_tabbar, s_body, tab, s_visible);
     if (tab == NL_TAB_APPS) {
         nl_ov_apps_ensure();
     }
@@ -1209,6 +1223,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_set_size(s_root, lv_pct(100), lv_pct(100));
     lv_obj_set_style_bg_color(s_root, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, 0);
+    nl_backdrop_sync(s_root);
     lv_obj_set_style_text_font(s_root, nl_ov_ui_font(), 0);
     lv_obj_set_style_text_color(s_root, UI_TEXT, 0);
     lv_obj_set_flex_flow(s_root, LV_FLEX_FLOW_COLUMN);
@@ -1299,17 +1314,18 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_set_style_bg_opa(s_body, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(s_body, LV_OBJ_FLAG_SCROLLABLE);
 
+    const lv_opa_t init_page_opa = ui_palette_is_immersive() ? LV_OPA_TRANSP : LV_OPA_COVER;
     s_home = lv_obj_create(s_body);
     lv_obj_remove_style_all(s_home);
     lv_obj_set_size(s_home, lv_pct(100), lv_pct(100));
     lv_obj_set_style_bg_color(s_home, UI_BG, 0);
-    lv_obj_set_style_bg_opa(s_home, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(s_home, init_page_opa, 0);
 
     s_settings = lv_obj_create(s_body);
     lv_obj_remove_style_all(s_settings);
     lv_obj_set_size(s_settings, lv_pct(100), lv_pct(100));
     lv_obj_set_style_bg_color(s_settings, UI_BG, 0);
-    lv_obj_set_style_bg_opa(s_settings, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(s_settings, init_page_opa, 0);
     lv_obj_add_flag(s_settings, LV_OBJ_FLAG_HIDDEN);
 
     /* bottom tabs — custom, not lv_tabview */
@@ -1354,6 +1370,8 @@ static void build_shell_on_lvgl(void * /*user_data*/)
             lv_obj_set_ext_click_area(button, 0);
         }
     }
+    nl_dock_init(s_root);
+    nl_dock_sync(s_tabbar, s_body, s_tab, true);
 
     /* 全局 AI 对话浮层抽屉（唤醒词触发，不依赖 Tab，挂在 lv_layer_top()） */
     nl_ov_create_ai_drawer(lv_layer_top());
@@ -1395,6 +1413,9 @@ static void build_shell_on_lvgl(void * /*user_data*/)
 
     s_ready = true;
     apply_visible_locked();
+#if CONFIG_NODELIO_UI_PROBE
+    nl_ui_probe_open();
+#endif
     nl_ov_refresh_hold_end(true);
     /* 不在这里开背光：等 assets/字号稳定后 nodelio_overlay_reveal_boot_backlight */
     start_status_poll();
@@ -1532,7 +1553,7 @@ esp_err_t nodelio_overlay_init(void)
     }
     (void)nodelio_nvs_init();
     (void)nodelio_nvs_load(&s_cfg);
-    ui_palette_set(s_cfg.ui_mode == 1 ? 1 : 0);
+    ui_palette_set(s_cfg.ui_mode);
     nodelio_conn_hist_t history{};
     (void)nodelio_conn_hist_load(&history);
     if (s_cfg.volume <= 100) {

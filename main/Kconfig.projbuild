@@ -1223,6 +1223,16 @@ menu "NodeLio Panel"
             at most once per five seconds of activity. No extra timer or task.
             These are LVGL timings, not panel scan FPS or PPA hardware counters.
 
+    config NODELIO_UI_PROBE
+        bool "Debug: immersive UI render probe (stage 1)"
+        depends on NODELIO_PANEL && (BOARD_TYPE_SILA_P4C5_62 || BOARD_TYPE_SILA_P4C5_508)
+        default n
+        help
+            Opens a full-screen test page after boot that cycles classic opaque,
+            runtime 70% alpha cards and baked-glass wallpaper (10s each) while
+            auto-scrolling a list, and logs LVGL refresh times per mode (tag
+            nl_probe). Tap the bottom stats bar to exit. Never enable in release.
+
     config NODELIO_SD_MUSIC
         bool "TF/SD card music library (Slot0)"
         depends on NODELIO_PANEL

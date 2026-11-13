@@ -238,13 +238,16 @@ static bool parse_text_scale(const char *value, uint8_t *out, char *err, size_t 
 
 const char *nl_ov_ui_mode_name(uint8_t mode)
 {
+    if (mode == 2) {
+        return "沉浸";
+    }
     return mode == 1 ? "深色" : "浅色";
 }
 
 static bool parse_ui_mode(const char *value, uint8_t *out, char *err, size_t err_len)
 {
     if (!value || !value[0] || !out) {
-        pref_err(err, err_len, "外观须为 0 浅色或 1 深色");
+        pref_err(err, err_len, "外观须为 0 浅色、1 深色或 2 沉浸");
         return false;
     }
     if (strcmp(value, "0") == 0 || strcmp(value, "浅色") == 0 || strcasecmp(value, "light") == 0) {
@@ -255,14 +258,26 @@ static bool parse_ui_mode(const char *value, uint8_t *out, char *err, size_t err
         *out = 1;
         return true;
     }
-    pref_err(err, err_len, "外观须为 0 浅色或 1 深色");
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508
+    if (strcmp(value, "2") == 0 || strcmp(value, "沉浸") == 0 || strcasecmp(value, "immersive") == 0) {
+        *out = 2;
+        return true;
+    }
+#endif
+    pref_err(err, err_len, "外观须为 0 浅色、1 深色或 2 沉浸");
     return false;
 }
 
 void nl_ov_commit_ui_mode(uint8_t mode)
 {
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508
+    if (mode > 2) {
+        mode = 0;
+    }
+#else
     mode = mode == 1 ? 1 : 0;
-    if (s_cfg.ui_mode == mode && (uint8_t)ui_palette_is_dark() == mode) {
+#endif
+    if (s_cfg.ui_mode == mode && (uint8_t)ui_palette_mode() == mode) {
         return;
     }
     s_cfg.ui_mode = mode;
@@ -274,7 +289,7 @@ void nl_ov_commit_ui_mode(uint8_t mode)
             return;
         }
         nl_ov_apply_appearance();
-        nl_ov_toast(mode == 1 ? "外观 深色" : "外观 浅色");
+        nl_ov_toast(mode == 2 ? "外观 沉浸" : (mode == 1 ? "外观 深色" : "外观 浅色"));
     });
 }
 
