@@ -75,6 +75,8 @@ static lv_obj_t *s_listen_idle_lbl;
 static lv_obj_t *s_media_pause_lbl;
 static lv_obj_t *s_media_duck_lbl;
 static lv_obj_t *s_ai_w_lbl;
+static lv_obj_t *s_ai_h_lbl;
+static lv_obj_t *s_ai_lines_lbl;
 static lv_obj_t *s_ai_bd_lbl;
 static lv_obj_t *s_ai_sh_lbl;
 static lv_obj_t *s_voice_mode_row;
@@ -388,6 +390,8 @@ void nl_ov_close_settings_detail(void)
     s_media_pause_lbl = nullptr;
     s_media_duck_lbl = nullptr;
     s_ai_w_lbl = nullptr;
+    s_ai_h_lbl = nullptr;
+    s_ai_lines_lbl = nullptr;
     s_ai_bd_lbl = nullptr;
     s_ai_sh_lbl = nullptr;
     s_voice_mode_row = nullptr;
@@ -1527,6 +1531,68 @@ void nl_ov_open_settings_detail(set_page_id_t page)
             },
             LV_EVENT_RELEASED, nullptr);
 
+        const int ai_h = (int)nodelio_ai_drawer_height();
+        std::snprintf(ai_txt, sizeof(ai_txt), "%d", ai_h);
+        lv_obj_t *ai_h_band = audio_ctrl_band(body, "对话框高度", ai_txt, &s_ai_h_lbl);
+        lv_obj_t *ai_h_sl = lv_slider_create(ai_h_band);
+        ui_style_slider(ai_h_sl);
+        lv_slider_set_range(ai_h_sl, NODELIO_AI_H_MIN, nodelio_ai_drawer_height_max());
+        lv_slider_set_value(ai_h_sl, ai_h, LV_ANIM_OFF);
+        lv_obj_add_event_cb(
+            ai_h_sl,
+            [](lv_event_t *e) {
+                int v = (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e));
+                if (s_ai_h_lbl) {
+                    char buf[16];
+                    std::snprintf(buf, sizeof(buf), "%d", v);
+                    lv_label_set_text(s_ai_h_lbl, buf);
+                }
+                s_cfg.ai_h = (uint16_t)v;
+                nodelio_nvs_cache_put_preferences(&s_cfg);
+                nl_ov_ai_apply_metrics();
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_add_event_cb(
+            ai_h_sl,
+            [](lv_event_t *e) {
+                char num[12];
+                std::snprintf(num, sizeof(num), "%d",
+                              (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e)));
+                (void)nodelio_panel_ui_set_pref("ai_drawer_h", num, nullptr, 0);
+            },
+            LV_EVENT_RELEASED, nullptr);
+
+        const int ai_ln = (int)nodelio_ai_drawer_lines();
+        std::snprintf(ai_txt, sizeof(ai_txt), "%d", ai_ln);
+        lv_obj_t *ai_ln_band = audio_ctrl_band(body, "对话显示行数", ai_txt, &s_ai_lines_lbl);
+        lv_obj_t *ai_ln_sl = lv_slider_create(ai_ln_band);
+        ui_style_slider(ai_ln_sl);
+        lv_slider_set_range(ai_ln_sl, NODELIO_AI_LINES_MIN, NODELIO_AI_LINES_MAX);
+        lv_slider_set_value(ai_ln_sl, ai_ln, LV_ANIM_OFF);
+        lv_obj_add_event_cb(
+            ai_ln_sl,
+            [](lv_event_t *e) {
+                int v = (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e));
+                if (s_ai_lines_lbl) {
+                    char buf[16];
+                    std::snprintf(buf, sizeof(buf), "%d", v);
+                    lv_label_set_text(s_ai_lines_lbl, buf);
+                }
+                s_cfg.ai_lines = (uint8_t)v;
+                nodelio_nvs_cache_put_preferences(&s_cfg);
+                nl_ov_ai_apply_metrics();
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_add_event_cb(
+            ai_ln_sl,
+            [](lv_event_t *e) {
+                char num[12];
+                std::snprintf(num, sizeof(num), "%d",
+                              (int)lv_slider_get_value((lv_obj_t *)lv_event_get_target(e)));
+                (void)nodelio_panel_ui_set_pref("ai_drawer_lines", num, nullptr, 0);
+            },
+            LV_EVENT_RELEASED, nullptr);
+
         const int ai_bd = (int)nodelio_ai_border_width();
         std::snprintf(ai_txt, sizeof(ai_txt), "%d", ai_bd);
         lv_obj_t *ai_bd_band = audio_ctrl_band(body, "边框粗细", ai_txt, &s_ai_bd_lbl);
@@ -1719,27 +1785,23 @@ static void fill_settings_hub(void)
     }
     const lv_coord_t keep_y = lv_obj_get_scroll_y(s_settings);
     lv_obj_clean(s_settings);
-#if CONFIG_BOARD_TYPE_SILA_P4C5_508
-    /* 508：两列磁贴墙。 */
-    lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_ROW_WRAP);
+    /* 全板统一：常用 / 连接 / 系统 分组（508 组内仍两列磁贴）。 */
+    lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s_settings, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    const int set_gap = nodelio_text_scale() == 1 ? 12 : 10;
+#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+    const int set_gap = nodelio_text_scale() == 1 ? 14 : 12;
+#else
+    const int set_gap = nodelio_text_scale() == 1 ? 16 : 14;
+#endif
     lv_obj_set_style_pad_row(s_settings, set_gap, 0);
-    lv_obj_set_style_pad_column(s_settings, set_gap, 0);
+    lv_obj_set_style_pad_column(s_settings, 0, 0);
     lv_obj_set_style_pad_left(s_settings, 16, 0);
     lv_obj_set_style_pad_right(s_settings, 16, 0);
+#if CONFIG_BOARD_TYPE_SILA_P4C5_508
     lv_obj_set_style_pad_top(s_settings, 28, 0);
     lv_obj_set_style_pad_bottom(s_settings, 54, 0);
 #else
-    /* 分组列表：常用 / 连接 / 系统，单列全宽行。 */
-    lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(s_settings, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    const int set_gap = nodelio_text_scale() == 1 ? 16 : 14;
-    lv_obj_set_style_pad_row(s_settings, set_gap, 0);
-    lv_obj_set_style_pad_column(s_settings, 0, 0);
     const bool is_wide = nodelio_display_profile()->nav_width > 0;
-    lv_obj_set_style_pad_left(s_settings, 16, 0);
-    lv_obj_set_style_pad_right(s_settings, 16, 0);
     lv_obj_set_style_pad_top(s_settings, is_wide ? 16 : 28, 0);
     lv_obj_set_style_pad_bottom(s_settings, is_wide ? 20 : 54, 0);
 #endif
@@ -1754,12 +1816,11 @@ static void fill_settings_hub(void)
     std::snprintf(bri_sub, sizeof(bri_sub), "%d%% · %d%% · %s", s_brightness, s_volume,
                   nl_ov_ui_mode_name(s_cfg.ui_mode));
 
-#if CONFIG_BOARD_TYPE_SILA_P4C5_508
-    lv_obj_t *host = s_settings;
-#else
     lv_obj_t *sec = ui_make_settings_section(s_settings, "常用");
-    lv_obj_t *host = sec;
+#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+    lv_obj_update_layout(s_settings); /* 组内两列宽度依赖 content_width */
 #endif
+    lv_obj_t *host = sec;
     settings_tile(host, "brightness_6", "显示与声音", bri_sub, UI_C_INFO, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_DISP); });
     settings_tile(host, "home", "控家",
@@ -1787,9 +1848,12 @@ static void fill_settings_hub(void)
     }
 #if !CONFIG_BOARD_TYPE_SILA_P4C5_508
     hub_section_seal(sec);
-    sec = ui_make_settings_section(s_settings, "连接");
-    host = sec;
 #endif
+    sec = ui_make_settings_section(s_settings, "连接");
+#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+    lv_obj_update_layout(s_settings);
+#endif
+    host = sec;
     settings_tile(host, "wifi", "网络与连接", "WiFi · 服务器", 0x00B4D8, nullptr,
                   [](lv_event_t*) { nl_ov_open_connect(); });
     settings_tile(
@@ -1805,9 +1869,12 @@ static void fill_settings_hub(void)
     }
 #if !CONFIG_BOARD_TYPE_SILA_P4C5_508
     hub_section_seal(sec);
-    sec = ui_make_settings_section(s_settings, "系统");
-    host = sec;
 #endif
+    sec = ui_make_settings_section(s_settings, "系统");
+#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+    lv_obj_update_layout(s_settings);
+#endif
+    host = sec;
 #if CONFIG_FIRMWARE_OTA_ENABLED
     settings_tile(host, "cloud_download", "检查固件更新", "检查更新", 0x0284C7, nullptr,
                   [](lv_event_t*) {

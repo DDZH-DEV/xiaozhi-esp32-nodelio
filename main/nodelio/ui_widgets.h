@@ -17,7 +17,8 @@ void ui_style_card(lv_obj_t *obj);
 /** Contrast-safe foreground for user-defined solid layout colors. */
 lv_color_t ui_color_on(lv_color_t background);
 
-/** 设置 hub 分组卡：白底圆角容器，返回挂行的父对象。 */
+/** 设置 hub 分组卡：标题 + 圆角容器，返回挂磁贴的父对象。
+ *  508 组内两列 wrap；其它板组内单列全宽行。 */
 lv_obj_t *ui_make_settings_section(lv_obj_t *parent, const char *title);
 /** 磁贴墙列宽（508 两列等）；force_single_col 时取整屏约 1/5。 */
 int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out);
@@ -25,7 +26,7 @@ int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out);
 int ui_settings_tile_height(void);
 
 /** 设置入口卡：左 Icon Pod · 右标题/副文。
- *  508 为两列磁贴墙；其它板为分组内全宽行。force_single_col：宽屏技能卡占右时左侧单列。 */
+ *  全板均挂在分组内；508 为组内两列磁贴，其它板为全宽行。force_single_col：宽屏技能卡占右时左侧单列。 */
 lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char *title,
                                 const char *sub, uint32_t accent_c, const char *right_icon,
                                 lv_event_cb_t cb, bool force_single_col);

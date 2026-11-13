@@ -226,12 +226,17 @@ int nodelio_card_radius_px(void);
 #define UI_AI_DRAWER_SHADOW_W 12
 #define UI_AI_DRAWER_SHADOW_Y 3
 #define UI_AI_DRAWER_SHADOW_OPA LV_OPA_40
-#define UI_AI_DRAWER_H 208 /* 含 48px 头栏（关闭/最小化可点） */
-#define UI_AI_DRAWER_COMPACT_W 296 /* 唤醒建链条：贴文案宽度 */
-#define UI_AI_DRAWER_COMPACT_H 72  /* 唤醒建链条：头栏按钮 44px */
+#define UI_AI_DRAWER_PAD_TOP 6
+#define UI_AI_DRAWER_PAD_BOTTOM 8
+#define UI_AI_DRAWER_PAD_ROW 4
+#define UI_AI_DRAWER_HDR_H 36 /* 紧凑头栏：状态字 + 缩小图标钮 */
+#define UI_AI_DRAWER_BTN_SZ 34 /* 触控靠 ext_click_area 补足 */
 #define UI_AI_DRAWER_TEXT_H 120
-#define UI_AI_DRAWER_HDR_H 48 /* 头栏：对齐 44px 触控钮 */
-#define UI_AI_DRAWER_BTN_SZ 44 /* 最小化/关闭：≥44 防穿透下层卡 */
+#define UI_AI_DRAWER_CHROME_H                                                                 \
+    (UI_AI_DRAWER_PAD_TOP + UI_AI_DRAWER_HDR_H + UI_AI_DRAWER_PAD_ROW + UI_AI_DRAWER_PAD_BOTTOM)
+#define UI_AI_DRAWER_H (UI_AI_DRAWER_CHROME_H + UI_AI_DRAWER_TEXT_H) /* 默认 174 */
+#define UI_AI_DRAWER_COMPACT_W 296 /* 唤醒建链条：贴文案宽度 */
+#define UI_AI_DRAWER_COMPACT_H (UI_AI_DRAWER_PAD_TOP + UI_AI_DRAWER_HDR_H + UI_AI_DRAWER_PAD_BOTTOM + 6)
 #define UI_AI_DRAWER_BOTTOM 52
 #define UI_AI_DRAWER_BG_OPA LV_OPA_COVER /* 保证正文对比度，避免反复透明混合 */
 #define UI_AI_MINI_SZ 52 /* 最小化圆钮（仅图标，无文字） */

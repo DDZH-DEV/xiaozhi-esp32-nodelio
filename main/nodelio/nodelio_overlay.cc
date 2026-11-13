@@ -79,7 +79,7 @@ lv_obj_t *s_body;
 lv_obj_t *s_home;
 lv_obj_t *s_ai_drawer;           /* 底部居中 AI 悬浮胶囊 */
 lv_obj_t *s_ai_drawer_status;    /* 状态小标题（如 "小智在听…" / "小智回答"） */
-lv_obj_t *s_ai_drawer_text;      /* 对话正文：最近 5 句 */
+lv_obj_t *s_ai_drawer_text;      /* 对话正文：最近 N 句（ai_lines） */
 lv_obj_t *s_ai_mini_fab;         /* 最小化圆钮（仅图标） */
 lv_obj_t *s_shot_fab = nullptr;    /* 调试截图悬浮图标 */
 lv_timer_t *s_ai_hide_timer;     /* 会话闲置自动收起定时器 */
@@ -378,7 +378,10 @@ void nl_ov_apply_text_scale(void)
             }
         }
     }
-    apply_font_if(s_ai_drawer_status);
+    /* 头栏状态保持紧凑字号，不跟正文档位一起放大 */
+    if (s_ai_drawer_status) {
+        nl_ov_set_font_compact(s_ai_drawer_status);
+    }
     apply_font_if(s_ai_drawer_text);
     if (scale_num_changed && s_have_layout && s_home) {
         nl_ov_fill_home();
@@ -1214,13 +1217,13 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_clear_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_root, LV_OBJ_FLAG_HIDDEN);
 
-    /* 悬浮在 layer_top：不占弹性行。半透明底，空闲隐藏；点空白不吃点击，品牌字仍可点。 */
+    /* 悬浮在 layer_top：不占弹性行。半透明底，空闲隐藏。
+     * 整栏点击穿透到下层；仅消息未读角标可点。 */
     s_status_bar = lv_obj_create(lv_layer_top());
     lv_obj_t *bar = s_status_bar;
     lv_obj_remove_style_all(bar);
     lv_obj_add_flag(bar, LV_OBJ_FLAG_FLOATING);
     lv_obj_add_flag(bar, LV_OBJ_FLAG_HIDDEN);
-    /* 默认对象可点。顶栏盖在 y=0 的技能卡上，空白必须透传，只留品牌字。 */
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_size(bar, lv_pct(100), NL_UI_STATUS_H);
     lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
@@ -1234,15 +1237,14 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_label_set_text(s_brand_lbl, "NodeLio");
     nl_ov_set_font(s_brand_lbl);
     lv_obj_set_style_text_color(s_brand_lbl, lv_color_white(), 0);
-    lv_obj_add_flag(s_brand_lbl, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(s_brand_lbl, 16);
-    lv_obj_add_event_cb(s_brand_lbl, nl_ov_on_brand_click, LV_EVENT_CLICKED, nullptr);
+    lv_obj_clear_flag(s_brand_lbl, LV_OBJ_FLAG_CLICKABLE);
 
     s_clock_lbl = lv_label_create(bar);
     lv_label_set_text(s_clock_lbl, "--:--");
     s_clock_last[0] = '\0';
     nl_ov_set_font(s_clock_lbl);
     lv_obj_set_style_text_color(s_clock_lbl, UI_ON_TILE, 0);
+    lv_obj_clear_flag(s_clock_lbl, LV_OBJ_FLAG_CLICKABLE);
 
     char build_stamp[40];
     fill_build_stamp(build_stamp, sizeof(build_stamp));
@@ -1251,21 +1253,25 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_label_set_long_mode(s_status_lbl, LV_LABEL_LONG_CLIP);
     nl_ov_set_font(s_status_lbl);
     lv_obj_set_style_text_color(s_status_lbl, UI_ON_TILE, 0);
+    lv_obj_clear_flag(s_status_lbl, LV_OBJ_FLAG_CLICKABLE);
 
     s_cloud_lbl = lv_label_create(bar);
     lv_label_set_text(s_cloud_lbl, LV_SYMBOL_UPLOAD);
     nl_ov_set_icon_font(s_cloud_lbl);
     lv_obj_set_style_text_color(s_cloud_lbl, UI_ON_TILE, 0);
+    lv_obj_clear_flag(s_cloud_lbl, LV_OBJ_FLAG_CLICKABLE);
 
     s_wifi_lbl = lv_label_create(bar);
     lv_obj_set_style_text_font(s_wifi_lbl, &font_material_symbols_20_4, 0);
     lv_label_set_text(s_wifi_lbl, MATERIAL_SYMBOLS_WIFI_OFF);
     lv_obj_set_style_text_color(s_wifi_lbl, UI_ON_TILE, 0);
+    lv_obj_clear_flag(s_wifi_lbl, LV_OBJ_FLAG_CLICKABLE);
 
     s_batt_lbl = lv_label_create(bar);
     lv_obj_set_style_text_font(s_batt_lbl, &font_material_symbols_30_4, 0);
     lv_label_set_text(s_batt_lbl, MATERIAL_SYMBOLS_BATTERY_ANDROID_FRAME_FULL);
     lv_obj_set_style_text_color(s_batt_lbl, UI_ON_TILE, 0);
+    lv_obj_clear_flag(s_batt_lbl, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN);
     status_bar_relayout();
     nl_ov_status_bar_apply_mode();

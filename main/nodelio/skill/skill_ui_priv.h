@@ -88,21 +88,21 @@ static inline int skill_top_y(void)
 #define SKILL_SCRIM_OPA 170
 #define SKILL_EQ_N 4
 #if CONFIG_BOARD_TYPE_SILA_P4C5_508
-/* 508：顶栏收紧，把高度让给列表/内容 */
-#define SKILL_CTRL_SZ 36
-#define SKILL_PLAY_CTRL_SZ 36
+/* 508：顶栏仍要紧，但刷新/关闭须可点 */
+#define SKILL_CTRL_SZ 44
+#define SKILL_PLAY_CTRL_SZ 44
 #define SKILL_CARD_PAD 8
 #define SKILL_CARD_PAD_ROW 4
 #define SKILL_HDR_TXT_PAD_ROW 0
-#define SKILL_LIST_HDR_BUDGET 40
+#define SKILL_LIST_HDR_BUDGET 48
 #define SKILL_LIST_CHROME_PAD 20 /* pad×2 + pad_row */
 #else
-#define SKILL_CTRL_SZ 44
-#define SKILL_PLAY_CTRL_SZ 48
+#define SKILL_CTRL_SZ 52
+#define SKILL_PLAY_CTRL_SZ 52
 #define SKILL_CARD_PAD 12
 #define SKILL_CARD_PAD_ROW 8
-#define SKILL_HDR_TXT_PAD_ROW 2
-#define SKILL_LIST_HDR_BUDGET 48
+#define SKILL_HDR_TXT_PAD_ROW 0
+#define SKILL_LIST_HDR_BUDGET 56
 #define SKILL_LIST_CHROME_PAD 32 /* card pad_all×2 + pad_row */
 #endif
 #define SKILL_MINI_SZ 52
@@ -116,8 +116,8 @@ static inline int skill_top_y(void)
 #define SKILL_LIST_COLS 1
 #define SKILL_LIST_ROWS 4
 #define SKILL_LIST_ROW_H 68
-/* 曲库：标题 + 艺人各一行；左右圆标同尺寸。矮屏有 now_playing 时靠动态行数分页 */
-#define SKILL_MUSIC_ROW_H 64
+/* 曲库：标题 + 艺人各一行；序号圆标克制。矮屏有 now_playing 时靠动态行数分页 */
+#define SKILL_MUSIC_ROW_H 56
 #define NEWS_ARTICLE_CAP (20 * 1024)
 /* JSON 转义后的正文预算；预留标题、提示及 MCP/session 包装，总包控制在 2KB 内。 */
 #define NEWS_MCP_CHUNK 640
@@ -225,6 +225,7 @@ bool env_media_is_live(void);
 void close_list_keep_player(void);
 bool skill_ui_is_up(void);
 void paint_music_mark(lv_obj_t *lbl, bool playing, int index);
+void style_music_track_row(lv_obj_t *row, bool playing);
 void reflow_music_list_if_open(void);
 void set_hdr_mid_icon(const char *sym);
 void reopen_list(void);

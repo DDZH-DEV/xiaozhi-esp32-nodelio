@@ -221,6 +221,13 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     if (out->ai_pos_set > 1) {
         out->ai_pos_set = 0;
     }
+    if (out->ai_h != 0 && out->ai_h < NODELIO_AI_H_MIN) {
+        out->ai_h = NODELIO_AI_H_MIN;
+    }
+    if (out->ai_lines != 0 &&
+        (out->ai_lines < NODELIO_AI_LINES_MIN || out->ai_lines > NODELIO_AI_LINES_MAX)) {
+        out->ai_lines = NODELIO_AI_LINES_DEFAULT;
+    }
     if (out->ai_bd_w != NODELIO_AI_UNSET && out->ai_bd_w > NODELIO_AI_BD_MAX) {
         out->ai_bd_w = NODELIO_AI_UNSET;
     }
@@ -296,6 +303,13 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     out->notice_repeat = out->notice_repeat ? 1 : 0;
     if (out->ai_pos_set > 1) {
         out->ai_pos_set = 0;
+    }
+    if (out->ai_h != 0 && out->ai_h < NODELIO_AI_H_MIN) {
+        out->ai_h = NODELIO_AI_H_MIN;
+    }
+    if (out->ai_lines != 0 &&
+        (out->ai_lines < NODELIO_AI_LINES_MIN || out->ai_lines > NODELIO_AI_LINES_MAX)) {
+        out->ai_lines = NODELIO_AI_LINES_DEFAULT;
     }
     if (out->ai_bd_w != NODELIO_AI_UNSET && out->ai_bd_w > NODELIO_AI_BD_MAX) {
         out->ai_bd_w = NODELIO_AI_UNSET;
@@ -499,6 +513,14 @@ static esp_err_t load_config_impl(void *ctx) {
         if (nvs_get_u16(h, "ai_w", &u16) == ESP_OK) {
             out->ai_w = u16;
         }
+        u16 = 0;
+        if (nvs_get_u16(h, "ai_h", &u16) == ESP_OK) {
+            out->ai_h = u16;
+        }
+        v = 0;
+        if (nvs_get_u8(h, "ai_ln", &v) == ESP_OK) {
+            out->ai_lines = v;
+        }
         v = NODELIO_AI_UNSET;
         if (nvs_get_u8(h, "ai_bd_w", &v) == ESP_OK) {
             out->ai_bd_w = v;
@@ -616,6 +638,8 @@ static esp_err_t save_config_impl(void *ctx) {
     NL_ACCUM(nvs_set_i16(h, "ai_x", tmp->ai_x));
     NL_ACCUM(nvs_set_i16(h, "ai_y", tmp->ai_y));
     NL_ACCUM(nvs_set_u16(h, "ai_w", tmp->ai_w));
+    NL_ACCUM(nvs_set_u16(h, "ai_h", tmp->ai_h));
+    NL_ACCUM(nvs_set_u8(h, "ai_ln", tmp->ai_lines));
     NL_ACCUM(nvs_set_u8(h, "ai_bd_w", tmp->ai_bd_w));
     NL_ACCUM(nvs_set_u8(h, "ai_sh_w", tmp->ai_sh_w));
     NL_ACCUM(nvs_set_u8(h, "ai_bd_i", tmp->ai_bd_i > 2 ? 0 : tmp->ai_bd_i));
@@ -999,6 +1023,47 @@ uint16_t nodelio_ai_drawer_width(void)
         w = maxw;
     }
     return w;
+}
+
+uint16_t nodelio_ai_drawer_height_max(void)
+{
+    const nodelio_display_profile_t *p = nodelio_display_profile();
+    int maxh = 320;
+    if (p && p->height > 80) {
+        maxh = (int)p->height - (int)p->chat_bottom - 24;
+    }
+    if (maxh > 360) {
+        maxh = 360;
+    }
+    if (maxh < NODELIO_AI_H_MIN) {
+        maxh = NODELIO_AI_H_MIN;
+    }
+    return (uint16_t)maxh;
+}
+
+uint16_t nodelio_ai_drawer_height(void)
+{
+    uint16_t h = s_ram_ok && s_ram.ai_h ? s_ram.ai_h : NODELIO_AI_H_DEFAULT;
+    const uint16_t maxh = nodelio_ai_drawer_height_max();
+    if (h < NODELIO_AI_H_MIN) {
+        h = NODELIO_AI_H_MIN;
+    }
+    if (h > maxh) {
+        h = maxh;
+    }
+    return h;
+}
+
+uint8_t nodelio_ai_drawer_lines(void)
+{
+    uint8_t n = s_ram_ok && s_ram.ai_lines ? s_ram.ai_lines : NODELIO_AI_LINES_DEFAULT;
+    if (n < NODELIO_AI_LINES_MIN) {
+        n = NODELIO_AI_LINES_MIN;
+    }
+    if (n > NODELIO_AI_LINES_MAX) {
+        n = NODELIO_AI_LINES_MAX;
+    }
+    return n;
 }
 
 uint8_t nodelio_ai_border_width(void)

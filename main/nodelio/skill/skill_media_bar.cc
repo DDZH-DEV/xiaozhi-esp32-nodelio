@@ -138,8 +138,7 @@ static void paint_music_row_bg(lv_obj_t *row, bool playing)
     if (!row) {
         return;
     }
-    lv_obj_set_style_bg_color(
-        row, playing ? UI_SELECTION : (ui_palette_is_dark() ? UI_FIELD : UI_SURFACE), 0);
+    style_music_track_row(row, playing);
 }
 
 /* 播放器关闭时恢复列表序号，避免耳机图标一直占着当前行 */

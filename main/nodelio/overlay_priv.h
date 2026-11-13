@@ -53,8 +53,8 @@ typedef enum {
     SET_PAGE_DIAGNOSTICS = 8,
 } set_page_id_t;
 
-#define NL_CHAT_SHOW_LINES 5
-#define NL_CHAT_SHOW_CAP 1024
+#define NL_CHAT_SHOW_LINES_DEFAULT NODELIO_AI_LINES_DEFAULT
+#define NL_CHAT_SHOW_CAP 1536
 #define NL_CHAT_CAP 3072
 
 /* —— shared state (defined in nodelio_overlay.cc) —— */

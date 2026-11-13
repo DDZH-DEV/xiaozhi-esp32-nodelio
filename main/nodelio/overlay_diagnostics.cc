@@ -385,6 +385,6 @@ void nl_ov_trigger_screenshot(void)
 
 void nl_ov_on_brand_click(lv_event_t *e)
 {
+    /* 顶栏品牌字已取消截图；保留空实现以免旧调用链接失败。 */
     (void)e;
-    nl_ov_trigger_screenshot();
 }

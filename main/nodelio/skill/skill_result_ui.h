@@ -194,6 +194,8 @@ void nodelio_skill_support_on_network_resumed(void);
 
 /** 当前客服卡访客最新一句；供 self.support.suggest 第一轮回传云端。 */
 bool nodelio_skill_support_visitor_text(char *out, size_t out_len);
+/** 同上，但把 [中文] 展开为「（表情：中文）」供小智理解手势。 */
+bool nodelio_skill_support_visitor_text_for_llm(char *out, size_t out_len);
 
 /**
  * 用小智拟的 2–4 条替换底部发送按钮（无 20s 倒计时）。

@@ -732,6 +732,29 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         nl_ov_toast("对话框宽度已保存");
         return ESP_OK;
     }
+    if (strcasecmp(key, "ai_drawer_h") == 0) {
+        int v = 0;
+        if (!parse_int_range(value, NODELIO_AI_H_MIN, nodelio_ai_drawer_height_max(), &v, err,
+                             err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.ai_h = (uint16_t)v;
+        nl_ov_persist_cfg_async();
+        nl_ov_ai_apply_metrics();
+        nl_ov_toast("对话框高度已保存");
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "ai_drawer_lines") == 0 || strcasecmp(key, "ai_lines") == 0) {
+        int v = 0;
+        if (!parse_int_range(value, NODELIO_AI_LINES_MIN, NODELIO_AI_LINES_MAX, &v, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.ai_lines = (uint8_t)v;
+        nl_ov_persist_cfg_async();
+        nl_ov_ai_apply_metrics();
+        nl_ov_toast("对话行数已保存");
+        return ESP_OK;
+    }
     if (strcasecmp(key, "ai_border_w") == 0) {
         int v = 0;
         if (!parse_int_range(value, 0, NODELIO_AI_BD_MAX, &v, err, err_len)) {
@@ -868,6 +891,14 @@ extern "C" esp_err_t nodelio_panel_ui_get_pref(const char *key, char *buf, size_
     }
     if (strcasecmp(key, "ai_drawer_w") == 0) {
         std::snprintf(buf, len, "%d", (int)nodelio_ai_drawer_width());
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "ai_drawer_h") == 0) {
+        std::snprintf(buf, len, "%d", (int)nodelio_ai_drawer_height());
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "ai_drawer_lines") == 0 || strcasecmp(key, "ai_lines") == 0) {
+        std::snprintf(buf, len, "%d", (int)nodelio_ai_drawer_lines());
         return ESP_OK;
     }
     if (strcasecmp(key, "ai_border_w") == 0) {

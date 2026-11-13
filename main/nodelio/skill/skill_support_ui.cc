@@ -244,6 +244,23 @@ void hide_support_image_preview(void)
     nl_ui_image_preview_hide();
 }
 
+/** 会话气泡滚到底。force=整页刷新；非 force 时仅在原本已贴底时跟随（图片异步撑高）。 */
+static void support_scroll_thread_bottom(bool force)
+{
+    if (!s_card_list || !lv_obj_is_valid(s_card_list) || !s_have_env || !s_env ||
+        strcmp(s_env->card_type, "support_thread") != 0) {
+        return;
+    }
+    if (!force) {
+        const lv_coord_t bottom = lv_obj_get_scroll_bottom(s_card_list);
+        if (bottom > 48) {
+            return; /* 用户在往上翻历史，别拽回去 */
+        }
+    }
+    lv_obj_update_layout(s_card_list);
+    lv_obj_scroll_to_y(s_card_list, LV_COORD_MAX, LV_ANIM_OFF);
+}
+
 void free_img_slots(void)
 {
     hide_support_image_preview();
@@ -409,6 +426,8 @@ void img_job_run(void *p)
     if (job->hint && lv_obj_is_valid(job->hint)) {
         lv_obj_add_flag(job->hint, LV_OBJ_FLAG_HIDDEN);
     }
+    /* 缩略图撑高后若原先贴底则继续跟到底，避免新消息看起来「没滚下来」 */
+    support_scroll_thread_bottom(false);
     delete job;
 }
 
@@ -1237,18 +1256,22 @@ void fill_support_presence_meta(void)
     if (!s_support_meta_row || !lv_obj_is_valid(s_support_meta_row)) {
         s_support_meta_row = lv_obj_create(parent);
         lv_obj_remove_style_all(s_support_meta_row);
-        lv_obj_set_width(s_support_meta_row, lv_pct(100));
+        lv_obj_set_width(s_support_meta_row, LV_SIZE_CONTENT);
+        lv_obj_set_flex_grow(s_support_meta_row, 1);
+        lv_obj_set_style_min_width(s_support_meta_row, 0, 0);
         lv_obj_set_height(s_support_meta_row, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(s_support_meta_row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(s_support_meta_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(s_support_meta_row, 8, 0);
+        lv_obj_set_style_pad_column(s_support_meta_row, 6, 0);
         lv_obj_clear_flag(s_support_meta_row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_move_to_index(s_support_meta_row, lv_obj_get_index(s_card_sub));
     }
     lv_obj_clean(s_support_meta_row);
     lv_obj_clear_flag(s_support_meta_row, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_height(s_support_meta_row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(s_support_meta_row, 1);
+    lv_obj_set_style_min_width(s_support_meta_row, 0, 0);
     lv_obj_add_flag(s_card_sub, LV_OBJ_FLAG_HIDDEN);
 
     char line[192] = {};
@@ -1274,15 +1297,19 @@ void fill_support_presence_meta(void)
         ++rest;
     }
 
-    const lv_font_t *font = nl_ov_ui_font();
+    const lv_font_t *font = nl_ov_ui_font_compact();
+    if (!font) {
+        font = nl_ov_ui_font();
+    }
     const int line_h = font ? lv_font_get_line_height(font) : nl_ov_ui_font_line_h();
     if (online || offline) {
+        const int badge_h = line_h + 2;
         lv_obj_t *badge = lv_obj_create(s_support_meta_row);
         lv_obj_remove_style_all(badge);
-        lv_obj_set_height(badge, line_h + 6);
+        lv_obj_set_height(badge, badge_h);
         lv_obj_set_width(badge, LV_SIZE_CONTENT);
-        lv_obj_set_style_pad_hor(badge, 10, 0);
-        lv_obj_set_style_radius(badge, (line_h + 6) / 2, 0);
+        lv_obj_set_style_pad_hor(badge, 6, 0);
+        lv_obj_set_style_radius(badge, badge_h / 2, 0);
         lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
         if (online) {
             lv_obj_set_style_bg_color(badge, UI_ACCENT, 0);
@@ -1294,7 +1321,7 @@ void fill_support_presence_meta(void)
         if (font) {
             lv_obj_set_style_text_font(bl, font, 0);
         } else {
-            nl_ov_set_font(bl);
+            nl_ov_set_font_compact(bl);
         }
         lv_label_set_text(bl, online ? online_pfx : offline_pfx);
         lv_obj_set_style_text_color(bl, online ? UI_ON_TILE : UI_TEXT_MUTED, 0);
@@ -1306,7 +1333,7 @@ void fill_support_presence_meta(void)
     if (font) {
         lv_obj_set_style_text_font(facts, font, 0);
     } else {
-        nl_ov_set_font(facts);
+        nl_ov_set_font_compact(facts);
     }
     lv_label_set_long_mode(facts, LV_LABEL_LONG_DOT);
     lv_obj_set_flex_grow(facts, 1);
@@ -1332,9 +1359,14 @@ void hide_support_title_nav(void)
         lv_obj_set_height(s_support_nav, 0);
     }
     if (s_card_title) {
-        lv_obj_set_flex_grow(s_card_title, 1);
-        lv_obj_set_width(s_card_title, lv_pct(100));
+        /* 标题与副标题同行：标题按内容，副标题 flex 吃剩余 */
+        lv_obj_set_flex_grow(s_card_title, 0);
+        lv_obj_set_width(s_card_title, LV_SIZE_CONTENT);
         lv_obj_set_style_max_width(s_card_title, LV_COORD_MAX, 0);
+    }
+    if (s_card_sub && lv_obj_is_valid(s_card_sub)) {
+        lv_obj_set_flex_grow(s_card_sub, 1);
+        lv_obj_set_style_min_width(s_card_sub, 0, 0);
     }
 }
 
@@ -1549,6 +1581,7 @@ void fill_support_thread(void)
         }
     }
     fill_action_bar();
+    support_scroll_thread_bottom(true);
     if (qr_url[0]) {
         nl_ov_toast("手机扫码免登 Inbox");
         show_support_image_preview(qr_url, true);
@@ -1684,6 +1717,62 @@ bool nodelio_skill_support_visitor_text(char *out, size_t out_len)
         return true;
     }
     return false;
+}
+
+static void support_expand_emoji_for_llm(char *io, size_t cap)
+{
+    if (!io || !io[0] || !strchr(io, '[') || cap < 8) {
+        return;
+    }
+    char *tmp = static_cast<char *>(malloc(cap));
+    if (!tmp) {
+        return;
+    }
+    size_t w = 0;
+    for (size_t i = 0; io[i] && w + 1 < cap;) {
+        if (io[i] == '[') {
+            const char *end = strchr(io + i, ']');
+            if (end && end > io + i + 1) {
+                const size_t lab_n = (size_t)(end - (io + i + 1));
+                if (lab_n > 0 && lab_n < 32) {
+                    char label[40];
+                    memcpy(label, io + i + 1, lab_n);
+                    label[lab_n] = '\0';
+                    if (strcmp(label, "图片") != 0 && strcmp(label, "TRANSFER") != 0) {
+                        const char *prefix = (strcmp(label, "表情") == 0) ? "（表情）" : "（表情：";
+                        const char *suffix = (strcmp(label, "表情") == 0) ? "" : "）";
+                        const size_t need = strlen(prefix) +
+                                           (strcmp(label, "表情") == 0 ? 0 : lab_n) + strlen(suffix);
+                        if (w + need + 1 < cap) {
+                            memcpy(tmp + w, prefix, strlen(prefix));
+                            w += strlen(prefix);
+                            if (strcmp(label, "表情") != 0) {
+                                memcpy(tmp + w, label, lab_n);
+                                w += lab_n;
+                                memcpy(tmp + w, suffix, strlen(suffix));
+                                w += strlen(suffix);
+                            }
+                            i = (size_t)(end - io) + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        tmp[w++] = io[i++];
+    }
+    tmp[w] = '\0';
+    snprintf(io, cap, "%s", tmp);
+    free(tmp);
+}
+
+bool nodelio_skill_support_visitor_text_for_llm(char *out, size_t out_len)
+{
+    if (!nodelio_skill_support_visitor_text(out, out_len) || !out[0]) {
+        return false;
+    }
+    support_expand_emoji_for_llm(out, out_len);
+    return out[0] != '\0';
 }
 
 static bool fit_reply_params(char *out, size_t out_len, uint64_t cid, uint64_t mid, const char *text)

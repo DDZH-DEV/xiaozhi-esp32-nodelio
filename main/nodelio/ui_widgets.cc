@@ -170,8 +170,19 @@ lv_obj_t *ui_make_settings_section(lv_obj_t *parent, const char *title)
     lv_obj_set_style_border_color(card, UI_TILE_OFF_BORDER, 0);
     lv_obj_set_style_border_opa(card, LV_OPA_80, 0);
     ui_style_card(card);
+#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+    /* 508：分组内两列磁贴墙 */
+    const int gap = (nodelio_text_scale() == 1) ? 12 : 10;
+    const int pad = (nodelio_text_scale() == 1) ? 12 : 10;
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(card, pad, 0);
+    lv_obj_set_style_pad_row(card, gap, 0);
+    lv_obj_set_style_pad_column(card, gap, 0);
+#else
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(card, 0, 0);
+#endif
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     return card;
 }

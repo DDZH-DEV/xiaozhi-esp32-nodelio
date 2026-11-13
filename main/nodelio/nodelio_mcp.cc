@@ -1646,7 +1646,8 @@ void nodelio_mcp_register_tools(void)
         "self.support.suggest",
         "self.support.suggest: 客服拟回复。听到「调support.suggest」必须调用。"
         "replies 为空时返回访客原话与回复语言；你必须立刻再次调用，replies 为 2 到 4 条短回复，用 | 分隔。"
-        "回复语言必须与访客原话一致：英文访客→全英文，中文访客→简体中文。不要朗读。",
+        "访客原话里「（表情：…）」是表情包手势（如无语/眨眼/苹果），按情绪回应，勿当商品名追问；"
+        "只发表情时用短句接住气氛即可。回复语言必须与访客原话一致：英文访客→全英文，中文访客→简体中文。不要朗读。",
         PropertyList({
             Property("replies", kPropertyTypeString, std::string("")).SetMaxLength(512),
         }),
@@ -1692,7 +1693,7 @@ void nodelio_mcp_register_tools(void)
             if (lines.empty()) {
                 char visitor[256];
                 visitor[0] = '\0';
-                if (!nodelio_skill_support_visitor_text(visitor, sizeof(visitor)) || !visitor[0]) {
+                if (!nodelio_skill_support_visitor_text_for_llm(visitor, sizeof(visitor)) || !visitor[0]) {
                     return std::unexpected(std::string("请先打开客服会话"));
                 }
                 Application::GetInstance().Schedule([]() {
@@ -1723,11 +1724,14 @@ void nodelio_mcp_register_tools(void)
                 std::string out = en ? "Visitor message: " : "访客原话：";
                 out += visitor;
                 if (en) {
-                    out += "\nCRITICAL: Reply language is English ONLY (no Chinese). "
+                    out += "\nNote: text like (emoji: …) / Chinese （表情：…） is an emoticon gesture—"
+                           "reply to mood, not as a product name. "
+                           "CRITICAL: Reply language is English ONLY (no Chinese). "
                            "Call self.support.suggest again now with replies = 2 to 4 short English "
                            "replies separated by |. Do not speak them aloud.";
                 } else {
-                    out += "\n关键：用简体中文写候选。立刻再次调用 self.support.suggest，"
+                    out += "\n说明：「（表情：…）」是表情手势，按情绪接话，勿当商品名。"
+                           "关键：用简体中文写候选。立刻再次调用 self.support.suggest，"
                            "replies 为 2 到 4 条针对这句话的短回复，用 | 分隔。不要朗读。";
                 }
                 return out;

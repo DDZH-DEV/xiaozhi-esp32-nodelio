@@ -46,6 +46,8 @@ typedef struct {
     int16_t ai_x;       /* 弹窗左上角，相对屏幕 */
     int16_t ai_y;
     uint16_t ai_w;      /* 对话框宽，0=默认 348 */
+    uint16_t ai_h;      /* 对话框高，0=默认 UI_AI_DRAWER_H */
+    uint8_t ai_lines;   /* 展示句数，0=默认 5；范围 2–8 */
     uint8_t ai_bd_w;    /* 边框粗细 0–4；255=默认 1 */
     uint8_t ai_sh_w;    /* 阴影宽度 0–24；255=浅色 12 / 深色 0 */
     uint8_t ai_bd_i;    /* 边框色 0=默认 1=暖灰 2=绿 */
@@ -79,6 +81,11 @@ typedef struct {
 #define NODELIO_MEDIA_WAKE_DUCK_MAX 100
 #define NODELIO_AI_W_DEFAULT 348
 #define NODELIO_AI_W_MIN 280
+#define NODELIO_AI_H_DEFAULT 174
+#define NODELIO_AI_H_MIN 140
+#define NODELIO_AI_LINES_DEFAULT 5
+#define NODELIO_AI_LINES_MIN 2
+#define NODELIO_AI_LINES_MAX 8
 #define NODELIO_AI_BD_DEFAULT 1
 #define NODELIO_AI_BD_MAX 4
 #define NODELIO_AI_SH_DEFAULT 12
@@ -166,6 +173,10 @@ esp_err_t nodelio_set_listen_idle_seconds(uint16_t listen_s);
 /** 小智对话框宽（已按本屏夹取）。 */
 uint16_t nodelio_ai_drawer_width(void);
 uint16_t nodelio_ai_drawer_width_max(void);
+/** 小智对话框总高 / 展示句数。 */
+uint16_t nodelio_ai_drawer_height(void);
+uint16_t nodelio_ai_drawer_height_max(void);
+uint8_t nodelio_ai_drawer_lines(void);
 /** 边框粗细 0–4。 */
 uint8_t nodelio_ai_border_width(void);
 /** 阴影宽度；未设置时浅色 12、深色 0。 */
