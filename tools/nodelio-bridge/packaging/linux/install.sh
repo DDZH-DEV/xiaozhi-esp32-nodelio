@@ -8,4 +8,7 @@ if [ -e "$destination" ]; then
   exit 1
 fi
 install -m 755 "$source_dir/nodelio-bridge" "$destination"
+if [ -f "$source_dir/meshcall-router" ]; then
+  install -m 755 "$source_dir/meshcall-router" "$HOME/.local/bin/meshcall-router"
+fi
 printf '%s\n' "已安装：$destination" '桌面启动：nodelio-bridge serve --open' '无桌面启动：nodelio-bridge serve' '登录自启动：nodelio-bridge autostart-enable'

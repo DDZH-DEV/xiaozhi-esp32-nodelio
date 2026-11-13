@@ -14,7 +14,7 @@ import (
 	"sync"
 )
 
-const Version = "0.4.3"
+const Version = "0.5.3"
 
 type ProviderConfig struct {
 	Enabled       bool   `json:"enabled"`
@@ -60,6 +60,12 @@ type ConfigStore struct {
 	mu  sync.RWMutex
 	dir string
 	s   Settings
+}
+
+func (c *ConfigStore) Dir() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.dir
 }
 
 func NewID() string {

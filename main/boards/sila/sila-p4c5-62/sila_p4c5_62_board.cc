@@ -583,7 +583,7 @@ public:
                   &codec_bus_);
         CreateBus(PERIPHERAL_I2C_PORT, PERIPHERAL_I2C_SDA_PIN, PERIPHERAL_I2C_SCL_PIN,
                   &peripheral_bus_);
-        // Read fuel gauge only. Do not write regulator, charge, or gauge registers.
+        // Probe PMU；AttachPmu 内 ConfigureAxpCharging 只写充电相关，不改 DCDC/LDO。
         const esp_err_t pmu = i2c_master_probe(peripheral_bus_, PMU_I2C_ADDRESS, 50);
         if (pmu == ESP_OK) {
             AttachPmu();
@@ -744,33 +744,31 @@ public:
     }
 
     void ConfigureAxpCharging() {
+        // 对齐本仓 kevin_box / XPowers：仅写充电相关，不改 DCDC/LDO。
+        // aibox 工程故意不碰 0x34；本板要拉高充电功率必须写 PMU。
+        WritePmuReg(0x14, 0x00); // Vsys min 4.1V（差线缆防 VINDPM 卡死）
+        WritePmuReg(0x15, 0x00); // 输入电压限 3.88V
+        WritePmuReg(0x16, 0x05); // VBUS 输入限流 2000mA
         uint8_t val = 0;
-        // 1. 设置 VBUS 输入限流为 2000mA（0x16 寄存器 Bit[2:0] = 5，解除默认 500mA 限制）
-        if (ReadPmuReg(0x16, &val)) {
-            val = (val & 0xF8) | 0x05;
-            WritePmuReg(0x16, val);
-        }
-        // 2. 确保主电池充电使能（0x18 寄存器 Bit 1 = 1）
         if (ReadPmuReg(0x18, &val)) {
-            val |= (1 << 1);
-            WritePmuReg(0x18, val);
+            WritePmuReg(0x18, static_cast<uint8_t>(val | (1 << 1))); // 主电池充电使能
         }
-        // 3. 设置恒流充电（ICC）为 1000mA（0x62 寄存器 Bit[4:0] = 0x10，大幅提升充电功率）
-        if (ReadPmuReg(0x62, &val)) {
-            val = (val & 0xE0) | 0x10;
-            WritePmuReg(0x62, val);
+        // TS 无 NTC 时必须关掉温度门控，否则常卡在默认约 300mA（≈1.5W）
+        WritePmuReg(0x50, 0x14); // TS=external，不参与充电判定
+        if (ReadPmuReg(0x30, &val)) {
+            WritePmuReg(0x30, static_cast<uint8_t>(val & ~0x02)); // 关 TS ADC
         }
-        // 4. 设置预充电流为 200mA（0x61 寄存器）
-        if (ReadPmuReg(0x61, &val)) {
-            val = (val & 0xF0) | 0x03;
-            WritePmuReg(0x61, val);
-        }
-        // 5. 设置充电截止电压为标准 4.2V（0x64 寄存器 Bit[2:0] = 2）
-        if (ReadPmuReg(0x64, &val)) {
-            val = (val & 0xF8) | 0x02;
-            WritePmuReg(0x64, val);
-        }
-        ESP_LOGI(kTag, "AXP2101 fast charging configured: VBUS limit=2000mA, ICC=1000mA");
+        WritePmuReg(0x61, 0x05); // 预充 125mA
+        WritePmuReg(0x62, 0x10); // ICC 1000mA（芯片上限）
+        WritePmuReg(0x63, 0x15); // 截止电流使能 + 125mA
+        WritePmuReg(0x64, 0x03); // CV 4.2V（0x02 是 4.1V）
+        uint8_t r16 = 0, r50 = 0, r62 = 0;
+        (void)ReadPmuReg(0x16, &r16);
+        (void)ReadPmuReg(0x50, &r50);
+        (void)ReadPmuReg(0x62, &r62);
+        ESP_LOGI(kTag,
+                 "AXP2101 charge cfg readback: 0x16=0x%02X 0x50=0x%02X 0x62=0x%02X (want 05/14/10)",
+                 r16, r50, r62);
     }
 
     bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {

@@ -159,6 +159,7 @@ func run(args []string) error {
 	_ = server.Close()
 	<-hostDone
 	engine.Wait()
+	bridge.CloseDSHMesh()
 	slog.Info("NodeLio Bridge stopped")
 	return err
 }

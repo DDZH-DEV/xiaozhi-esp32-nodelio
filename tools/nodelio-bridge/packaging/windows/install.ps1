@@ -4,6 +4,10 @@ New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 $target = Join-Path $installDir 'nodelio-bridge.exe'
 # A running executable is not killed or replaced implicitly. Exit the bridge before upgrading.
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'nodelio-bridge.exe') -Destination $target -Force
+$routerSrc = Join-Path $PSScriptRoot 'meshcall-router.exe'
+if (Test-Path -LiteralPath $routerSrc) {
+	Copy-Item -LiteralPath $routerSrc -Destination (Join-Path $installDir 'meshcall-router.exe') -Force
+}
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Programs')) 'NodeLio Bridge.lnk'))
 $shortcut.TargetPath = $target

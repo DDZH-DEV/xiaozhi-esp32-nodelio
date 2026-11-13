@@ -29,7 +29,7 @@ S3 专用的硬件 AES、DRAM 占位、断网休眠及音频规避没有整体�
 | 背光 | 30，高亮/低灭 | PWM 20kHz，首个 UI 绘制后恢复保存亮度 |
 | TP/PMU I²C | SDA28、SCL29，I2C0 | 板级拥有总线；TP 0x3B，PMU预期0x34 |
 | TP interrupt | 27，下降沿 | 仅 IRQ 后 raw read；不空闲轮询 |
-| PMU interrupt | 6 | 目前未注册 IRQ，也未写寄存器 |
+| PMU interrupt | 6 | 已注册 IRQ（插拔/充放电）；充电配置见下文 AXP2101 |
 | Codec I²C | SDA7、SCL8，I2C1 | ES8389 使用 esp_codec_dev 的地址常量 |
 | I²S | MCLK13、BCLK12、WS10、DOUT9、DIN11 | 双工 24kHz/16bit；输入两麦，输出 mono 复制到 L/R |
 | PA enable | 31 | 归 codec 管理；息屏不关闭正在播放的功放 |
@@ -116,9 +116,21 @@ GPIO30的LEDC占用提示、MAC读取错误也需后续验证，当前未据此�
 [SDIO接收实现](https://github.com/espressif/esp-hosted-mcu/blob/v2.13.1/host/drivers/transport/sdio/sdio_drv.c)、
 [官方从机OTA示例](https://github.com/espressif/esp-hosted-mcu/tree/v2.13.1/examples/host_performs_slave_ota)。
 
-AXP2101 先做地址 ACK，再读芯片 ID（`0x03 == 0x4A`）。电池在位（status1 bit3）才把电量百分比和充电状态画到顶栏；不写供电、充电或电量计寄存器。
-图中 DCDC1=3.3V，ALDO2/3/4 为摄像头相关 C1V8/C1V5/C3V3；电池容量、充电限制与
-实际贴装仍需确认。首期保持硬件电源默认配置，不初始化摄像头、陀螺仪和 TF 卡。
+AXP2101 先做地址 ACK，再读芯片 ID（`0x03 == 0x4A`）。电池在位（status1 bit3）才把电量百分比和充电状态画到顶栏。
+板级 `ConfigureAxpCharging()`（62/508 相同策略）只写**充电相关**寄存器，不改 DCDC/LDO 供电轨：
+
+| 寄存器 | 值/动作 | 作用 |
+|---|---|---|
+| `0x14` / `0x15` | `0x00` | 放宽 Vsys / VINDPM，差 USB 线不易卡输入 |
+| `0x16` | `0x05` | VBUS 输入限流 **2000mA**（档位上限） |
+| `0x18` bit1 | 置 1 | 主电池充电使能 |
+| `0x50` | `0x14` | TS=external，关掉无 NTC 时的温度门控 |
+| `0x30` | 清 bit1 | 关 TS ADC |
+| `0x61` / `0x62` / `0x63` / `0x64` | 125mA / **1000mA** / 125mA+使能 / **4.2V** | 预充、ICC（芯片上限）、截止、CV |
+
+开机回读期望：`0x16=0x05`、`0x50=0x14`、`0x62=0x10`。未写 TS/VINDPM 时 USB 侧常约 **1.5W**（默认 ICC≈300mA）。
+`esp32-p4-c5-aibox` 故意不写 `0x34`，不能当快充参考；LCD/TP 探测仍**禁止**误写 PMU。
+图中 DCDC1=3.3V，ALDO2/3/4 为摄像头相关 C1V8/C1V5/C3V3；电池容量与实际贴装仍以实机为准。
 
 ## 内存卡曲库（SD/TF）
 

@@ -629,6 +629,24 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
             return ESP_OK;
         }
         s_cfg.xiaozhi_en = next;
+        /* 立刻停唤醒/云链，勿等到 3 秒重启；否则开关已关仍能说「你好小智」。 */
+        Application::GetInstance().Schedule([on]() {
+            auto& app = Application::GetInstance();
+            auto& audio = app.GetAudioService();
+            if (!on) {
+                audio.EnableWakeWordDetection(false);
+                audio.DiscardWakeWordAudio();
+                app.MarkTransportSuspended(true);
+                app.SuspendTransport();
+                const DeviceState st = app.GetDeviceState();
+                if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
+                    st == kDeviceStateConnecting) {
+                    app.ToggleChatState();
+                }
+            } else {
+                app.MarkTransportSuspended(false);
+            }
+        });
         nl_ov_persist_voice_and_reboot();
         return ESP_OK;
     }

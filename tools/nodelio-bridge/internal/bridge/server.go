@@ -120,7 +120,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	case "/api/health":
 		if r.Method == "GET" {
-			ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+			ctx, cancel := context.WithTimeout(r.Context(), 22*time.Second)
 			defer cancel()
 			s.json(w, 200, map[string]any{"host_online": s.Host.Online(), "providers": s.Engine.Health(ctx)})
 			return

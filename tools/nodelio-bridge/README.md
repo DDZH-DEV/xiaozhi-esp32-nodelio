@@ -9,7 +9,7 @@ Go 实现的跨平台工作台连接桥。单个程序内含配置网页、DSH /
 | 项目 | 本版本 |
 |---|---|
 | 构建目标 | Windows / macOS / Linux，各 amd64、arm64；CGO_ENABLED=0 |
-| DSH | 本机 endpoint 自动发现、会话列表、详情、投递、续聊、按当前 notice 校验审批、zstd 日志 |
+| DSH | DSH NEXT 2.x MeshCall（本机 pipe + connector.json）；旧 endpoint.json 1.0 仍可回退；会话列表/投递/续聊/审批、zstd 日志 |
 | OpenAI | Responses API、异步独立会话、previous_response_id 续聊；不访问 ChatGPT 历史、不执行本机工具 |
 | WorkBuddy 本地 | 已授权 Token、在线检测、消息发送、最近消息历史；它是一条本地助理消息流，不是独立会话集合 |
 | WorkBuddy 云端 | 创建任务、ACP SSE/JSON-RPC、续聊、流式文本、带原始选项的工具审批；以 prompt response 判断本轮结束 |

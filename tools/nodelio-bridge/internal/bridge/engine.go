@@ -173,7 +173,11 @@ func (e *Engine) Health(ctx context.Context) map[string]Health {
 			defer wg.Done()
 			h := Health{State: "disabled", Message: "未启用", Capabilities: []string{}}
 			if c.Providers[id].Enabled {
-				probe, cancel := context.WithTimeout(ctx, 5*time.Second)
+				timeout := 5 * time.Second
+				if id == "dsh" {
+					timeout = 18 * time.Second
+				}
+				probe, cancel := context.WithTimeout(ctx, timeout)
 				defer cancel()
 				h = p.Health(probe)
 			}

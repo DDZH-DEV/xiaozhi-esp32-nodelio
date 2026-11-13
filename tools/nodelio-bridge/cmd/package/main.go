@@ -80,6 +80,9 @@ func run() error {
 		if err = cmd.Run(); err != nil {
 			return err
 		}
+		if err = copyMeshcallRouter(stage, goos, arch); err != nil {
+			return err
+		}
 		if goos == "darwin" {
 			plist := `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.nodelio.bridge</string><key>CFBundleName</key><string>NodeLio Bridge</string><key>CFBundleExecutable</key><string>nodelio-bridge</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>` + bridge.Version + `</string><key>LSUIElement</key><true/></dict></plist>`
 			if err = os.WriteFile(filepath.Join(stage, "NodeLio Bridge.app", "Contents", "Info.plist"), []byte(plist), 0644); err != nil {
@@ -130,6 +133,42 @@ func run() error {
 	sort.Strings(checksums)
 	return os.WriteFile(filepath.Join(*out, "SHA256SUMS"), []byte(strings.Join(checksums, "\n")+"\n"), 0644)
 }
+
+func copyMeshcallRouter(stage, goos, arch string) error {
+	name := "meshcall-router"
+	if goos == "windows" {
+		name += ".exe"
+	}
+	src := filepath.Join("packaging", "meshcall-router", goos+"-"+arch, name)
+	st, err := os.Stat(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "warning: missing %s (DSH 2.x MeshCall unavailable on this target)\n", src)
+			return nil
+		}
+		return err
+	}
+	if st.IsDir() {
+		return fmt.Errorf("%s is a directory", src)
+	}
+	dest := filepath.Join(stage, name)
+	if goos == "darwin" {
+		dest = filepath.Join(stage, "NodeLio Bridge.app", "Contents", "MacOS", name)
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0755)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
+
 func pack(root, dest, prefix string, isZip bool) error {
 	f, err := os.Create(dest)
 	if err != nil {
@@ -162,7 +201,8 @@ func pack(root, dest, prefix string, isZip bool) error {
 		}
 		name := prefix + "/" + filepath.ToSlash(rel)
 		mode := os.FileMode(0644)
-		if entry.Name() == "nodelio-bridge" || entry.Name() == "install.sh" {
+		base := entry.Name()
+		if base == "nodelio-bridge" || base == "meshcall-router" || base == "install.sh" {
 			mode = 0755
 		}
 		var w io.Writer

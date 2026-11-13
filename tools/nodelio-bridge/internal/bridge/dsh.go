@@ -24,6 +24,8 @@ type dshRPC struct {
 	reader *bufio.Scanner
 	next   int
 	ctx    context.Context
+	mesh   *dshMesh
+	v2     bool
 }
 type dshSession struct {
 	ID       string `json:"sessionId"`
@@ -48,15 +50,36 @@ func (p *DSH) with(ctx context.Context, fn func(*dshRPC) error) error {
 		}
 		<-p.gate
 	}()
+	if rpc, ok, err := p.dialLegacy(ctx); ok {
+		if err != nil {
+			return err
+		}
+		defer rpc.conn.Close()
+		return fn(rpc)
+	}
+	mesh := getDSHMesh()
+	if err := mesh.ensure(ctx, p.config.Dir()); err != nil {
+		return err
+	}
+	return fn(&dshRPC{ctx: ctx, mesh: mesh, v2: true})
+}
+
+func (p *DSH) dialLegacy(ctx context.Context) (*dshRPC, bool, error) {
 	s := p.config.Snapshot()
 	ep := s.Config.Providers["dsh"].EndpointFile
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		return nil, false, err
 	}
-	paths := []string{ep}
-	if ep == "" {
-		paths = []string{filepath.Join(home, ".agents-anywhere", "dsh-bridge", "endpoint.json"), filepath.Join(home, ".agents-anywhere", "dsh-bridge-next", "endpoint.json"), filepath.Join(home, ".dsh", "agents-anywhere", "bridge", "endpoint.json")}
+	paths := []string{}
+	if ep != "" {
+		paths = append(paths, ep)
+	} else {
+		paths = []string{
+			filepath.Join(home, ".agents-anywhere", "dsh-bridge", "endpoint.json"),
+			filepath.Join(home, ".agents-anywhere", "dsh-bridge-next", "endpoint.json"),
+			filepath.Join(home, ".dsh", "agents-anywhere", "bridge", "endpoint.json"),
+		}
 	}
 	var endpoint struct {
 		Host  string `json:"host"`
@@ -72,32 +95,36 @@ func (p *DSH) with(ctx context.Context, fn func(*dshRPC) error) error {
 		}
 	}
 	if !found {
-		return errors.New("DSH endpoint not found; open DSH and enable its bridge")
+		return nil, false, nil
 	}
 	if endpoint.Host == "" {
 		endpoint.Host = "127.0.0.1"
 	}
 	ip := net.ParseIP(endpoint.Host)
 	if ip == nil || !ip.IsLoopback() {
-		return errors.New("DSH endpoint must be loopback")
+		return nil, true, errors.New("DSH endpoint must be loopback")
 	}
 	conn, err := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(endpoint.Host, fmt.Sprint(endpoint.Port)))
 	if err != nil {
-		return errors.New("DSH desktop is offline")
+		return nil, true, errors.New("DSH desktop is offline")
 	}
-	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
-	defer stop()
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 4096), 4<<20)
-	rpc := &dshRPC{conn: conn, reader: scanner, ctx: ctx}
+	rpc := &dshRPC{conn: conn, reader: scanner, ctx: ctx, v2: false}
 	var init any
 	if err = rpc.call("initialize", map[string]any{"authToken": endpoint.Token, "protocolVersion": "1.0", "runtime": "dsh", "sessionNamespace": "nodelio-bridge"}, &init); err != nil {
-		return err
+		stop()
+		conn.Close()
+		return nil, true, err
 	}
-	return fn(rpc)
+	return rpc, true, nil
 }
+
 func (c *dshRPC) call(method string, params any, out any) error {
+	if c.v2 {
+		return c.mesh.call(c.ctx, dshMethodV2(method), params, out)
+	}
 	c.next++
 	deadline := time.Now().Add(20 * time.Second)
 	if method == "initialize" {
@@ -162,9 +189,20 @@ func (p *DSH) Health(ctx context.Context) Health {
 	h := Health{State: "ready", Message: "DSH 已连接", Capabilities: []string{"list", "create", "continue", "approval"}}
 	if err := p.with(ctx, func(c *dshRPC) error { return nil }); err != nil {
 		h.State = "offline"
-		h.Message = err.Error()
+		h.Message = dshHealthMessage(err)
 	}
 	return h
+}
+
+func dshHealthMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(msg, "context deadline exceeded") || strings.Contains(msg, "DSH bridge not registered") || strings.Contains(msg, "No instances registered for aa.dsh.v2.Bridge") {
+		return "DSH 未注册 Bridge。打开 DSH NEXT → 插件 → 远程控制，打开「启用远程控制」，按提示重启后台服务后再检查"
+	}
+	return msg
 }
 func (p *DSH) read(c *dshRPC, s dshSession) (Task, error) {
 	t := Task{ID: s.External, Provider: "dsh", Title: s.Title, Workspace: s.CWD, Updated: time.Now().UnixMilli(), Status: "unknown"}
@@ -403,7 +441,7 @@ func (p *DSH) Answer(ctx context.Context, r Request) error {
 		if !allowed {
 			return errors.New("approval expired or action does not belong to this notice")
 		}
-		params := map[string]any{"sessionId": s.ID, "noticeId": r.NoticeID, "actionId": r.Action}
+		params := map[string]any{"sessionId": s.ID, "externalSessionId": s.External, "noticeId": r.NoticeID, "actionId": r.Action}
 		if r.Action == "submit" {
 			if len(r.Answers) == 0 {
 				return errors.New("answers required")
@@ -414,7 +452,7 @@ func (p *DSH) Answer(ctx context.Context, r Request) error {
 			return err
 		}
 		if r.Action == "deny" || r.Action == "reject" || r.Action == "cancel" {
-			return c.call("session.interrupt", map[string]any{"sessionId": s.ID, "reason": "nodelio-" + r.Action}, nil)
+			return c.call("session.interrupt", map[string]any{"sessionId": s.ID, "externalSessionId": s.External, "reason": "nodelio-" + r.Action}, nil)
 		}
 		return nil
 	})

@@ -46,9 +46,43 @@ async function load() {
   $('workbuddy-mode').value=p.workbuddy.mode; $('workbuddy-base').value=p.workbuddy.base_url;
   for(const [id,key] of [['host-token','host_token'],['openai-key','openai_key'],['workbuddy-token','workbuddy_token']]) {$(id).value='';$(id).placeholder=doc.secrets_set[key]?'已保存；留空保留':'尚未配置';}
   $('version').textContent='v'+doc.version; $('test-provider').value=config.default_provider; $('test-provider').onchange();
+  selectProviderTab(config.default_provider||'codex');
   if(doc.restart_required)message('监听地址已修改，重启程序后生效。');
 }
-async function health(){const h=await api('/api/health');$('host-state').textContent=h.host_online?'Host 已连接':'Host 未连接';for(const [id,s] of Object.entries(h.providers)){const el=$(id+'-state');el.textContent=s.message;el.className='state '+s.state;}}
+function clipState(text){const t=String(text||'');return t.length>36?t.slice(0,35)+'…':t;}
+async function health(){const h=await api('/api/health');$('host-state').textContent=h.host_online?'Host 已连接':'Host 未连接';for(const [id,s] of Object.entries(h.providers)){const el=$(id+'-state');el.textContent=s.message;el.className='state '+s.state;const tab=$(id+'-tab-state');if(tab){tab.textContent=clipState(s.message);tab.className='tab-state '+s.state;}}}
+function selectProviderTab(id){
+  for(const tab of document.querySelectorAll('.provider-tab')){
+    const on=tab.dataset.tab===id;
+    tab.classList.toggle('active',on);
+    tab.setAttribute('aria-selected',on?'true':'false');
+    tab.tabIndex=on?0:-1;
+  }
+  for(const panel of document.querySelectorAll('.provider-panels .provider')){
+    const on=panel.id==='panel-'+id;
+    panel.classList.toggle('active',on);
+    panel.hidden=!on;
+  }
+}
+document.querySelector('.provider-tabs')?.addEventListener('click',e=>{
+  const tab=e.target.closest('.provider-tab');
+  if(!tab||!tab.dataset.tab)return;
+  selectProviderTab(tab.dataset.tab);
+});
+document.querySelector('.provider-tabs')?.addEventListener('keydown',e=>{
+  const tabs=[...document.querySelectorAll('.provider-tab')];
+  const i=tabs.indexOf(document.activeElement);
+  if(i<0)return;
+  let next=-1;
+  if(e.key==='ArrowRight'||e.key==='ArrowDown')next=(i+1)%tabs.length;
+  if(e.key==='ArrowLeft'||e.key==='ArrowUp')next=(i-1+tabs.length)%tabs.length;
+  if(e.key==='Home')next=0;
+  if(e.key==='End')next=tabs.length-1;
+  if(next<0)return;
+  e.preventDefault();
+  selectProviderTab(tabs[next].dataset.tab);
+  tabs[next].focus();
+});
 async function startup(){const s=await api('/api/startup');$('startup').checked=s.enabled;$('startup').disabled=!s.supported;$('startup-note').textContent=s.message||`${s.mechanism} · ${s.enabled?'已启用，下次登录生效':'未启用'}`;}
 $('settings').addEventListener('submit',async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;try{
   if(val('host-ws') && !/^wss?:\/\//i.test(val('host-ws')))throw new Error('服务器连接地址应以 ws:// 或 wss:// 开头；生成的凭据请填到“桥凭据（Token）”。');
