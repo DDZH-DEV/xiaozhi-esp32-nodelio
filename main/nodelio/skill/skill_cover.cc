@@ -5,6 +5,7 @@
 #include "jpg/jpeg_to_image.h"
 #include "nodelio_http.h"
 #include "panel_jobs.h"
+#include "skill_media_cache.h"
 
 #include <cJSON.h>
 #include <esp_heap_caps.h>
@@ -229,18 +230,6 @@ void cover_discard(void *p) { free(p); }
 void cover_run(void *p)
 {
     auto *job = static_cast<cover_job_t *>(p);
-    char art_url[360]{};
-    bool have = itunes_artwork_url(job->title, job->artist, art_url, sizeof(art_url));
-    if (!have) {
-        ESP_LOGI(kTag, "itunes miss, try CAA title=%s", job->title);
-        have = musicbrainz_cover_url(job->title, job->artist, art_url, sizeof(art_url));
-    }
-    if (!have || !art_url[0]) {
-        ESP_LOGW(kTag, "no cover title=%s", job->title);
-        free(job);
-        return;
-    }
-
     uint8_t *jpeg = static_cast<uint8_t *>(
         heap_caps_malloc(kJpegCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!jpeg) {
@@ -248,12 +237,28 @@ void cover_run(void *p)
         return;
     }
     size_t jpeg_n = 0;
-    int status = 0;
-    if (!http_get_bin(art_url, jpeg, kJpegCap, &jpeg_n, &status)) {
-        ESP_LOGW(kTag, "cover download fail status=%d url=%s", status, art_url);
-        heap_caps_free(jpeg);
-        free(job);
-        return;
+    bool from_cache = nodelio_media_cache_load_cover(job->title, job->artist, jpeg, kJpegCap, &jpeg_n);
+    if (!from_cache) {
+        char art_url[360]{};
+        bool have = itunes_artwork_url(job->title, job->artist, art_url, sizeof(art_url));
+        if (!have) {
+            ESP_LOGI(kTag, "itunes miss, try CAA title=%s", job->title);
+            have = musicbrainz_cover_url(job->title, job->artist, art_url, sizeof(art_url));
+        }
+        if (!have || !art_url[0]) {
+            ESP_LOGW(kTag, "no cover title=%s", job->title);
+            heap_caps_free(jpeg);
+            free(job);
+            return;
+        }
+        int status = 0;
+        if (!http_get_bin(art_url, jpeg, kJpegCap, &jpeg_n, &status)) {
+            ESP_LOGW(kTag, "cover download fail status=%d url=%s", status, art_url);
+            heap_caps_free(jpeg);
+            free(job);
+            return;
+        }
+        nodelio_media_cache_save_cover(job->title, job->artist, jpeg, jpeg_n);
     }
 
     lv_image_dsc_t dsc{};

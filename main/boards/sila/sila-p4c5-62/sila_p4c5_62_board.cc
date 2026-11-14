@@ -140,7 +140,12 @@ public:
             lv_refr_now(display_);
             lvgl_port_unlock();
         }
+#if CONFIG_NODELIO_PANEL
+        /* 背光由 Application→reveal_boot_backlight 在 Hosted 起完后再开，
+         * 避免亮着扫到 DPI underrun 泛蓝。 */
+#else
         backlight_.RestoreBrightness();
+#endif
         LogMemory("first UI");
     }
 

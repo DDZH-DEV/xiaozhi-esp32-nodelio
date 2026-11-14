@@ -796,10 +796,12 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
 
     /* 用户触发的技能/正文请求不能等语音结束：新闻打开后还要在同一会话问「要读吗」。
      * 心跳等后台请求仍让路给 MQTT。 */
-    /* 封面/歌词/外网 TLS：播放 Notifying 时 voice=1，勿干等 3.5s quiet */
+    /* 封面/歌词/外网 TLS：播放 Notifying 时 voice=1，勿干等 3.5s quiet。
+     * register 开机路径：Activating 时 voice 曾误为真，干等满 4s 才 POST。 */
     const bool ui_content =
         strstr(url, "/panel/news/") != nullptr || strstr(url, "/panel/snapshot") != nullptr ||
         strstr(url, "/panel/command") != nullptr || strstr(url, "/panel/lyrics") != nullptr ||
+        strstr(url, "/api/devices/register") != nullptr ||
         strncmp(url, "https://", 8) == 0 ||
         (strstr(url, "/panel/skills/") != nullptr && strstr(url, "/invoke") != nullptr);
     if (!ui_content) {

@@ -258,7 +258,7 @@ void Application::Initialize() {
 #if CONFIG_NODELIO_PANEL
     /* Assets：加载 WakeNet 等；MultiNet 已从产品拿掉（省 ~4MB PSRAM），不再 prewarm。
      * 勿 refresh_display_theme：此时 NodeLio 首页已渲染，SetTheme 会整屏脏刷闪白。
-     * 背光压到 assets/字号之后再开：否则字库指针变触发二次刷首页时可见撕裂。 */
+     * 背光：86 在 assets 后开；P4 等 Hosted 起完再开（见 StartNetwork 后）。 */
     {
         auto& assets = Assets::GetInstance();
         const int64_t t0 = esp_timer_get_time();
@@ -271,7 +271,9 @@ void Application::Initialize() {
         if (applied) {
             nodelio_overlay_apply_text_scale();
         }
+#if CONFIG_BOARD_TYPE_SILA_86
         nodelio_overlay_reveal_boot_backlight();
+#endif
     }
 #endif
 
@@ -288,6 +290,12 @@ void Application::Initialize() {
     nodelio_log_heap("boot start network");
 #endif
     board.StartNetwork();
+
+#if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
+    /* Hosted SDIO 与 MIPI DPI 同抢 PSRAM：亮屏时 underrun 常表现为整屏闪蓝。
+     * FB 已在黑屏下刷好，Hosted 起完再开背光。 */
+    nodelio_overlay_reveal_boot_backlight();
+#endif
 
 #if CONFIG_NODELIO_PANEL
     /* 墙板开机跳过小智 OTA（其 server_time 曾是唯一时间源），改由 SNTP 补；

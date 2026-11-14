@@ -26,7 +26,7 @@ bool nodelio_bridge_wait_ready(uint32_t timeout_ms);
  */
 void nodelio_bridge_start_panel_mqtt(void);
 
-/** 小智正在连接/聆听/说话：布局 snapshot 应让路，避免抢 UDP 语音. */
+/** 小智正在连接/聆听/说话/播报：布局 snapshot 与后台 HTTP 应让路。不含 Activating。 */
 bool nodelio_voice_session_active(void);
 
 #ifdef __cplusplus

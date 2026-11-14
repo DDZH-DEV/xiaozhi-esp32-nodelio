@@ -589,9 +589,9 @@ void nodelio_bridge_stop(void)
 bool nodelio_voice_session_active(void)
 {
     DeviceState st = Application::GetInstance().GetDeviceState();
+    /* Activating/Starting 不算：小智 MQTT 尚未起，LAN HTTP（register）勿干等 3.5s quiet */
     if (st == kDeviceStateConnecting || st == kDeviceStateListening ||
-        st == kDeviceStateSpeaking || st == kDeviceStateNotifying ||
-        st == kDeviceStateActivating) {
+        st == kDeviceStateSpeaking || st == kDeviceStateNotifying) {
         return true;
     }
     /* 入队后、Notifying 前也可能已在播 */

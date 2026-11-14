@@ -1013,6 +1013,7 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/skill/media_player.cc"
         "nodelio/skill/skill_lyrics.cc"
         "nodelio/skill/skill_cover.cc"
+        "nodelio/skill/skill_media_cache.cc"
         "nodelio/skill/skill_immersive_player.cc"
         "nodelio/skill/skill_favorites.cc"
     )

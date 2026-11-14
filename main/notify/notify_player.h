@@ -62,6 +62,8 @@ public:
     void SetPlaybackContentLength(size_t bytes);
     /** 按容器粗估时长（kbps）；已有精确时长则不改。Ogg/Opus≈80，MP3≈128。 */
     void EstimateDurationFromLengthKbps(int kbps);
+    /** 从 MP3 首帧 Xing/Info/VBRI 取帧数推时长；成功返回 true（覆盖粗估）。 */
+    bool TrySetDurationFromMp3Xing(const uint8_t *data, size_t n);
 
 private:
     AudioService& audio_service_;

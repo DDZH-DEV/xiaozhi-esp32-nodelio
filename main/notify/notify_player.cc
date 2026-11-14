@@ -708,6 +708,95 @@ void NotifyPlayer::EstimateDurationFromLengthKbps(int kbps) {
     }
 }
 
+bool NotifyPlayer::TrySetDurationFromMp3Xing(const uint8_t *data, size_t n)
+{
+    if (!data || n < 64) {
+        return false;
+    }
+    size_t off = 0;
+    /* 跳过 ID3v2 */
+    if (n >= 10 && data[0] == 'I' && data[1] == 'D' && data[2] == '3') {
+        const size_t id3 =
+            10u + ((static_cast<size_t>(data[6] & 0x7f) << 21) |
+                   (static_cast<size_t>(data[7] & 0x7f) << 14) |
+                   (static_cast<size_t>(data[8] & 0x7f) << 7) | static_cast<size_t>(data[9] & 0x7f));
+        if (id3 < n) {
+            off = id3;
+        }
+    }
+    const size_t limit = n > off + 8192 ? off + 8192 : n;
+    for (size_t i = off; i + 4 < limit; ++i) {
+        if (!IsMp3Frame(data + i, n - i)) {
+            continue;
+        }
+        const size_t frame_len = Mp3FrameLength(data + i, n - i);
+        if (frame_len < 32 || i + frame_len > n) {
+            continue;
+        }
+        const int ver = (data[i + 1] >> 3) & 0x3;
+        const int layer = (data[i + 1] >> 1) & 0x3;
+        const int sr_idx = (data[i + 2] >> 2) & 0x3;
+        const int ch_mode = (data[i + 3] >> 6) & 0x3; /* 3=mono */
+        static const int kSrMpeg1[] = {44100, 48000, 32000, 0};
+        static const int kSrMpeg2[] = {22050, 24000, 16000, 0};
+        static const int kSrMpeg25[] = {11025, 12000, 8000, 0};
+        int samplerate = 0;
+        if (ver == 3) {
+            samplerate = kSrMpeg1[sr_idx];
+        } else if (ver == 2) {
+            samplerate = kSrMpeg2[sr_idx];
+        } else {
+            samplerate = kSrMpeg25[sr_idx];
+        }
+        if (samplerate <= 0 || layer != 1) {
+            /* layer==1 才是 Layer III；其它层无 Xing */
+            continue;
+        }
+        /* MPEG1 LayerIII: side info 32 stereo / 17 mono；MPEG2/2.5: 17 / 9 */
+        size_t side = 0;
+        if (ver == 3) {
+            side = (ch_mode == 3) ? 17 : 32;
+        } else {
+            side = (ch_mode == 3) ? 9 : 17;
+        }
+        const size_t xing_off = i + 4 + side;
+        if (xing_off + 12 > n) {
+            break;
+        }
+        const uint8_t *x = data + xing_off;
+        uint32_t frames = 0;
+        if ((x[0] == 'X' && x[1] == 'i' && x[2] == 'n' && x[3] == 'g') ||
+            (x[0] == 'I' && x[1] == 'n' && x[2] == 'f' && x[3] == 'o')) {
+            const uint32_t flags = (static_cast<uint32_t>(x[4]) << 24) | (static_cast<uint32_t>(x[5]) << 16) |
+                                   (static_cast<uint32_t>(x[6]) << 8) | static_cast<uint32_t>(x[7]);
+            if (flags & 0x1) {
+                frames = (static_cast<uint32_t>(x[8]) << 24) | (static_cast<uint32_t>(x[9]) << 16) |
+                         (static_cast<uint32_t>(x[10]) << 8) | static_cast<uint32_t>(x[11]);
+            }
+        } else if (xing_off + 32 <= n && x[0] == 'V' && x[1] == 'B' && x[2] == 'R' && x[3] == 'I') {
+            /* VBRI: frames at +14 */
+            frames = (static_cast<uint32_t>(x[14]) << 24) | (static_cast<uint32_t>(x[15]) << 16) |
+                     (static_cast<uint32_t>(x[16]) << 8) | static_cast<uint32_t>(x[17]);
+        }
+        if (frames == 0 || samplerate <= 0) {
+            break;
+        }
+        /* Layer III：MPEG1 每帧 1152 样点，MPEG2/2.5 为 576 */
+        const uint32_t spf = (ver == 3) ? 1152u : 576u;
+        const uint64_t ms =
+            (static_cast<uint64_t>(frames) * static_cast<uint64_t>(spf) * 1000ull) /
+            static_cast<uint64_t>(samplerate);
+        if (ms > 500 && ms < 24ull * 3600ull * 1000ull) {
+            SetPlaybackDurationMs(static_cast<uint32_t>(ms));
+            ESP_LOGI(TAG, "mp3 xing duration=%ums frames=%u rate=%d", (unsigned)ms, (unsigned)frames,
+                     samplerate);
+            return true;
+        }
+        break;
+    }
+    return false;
+}
+
 bool NotifyPlayer::IsCancelled(uint32_t playback_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return cancelled_ || !active_ || playback_id != playback_id_;
@@ -724,6 +813,10 @@ void NotifyPlayer::OnPlaybackProgress(uint32_t playback_id, uint32_t media_posit
         }
         last_playback_position_ms_ = media_position_ms;
         playback_started_ = true;
+        /* 粗估偏短时：进度超过总长则抬升，避免 UI 出现 2:34/2:10 */
+        if (duration_ms_ > 0 && media_position_ms > duration_ms_) {
+            duration_ms_ = media_position_ms;
+        }
         while (next_subtitle_index_ < subtitles_.size() &&
                subtitles_[next_subtitle_index_].start_ms <= media_position_ms) {
             text = subtitles_[next_subtitle_index_].text;
@@ -967,7 +1060,11 @@ void NotifyPlayer::WorkerTask() {
             if (!prefetch_fail && icy.metaint <= 0) {
                 if (kind == StreamKind::kOgg) {
                     EstimateDurationFromLengthKbps(80);
-                } else if (kind == StreamKind::kMp3 || kind == StreamKind::kM4a) {
+                } else if (kind == StreamKind::kMp3) {
+                    if (!TrySetDurationFromMp3Xing(prefetch.data(), prefetch.size())) {
+                        EstimateDurationFromLengthKbps(128);
+                    }
+                } else if (kind == StreamKind::kM4a) {
                     EstimateDurationFromLengthKbps(128);
                 }
             }
@@ -1078,7 +1175,11 @@ bool NotifyPlayer::WorkerTaskLocal() {
                                                          : "unknown";
             ESP_LOGI(TAG, "local kind=%s head=%u", kn, static_cast<unsigned>(head.size()));
             if (!IsCancelled(playback_id)) {
-                if (kind == StreamKind::kMp3 || kind == StreamKind::kM4a) {
+                if (kind == StreamKind::kMp3) {
+                    if (!TrySetDurationFromMp3Xing(head.data(), head.size())) {
+                        EstimateDurationFromLengthKbps(128);
+                    }
+                } else if (kind == StreamKind::kM4a) {
                     EstimateDurationFromLengthKbps(128);
                 } else if (kind == StreamKind::kOgg) {
                     EstimateDurationFromLengthKbps(80);

@@ -99,7 +99,11 @@ public:
             lv_refr_now(display_);
             lvgl_port_unlock();
         }
+#if CONFIG_NODELIO_PANEL
+        /* 同 62：Hosted/DPI 抢 PSRAM 时勿先亮背光，否则 underrun 泛蓝可见。 */
+#else
         backlight_.RestoreBrightness();
+#endif
         LogMemory("first UI");
     }
 

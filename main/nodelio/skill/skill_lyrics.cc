@@ -5,6 +5,7 @@
 #include "media_player.h"
 #include "nl_url_util.h"
 #include "nodelio_http.h"
+#include "skill_media_cache.h"
 
 #include <cJSON.h>
 
@@ -36,18 +37,26 @@ struct lyric_line_t {
     char text[kTextMax];
 };
 
+enum lyric_op_t : uint8_t { kOpFetch = 0, kOpCandidates = 1, kOpPick = 2 };
+
 struct lyric_job_t {
     uint32_t gen;
+    lyric_op_t op;
+    bool skip_cache;
     char url[1024];
     char device_key[65];
     char title[NL_ENV_TITLE];
     char artist[NL_ENV_SUB];
+    char pick_id[40];
 };
 
+constexpr int kCandMax = 8;
 EXT_RAM_BSS_ATTR lyric_line_t s_lines[kLineMax];
 /* 只在 nl_lyric 里写。不能放进 lyric_worker 栈：100 行约 8.8KB，任务栈只有 8KB。 */
 EXT_RAM_BSS_ATTR lyric_line_t s_parse_lines[kLineMax];
+EXT_RAM_BSS_ATTR nodelio_lyric_candidate_t s_cands[kCandMax];
 int s_line_n = 0;
+int s_cand_n = 0;
 bool s_synced = false;
 uint32_t s_gen = 0;
 char s_key[NL_ENV_TITLE + NL_ENV_SUB + 4];
@@ -55,6 +64,8 @@ SemaphoreHandle_t s_mu = nullptr;
 QueueHandle_t s_q = nullptr;
 lv_timer_t *s_timer = nullptr;
 char s_shown[kTextMax];
+nodelio_lyrics_candidates_cb_t s_cand_cb = nullptr;
+void *s_cand_user = nullptr;
 
 void ensure_mu()
 {
@@ -537,7 +548,30 @@ int fetch_lrcmux(const char *title, const char *artist, char *buf, bool *synced_
     return n;
 }
 
-void commit_lines(uint32_t gen, int n, bool synced, const char *src)
+char *lines_to_json(bool synced, int n)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return nullptr;
+    }
+    cJSON_AddBoolToObject(root, "synced", synced);
+    cJSON *arr = cJSON_AddArrayToObject(root, "lines");
+    for (int i = 0; i < n && arr; ++i) {
+        cJSON *one = cJSON_CreateObject();
+        if (!one) {
+            continue;
+        }
+        cJSON_AddNumberToObject(one, "ms", static_cast<double>(s_parse_lines[i].ms));
+        cJSON_AddStringToObject(one, "text", s_parse_lines[i].text);
+        cJSON_AddItemToArray(arr, one);
+    }
+    char *printed = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return printed;
+}
+
+void commit_lines(uint32_t gen, int n, bool synced, const char *src, const char *title,
+                  const char *artist, bool write_cache)
 {
     if (!s_mu) {
         return;
@@ -555,6 +589,56 @@ void commit_lines(uint32_t gen, int n, bool synced, const char *src)
         }
     }
     xSemaphoreGive(s_mu);
+    if (write_cache && n > 0 && title && title[0] && nodelio_media_cache_available()) {
+        char *js = lines_to_json(synced, n);
+        if (js) {
+            nodelio_media_cache_save_lyrics(title, artist, js);
+            cJSON_free(js);
+        }
+    }
+}
+
+int parse_candidates_json(const char *buf)
+{
+    s_cand_n = 0;
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        return 0;
+    }
+    cJSON *arr = cJSON_GetObjectItem(root, "candidates");
+    if (!cJSON_IsArray(arr)) {
+        cJSON_Delete(root);
+        return 0;
+    }
+    cJSON *it = nullptr;
+    cJSON_ArrayForEach(it, arr) {
+        if (s_cand_n >= kCandMax) {
+            break;
+        }
+        cJSON *id = cJSON_GetObjectItem(it, "id");
+        cJSON *src = cJSON_GetObjectItem(it, "source");
+        cJSON *title = cJSON_GetObjectItem(it, "title");
+        cJSON *artist = cJSON_GetObjectItem(it, "artist");
+        cJSON *preview = cJSON_GetObjectItem(it, "preview");
+        if (!cJSON_IsString(id) || !id->valuestring || !id->valuestring[0]) {
+            continue;
+        }
+        nodelio_lyric_candidate_t &c = s_cands[s_cand_n];
+        memset(&c, 0, sizeof(c));
+        clip_into(c.id, sizeof(c.id), id->valuestring);
+        clip_into(c.source, sizeof(c.source),
+                  cJSON_IsString(src) && src->valuestring ? src->valuestring : "?");
+        clip_into(c.title, sizeof(c.title),
+                  cJSON_IsString(title) && title->valuestring ? title->valuestring : "");
+        clip_into(c.artist, sizeof(c.artist),
+                  cJSON_IsString(artist) && artist->valuestring ? artist->valuestring : "");
+        clip_into(c.preview, sizeof(c.preview),
+                  cJSON_IsString(preview) && preview->valuestring ? preview->valuestring : "");
+        c.synced = cJSON_IsTrue(cJSON_GetObjectItem(it, "synced"));
+        ++s_cand_n;
+    }
+    cJSON_Delete(root);
+    return s_cand_n;
 }
 
 void lyric_worker(void *)
@@ -569,9 +653,59 @@ void lyric_worker(void *)
             continue;
         }
 
+        if (job.op == kOpCandidates) {
+            int n = 0;
+            if (job.url[0]) {
+                int status = 0;
+                const esp_err_t err =
+                    nodelio_http_get_ms(job.url, job.device_key, nullptr, &status, buf, kRespCap, 12000);
+                if (err == ESP_OK && status == 200) {
+                    n = parse_candidates_json(buf);
+                } else {
+                    ESP_LOGW(TAG, "candidates fail status=%d", status);
+                }
+            }
+            free(buf);
+            auto cb = s_cand_cb;
+            void *user = s_cand_user;
+            Application::GetInstance().Schedule([cb, user, n]() {
+                if (cb) {
+                    cb(n > 0, n, user);
+                }
+            });
+            continue;
+        }
+
         int n = 0;
         bool synced = false;
         const char *src = nullptr;
+
+        if (job.op == kOpPick && job.url[0]) {
+            int status = 0;
+            const esp_err_t err =
+                nodelio_http_get_ms(job.url, job.device_key, nullptr, &status, buf, kRespCap, 8000);
+            if (err == ESP_OK && status == 200) {
+                n = parse_server_json(buf, &synced);
+                if (n > 0) {
+                    src = "pick";
+                }
+            }
+            free(buf);
+            commit_lines(job.gen, n, synced, src, job.title, job.artist, true);
+            continue;
+        }
+
+        /* 先读 SD 缓存（force 跳过） */
+        if (!job.skip_cache && job.title[0] &&
+            nodelio_media_cache_load_lyrics(job.title, job.artist, buf, kRespCap)) {
+            n = parse_server_json(buf, &synced);
+            if (n > 0) {
+                src = "sd-cache";
+                free(buf);
+                commit_lines(job.gen, n, synced, src, job.title, job.artist, false);
+                continue;
+            }
+        }
 
         if (job.url[0]) {
             int status = 0;
@@ -601,7 +735,7 @@ void lyric_worker(void *)
         }
 
         free(buf);
-        commit_lines(job.gen, n, synced, src);
+        commit_lines(job.gen, n, synced, src, job.title, job.artist, n > 0);
     }
 }
 
@@ -611,7 +745,7 @@ void ensure_worker()
         return;
     }
     ensure_mu();
-    s_q = xQueueCreate(2, sizeof(lyric_job_t));
+    s_q = xQueueCreate(3, sizeof(lyric_job_t));
     if (!s_q) {
         return;
     }
@@ -625,6 +759,29 @@ void ensure_worker()
     xTaskCreate(lyric_worker, "nl_lyric", kStack, nullptr, 3, nullptr);
 }
 
+bool fill_server_lyric_url(char *url, size_t url_len, const nodelio_nvs_config_t *cfg,
+                           const char *mode_suffix, const char *title, const char *artist)
+{
+    if (!url || url_len == 0 || !cfg || !cfg->server_url[0] || !cfg->device_id[0]) {
+        return false;
+    }
+    url[0] = '\0';
+    char title_q[NL_ENV_TITLE * 3 + 4];
+    char artist_q[NL_ENV_SUB * 3 + 4];
+    url_encode(title ? title : "", title_q, sizeof(title_q));
+    url_encode(artist ? artist : "", artist_q, sizeof(artist_q));
+    char base[160];
+    nl_url_strip_base(cfg->server_url, base, sizeof(base));
+    /* %.*s 显式截断，躲 -Werror=format-truncation */
+    const int n = snprintf(
+        url, url_len, "%.*s/api/devices/%.*s/panel/lyrics?%.*stitle=%.*s&artist=%.*s",
+        static_cast<int>(sizeof(base) - 1), base, 64, cfg->device_id,
+        mode_suffix ? static_cast<int>(strlen(mode_suffix)) : 0, mode_suffix ? mode_suffix : "",
+        static_cast<int>(sizeof(title_q) - 1), title_q, static_cast<int>(sizeof(artist_q) - 1),
+        artist_q);
+    return n > 0 && n < static_cast<int>(url_len);
+}
+
 }  // namespace
 
 void nodelio_lyrics_clear(void)
@@ -636,6 +793,7 @@ void nodelio_lyrics_clear(void)
     xSemaphoreTake(s_mu, portMAX_DELAY);
     s_gen++;
     s_line_n = 0;
+    s_cand_n = 0;
     s_synced = false;
     s_key[0] = '\0';
     s_shown[0] = '\0';
@@ -671,6 +829,8 @@ void nodelio_lyrics_request(const nodelio_nvs_config_t *cfg, const char *title, 
 
     lyric_job_t job{};
     job.gen = gen;
+    job.op = kOpFetch;
+    job.skip_cache = force;
     snprintf(job.title, sizeof(job.title), "%s", title);
     snprintf(job.artist, sizeof(job.artist), "%s", art);
 
@@ -798,4 +958,104 @@ bool nodelio_lyrics_line_text(int idx, char *out, size_t out_len)
     }
     xSemaphoreGive(s_mu);
     return ok;
+}
+
+void nodelio_lyrics_request_candidates(const nodelio_nvs_config_t *cfg, const char *title,
+                                       const char *artist, nodelio_lyrics_candidates_cb_t cb,
+                                       void *user)
+{
+    s_cand_cb = cb;
+    s_cand_user = user;
+    s_cand_n = 0;
+    if (!cb || !title || !title[0] || !cfg || !cfg->server_url[0] || !cfg->device_id[0]) {
+        if (cb) {
+            Application::GetInstance().Schedule([cb, user]() { cb(false, 0, user); });
+        }
+        return;
+    }
+    const char *art = artist && artist[0] && strcmp(artist, "未命名") != 0 ? artist : "";
+    lyric_job_t job{};
+    job.op = kOpCandidates;
+    job.gen = s_gen;
+    clip_into(job.title, sizeof(job.title), title);
+    clip_into(job.artist, sizeof(job.artist), art);
+    if (cfg->device_key[0]) {
+        clip_into(job.device_key, sizeof(job.device_key), cfg->device_key);
+    }
+    if (!fill_server_lyric_url(job.url, sizeof(job.url), cfg, "mode=candidates&", title, art)) {
+        Application::GetInstance().Schedule([cb, user]() { cb(false, 0, user); });
+        return;
+    }
+    ensure_worker();
+    if (!s_q) {
+        Application::GetInstance().Schedule([cb, user]() { cb(false, 0, user); });
+        return;
+    }
+    if (xQueueSend(s_q, &job, 0) != pdTRUE) {
+        lyric_job_t drop{};
+        xQueueReceive(s_q, &drop, 0);
+        xQueueSend(s_q, &job, 0);
+    }
+}
+
+int nodelio_lyrics_candidate_count(void)
+{
+    return s_cand_n;
+}
+
+bool nodelio_lyrics_candidate_at(int idx, nodelio_lyric_candidate_t *out)
+{
+    if (!out || idx < 0 || idx >= s_cand_n) {
+        return false;
+    }
+    *out = s_cands[idx];
+    return true;
+}
+
+void nodelio_lyrics_apply_pick(const nodelio_nvs_config_t *cfg, const char *pick_id,
+                               const char *title, const char *artist)
+{
+    if (!cfg || !pick_id || !pick_id[0] || !cfg->server_url[0] || !cfg->device_id[0]) {
+        return;
+    }
+    const char *art = artist && artist[0] && strcmp(artist, "未命名") != 0 ? artist : "";
+    ensure_mu();
+    if (!s_mu) {
+        return;
+    }
+    xSemaphoreTake(s_mu, portMAX_DELAY);
+    s_gen++;
+    s_line_n = 0;
+    s_synced = false;
+    s_shown[0] = '\0';
+    const uint32_t gen = s_gen;
+    xSemaphoreGive(s_mu);
+
+    lyric_job_t job{};
+    job.gen = gen;
+    job.op = kOpPick;
+    clip_into(job.pick_id, sizeof(job.pick_id), pick_id);
+    if (title) {
+        clip_into(job.title, sizeof(job.title), title);
+    }
+    clip_into(job.artist, sizeof(job.artist), art);
+    if (cfg->device_key[0]) {
+        clip_into(job.device_key, sizeof(job.device_key), cfg->device_key);
+    }
+    char pick_q[48];
+    url_encode(pick_id, pick_q, sizeof(pick_q));
+    char mode[80];
+    snprintf(mode, sizeof(mode), "pick=%.*s&", static_cast<int>(sizeof(pick_q) - 1), pick_q);
+    if (!fill_server_lyric_url(job.url, sizeof(job.url), cfg, mode, title, art)) {
+        return;
+    }
+    ensure_worker();
+    if (!s_q) {
+        return;
+    }
+    if (xQueueSend(s_q, &job, 0) != pdTRUE) {
+        lyric_job_t drop{};
+        xQueueReceive(s_q, &drop, 0);
+        xQueueSend(s_q, &job, 0);
+    }
 }

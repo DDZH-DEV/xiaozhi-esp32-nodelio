@@ -1590,7 +1590,12 @@ esp_err_t nodelio_overlay_init(void)
     create_fab_locked();
     create_shot_fab_locked();
     ESP_LOGI(TAG, "FAB ready");
-    /* 建壳失败也不让背光一直灭 */
+    /* 建壳失败也不让背光一直灭。P4 须等 Hosted 起完（常 >2s），兜底放宽到 8s。 */
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508
+    constexpr uint32_t kBootBlFallbackMs = 8000;
+#else
+    constexpr uint32_t kBootBlFallbackMs = 2000;
+#endif
     lv_timer_create(
         [](lv_timer_t *t) {
             lv_timer_delete(t);
@@ -1599,7 +1604,7 @@ esp_err_t nodelio_overlay_init(void)
                 reveal_boot_backlight();
             }
         },
-        2000, nullptr);
+        kBootBlFallbackMs, nullptr);
     return ESP_OK;
 }
 
