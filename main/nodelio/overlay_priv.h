@@ -109,6 +109,7 @@ extern lv_obj_t *s_status_lbl;
 extern lv_obj_t *s_wifi_lbl;
 extern lv_obj_t *s_cloud_lbl;
 extern lv_obj_t *s_batt_lbl;
+extern lv_obj_t *s_batt_pct_lbl; /* 电池右侧百分比，如 87% */
 extern lv_obj_t *s_status_bar;
 extern esp_timer_handle_t s_status_tmr;
 extern lv_timer_t *s_activity_tmr;

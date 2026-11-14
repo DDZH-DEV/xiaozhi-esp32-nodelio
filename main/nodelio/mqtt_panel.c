@@ -285,7 +285,8 @@ esp_err_t nodelio_mqtt_panel_start(const nodelio_nvs_config_t *cfg)
         .broker.address.uri = uri,
         .credentials.username = s_cfg.mqtt_user[0] ? s_cfg.mqtt_user : NULL,
         .credentials.authentication.password = s_cfg.mqtt_pass[0] ? s_cfg.mqtt_pass : NULL,
-        .session.keepalive = 60,
+        /* 播歌占带宽时 60s 易 No PING_RESP；放宽到 120 */
+        .session.keepalive = 120,
         .network.disable_auto_reconnect = false,
         /* 明文 mqtt://；栈/缓冲走 PSRAM。notify 很小，收紧 buffer 少占堆。 */
         .buffer.size = 1024,

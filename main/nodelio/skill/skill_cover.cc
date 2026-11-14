@@ -3,6 +3,7 @@
 #include "application.h"
 #include "content_envelope.h"
 #include "jpg/jpeg_to_image.h"
+#include "media_player.h"
 #include "nodelio_http.h"
 #include "panel_jobs.h"
 #include "skill_media_cache.h"
@@ -237,8 +238,18 @@ void cover_run(void *p)
         return;
     }
     size_t jpeg_n = 0;
+    /* 先读盘/内存路径：命中则立刻解码上屏，勿等播流暖机 */
     bool from_cache = nodelio_media_cache_load_cover(job->title, job->artist, jpeg, kJpegCap, &jpeg_n);
     if (!from_cache) {
+        /* 仅网络拉取时避让：前几秒不抢 HTTPS，降低 underrun / MQTT 饿死 */
+        if (nodelio_media_is_playing()) {
+            for (int i = 0; i < 16; ++i) {
+                if (!nodelio_media_is_playing() || nodelio_media_position_ms() >= 4000) {
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(250));
+            }
+        }
         char art_url[360]{};
         bool have = itunes_artwork_url(job->title, job->artist, art_url, sizeof(art_url));
         if (!have) {
@@ -335,11 +346,14 @@ extern "C" void nodelio_cover_request(const char *title, const char *artist,
     ensure_mu();
     xSemaphoreTake(s_cv.mu, portMAX_DELAY);
     if (strcmp(s_cv.key, key) == 0 && s_cv.rgb) {
+        /* 异步投递：调用方常已持 DisplayLock，同步 cb 再 Lock 会死锁/超时 */
         lv_image_dsc_t copy = s_cv.dsc;
         s_cv.cb = cb;
         s_cv.user = user;
         xSemaphoreGive(s_cv.mu);
-        cb(&copy, user);
+        Application::GetInstance().Schedule([cb, user, copy]() mutable {
+            cb(&copy, user);
+        });
         return;
     }
     s_cv.gen++;

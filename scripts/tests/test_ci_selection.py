@@ -62,7 +62,7 @@ class CiSelectionTests(unittest.TestCase):
         self.assertGreater(len(selected), 1)
 
     def test_mixed_changes_preserve_nonrepresentative_boards_in_either_order(self):
-        paths = ["main/application.cc", "main/boards/otto-robot/config.h"]
+        paths = ["main/application.cc", "main/boards/sila/sila-86/config.h"]
         for changes in (paths, list(reversed(paths))):
             with self.subTest(changes=changes):
                 selected = build._select_variants_for_changes(self.variants, changes)
@@ -72,7 +72,7 @@ class CiSelectionTests(unittest.TestCase):
     def test_representative_board_changes_do_not_duplicate_default_build(self):
         selected = build._select_variants_for_changes(
             self.variants,
-            ["main/application.cc", "main/boards/bread-compact-wifi/config.h"],
+            ["main/application.cc", "main/boards/sila/sila-86/config.h"],
         )
         self.assertEqual(len(selected), 19)
         self.assertEqual(
@@ -83,7 +83,7 @@ class CiSelectionTests(unittest.TestCase):
     def test_ethernet_does_not_replace_changed_boards_wifi_variants(self):
         selected = build._select_variants_for_changes(
             self.variants,
-            ["main/application.cc", "main/boards/waveshare/esp32-p4-nano/config.h"],
+            ["main/application.cc", "main/boards/sila/sila-p4c5-62/config.h"],
         )
         nano = [v for v in selected if v["board"] == "waveshare/esp32-p4-nano"]
         self.assertEqual(len(nano), 3)
@@ -103,7 +103,7 @@ class CiSelectionTests(unittest.TestCase):
         )
 
     def test_docs_only_and_empty_changes_skip_firmware(self):
-        for paths in ([], ["README.md", "docs/custom-board.md"]):
+        for paths in ([], ["README.md", "docs/nodelio-sila86.md"]):
             self.assertEqual(build._select_variants_for_changes(self.variants, paths), [])
 
     def test_missing_duplicate_and_invalid_option_entries_fail(self):

@@ -159,6 +159,8 @@ public:
     /** 点歌前关掉仍开着的语音通道，避免后续 TTS 抢解码器。 */
     void YieldVoiceForMedia();
     void StopHttpAudio();
+    /** 仅掐 NotifyPlayer 套接字/任务（任意线程可调）；完整状态清理仍用 StopHttpAudio（主线程）。 */
+    void AbortHttpAudioStream();
     bool IsHttpAudioBusy() const;
     bool HasHttpAudioPlaybackStarted() const;
     /** 本机 HTTP/本地文件播放进度（毫秒）。未在播时为 0。 */

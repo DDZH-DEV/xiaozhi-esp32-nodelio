@@ -3878,6 +3878,8 @@ bool Application::PlayHttpAudioFrom(std::string audio_url, std::string device_ke
 
 void Application::StopHttpAudio() { StopNotification(); }
 
+void Application::AbortHttpAudioStream() { notify_player_.Stop(); }
+
 bool Application::PlayLocalAudioFile(std::string file_path) {
     return PlayLocalAudioFileFrom(std::move(file_path), 0, 0);
 }

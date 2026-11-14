@@ -96,6 +96,8 @@ private:
     bool playback_drained_ = false;
     bool completion_reported_ = false;
     int dram_epoch_ = 0;
+    /** 播流中的 Http；Stop() 调 Close 打断阻塞 Read，避免等满超时。 */
+    Http* live_http_ = nullptr;
 
     static void WorkerEntry(void* arg);
     void WorkerTask();

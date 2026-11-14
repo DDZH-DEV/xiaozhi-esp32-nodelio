@@ -639,12 +639,20 @@ bool NotifyPlayer::StartFile(std::string file_path, uint32_t playback_id,
 }
 
 void NotifyPlayer::Stop() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    cancelled_ = true;
-    active_ = false;
-    subtitles_.clear();
-    subtitle_callback_ = nullptr;
-    finished_callback_ = nullptr;
+    Http* to_close = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cancelled_ = true;
+        active_ = false;
+        to_close = live_http_;
+        subtitles_.clear();
+        subtitle_callback_ = nullptr;
+        finished_callback_ = nullptr;
+        /* Close 须在持锁时调用：对象仍由 worker 的 unique_ptr 持有。 */
+        if (to_close) {
+            to_close->Close();
+        }
+    }
 }
 
 bool NotifyPlayer::IsActive(uint32_t playback_id) const {
@@ -916,6 +924,10 @@ void NotifyPlayer::WorkerTask() {
     ESP_LOGI(TAG, "notify GET %s start_byte=%u", audio_url.c_str(), (unsigned)start_byte);
     auto http = Board::GetInstance().GetNetwork()->CreateHttp(0);
     if (http) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            live_http_ = http.get();
+        }
         http->SetTimeout(kHttpTimeoutMs);
         const std::string origin_host = UrlHost(audio_url);
         std::string url = audio_url;
@@ -1083,6 +1095,12 @@ void NotifyPlayer::WorkerTask() {
         } else if (opened_ok) {
             ESP_LOGE(TAG, "Notification HTTP request returned status %d", status_code);
         }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (live_http_ == http.get()) {
+                live_http_ = nullptr;
+            }
+        }
         http->Close();
         http.reset();
     }
@@ -1104,6 +1122,10 @@ void NotifyPlayer::WorkerTask() {
     bool report_success = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (live_http_) {
+            /* Open 失败等早退路径也清掉 */
+            live_http_ = nullptr;
+        }
         worker_running_ = false;
         task_handle_ = nullptr;
         if (!cancelled_ && active_ && playback_id == playback_id_) {

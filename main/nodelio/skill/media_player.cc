@@ -64,9 +64,28 @@ static esp_timer_handle_t s_pause_close_timer;
 static volatile bool s_resume_after_voice = false;
 /** 音频进入输出任务后再武装唤醒，避免与 HTTP/TLS 和解码暖机抢资源。 */
 static esp_timer_handle_t s_wake_arm_timer = nullptr;
-static constexpr int64_t kMediaWakeArmUs = 500000; /* 0.5s（原 1.5s） */
+static constexpr int64_t kMediaWakeArmUs = 4000000; /* 流稳后再武装，少抢带宽/DRAM */
 /** 点选开播后这段时间不武装、不接受唤醒，避开切流和台头人声。 */
-static constexpr int64_t kMediaWakeBlockUs = 2500000;
+static constexpr int64_t kMediaWakeBlockUs = 5000000;
+/** 暂停续播起点（ms）；无时长估算时退回从头播。 */
+static uint32_t s_pause_pos_ms = 0;
+/** 暂停瞬间快照：Stop 后 NotifyPlayer 进度归零，UI/Seek 靠这两项。 */
+static uint32_t s_pause_dur_ms = 0;
+static size_t s_pause_content_len = 0;
+
+static void capture_pause_snapshot(void)
+{
+    s_pause_pos_ms = Application::GetInstance().HttpAudioPositionMs();
+    s_pause_dur_ms = Application::GetInstance().HttpAudioDurationMs();
+    s_pause_content_len = Application::GetInstance().HttpAudioContentLength();
+}
+
+static void clear_pause_snapshot(void)
+{
+    s_pause_pos_ms = 0;
+    s_pause_dur_ms = 0;
+    s_pause_content_len = 0;
+}
 /** 敲屏冲击麦，按下后短暂忽略唤醒。 */
 static constexpr int64_t kTouchWakeBlockUs = 800000;
 static int64_t s_wake_block_until_us = 0;
@@ -238,7 +257,7 @@ static void media_wake_arm_cb(void *arg)
             heap_caps_get_info(&dd, MALLOC_CAP_DMA);
             heap_caps_get_info(&ds, MALLOC_CAP_SPIRAM);
             ESP_LOGW(TAG,
-                     "wake-dram dump(test-open) INTERNAL free=%u largest=%u min_free=%u | "
+                     "wake-dram dump INTERNAL free=%u largest=%u min_free=%u | "
                      "DMA free=%u largest=%u | PSRAM free=%u largest=%u",
                      (unsigned)di.total_free_bytes, (unsigned)di.largest_free_block,
                      (unsigned)di.minimum_free_bytes, (unsigned)dd.total_free_bytes,
@@ -246,17 +265,25 @@ static void media_wake_arm_cb(void *arg)
                      (unsigned)ds.largest_free_block);
         }
         if (largest < 8192) {
-            ESP_LOGW(TAG, "media wake arm despite low dram largest=%u (test-open)",
-                     (unsigned)largest);
+            s_wake_arm_retries++;
+            ESP_LOGW(TAG, "media wake skip low dram largest=%u retry=%d", (unsigned)largest,
+                     s_wake_arm_retries);
+            if (s_wake_arm_timer && s_wake_arm_retries <= 20) {
+                esp_timer_start_once(s_wake_arm_timer, 1000000);
+            } else if (s_wake_arm_retries == 21) {
+                ESP_LOGW(TAG, "media wake unavailable (dram largest=%u) — use player mic",
+                         (unsigned)largest);
+            }
+            return;
         }
         audio.EnableWakeWordDetection(true);
         if (!audio.IsWakeWordRunning()) {
             s_wake_arm_retries++;
             ESP_LOGW(TAG, "media wake enable failed dram largest=%u retry=%d", (unsigned)largest,
                      s_wake_arm_retries);
-            if (s_wake_arm_timer && s_wake_arm_retries <= 30) {
+            if (s_wake_arm_timer && s_wake_arm_retries <= 20) {
                 esp_timer_start_once(s_wake_arm_timer, 1000000); /* +1s */
-            } else if (s_wake_arm_retries == 31) {
+            } else if (s_wake_arm_retries == 21) {
                 ESP_LOGW(TAG, "media wake unavailable (dram largest=%u) — use player mic",
                          (unsigned)largest);
             }
@@ -264,7 +291,7 @@ static void media_wake_arm_cb(void *arg)
         }
         s_wake_arm_retries = 0;
         media_wake_duck();
-        ESP_LOGI(TAG, "media wake interrupt armed(test-open) dram largest=%u", (unsigned)largest);
+        ESP_LOGI(TAG, "media wake interrupt armed dram largest=%u", (unsigned)largest);
     });
 }
 
@@ -458,16 +485,18 @@ static void release_previous_http(void)
              (int)busy0, (int)need_stop);
     if (need_stop) {
         s_suppress_ended = true;
+        /* worker 线程：先 Abort 关套接字（Read 立刻醒），再丢主线程做完整 Stop */
+        app.AbortHttpAudioStream();
         app.Schedule([]() { Application::GetInstance().StopHttpAudio(); });
     }
-    for (int i = 0; i < 80; ++i) {
+    for (int i = 0; i < 40; ++i) {
         DeviceState st = app.GetDeviceState();
         if (!app.IsHttpAudioBusy() && st != kDeviceStateNotifying && st != kDeviceStateSpeaking) {
             s_suppress_ended = false;
             ESP_LOGI(TAG, "release prev done i=%d state=%s", i, DeviceStateMachine::GetStateName(st));
             return;
         }
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
     s_suppress_ended = false;
     ESP_LOGW(TAG, "wait previous audio timeout state=%s busy=%d",
@@ -562,18 +591,21 @@ static void media_worker(void *arg)
         if (msg.op == MEDIA_OP_STOP) {
             s_suppress_ended = true;
             s_playing = false;
-            Application::GetInstance().Schedule([]() { Application::GetInstance().StopHttpAudio(); });
+            Application::GetInstance().AbortHttpAudioStream();
+            Application::GetInstance().Schedule(
+                []() { Application::GetInstance().StopHttpAudio(); });
             if (!s_paused) {
                 s_now_title[0] = '\0';
                 s_now_url[0] = '\0';
                 s_started_url[0] = '\0';
                 s_now_key[0] = '\0';
+                clear_pause_snapshot();
                 nodelio_panel_ui_media_now_playing("", false);
                 nodelio_lyrics_clear();
                 reclaim_wake_dram_after_media();
             }
-            for (int i = 0; i < 80 && Application::GetInstance().IsHttpAudioBusy(); ++i) {
-                vTaskDelay(pdMS_TO_TICKS(100));
+            for (int i = 0; i < 40 && Application::GetInstance().IsHttpAudioBusy(); ++i) {
+                vTaskDelay(pdMS_TO_TICKS(50));
             }
             s_suppress_ended = false;
             continue;
@@ -826,6 +858,13 @@ esp_err_t nodelio_media_play_track(const nodelio_nvs_config_t *cfg, const nl_env
         nodelio_panel_ui_media_now_playing(s_now_title, true);
         return ESP_OK;
     }
+    /* 暂停同一首：续播，勿整首重拉 */
+    if (s_paused && same_url(s_now_url, msg.url)) {
+        snprintf(s_now_title, sizeof(s_now_title), "%s", msg.title);
+        snprintf(s_now_artist, sizeof(s_now_artist), "%s", track->artist);
+        nodelio_media_resume();
+        return ESP_OK;
+    }
 
     /* 先挡住唤醒，再入队。切流和台头人声容易被当成「你好小智」。 */
     note_wake_block(kMediaWakeBlockUs);
@@ -842,6 +881,7 @@ esp_err_t nodelio_media_play_track(const nodelio_nvs_config_t *cfg, const nl_env
     /* 只入队 PLAY。worker 里先等上一首 HTTP 退出再开流，避免 STOP 与 PLAY 抢主循环把新曲掐掉。 */
     disarm_pause_close();
     s_paused = false;
+    clear_pause_snapshot();
     s_retry_count = 0;
     snprintf(s_now_title, sizeof(s_now_title), "%s", msg.title);
     snprintf(s_now_artist, sizeof(s_now_artist), "%s", track->artist);
@@ -873,6 +913,7 @@ void nodelio_media_stop(void)
     disarm_media_wake_interrupt();
     s_paused = false;
     s_resume_after_voice = false;
+    clear_pause_snapshot();
     media_msg_t msg{.op = MEDIA_OP_STOP};
     xQueueSend(s_q, &msg, 0);
 }
@@ -884,13 +925,16 @@ void nodelio_media_pause(void)
     }
     s_resume_after_voice = false;
     disarm_media_wake_interrupt();
+    /* 必须在 Stop 前快照：停流后 HttpAudioPositionMs 恒为 0 */
+    capture_pause_snapshot();
     s_paused = true;
     s_playing = false;
     arm_pause_close();
     /* 先刷新 UI（保留条），再掐流。ended 回调见到 paused 不会清标题 */
     nodelio_panel_ui_media_now_playing(s_now_title, false);
-    Application::GetInstance().Schedule([]() { Application::GetInstance().StopHttpAudio(); });
-    ESP_LOGI(TAG, "paused title=%s", s_now_title);
+    Application::GetInstance().StopHttpAudio();
+    ESP_LOGI(TAG, "paused title=%s pos_ms=%u dur_ms=%u len=%u", s_now_title,
+             (unsigned)s_pause_pos_ms, (unsigned)s_pause_dur_ms, (unsigned)s_pause_content_len);
 }
 
 void nodelio_media_pause_for_voice(void)
@@ -905,13 +949,14 @@ void nodelio_media_pause_for_voice(void)
         }
         return;
     }
+    capture_pause_snapshot();
     s_paused = true;
     s_playing = false;
     s_resume_after_voice = true;
     nodelio_panel_ui_media_now_playing(s_now_title, false);
     /* 主任务同步掐流，避免 Schedule 晚于 BeginWakeWordInvoke */
     Application::GetInstance().StopHttpAudio();
-    ESP_LOGI(TAG, "paused for voice title=%s", s_now_title);
+    ESP_LOGI(TAG, "paused for voice title=%s pos_ms=%u", s_now_title, (unsigned)s_pause_pos_ms);
 }
 
 bool nodelio_media_resume_after_voice(void)
@@ -938,13 +983,15 @@ bool nodelio_media_preempt_for_heavy_app(void)
         return false;
     }
     s_resume_after_voice = false;
+    app.AbortHttpAudioStream();
     nodelio_media_stop();
     /* STOP 入队后仍可能短暂 busy；等空闲再开 TLS */
-    for (int i = 0; i < 100 && (app.IsHttpAudioBusy() || app.GetDeviceState() == kDeviceStateNotifying);
+    for (int i = 0; i < 40 && (app.IsHttpAudioBusy() || app.GetDeviceState() == kDeviceStateNotifying);
          ++i) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
     if (app.IsHttpAudioBusy() || app.GetDeviceState() == kDeviceStateNotifying) {
+        app.AbortHttpAudioStream();
         app.Schedule([]() { Application::GetInstance().StopHttpAudio(); });
         for (int i = 0; i < 40 && Application::GetInstance().IsHttpAudioBusy(); ++i) {
             vTaskDelay(pdMS_TO_TICKS(50));
@@ -961,14 +1008,28 @@ void nodelio_media_resume(void)
     if (!s_q && nodelio_media_init() != ESP_OK) {
         return;
     }
+    disarm_pause_close();
+    s_resume_after_voice = false;
+    const uint32_t pos = s_pause_pos_ms;
+    const uint32_t dur = nodelio_media_duration_ms();
+    /* 有进度且能估时长/长度：按 Range 续播，避免整首重拉 */
+    if (pos > 200 && dur > 0 &&
+        (s_pause_content_len > 0 || Application::GetInstance().HttpAudioContentLength() > 0)) {
+        s_paused = false;
+        ESP_LOGI(TAG, "resume seek title=%s pos_ms=%u", s_now_title, (unsigned)pos);
+        if (nodelio_media_seek_ms(pos)) {
+            return;
+        }
+        s_paused = true;
+        ESP_LOGW(TAG, "resume seek failed, fallback restart");
+    }
     media_msg_t msg{};
     msg.op = MEDIA_OP_PLAY;
     snprintf(msg.url, sizeof(msg.url), "%s", s_now_url);
     snprintf(msg.title, sizeof(msg.title), "%s", s_now_title[0] ? s_now_title : "播放中");
     snprintf(msg.device_key, sizeof(msg.device_key), "%s", s_now_key);
-    disarm_pause_close();
     s_paused = false;
-    s_resume_after_voice = false;
+    clear_pause_snapshot();
     if (xQueueSend(s_q, &msg, pdMS_TO_TICKS(100)) != pdTRUE) {
         s_paused = true;
         ESP_LOGW(TAG, "resume queue full");
@@ -1001,12 +1062,31 @@ void nodelio_media_now_url(char *buf, size_t len)
 
 uint32_t nodelio_media_position_ms(void)
 {
-    return Application::GetInstance().HttpAudioPositionMs();
+    /* 暂停或 Seek 重开流窗口：NotifyPlayer 未 active 时读到的是 0 */
+    if (s_paused || s_seeking) {
+        return s_pause_pos_ms;
+    }
+    const uint32_t live = Application::GetInstance().HttpAudioPositionMs();
+    if (live == 0 && s_pause_pos_ms > 0 && s_playing) {
+        return s_pause_pos_ms; /* 续播刚启动、首包未到 */
+    }
+    if (live > 0) {
+        s_pause_pos_ms = live; /* 跟播，供下次暂停 */
+    }
+    return live;
 }
 
 uint32_t nodelio_media_duration_ms(void)
 {
-    return Application::GetInstance().HttpAudioDurationMs();
+    if (s_paused && s_pause_dur_ms > 0) {
+        return s_pause_dur_ms;
+    }
+    const uint32_t live = Application::GetInstance().HttpAudioDurationMs();
+    if (live > 0) {
+        return live;
+    }
+    /* 停流瞬间 duration 偶发被清；续播前仍可用暂停快照 */
+    return s_pause_dur_ms;
 }
 
 bool nodelio_media_seek_ms(uint32_t ms)
@@ -1018,7 +1098,10 @@ bool nodelio_media_seek_ms(uint32_t ms)
     if (ms >= dur) {
         ms = dur > 200 ? dur - 200 : 0;
     }
-    const size_t blen = Application::GetInstance().HttpAudioContentLength();
+    size_t blen = Application::GetInstance().HttpAudioContentLength();
+    if (blen == 0) {
+        blen = s_pause_content_len;
+    }
     if (blen == 0) {
         return false;
     }
@@ -1027,6 +1110,8 @@ bool nodelio_media_seek_ms(uint32_t ms)
     s_seeking = true;
     s_suppress_ended = true;
     s_paused = false;
+    /* Seek 续播：保留 dur/len 供 UI，直到新流上报；pos 交给播放器 start_position */
+    s_pause_pos_ms = ms;
     s_started_url[0] = '\0';
     char local_path[NL_ENV_URL];
     const bool is_sd = nodelio_sd_resolve_url(s_now_url, local_path, sizeof(local_path));

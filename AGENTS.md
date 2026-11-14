@@ -44,7 +44,7 @@ Board selection is a coupled chain:
 
 `config.json` -> `scripts/build.py` -> `main/Kconfig.projbuild` -> `main/CMakeLists.txt` -> board source and `config.h`.
 
-When adding a board or variant, update every relevant link in that chain. Include a unique board identity, correct chip target, flash/partition settings, exactly one `DECLARE_BOARD`, and board documentation. Follow `docs/custom-board.md`.
+When adding a board or variant, update every relevant link in that chain. Include a unique board identity, correct chip target, flash/partition settings, exactly one `DECLARE_BOARD`, and board documentation under `main/boards/sila/`. This fork only ships sila panels.
 
 ## Commands
 
@@ -84,10 +84,11 @@ The build script changes local `sdkconfig` and build state. Do not assume the bu
 ## Authoritative Documentation
 
 - Overview and SDK policy: `README.md`
-- Board guide: `docs/custom-board.md`
+- Panel boards: `main/boards/sila/*/README.md`；排障 `docs/nodelio-sila86.md` / `docs/nodelio-sila-p4c5-lvgl.md`
 - Audio design: `main/audio/README.md`
 - Code style: `docs/code_style.md`
 - Protocols: `docs/websocket.md`, `docs/mqtt-udp.md`, `docs/mcp-protocol.md`
+- Media library: `docs/nodelio-media-library.md`
 - CI matrix: `.github/workflows/build.yml`
 
 Keep detailed or fast-changing information in those files, not here. Add a nested `AGENTS.md` only when a subsystem needs specialized instructions.

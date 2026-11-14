@@ -2017,9 +2017,9 @@ static void fill_source_bar(void)
         lv_obj_set_height(chip, 34);
         lv_obj_set_width(chip, LV_SIZE_CONTENT);
         lv_obj_set_style_pad_hor(chip, 16, 0);
-        /* 普惠字视觉重心偏下：底垫略大，字在胶囊里更居中 */
-        lv_obj_set_style_pad_top(chip, 0, 0);
-        lv_obj_set_style_pad_bottom(chip, 3, 0);
+        /* 中文胶囊：字框上沿偏紧，顶垫略大 + 微下移，避免视觉偏上 */
+        lv_obj_set_style_pad_top(chip, 3, 0);
+        lv_obj_set_style_pad_bottom(chip, 1, 0);
         lv_obj_set_style_radius(chip, 17, 0);
         lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(chip, 1, 0);
@@ -2042,7 +2042,7 @@ static void fill_source_bar(void)
         nl_ov_set_font(lbl);
         lv_label_set_text(lbl, kNames[i]);
         lv_obj_set_style_text_color(lbl, selected ? UI_ON_TILE : UI_TEXT_SUB, 0);
-        lv_obj_set_style_translate_y(lbl, -1, 0);
+        lv_obj_set_style_translate_y(lbl, 1, 0);
     }
 }
 
@@ -2066,8 +2066,8 @@ static void fill_filters(void)
         lv_obj_set_height(chip, 36);
         lv_obj_set_width(chip, LV_SIZE_CONTENT);
         lv_obj_set_style_pad_hor(chip, 14, 0);
-        lv_obj_set_style_pad_top(chip, 0, 0);
-        lv_obj_set_style_pad_bottom(chip, 3, 0);
+        lv_obj_set_style_pad_top(chip, 3, 0);
+        lv_obj_set_style_pad_bottom(chip, 1, 0);
         lv_obj_set_style_radius(chip, 18, 0);
         lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(chip, 1, 0);
@@ -2089,7 +2089,7 @@ static void fill_filters(void)
         nl_ov_set_font(lbl);
         lv_label_set_text(lbl, f->title[0] ? f->title : "?");
         lv_obj_set_style_text_color(lbl, f->selected ? UI_ON_TILE : UI_TEXT_SUB, 0);
-        lv_obj_set_style_translate_y(lbl, -1, 0);
+        lv_obj_set_style_translate_y(lbl, 1, 0);
     }
     /* 不在此处 scroll_to_view：会强制整树 layout，语音/主循环路径易触发 task_wdt */
 }

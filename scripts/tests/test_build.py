@@ -43,7 +43,7 @@ class VersionTests(unittest.TestCase):
         self.assertNotIn("waveshare-esp32-p4-nano-10.1-a-p4x", idf6_names)
         self.assertNotIn("espressif-esp32-s31-function-coreboard-1", idf6_names)
         self.assertIn("alientek-atk-dnesp32s3", idf6_names)
-        self.assertNotIn("atk-dnesp32s3", idf6_names)
+        self.assertNotIn("sila-86", idf6_names)
         self.assertNotIn("alientek-alientek-atk-dnesp32s3", idf6_names)
         self.assertIn("m5stack-atom-echos3r", idf6_names)
         self.assertIn("nologo-xingzhi-abs-2.0", idf6_names)
@@ -69,9 +69,9 @@ class VersionTests(unittest.TestCase):
             variant for variant in idf61
             if variant["board"] == "alientek/atk-dnesp32s3"
         )
-        self.assertEqual(atk["type"], "atk-dnesp32s3")
+        self.assertEqual(atk["type"], "sila-86")
         self.assertEqual(atk["target"], "esp32s3")
-        self.assertEqual(atk["config"], "CONFIG_BOARD_TYPE_ATK_DNESP32S3")
+        self.assertEqual(atk["config"], "CONFIG_BOARD_TYPE_SILA_86")
         self.assertEqual(
             atk["display_name"],
             "Alientek ATK-DNESP32S3 Development Board (正点原子)",
@@ -322,7 +322,7 @@ class VersionTests(unittest.TestCase):
 class BoardSelectionTests(unittest.TestCase):
     def setUp(self):
         self.variants = [
-            {"board": "bread-compact-wifi", "name": "bread-compact-wifi", "full_name": "bread-compact-wifi"},
+            {"board": "sila/sila-86", "name": "sila/sila-86", "full_name": "sila/sila-86"},
             {
                 "board": "waveshare/esp32-c6-touch-amoled-2.06",
                 "name": "esp32-c6-touch-amoled-2.06",
@@ -333,7 +333,7 @@ class BoardSelectionTests(unittest.TestCase):
     def test_nested_manufacturer_board_path(self):
         selected = build._select_variants_for_changes(
             self.variants,
-            ["main/boards/waveshare/esp32-c6-touch-amoled-2.06/config.h"],
+            ["main/boards/sila/sila-86/config.h"],
         )
         self.assertEqual([item["board"] for item in selected], [self.variants[1]["board"]])
 
@@ -342,13 +342,13 @@ class BoardSelectionTests(unittest.TestCase):
         self.assertTrue(build._board_type_exists(board))
         self.assertEqual(
             build._resolve_board_config(board, "esp32s3", []),
-            "CONFIG_BOARD_TYPE_ESP32_S3_BOX_3",
+            "CONFIG_BOARD_TYPE_SILA_86",
         )
 
     def test_board_display_name_comes_from_kconfig_prompt(self):
         self.assertEqual(
             build._get_board_display_name(
-                "CONFIG_BOARD_TYPE_ATK_DNESP32S3"
+                "CONFIG_BOARD_TYPE_SILA_86"
             ),
             "Alientek ATK-DNESP32S3 Development Board (正点原子)",
         )
@@ -356,25 +356,25 @@ class BoardSelectionTests(unittest.TestCase):
     def test_board_target_matching_uses_complete_kconfig_symbols(self):
         self.assertTrue(
             build._symbol_supports_target(
-                "CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI",
+                "CONFIG_BOARD_TYPE_SILA_86",
                 "esp32s3",
             )
         )
         self.assertFalse(
             build._symbol_supports_target(
-                "CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI",
+                "CONFIG_BOARD_TYPE_SILA_86",
                 "esp32",
             )
         )
         self.assertTrue(
             build._symbol_supports_target(
-                "CONFIG_BOARD_TYPE_ESP32_S31_FUNCTION_COREBOARD_1",
+                "CONFIG_BOARD_TYPE_SILA_86",
                 "esp32s31",
             )
         )
         self.assertFalse(
             build._symbol_supports_target(
-                "CONFIG_BOARD_TYPE_ESP32_S31_FUNCTION_COREBOARD_1",
+                "CONFIG_BOARD_TYPE_SILA_86",
                 "esp32s3",
             )
         )
@@ -385,20 +385,20 @@ class BoardSelectionTests(unittest.TestCase):
             "does not support target 'esp32c3'",
         ):
             build._resolve_board_config(
-                "bread-compact-wifi",
+                "sila/sila-86",
                 "esp32c3",
-                ["CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI=y"],
+                ["CONFIG_BOARD_TYPE_SILA_86=y"],
             )
 
     def test_explicit_board_config_rejects_different_board_directory(self):
         with self.assertRaisesRegex(
             ValueError,
-            "does not select board directory 'bread-compact-wifi'",
+            "does not select board directory 'sila/sila-86'",
         ):
             build._resolve_board_config(
-                "bread-compact-wifi",
+                "sila/sila-86",
                 "esp32s3",
-                ["CONFIG_BOARD_TYPE_M5STACK_CORE_S3=y"],
+                ["CONFIG_BOARD_TYPE_SILA_86=y"],
             )
 
     def test_inferred_board_config_rejects_incompatible_target(self):
@@ -407,7 +407,7 @@ class BoardSelectionTests(unittest.TestCase):
             "does not support target 'esp32c3'",
         ):
             build._resolve_board_config(
-                "bread-compact-wifi",
+                "sila/sila-86",
                 "esp32c3",
                 [],
             )
@@ -507,15 +507,15 @@ class BoardSelectionTests(unittest.TestCase):
     def test_alientek_directory_keeps_atk_board_types(self):
         cases = {
             "alientek/atk-dnesp32s3": (
-                "CONFIG_BOARD_TYPE_ATK_DNESP32S3",
-                "atk-dnesp32s3",
+                "CONFIG_BOARD_TYPE_SILA_86",
+                "sila-86",
             ),
             "alientek/atk-dnesp32s3m-wifi": (
-                "CONFIG_BOARD_TYPE_ATK_DNESP32S3M_WIFI",
+                "CONFIG_BOARD_TYPE_SILA_86M_WIFI",
                 "atk-dnesp32s3m-wifi",
             ),
             "alientek/atk-dnesp32s3m-4g": (
-                "CONFIG_BOARD_TYPE_ATK_DNESP32S3M_4G",
+                "CONFIG_BOARD_TYPE_SILA_86M_4G",
                 "atk-dnesp32s3m-4g",
             ),
         }
@@ -1144,7 +1144,7 @@ class BuildOptionTests(unittest.TestCase):
 
     def test_lcd_board_exposes_curated_display_options(self):
         config = json.loads(
-            (ROOT / "main/boards/bread-compact-esp32-lcd/config.json").read_text(
+            (ROOT / "main/boards/sila/sila-86/config.json").read_text(
                 encoding="utf-8"
             )
         )
@@ -1180,12 +1180,12 @@ class BuildOptionTests(unittest.TestCase):
 
     def test_bread_compact_esp32_config_supports_sh1106(self):
         config_header = (
-            ROOT / "main/boards/bread-compact-esp32/config.h"
+            ROOT / "main/boards/sila/sila-86/config.h"
         ).read_text(encoding="utf-8")
         self.assertIn("CONFIG_OLED_SH1106_128X64", config_header)
 
     def test_bread_compact_nt26_supports_sh1106(self):
-        board_dir = ROOT / "main/boards/bread-compact-nt26"
+        board_dir = ROOT / "main/boards/sila/sila-86"
         config_header = (board_dir / "config.h").read_text(encoding="utf-8")
         board_source = (board_dir / "compact_nt26_board.cc").read_text(
             encoding="utf-8"
@@ -1237,7 +1237,7 @@ class BuildOptionTests(unittest.TestCase):
 
     def test_esp_vocat_default_style_overrides_emote_board_defaults(self):
         config = json.loads(
-            (ROOT / "main/boards/espressif/esp-vocat/config.json").read_text(
+            (ROOT / "main/boards/sila/sila-86/config.json").read_text(
                 encoding="utf-8"
             )
         )
@@ -1328,7 +1328,7 @@ class BuildOptionTests(unittest.TestCase):
 
     def test_camera_board_defaults_are_declared_by_board_config(self):
         config = json.loads(
-            (ROOT / "main/boards/espressif/esp32-s3-korvo-2-v3.0/config.json").read_text(
+            (ROOT / "main/boards/sila/sila-86/config.json").read_text(
                 encoding="utf-8"
             )
         )
@@ -1352,7 +1352,7 @@ class BuildOptionTests(unittest.TestCase):
 
     def test_nothrow_camera_constructor_exposes_mirror_options(self):
         config = json.loads(
-            (ROOT / "main/boards/otto-robot/config.json").read_text(encoding="utf-8")
+            (ROOT / "main/boards/sila/sila-86/config.json").read_text(encoding="utf-8")
         )
         build_config = config["builds"][0]
         board_config = build._resolve_board_config(
@@ -1374,7 +1374,7 @@ class BuildOptionTests(unittest.TestCase):
 
     def test_optional_usb_camera_options_require_camera_to_be_enabled(self):
         config = json.loads(
-            (ROOT / "main/boards/espressif/esp-vocat/config.json").read_text(
+            (ROOT / "main/boards/sila/sila-86/config.json").read_text(
                 encoding="utf-8"
             )
         )
@@ -1450,9 +1450,9 @@ class CliTests(unittest.TestCase):
     def setUp(self):
         self.variants = [
             {
-                "board": "bread-compact-wifi",
-                "name": "bread-compact-wifi",
-                "full_name": "bread-compact-wifi",
+                "board": "sila/sila-86",
+                "name": "sila/sila-86",
+                "full_name": "sila/sila-86",
             },
             {
                 "board": "multi-board",
@@ -1499,7 +1499,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(
             output.getvalue(),
-            "bread-compact-wifi\n"
+            "sila/sila-86\n"
             "multi-board\n"
             "  - variant-a\n"
             "  - variant-b\n",
@@ -1545,12 +1545,12 @@ class CliTests(unittest.TestCase):
             ),
             mock.patch.object(build, "build_board") as build_board,
         ):
-            build.main(["bread-compact-wifi"])
+            build.main(["sila/sila-86"])
 
         build_board.assert_called_once_with(
-            "bread-compact-wifi",
+            "sila/sila-86",
             config_filename="config.json",
-            name_filter="bread-compact-wifi",
+            name_filter="sila/sila-86",
             create_zip=False,
             language=None,
             wake_word=None,
@@ -1569,7 +1569,7 @@ class CliTests(unittest.TestCase):
             ),
             mock.patch.object(build, "build_board") as build_board,
         ):
-            build.main(["bread-compact-wifi", "--zip"])
+            build.main(["sila/sila-86", "--zip"])
 
         self.assertTrue(build_board.call_args.kwargs["create_zip"])
 
@@ -1585,7 +1585,7 @@ class CliTests(unittest.TestCase):
             mock.patch.object(build, "build_board") as build_board,
         ):
             build.main([
-                "bread-compact-wifi",
+                "sila/sila-86",
                 "--language",
                 "en-US",
                 "--wake-word",
@@ -1606,7 +1606,7 @@ class CliTests(unittest.TestCase):
             mock.patch.object(build, "build_board") as build_board,
         ):
             build.main([
-                "bread-compact-wifi",
+                "sila/sila-86",
                 "--build-options-json",
                 '{"wifi_provisioning":"blufi"}',
             ])
@@ -1640,7 +1640,7 @@ class BoardSourceTests(unittest.TestCase):
         self.assertEqual(missing, [])
 
     def test_m5stack_tab5_supports_st7121_and_st7123_panels(self):
-        board_dir = ROOT / "main/boards/m5stack/tab5"
+        board_dir = ROOT / "main/boards/sila/sila-86"
         board_cc = (board_dir / "m5stack_tab5.cc").read_text(encoding="utf-8")
 
         initialize_display = board_cc[

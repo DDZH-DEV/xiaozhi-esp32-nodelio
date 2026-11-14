@@ -96,6 +96,7 @@ lv_obj_t *s_status_lbl;
 lv_obj_t *s_wifi_lbl;
 lv_obj_t *s_cloud_lbl;
 lv_obj_t *s_batt_lbl;
+lv_obj_t *s_batt_pct_lbl;
 lv_obj_t *s_status_bar;
 esp_timer_handle_t s_status_tmr;
 lv_timer_t *s_activity_tmr;
@@ -637,11 +638,20 @@ void nl_ov_status_bar_relayout(void)
     if (s_status_lbl && s_brand_lbl) {
         lv_obj_align_to(s_status_lbl, s_brand_lbl, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
     }
-    /* 右起：电池、云、WiFi、时钟、未读。无电池时云贴最右。 */
+    /* 右起：电量%、电池、云、WiFi、时钟、未读。无电池时云贴最右。 */
     lv_obj_t *anchor = nullptr;
-    if (s_batt_lbl && !lv_obj_has_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN)) {
+    const bool batt_vis =
+        s_batt_lbl && !lv_obj_has_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN);
+    if (batt_vis && s_batt_pct_lbl) {
+        lv_obj_align(s_batt_pct_lbl, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD, NL_STATUS_Y);
+        lv_obj_align_to(s_batt_lbl, s_batt_pct_lbl, LV_ALIGN_OUT_LEFT_MID, -2, 0);
+        anchor = s_batt_lbl;
+    } else if (batt_vis) {
         lv_obj_align(s_batt_lbl, LV_ALIGN_RIGHT_MID, NL_STATUS_RIGHT_PAD, NL_STATUS_Y);
         anchor = s_batt_lbl;
+    }
+    if (s_batt_pct_lbl && !batt_vis) {
+        lv_obj_add_flag(s_batt_pct_lbl, LV_OBJ_FLAG_HIDDEN);
     }
     if (s_cloud_lbl) {
         if (anchor) {
@@ -720,7 +730,9 @@ static const char *wifi_status_glyph(bool wifi_ok)
 static int s_batt_level = -1;
 static bool s_batt_charging = false;
 static const char *s_wifi_glyph_last = nullptr;
+static const char *s_cloud_glyph_last = nullptr;
 static const char *s_batt_glyph_last = nullptr;
+static int s_batt_level_last = -2; /* 与图标无关的 % 刷新用；-2=未刷 */
 static int s_batt_vis_last = -1; /* -1=unknown, 0=hidden, 1=shown_normal, 2=shown_warn */
 
 static const char *battery_status_glyph(int level, bool charging)
@@ -740,6 +752,12 @@ static const char *battery_status_glyph(int level, bool charging)
     };
     const int idx = level <= 0 ? 0 : (level >= 100 ? 7 : 1 + ((level - 1) * 6 / 99));
     return levels[idx];
+}
+
+static const char *cloud_status_glyph(bool cloud_ok)
+{
+    /* 字库无纯 cloud；云形用 upload / off。 */
+    return cloud_ok ? MATERIAL_SYMBOLS_CLOUD_UPLOAD : MATERIAL_SYMBOLS_CLOUD_OFF;
 }
 
 static void sample_battery_cache(void)
@@ -785,21 +803,34 @@ static bool refresh_battery_lbl(void)
         }
         s_batt_vis_last = 0;
         s_batt_glyph_last = nullptr;
+        s_batt_level_last = -1;
         lv_obj_add_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN);
+        if (s_batt_pct_lbl) {
+            lv_obj_add_flag(s_batt_pct_lbl, LV_OBJ_FLAG_HIDDEN);
+        }
         return true;
     }
     const char *glyph = battery_status_glyph(s_batt_level, s_batt_charging);
     const bool warn = (!s_batt_charging && s_batt_level <= 15);
     const int vis_state = warn ? 2 : 1;
-    if (s_batt_vis_last == vis_state && s_batt_glyph_last == glyph) {
+    if (s_batt_vis_last == vis_state && s_batt_glyph_last == glyph &&
+        s_batt_level_last == s_batt_level) {
         return false;
     }
     s_batt_vis_last = vis_state;
     s_batt_glyph_last = glyph;
+    s_batt_level_last = s_batt_level;
     lv_obj_set_style_text_font(s_batt_lbl, &font_material_symbols_30_4, 0);
     lv_label_set_text(s_batt_lbl, glyph);
     lv_obj_set_style_text_color(s_batt_lbl, warn ? UI_WARN : UI_ON_TILE, 0);
     lv_obj_remove_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN);
+    if (s_batt_pct_lbl) {
+        char pct[8];
+        std::snprintf(pct, sizeof(pct), "%d%%", s_batt_level);
+        lv_label_set_text(s_batt_pct_lbl, pct);
+        lv_obj_set_style_text_color(s_batt_pct_lbl, warn ? UI_WARN : UI_ON_TILE, 0);
+        lv_obj_remove_flag(s_batt_pct_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
     return true;
 }
 
@@ -829,6 +860,15 @@ void nl_ov_refresh_status_icons(bool wifi_ok, bool cloud_ok, const char *msg)
         if (s_wifi_glyph_last != g) {
             s_wifi_glyph_last = g;
             lv_label_set_text(s_wifi_lbl, g);
+            changed = true;
+        }
+    }
+    if (s_cloud_lbl) {
+        const char *g = cloud_status_glyph(cloud_ok);
+        if (s_cloud_glyph_last != g) {
+            s_cloud_glyph_last = g;
+            lv_obj_set_style_text_font(s_cloud_lbl, &font_material_symbols_30_4, 0);
+            lv_label_set_text(s_cloud_lbl, g);
             changed = true;
         }
     }
@@ -1287,8 +1327,9 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_clear_flag(s_status_lbl, LV_OBJ_FLAG_CLICKABLE);
 
     s_cloud_lbl = lv_label_create(bar);
-    lv_label_set_text(s_cloud_lbl, LV_SYMBOL_UPLOAD);
-    nl_ov_set_icon_font(s_cloud_lbl);
+    lv_obj_set_style_text_font(s_cloud_lbl, &font_material_symbols_30_4, 0);
+    lv_label_set_text(s_cloud_lbl, MATERIAL_SYMBOLS_CLOUD_OFF);
+    s_cloud_glyph_last = MATERIAL_SYMBOLS_CLOUD_OFF;
     lv_obj_set_style_text_color(s_cloud_lbl, UI_ON_TILE, 0);
     lv_obj_clear_flag(s_cloud_lbl, LV_OBJ_FLAG_CLICKABLE);
 
@@ -1304,6 +1345,13 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_set_style_text_color(s_batt_lbl, UI_ON_TILE, 0);
     lv_obj_clear_flag(s_batt_lbl, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(s_batt_lbl, LV_OBJ_FLAG_HIDDEN);
+
+    s_batt_pct_lbl = lv_label_create(bar);
+    lv_label_set_text(s_batt_pct_lbl, "");
+    nl_ov_set_font(s_batt_pct_lbl);
+    lv_obj_set_style_text_color(s_batt_pct_lbl, UI_ON_TILE, 0);
+    lv_obj_clear_flag(s_batt_pct_lbl, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(s_batt_pct_lbl, LV_OBJ_FLAG_HIDDEN);
     status_bar_relayout();
     nl_ov_status_bar_apply_mode();
 
