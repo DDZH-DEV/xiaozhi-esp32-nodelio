@@ -331,12 +331,26 @@ bool IsSupportedUrl(const std::string& url) {
  */
 class LocalFileHttp final : public Http {
 public:
-    bool OpenPath(const std::string& path) {
+    bool OpenPath(const std::string& path, uint32_t start_byte = 0) {
         file_ = fopen(path.c_str(), "rb");
         if (file_ == nullptr) {
             return false;
         }
         setvbuf(file_, nullptr, _IOFBF, 8 * 1024);
+        if (fseek(file_, 0, SEEK_END) == 0) {
+            const long end = ftell(file_);
+            if (end > 0) {
+                body_len_ = static_cast<size_t>(end);
+            }
+        }
+        if (start_byte > 0 && body_len_ > 0) {
+            if (start_byte >= body_len_) {
+                start_byte = body_len_ > 1 ? static_cast<uint32_t>(body_len_ - 1) : 0;
+            }
+            fseek(file_, static_cast<long>(start_byte), SEEK_SET);
+        } else {
+            fseek(file_, 0, SEEK_SET);
+        }
         return true;
     }
     void SetTimeout(int) override {}
@@ -367,11 +381,12 @@ public:
     }
     NetworkResult<int> GetStatusCode() override { return 200; }
     std::string GetResponseHeader(const std::string&) const override { return {}; }
-    size_t GetBodyLength() override { return 0; }
+    size_t GetBodyLength() override { return body_len_; }
     std::string ReadAll() override { return {}; }
 
 private:
     FILE* file_ = nullptr;
+    size_t body_len_ = 0;
 };
 
 void EnsureM4aDecoderRegistered() {
@@ -490,7 +505,8 @@ NotifyPlayer::~NotifyPlayer() { Stop(); }
 
 bool NotifyPlayer::Start(std::string audio_url, std::vector<NotifySubtitle> subtitles,
                          uint32_t playback_id, SubtitleCallback subtitle_callback,
-                         FinishedCallback finished_callback, std::string device_key) {
+                         FinishedCallback finished_callback, std::string device_key,
+                         uint32_t start_byte, uint32_t start_position_ms) {
     if (playback_id == 0 || !IsSupportedUrl(audio_url)) {
         return false;
     }
@@ -514,7 +530,13 @@ bool NotifyPlayer::Start(std::string audio_url, std::vector<NotifySubtitle> subt
         subtitle_callback_ = std::move(subtitle_callback);
         finished_callback_ = std::move(finished_callback);
         playback_id_ = playback_id;
-        last_playback_position_ms_ = 0;
+        last_playback_position_ms_ = start_position_ms;
+        start_byte_ = start_byte;
+        start_position_ms_ = start_position_ms;
+        if (start_byte == 0 && start_position_ms == 0) {
+            duration_ms_ = 0;
+            content_length_ = 0;
+        }
         underrun_count_ = 0;
         next_subtitle_index_ = 0;
         active_ = true;
@@ -555,7 +577,8 @@ bool NotifyPlayer::Start(std::string audio_url, std::vector<NotifySubtitle> subt
 
 bool NotifyPlayer::StartFile(std::string file_path, uint32_t playback_id,
                              SubtitleCallback subtitle_callback,
-                             FinishedCallback finished_callback) {
+                             FinishedCallback finished_callback, uint32_t start_byte,
+                             uint32_t start_position_ms) {
     if (playback_id == 0 || file_path.empty()) {
         return false;
     }
@@ -572,7 +595,13 @@ bool NotifyPlayer::StartFile(std::string file_path, uint32_t playback_id,
         subtitle_callback_ = std::move(subtitle_callback);
         finished_callback_ = std::move(finished_callback);
         playback_id_ = playback_id;
-        last_playback_position_ms_ = 0;
+        last_playback_position_ms_ = start_position_ms;
+        start_byte_ = start_byte;
+        start_position_ms_ = start_position_ms;
+        if (start_byte == 0 && start_position_ms == 0) {
+            duration_ms_ = 0;
+            content_length_ = 0;
+        }
         underrun_count_ = 0;
         next_subtitle_index_ = 0;
         active_ = true;
@@ -639,6 +668,26 @@ uint32_t NotifyPlayer::PlaybackPositionMs() const {
         return 0;
     }
     return last_playback_position_ms_;
+}
+
+uint32_t NotifyPlayer::PlaybackDurationMs() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return duration_ms_;
+}
+
+size_t NotifyPlayer::PlaybackContentLength() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return content_length_;
+}
+
+void NotifyPlayer::SetPlaybackDurationMs(uint32_t duration_ms) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    duration_ms_ = duration_ms;
+}
+
+void NotifyPlayer::SetPlaybackContentLength(size_t bytes) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    content_length_ = bytes;
 }
 
 bool NotifyPlayer::IsCancelled(uint32_t playback_id) const {
@@ -743,15 +792,17 @@ void NotifyPlayer::WorkerTask() {
     std::string audio_url;
     std::string device_key;
     uint32_t playback_id = 0;
+    uint32_t start_byte = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         audio_url = audio_url_;
         device_key = device_key_;
         playback_id = playback_id_;
+        start_byte = start_byte_;
     }
 
     bool success = false;
-    ESP_LOGI(TAG, "notify GET %s", audio_url.c_str());
+    ESP_LOGI(TAG, "notify GET %s start_byte=%u", audio_url.c_str(), (unsigned)start_byte);
     auto http = Board::GetInstance().GetNetwork()->CreateHttp(0);
     if (http) {
         http->SetTimeout(kHttpTimeoutMs);
@@ -766,6 +817,11 @@ void NotifyPlayer::WorkerTask() {
             http->SetHeader("Accept-Encoding", "identity");
             /* 电台常夹 ICY 元数据；声明后按 icy-metaint 剥离，否则解码器当坏帧 → 跳针 */
             http->SetHeader("Icy-MetaData", "1");
+            if (start_byte > 0) {
+                char range[48];
+                snprintf(range, sizeof(range), "bytes=%u-", (unsigned)start_byte);
+                http->SetHeader("Range", range);
+            }
             if (!device_key.empty() && UrlHost(url) == origin_host) {
                 http->SetHeader("X-Device-Key", device_key);
             }
@@ -799,11 +855,33 @@ void NotifyPlayer::WorkerTask() {
             ESP_LOGI(TAG, "HTTP %d redirect hop=%d", status_code, hop + 1);
             url = next;
         }
+        /* 200 OK 或 206 Partial Content（Seek Range） */
         if (!opened_ok || status_code < 200 || status_code >= 300) {
             ESP_LOGE(TAG, "notify HTTP failed status=%d url=%s", status_code, url.c_str());
         }
         if (opened_ok && status_code >= 200 && status_code < 300 && !IsCancelled(playback_id)) {
             const std::string ctype = http->GetResponseHeader("Content-Type");
+            size_t blen = http->GetBodyLength();
+            if (blen == 0) {
+                const std::string cl = http->GetResponseHeader("Content-Length");
+                if (!cl.empty()) {
+                    blen = static_cast<size_t>(strtoul(cl.c_str(), nullptr, 10));
+                }
+            }
+            /* Content-Range: bytes a-b/total */
+            const std::string cr = http->GetResponseHeader("Content-Range");
+            if (!cr.empty()) {
+                const char *slash = strrchr(cr.c_str(), '/');
+                if (slash && slash[1] && slash[1] != '*') {
+                    const size_t total = static_cast<size_t>(strtoul(slash + 1, nullptr, 10));
+                    if (total > 0) {
+                        blen = total;
+                    }
+                }
+            }
+            if (blen > 0) {
+                SetPlaybackContentLength(blen);
+            }
             IcyState icy{};
             /* HttpClient 头查找已小写；顺带兼容大小写敏感实现 */
             icy.metaint = ParseIcyMetaint(http->GetResponseHeader("icy-metaint"));
@@ -812,6 +890,8 @@ void NotifyPlayer::WorkerTask() {
             }
             if (icy.metaint > 0) {
                 ESP_LOGI(TAG, "ICY metaint=%d", icy.metaint);
+                /* 直播：禁用时长/Seek */
+                SetPlaybackDurationMs(0);
             }
             if (!PsramCanHold(kPrefetchBytes + kHttpReadBufferSize)) {
                 ESP_LOGE(TAG, "prefetch skip: no %u contiguous heap",
@@ -928,19 +1008,27 @@ void NotifyPlayer::WorkerTask() {
 bool NotifyPlayer::WorkerTaskLocal() {
     std::string path;
     uint32_t playback_id = 0;
+    uint32_t start_byte = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         path = local_path_;
         playback_id = playback_id_;
+        start_byte = start_byte_;
     }
-    ESP_LOGI(TAG, "local play %s", path.c_str());
+    ESP_LOGI(TAG, "local play %s start_byte=%u", path.c_str(), (unsigned)start_byte);
 
     bool success = false;
     {
         LocalFileHttp file;
-        if (!file.OpenPath(path)) {
+        if (!file.OpenPath(path, start_byte)) {
             ESP_LOGE(TAG, "open local file failed: %s", path.c_str());
         } else {
+            {
+                const size_t blen = file.GetBodyLength();
+                if (blen > 0) {
+                    SetPlaybackContentLength(blen);
+                }
+            }
             /* 与 HTTP 一样先嗅探容器：本地文件读不动就立刻失败，不要卡在解码循环里。 */
             std::array<char, kHttpReadBufferSize> buffer;
             PsramBytes head;
@@ -1503,6 +1591,10 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
     esp_ae_rate_cvt_handle_t resampler = nullptr;
     int resampler_src = 0;
     uint32_t media_position_ms = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        media_position_ms = start_position_ms_;
+    }
     PsramSamples stage;
     stage.reserve(warmup_samples);
     /* stage/pending 改「游标消费、按需压实」：杜绝整块搬出再塞回的 O(n) PSRAM 搬运。 */
@@ -1518,6 +1610,28 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
     bool played = false;
     bool failed = false;
     uint32_t stream_bitrate = 0;
+
+    auto maybe_set_duration = [&]() {
+        if (stream_bitrate == 0) {
+            return;
+        }
+        size_t blen = 0;
+        uint32_t cur_dur = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            blen = content_length_;
+            cur_dur = duration_ms_;
+        }
+        if (cur_dur > 0 || blen == 0) {
+            return;
+        }
+        /* bitrate 单位 kbps：duration_ms ≈ bytes * 8 / bitrate */
+        const uint64_t ms = (static_cast<uint64_t>(blen) * 8ull * 1000ull) /
+                            static_cast<uint64_t>(stream_bitrate);
+        if (ms > 500 && ms < 24ull * 3600ull * 1000ull) {
+            SetPlaybackDurationMs(static_cast<uint32_t>(ms));
+        }
+    };
 
     auto close_all = [&]() {
         if (resampler != nullptr) {
@@ -1753,6 +1867,7 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
             }
             if (info.bitrate > 0) {
                 stream_bitrate = info.bitrate;
+                maybe_set_duration();
             }
             if (frame.decoded_size < sizeof(int16_t) || info.channel == 0) {
                 continue;

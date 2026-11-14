@@ -11,6 +11,7 @@
 #include "panel_ui.h"
 #include "overlay_priv.h"
 #include "media_player.h"
+#include "skill_favorites.h"
 #include "sd_files_ui.h"
 #include "skill_result_ui.h"
 #include "skill_runtime.h"
@@ -2248,6 +2249,22 @@ void nodelio_mcp_register_tools(void)
             }
             return std::unexpected(
                 std::string("op 须为 prev/next/pause/resume/play/stop/close/list"));
+        });
+
+    mcp.AddTool(
+        "self.media.favorite",
+        "收藏或取消收藏当前正在播放的曲目（含云端曲库、内存卡 sd://、MCP/外链 URL）。"
+        "用户说「收藏这首」「取消收藏」时调用。写入 NodeLio 服务端，可在曲库来源「收藏」里查看。",
+        PropertyList(),
+        [](const PropertyList &) -> ToolResult {
+            char url[NL_ENV_URL];
+            nodelio_media_now_url(url, sizeof(url));
+            if (!url[0]) {
+                return std::unexpected(std::string("当前没有可收藏的曲目"));
+            }
+            const bool was = nodelio_media_is_current_favorited();
+            nodelio_media_favorite_toggle_current();
+            return was ? std::string("正在取消收藏") : std::string("正在收藏");
         });
 
     mcp.AddTool(

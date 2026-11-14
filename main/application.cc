@@ -3819,6 +3819,10 @@ bool Application::HasHttpAudioPlaybackStarted() const {
 
 uint32_t Application::HttpAudioPositionMs() const { return notify_player_.PlaybackPositionMs(); }
 
+uint32_t Application::HttpAudioDurationMs() const { return notify_player_.PlaybackDurationMs(); }
+
+size_t Application::HttpAudioContentLength() const { return notify_player_.PlaybackContentLength(); }
+
 void Application::YieldVoiceForMedia() {
     if (protocol_ && protocol_->IsAudioChannelOpened()) {
         protocol_->CloseAudioChannel();
@@ -3826,19 +3830,62 @@ void Application::YieldVoiceForMedia() {
 }
 
 bool Application::PlayHttpAudio(std::string audio_url, std::string device_key) {
+    return PlayHttpAudioFrom(std::move(audio_url), std::move(device_key), 0, 0);
+}
+
+bool Application::PlayHttpAudioFrom(std::string audio_url, std::string device_key, uint32_t start_byte,
+                                    uint32_t start_position_ms) {
     if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy()) {
         ESP_LOGW(TAG, "PlayHttpAudio ignored while busy");
         return false;
     }
-    /* 点歌勿弹 OGG_POPUP：会往 Opus 解码队列塞包，与 MP3 PCM 抢开头，刷 ESP_OPUS_DEC */
-    StartNotification(std::move(audio_url), std::vector<NotifySubtitle>{}, std::move(device_key),
-                      false);
+    auto& board = Board::GetInstance();
+    board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+    while (audio_service_.PopPacketFromSendQueue()) {
+    }
+    if (!SetDeviceState(kDeviceStateNotifying)) {
+        board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        return false;
+    }
+    audio_service_.ResetDecoder();
+#if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
+    MarkTransportSuspended(true);
+    SuspendTransport();
+    audio_service_.ResetDecoder();
+#endif
+    uint32_t playback_id = ++notification_playback_id_;
+    if (playback_id == 0) {
+        playback_id = ++notification_playback_id_;
+    }
+    const bool started = notify_player_.Start(
+        std::move(audio_url), std::vector<NotifySubtitle>{}, playback_id,
+        [this](uint32_t id, const std::string& text) {
+            Schedule([this, id, text]() {
+                if (GetDeviceState() == kDeviceStateNotifying && notification_playback_id_ == id) {
+                    Board::GetInstance().GetDisplay()->SetChatMessage("assistant", text.c_str());
+                }
+            });
+        },
+        [this](uint32_t id, bool success) {
+            Schedule([this, id, success]() { HandleNotificationFinished(id, success); });
+        },
+        std::move(device_key), start_byte, start_position_ms);
+    if (!started) {
+        ESP_LOGE(TAG, "Failed to start HTTP audio");
+        StopNotification();
+        return false;
+    }
     return GetDeviceState() == kDeviceStateNotifying;
 }
 
 void Application::StopHttpAudio() { StopNotification(); }
 
 bool Application::PlayLocalAudioFile(std::string file_path) {
+    return PlayLocalAudioFileFrom(std::move(file_path), 0, 0);
+}
+
+bool Application::PlayLocalAudioFileFrom(std::string file_path, uint32_t start_byte,
+                                         uint32_t start_position_ms) {
     if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy()) {
         ESP_LOGW(TAG, "PlayLocalAudioFile ignored while busy");
         return false;
@@ -3873,7 +3920,8 @@ bool Application::PlayLocalAudioFile(std::string file_path) {
         },
         [this](uint32_t id, bool success) {
             Schedule([this, id, success]() { HandleNotificationFinished(id, success); });
-        });
+        },
+        start_byte, start_position_ms);
     if (!started) {
         ESP_LOGE(TAG, "Failed to start local file playback");
         StopNotification();

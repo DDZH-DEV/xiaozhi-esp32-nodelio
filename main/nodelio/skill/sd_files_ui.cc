@@ -5,7 +5,6 @@
 #include "board_info.h"
 #include "content_envelope.h"
 #include "display.h"
-#include "media_player.h"
 #include "overlay_priv.h"
 #include "panel_jobs.h"
 #include "panel_ui.h"
@@ -20,10 +19,26 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <material_symbols.h>
+
+LV_FONT_DECLARE(font_material_symbols_20_4);
+LV_FONT_DECLARE(font_material_symbols_30_4);
+
 namespace {
 
 constexpr int kMaxDepth = 3;
 constexpr int kListMax = NODELIO_SD_LIST_MAX;
+/* 单页最多建这么多行 obj；再多才分页。列表可滑，不再写死 6 行。 */
+constexpr int kPageObjBudget = 48;
+constexpr int kRowH = 40;
+constexpr int kRowGap = 4;
+constexpr int kIconW = 28;
+constexpr int kSizeW = 72;
+constexpr int kHdrBudget = 56;
+constexpr int kFootBudget = 44;
+constexpr int kCardPad = 12;
+/* 与 overlay_apps apps_pane_target_w(true) 一致；勿等 s_split 再量宽。 */
+constexpr int kAppsRailW = 220;
 
 struct FilesUi {
     lv_obj_t *scrim = nullptr;
@@ -31,27 +46,145 @@ struct FilesUi {
     lv_obj_t *title = nullptr;
     lv_obj_t *sub = nullptr;
     lv_obj_t *up_btn = nullptr;
+    lv_obj_t *prev_btn = nullptr;
+    lv_obj_t *next_btn = nullptr;
+    lv_obj_t *foot = nullptr;
     lv_obj_t *list = nullptr;
     char cwd[NODELIO_SD_ENTRY_PATH_MAX]{};
     nodelio_sd_entry_t entries[kListMax]{};
     int entry_n = 0;
+    int page = 0;
     bool busy = false;
 };
 
 FilesUi s_ui;
 
-const char *kind_label(nodelio_sd_entry_kind_t k)
+/** 与应用页技能卡同宽：侧轨 + 应用左列表 + 右缘缝；禁止退回 result_width 留白。 */
+int files_panel_w()
+{
+    const auto *p = nodelio_display_profile();
+    if (!p || !p->nav_width) {
+        return p ? static_cast<int>(p->width) : 480;
+    }
+    const int gap = (nodelio_card_radius_px() == 0) ? 0 : 12;
+    int rail = nl_ov_apps_split_rail_w();
+    if (rail <= 0) {
+        /* 首帧布局时 split 常未置位；按应用页目标左轨宽算，避免卡停在 720。 */
+        const int body = static_cast<int>(p->width) - static_cast<int>(p->nav_width) - 32;
+        rail = kAppsRailW;
+        if (rail > body) {
+            rail = body > 168 ? 168 : body;
+        }
+    }
+    const int left = static_cast<int>(p->nav_width) + 16 + rail + 16;
+    int w = static_cast<int>(p->width) - left - gap;
+    if (w < 320) {
+        w = 320;
+    }
+    return w;
+}
+
+int files_panel_h()
+{
+    const auto *p = nodelio_display_profile();
+    if (!p) {
+        return 480;
+    }
+    if (!p->nav_width) {
+        return static_cast<int>(p->height);
+    }
+    const int gap = (nodelio_card_radius_px() == 0) ? 0 : 12;
+    int h = static_cast<int>(p->height) - gap;
+    if (h < 180) {
+        h = 180;
+    }
+    return h;
+}
+
+int files_page_size()
+{
+    const int card_h = files_panel_h();
+    const int list_h = card_h - 2 * kCardPad - kHdrBudget - kCardPad - kFootBudget;
+    int fit = 1;
+    if (list_h > 0) {
+        fit = (list_h + kRowGap) / (kRowH + kRowGap);
+        if (fit < 1) {
+            fit = 1;
+        }
+    }
+    /* 可见行之上允许再多建一截可滑内容；整目录不超过预算时一次铺完。 */
+    int page = fit * 3;
+    if (page < fit) {
+        page = fit;
+    }
+    if (page > kPageObjBudget) {
+        page = kPageObjBudget;
+    }
+    if (s_ui.entry_n > 0 && s_ui.entry_n <= kPageObjBudget) {
+        return s_ui.entry_n;
+    }
+    return page;
+}
+
+const char *kind_icon(nodelio_sd_entry_kind_t k)
 {
     switch (k) {
         case NODELIO_SD_ENTRY_DIR:
-            return "文件夹";
+            return MATERIAL_SYMBOLS_SD_CARD; /* 字库无 folder，用 SD 示文件夹 */
         case NODELIO_SD_ENTRY_AUDIO:
-            return "歌曲";
+            return MATERIAL_SYMBOLS_MUSIC_NOTE;
         case NODELIO_SD_ENTRY_PHOTO:
-            return "图片";
+            return MATERIAL_SYMBOLS_IMAGE;
         default:
-            return "其它";
+            return MATERIAL_SYMBOLS_EDIT_SQUARE;
     }
+}
+
+lv_color_t kind_icon_color(nodelio_sd_entry_kind_t k)
+{
+    switch (k) {
+        case NODELIO_SD_ENTRY_DIR:
+            return UI_ACCENT;
+        case NODELIO_SD_ENTRY_AUDIO:
+            return UI_ACCENT;
+        case NODELIO_SD_ENTRY_PHOTO:
+            return UI_INFO;
+        default:
+            return UI_TEXT_MUTED;
+    }
+}
+
+void format_size(uint64_t bytes, bool is_dir, char *out, size_t out_len)
+{
+    if (!out || out_len == 0) {
+        return;
+    }
+    if (is_dir) {
+        snprintf(out, out_len, "—");
+        return;
+    }
+    if (bytes == 0) {
+        snprintf(out, out_len, "—");
+        return;
+    }
+    if (bytes < 1024ull) {
+        snprintf(out, out_len, "%u B", static_cast<unsigned>(bytes));
+        return;
+    }
+    if (bytes < 1024ull * 1024ull) {
+        snprintf(out, out_len, "%u KB", static_cast<unsigned>((bytes + 512ull) / 1024ull));
+        return;
+    }
+    if (bytes < 1024ull * 1024ull * 1024ull) {
+        const unsigned mb10 =
+            static_cast<unsigned>((bytes * 10ull + 512ull * 1024ull) / (1024ull * 1024ull));
+        snprintf(out, out_len, "%u.%u MB", mb10 / 10u, mb10 % 10u);
+        return;
+    }
+    const unsigned gb10 =
+        static_cast<unsigned>((bytes * 10ull + 512ull * 1024ull * 1024ull) /
+                              (1024ull * 1024ull * 1024ull));
+    snprintf(out, out_len, "%u.%u GB", gb10 / 10u, gb10 % 10u);
 }
 
 void path_basename(const char *path, char *out, size_t out_len)
@@ -88,6 +221,81 @@ bool parent_path(const char *cwd, char *out, size_t out_len)
     return nodelio_sd_normalize_path(out, out, out_len);
 }
 
+void layout_shell()
+{
+    if (!s_ui.card) {
+        return;
+    }
+    const auto *profile = nodelio_display_profile();
+    if (!profile) {
+        return;
+    }
+    const bool wide = profile->nav_width != 0;
+    const int gap = (wide && nodelio_card_radius_px() == 0) ? 0 : 12;
+    const int card_w = files_panel_w();
+    const int card_h = files_panel_h();
+    lv_obj_set_size(s_ui.card, card_w, card_h);
+    if (wide) {
+        lv_obj_align(s_ui.card, LV_ALIGN_TOP_RIGHT, -gap, gap);
+        if (s_ui.scrim) {
+            lv_obj_set_size(s_ui.scrim, card_w + gap, profile->height);
+            lv_obj_align(s_ui.scrim, LV_ALIGN_TOP_RIGHT, 0, 0);
+        }
+        nl_ov_workspace_reserve(card_w + gap, 0);
+    } else {
+        lv_obj_align(s_ui.card, LV_ALIGN_TOP_LEFT, 0, 0);
+        if (s_ui.scrim) {
+            lv_obj_set_size(s_ui.scrim, profile->width, profile->height);
+            lv_obj_align(s_ui.scrim, LV_ALIGN_TOP_LEFT, 0, 0);
+        }
+        nl_ov_workspace_reserve(card_w, 0);
+    }
+}
+
+lv_obj_t *make_chip_btn(lv_obj_t *parent, const char *label, lv_event_cb_t cb)
+{
+    lv_obj_t *btn = lv_obj_create(parent);
+    lv_obj_remove_style_all(btn);
+    lv_obj_set_height(btn, 40);
+    lv_obj_set_width(btn, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_hor(btn, 14, 0);
+    lv_obj_set_style_radius(btn, 20, 0);
+    lv_obj_set_style_bg_color(btn, UI_CAPSULE_OFF, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(btn, 8);
+    if (cb) {
+        lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
+    }
+    lv_obj_t *lb = lv_label_create(btn);
+    nl_ov_set_font(lb);
+    lv_label_set_text(lb, label ? label : "");
+    lv_obj_set_style_text_color(lb, UI_TEXT, 0);
+    lv_obj_center(lb);
+    return btn;
+}
+
+lv_obj_t *make_close_btn(lv_obj_t *parent)
+{
+    constexpr int kSz = 48;
+    lv_obj_t *btn = lv_obj_create(parent);
+    lv_obj_remove_style_all(btn);
+    lv_obj_set_size(btn, kSz, kSz);
+    lv_obj_set_style_radius(btn, kSz / 2, 0);
+    lv_obj_set_style_bg_color(btn, UI_CAPSULE_OFF, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(btn, 16);
+    lv_obj_add_event_cb(btn, [](lv_event_t *) { nodelio_skill_sd_files_hide(); }, LV_EVENT_CLICKED,
+                        nullptr);
+    lv_obj_t *ic = lv_label_create(btn);
+    lv_obj_set_style_text_font(ic, &font_material_symbols_30_4, 0);
+    lv_label_set_text(ic, MATERIAL_SYMBOLS_CLOSE);
+    lv_obj_set_style_text_color(ic, UI_TEXT_SUB, 0);
+    lv_obj_center(ic);
+    return btn;
+}
+
 void hide_locked()
 {
     if (s_ui.card) {
@@ -96,6 +304,9 @@ void hide_locked()
         s_ui.title = nullptr;
         s_ui.sub = nullptr;
         s_ui.up_btn = nullptr;
+        s_ui.prev_btn = nullptr;
+        s_ui.next_btn = nullptr;
+        s_ui.foot = nullptr;
         s_ui.list = nullptr;
     }
     if (s_ui.scrim) {
@@ -103,7 +314,32 @@ void hide_locked()
         s_ui.scrim = nullptr;
     }
     s_ui.entry_n = 0;
+    s_ui.page = 0;
     s_ui.cwd[0] = '\0';
+    nl_ov_workspace_reserve(0, 0);
+}
+
+int page_count()
+{
+    if (s_ui.entry_n <= 0) {
+        return 1;
+    }
+    const int ps = files_page_size();
+    if (ps <= 0) {
+        return 1;
+    }
+    return (s_ui.entry_n + ps - 1) / ps;
+}
+
+void clamp_page()
+{
+    const int pages = page_count();
+    if (s_ui.page < 0) {
+        s_ui.page = 0;
+    }
+    if (s_ui.page >= pages) {
+        s_ui.page = pages - 1;
+    }
 }
 
 void style_frame(lv_obj_t *card)
@@ -193,6 +429,7 @@ void list_dir_job(void *p)
         }
         snprintf(s_ui.cwd, sizeof(s_ui.cwd), "%s", path);
         s_ui.entry_n = n;
+        s_ui.page = 0;
         if (n > 0 && buf.data) {
             memcpy(s_ui.entries, buf.data, sizeof(nodelio_sd_entry_t) * static_cast<size_t>(n));
         } else {
@@ -248,18 +485,54 @@ void on_entry_click(lv_event_t *e)
         return;
     }
     if (ent->kind == NODELIO_SD_ENTRY_AUDIO) {
-        nl_env_track_t tr{};
-        path_basename(ent->path, tr.title, sizeof(tr.title));
-        char *dot = strrchr(tr.title, '.');
-        if (dot && dot != tr.title) {
-            *dot = '\0';
+        /* 组本夹歌单 → 技能播放器；勿裸 play_track（无 s_env，播完切下一首会崩）。 */
+        nl_content_envelope_t *env = static_cast<nl_content_envelope_t *>(
+            heap_caps_calloc(1, sizeof(nl_content_envelope_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!env) {
+            env = static_cast<nl_content_envelope_t *>(calloc(1, sizeof(nl_content_envelope_t)));
         }
-        snprintf(tr.artist, sizeof(tr.artist), "内存卡");
-        nodelio_sd_make_url(ent->path, tr.playback_url, sizeof(tr.playback_url));
-        tr.has_play_action = true;
-        if (nodelio_media_play_track(nullptr, &tr) != ESP_OK) {
-            nl_ov_toast("无法播放");
+        if (!env) {
+            nl_ov_toast("内存不足");
+            return;
         }
+        snprintf(env->status, sizeof(env->status), "ok");
+        snprintf(env->app_id, sizeof(env->app_id), "music.sd");
+        snprintf(env->card_type, sizeof(env->card_type), "music_list");
+        snprintf(env->display_title, sizeof(env->display_title), "文件");
+        snprintf(env->media_kind, sizeof(env->media_kind), "track");
+        env->auto_play = true;
+
+        auto fill_track = [](nl_env_track_t *tr, const nodelio_sd_entry_t *src) {
+            path_basename(src->path, tr->title, sizeof(tr->title));
+            char *dot = strrchr(tr->title, '.');
+            if (dot && dot != tr->title) {
+                *dot = '\0';
+            }
+            snprintf(tr->artist, sizeof(tr->artist), "内存卡");
+            nodelio_sd_make_url(src->path, tr->playback_url, sizeof(tr->playback_url));
+            tr->has_play_action = true;
+        };
+
+        /* 点中的放第 0 首（auto_play）；其后按目录顺序环绕，上一首/下一首自然。 */
+        fill_track(&env->tracks[0], ent);
+        int n = 1;
+        for (int pass = 0; pass < 2 && n < NL_ENV_TRACK_MAX; pass++) {
+            const int begin = (pass == 0) ? (idx + 1) : 0;
+            const int endi = (pass == 0) ? s_ui.entry_n : idx;
+            for (int i = begin; i < endi && n < NL_ENV_TRACK_MAX; i++) {
+                if (s_ui.entries[i].kind != NODELIO_SD_ENTRY_AUDIO) {
+                    continue;
+                }
+                fill_track(&env->tracks[n], &s_ui.entries[i]);
+                n++;
+            }
+        }
+        env->track_n = n;
+        /* 勿在当前行 CLICKED 里删父卡；下一拍再关文件、开技能播放器。 */
+        Application::GetInstance().Schedule([env]() {
+            nodelio_skill_sd_files_hide();
+            nodelio_skill_result_show(nullptr, env, true);
+        });
         return;
     }
     if (ent->kind == NODELIO_SD_ENTRY_PHOTO) {
@@ -275,6 +548,7 @@ void fill_list_locked()
         return;
     }
     lv_obj_clean(s_ui.list);
+    clamp_page();
 
     const char *mount = nodelio_sd_mount_point();
     const bool at_root = (s_ui.cwd[0] == '\0') || (strcmp(s_ui.cwd, mount) == 0);
@@ -285,11 +559,33 @@ void fill_list_locked()
             lv_obj_clear_flag(s_ui.up_btn, LV_OBJ_FLAG_HIDDEN);
         }
     }
-    if (s_ui.sub) {
-        if (at_root) {
-            lv_label_set_text(s_ui.sub, "/");
+    const int pages = page_count();
+    if (s_ui.foot) {
+        if (pages <= 1) {
+            lv_obj_add_flag(s_ui.foot, LV_OBJ_FLAG_HIDDEN);
         } else {
-            const char *rel = s_ui.cwd;
+            lv_obj_clear_flag(s_ui.foot, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (s_ui.prev_btn) {
+        if (pages <= 1 || s_ui.page <= 0) {
+            lv_obj_add_flag(s_ui.prev_btn, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(s_ui.prev_btn, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (s_ui.next_btn) {
+        if (pages <= 1 || s_ui.page + 1 >= pages) {
+            lv_obj_add_flag(s_ui.next_btn, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(s_ui.next_btn, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (s_ui.sub) {
+        char line[160];
+        const char *rel = "/";
+        if (!at_root) {
+            rel = s_ui.cwd;
             const size_t mount_len = strlen(mount);
             if (strncmp(rel, mount, mount_len) == 0) {
                 rel = s_ui.cwd + mount_len;
@@ -297,8 +593,22 @@ void fill_list_locked()
                     rel++;
                 }
             }
-            lv_label_set_text(s_ui.sub, rel[0] ? rel : "/");
+            if (!rel[0]) {
+                rel = "/";
+            }
         }
+        /* 路径用 %.*s 截断，避免 -Werror=format-truncation */
+        constexpr int kRelMax = 96;
+        const int n = s_ui.entry_n > 0 ? s_ui.entry_n : 0;
+        if (n <= 0) {
+            snprintf(line, sizeof(line), "%.*s · 空", kRelMax, rel);
+        } else if (pages > 1) {
+            snprintf(line, sizeof(line), "%.*s · %d项 · %d/%d页", kRelMax, rel, n, s_ui.page + 1,
+                     pages);
+        } else {
+            snprintf(line, sizeof(line), "%.*s · %d项", kRelMax, rel, n);
+        }
+        lv_label_set_text(s_ui.sub, line);
     }
 
     if (s_ui.entry_n <= 0) {
@@ -309,29 +619,36 @@ void fill_list_locked()
         return;
     }
 
-    for (int i = 0; i < s_ui.entry_n; i++) {
+    const int ps = files_page_size();
+    const int start = s_ui.page * ps;
+    int end = start + ps;
+    if (end > s_ui.entry_n) {
+        end = s_ui.entry_n;
+    }
+    for (int i = start; i < end; i++) {
         const nodelio_sd_entry_t *ent = &s_ui.entries[i];
         lv_obj_t *row = lv_obj_create(s_ui.list);
         lv_obj_remove_style_all(row);
         lv_obj_set_width(row, lv_pct(100));
-        lv_obj_set_height(row, 56);
+        lv_obj_set_height(row, kRowH);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_hor(row, 10, 0);
-        lv_obj_set_style_pad_column(row, 10, 0);
-        lv_obj_set_style_radius(row, 10, 0);
+        lv_obj_set_style_pad_hor(row, 8, 0);
+        lv_obj_set_style_pad_column(row, 8, 0);
+        /* 直角、无阴影：避免大量 ext_draw 计算拖死 LVGL */
+        lv_obj_set_style_radius(row, 0, 0);
         lv_obj_set_style_bg_color(row, UI_SURFACE_OFF, 0);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_ext_click_area(row, 4);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_event_cb(row, on_entry_click, LV_EVENT_CLICKED,
                             reinterpret_cast<void *>(static_cast<intptr_t>(i)));
 
-        lv_obj_t *badge = lv_label_create(row);
-        nl_ov_set_font(badge);
-        lv_label_set_text(badge, kind_label(ent->kind));
-        lv_obj_set_style_text_color(badge, UI_TEXT_MUTED, 0);
-        lv_obj_set_width(badge, 56);
+        lv_obj_t *ic = lv_label_create(row);
+        lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
+        lv_label_set_text(ic, kind_icon(ent->kind));
+        lv_obj_set_style_text_color(ic, kind_icon_color(ent->kind), 0);
+        lv_obj_set_width(ic, kIconW);
 
         lv_obj_t *name = lv_label_create(row);
         nl_ov_set_font(name);
@@ -340,12 +657,22 @@ void fill_list_locked()
         lv_obj_set_flex_grow(name, 1);
         lv_obj_set_style_min_width(name, 0, 0);
         lv_obj_set_style_text_color(name, UI_TEXT, 0);
+
+        char sz[16];
+        format_size(ent->size_bytes, ent->kind == NODELIO_SD_ENTRY_DIR, sz, sizeof(sz));
+        lv_obj_t *size = lv_label_create(row);
+        nl_ov_set_font(size);
+        lv_label_set_text(size, sz);
+        lv_obj_set_width(size, kSizeW);
+        lv_obj_set_style_text_align(size, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_set_style_text_color(size, UI_TEXT_MUTED, 0);
     }
 }
 
 void ensure_shell()
 {
     if (s_ui.card) {
+        layout_shell();
         return;
     }
     lv_obj_t *parent = lv_layer_top();
@@ -353,36 +680,23 @@ void ensure_shell()
         return;
     }
     const auto *profile = nodelio_display_profile();
-    const bool wide = profile && profile->nav_width != 0;
-    const int gap = UI_GAP;
-    const int card_w =
-        wide ? static_cast<int>(profile->result_width) : static_cast<int>(profile->width);
-    const int card_h =
-        wide ? static_cast<int>(profile->height) - 2 * gap : static_cast<int>(profile->height);
+    if (!profile) {
+        return;
+    }
+    const bool wide = profile->nav_width != 0;
 
     s_ui.scrim = lv_obj_create(parent);
     lv_obj_remove_style_all(s_ui.scrim);
-    lv_obj_set_size(s_ui.scrim, LV_HOR_RES, LV_VER_RES);
-    lv_obj_align(s_ui.scrim, LV_ALIGN_TOP_LEFT, 0, 0);
-    if (wide) {
-        lv_obj_set_width(s_ui.scrim, card_w + 2 * gap);
-        lv_obj_align(s_ui.scrim, LV_ALIGN_TOP_RIGHT, 0, 0);
-        lv_obj_set_style_bg_opa(s_ui.scrim, LV_OPA_70, 0);
-    } else {
-        lv_obj_set_style_bg_opa(s_ui.scrim, LV_OPA_COVER, 0);
-    }
     lv_obj_set_style_bg_color(s_ui.scrim, UI_BG, 0);
+    lv_obj_set_style_bg_opa(s_ui.scrim, wide ? LV_OPA_70 : LV_OPA_COVER, 0);
     lv_obj_add_flag(s_ui.scrim, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(
         s_ui.scrim, [](lv_event_t *) { nodelio_skill_sd_files_hide(); }, LV_EVENT_CLICKED, nullptr);
 
     s_ui.card = lv_obj_create(parent);
     lv_obj_remove_style_all(s_ui.card);
-    lv_obj_set_size(s_ui.card, card_w, card_h);
-    lv_obj_align(s_ui.card, wide ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_TOP_LEFT, wide ? -gap : 0,
-                 wide ? gap : 0);
     style_frame(s_ui.card);
-    lv_obj_set_style_pad_all(s_ui.card, 12, 0);
+    lv_obj_set_style_pad_all(s_ui.card, kCardPad, 0);
     lv_obj_set_style_pad_row(s_ui.card, 8, 0);
     lv_obj_set_flex_flow(s_ui.card, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(s_ui.card, LV_OBJ_FLAG_SCROLLABLE);
@@ -394,6 +708,8 @@ void ensure_shell()
     lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(hdr, 8, 0);
+    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *hdr_txt = lv_obj_create(hdr);
     lv_obj_remove_style_all(hdr_txt);
@@ -402,6 +718,7 @@ void ensure_shell()
     lv_obj_set_flex_flow(hdr_txt, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(hdr_txt, 2, 0);
     lv_obj_set_style_min_width(hdr_txt, 0, 0);
+    lv_obj_clear_flag(hdr_txt, LV_OBJ_FLAG_SCROLLABLE);
 
     s_ui.title = lv_label_create(hdr_txt);
     nl_ov_set_font(s_ui.title);
@@ -415,13 +732,16 @@ void ensure_shell()
     lv_obj_set_width(s_ui.sub, lv_pct(100));
     lv_obj_set_style_text_color(s_ui.sub, UI_TEXT_MUTED, 0);
 
+    /* 顶栏只放「上级」+ 关闭：勿用 ui_make_text_btn（会 width=100% 挤掉关闭） */
     lv_obj_t *btns = lv_obj_create(hdr);
     lv_obj_remove_style_all(btns);
     lv_obj_set_size(btns, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(btns, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(btns, 6, 0);
+    lv_obj_set_flex_align(btns, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(btns, 8, 0);
+    lv_obj_clear_flag(btns, LV_OBJ_FLAG_SCROLLABLE);
 
-    s_ui.up_btn = ui_make_text_btn(btns, "上级", 1, [](lv_event_t *) {
+    s_ui.up_btn = make_chip_btn(btns, "上级", [](lv_event_t *) {
         Board::GetInstance().NoteUserActivity();
         char parent[NODELIO_SD_ENTRY_PATH_MAX];
         if (!parent_path(s_ui.cwd, parent, sizeof(parent))) {
@@ -429,18 +749,52 @@ void ensure_shell()
         }
         (void)start_list_job(parent, "sd_files_up");
     });
-
-    (void)ui_make_text_btn(btns, "关闭", 1, [](lv_event_t *) { nodelio_skill_sd_files_hide(); });
+    (void)make_close_btn(btns);
 
     s_ui.list = lv_obj_create(s_ui.card);
     lv_obj_remove_style_all(s_ui.list);
     lv_obj_set_width(s_ui.list, lv_pct(100));
     lv_obj_set_flex_grow(s_ui.list, 1);
     lv_obj_set_flex_flow(s_ui.list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(s_ui.list, 6, 0);
-    lv_obj_set_scroll_dir(s_ui.list, LV_DIR_VER);
+    lv_obj_set_style_pad_row(s_ui.list, kRowGap, 0);
     lv_obj_set_scrollbar_mode(s_ui.list, LV_SCROLLBAR_MODE_OFF);
     lv_obj_add_flag(s_ui.list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(s_ui.list, LV_DIR_VER);
+
+    s_ui.foot = lv_obj_create(s_ui.card);
+    lv_obj_remove_style_all(s_ui.foot);
+    lv_obj_set_width(s_ui.foot, lv_pct(100));
+    lv_obj_set_height(s_ui.foot, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(s_ui.foot, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_ui.foot, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(s_ui.foot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_ui.foot, LV_OBJ_FLAG_HIDDEN);
+
+    s_ui.prev_btn = make_chip_btn(s_ui.foot, "上一页", [](lv_event_t *) {
+        Board::GetInstance().NoteUserActivity();
+        if (s_ui.page <= 0) {
+            return;
+        }
+        s_ui.page--;
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            fill_list_locked();
+        }
+    });
+    s_ui.next_btn = make_chip_btn(s_ui.foot, "下一页", [](lv_event_t *) {
+        Board::GetInstance().NoteUserActivity();
+        if (s_ui.page + 1 >= page_count()) {
+            return;
+        }
+        s_ui.page++;
+        DisplayLockGuard lock(nl_ov_disp());
+        if (lock) {
+            fill_list_locked();
+        }
+    });
+
+    layout_shell();
 }
 
 void show_listing(const char *cwd, const nodelio_sd_entry_t *entries, int n)
@@ -455,13 +809,23 @@ void show_listing(const char *cwd, const nodelio_sd_entry_t *entries, int n)
     }
     snprintf(s_ui.cwd, sizeof(s_ui.cwd), "%s", cwd && cwd[0] ? cwd : nodelio_sd_mount_point());
     s_ui.entry_n = n < 0 ? 0 : (n > kListMax ? kListMax : n);
+    s_ui.page = 0;
     if (entries && s_ui.entry_n > 0) {
         memcpy(s_ui.entries, entries, sizeof(nodelio_sd_entry_t) * static_cast<size_t>(s_ui.entry_n));
     } else {
         s_ui.entry_n = 0;
     }
-    fill_list_locked();
+    /* 先缩左轨再量宽，避免首帧按未分栏退回 720。 */
     nl_ov_apps_notify_skill_open(true);
+    layout_shell();
+    fill_list_locked();
+    if (s_ui.card) {
+        lv_obj_move_foreground(s_ui.card);
+    }
+    if (s_ui.scrim) {
+        lv_obj_move_foreground(s_ui.scrim);
+        lv_obj_move_foreground(s_ui.card);
+    }
 }
 
 struct OpenArg {
@@ -550,9 +914,15 @@ extern "C" void nodelio_skill_sd_files_hide(void)
     DisplayLockGuard lock(nl_ov_disp());
     if (!lock) {
         hide_locked();
+        if (nodelio_skill_result_card_visible()) {
+            nodelio_skill_result_layout();
+        }
         nl_ov_apps_notify_skill_open(nodelio_skill_result_card_visible());
         return;
     }
     hide_locked();
+    if (nodelio_skill_result_card_visible()) {
+        nodelio_skill_result_layout();
+    }
     nl_ov_apps_notify_skill_open(nodelio_skill_result_card_visible());
 }

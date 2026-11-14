@@ -99,6 +99,7 @@ extern "C" const char *nodelio_sd_mount_point(void) { return "/sdcard"; }
 
 #include <dirent.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <driver/gpio.h>
 #include <driver/sdmmc_host.h>
 #include <driver/sdspi_host.h>
@@ -1067,9 +1068,17 @@ esp_err_t nodelio_sd_list_dir(const char *dir_path, nodelio_sd_entry_t *out, int
             }
         }
         nodelio_sd_entry_t *e = &out[n];
+        memset(e, 0, sizeof(*e));
         e->kind = classify_name(ent->d_name, is_dir);
-        snprintf(e->name, sizeof(e->name), "%s", ent->d_name);
+        /* d_name 最长 255；显式截断写入 name，避免 -Werror=format-truncation */
+        snprintf(e->name, sizeof(e->name), "%.*s", (int)(sizeof(e->name) - 1), ent->d_name);
         snprintf(e->path, sizeof(e->path), "%s", full);
+        if (!is_dir) {
+            struct stat st {};
+            if (stat(full, &st) == 0 && st.st_size > 0) {
+                e->size_bytes = static_cast<uint64_t>(st.st_size);
+            }
+        }
         n++;
     }
     closedir(d);

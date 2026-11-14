@@ -261,7 +261,9 @@ extern "C" void nl_dock_sync(lv_obj_t *tabbar, lv_obj_t *body, int active_tab, b
         return;
     }
 
-    /* 沉浸模式：左侧圆角 Dock。首页可空闲收起；应用/设置由调用方保持 shell_visible=true */
+    /* 沉浸模式：左侧圆角 Dock。
+     * 纯首页可空闲收起；应用/设置、或首页仍挂技能/文件卡时由调用方保持 shell_visible=true
+     *（62 的 96px 槽位不随 Dock 伸缩，有应用卡时收起只会空出一条轨）。 */
     if (s_dock) {
         if (shell_visible) {
             lv_obj_remove_flag(s_dock, LV_OBJ_FLAG_HIDDEN);

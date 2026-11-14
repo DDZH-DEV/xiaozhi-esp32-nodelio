@@ -8,6 +8,7 @@
 #include "offline_cmd.h"
 #include "panel_ui.h"
 #include "sd_library.h"
+#include "skill_favorites.h"
 #include "skill_lyrics.h"
 #include "skill_result_ui.h"
 #include "wake_dram.h"
@@ -43,10 +44,13 @@ struct media_msg_t {
 static QueueHandle_t s_q;
 static TaskHandle_t s_task;
 static char s_now_title[NL_ENV_TITLE];
+static char s_now_artist[NL_ENV_SUB];
 static char s_now_url[NL_ENV_URL];
 /** 已经交给 HTTP 播放器的地址。请求地址会提前写入 s_now_url，不能拿它判断「同一首」。 */
 static char s_started_url[NL_ENV_URL];
 static char s_now_key[65];
+/** Seek 重启时抑制 ended 自动切下一首。 */
+static volatile bool s_seeking = false;
 static volatile bool s_playing;
 static volatile bool s_paused;
 static uint32_t s_playback_id = 1;
@@ -740,6 +744,7 @@ esp_err_t nodelio_media_init(void)
     if (s_q) {
         return ESP_OK;
     }
+    nodelio_favorites_init();
     s_q = xQueueCreate(4, sizeof(media_msg_t));
     if (!s_q) {
         return ESP_ERR_NO_MEM;
@@ -815,6 +820,7 @@ esp_err_t nodelio_media_play_track(const nodelio_nvs_config_t *cfg, const nl_env
         ESP_LOGI(TAG, "skip restart streaming title=%s tail=%s", msg.title, url_tail(msg.url));
         disarm_pause_close();
         snprintf(s_now_title, sizeof(s_now_title), "%s", msg.title);
+        snprintf(s_now_artist, sizeof(s_now_artist), "%s", track->artist);
         s_playing = true;
         s_paused = false;
         nodelio_panel_ui_media_now_playing(s_now_title, true);
@@ -838,12 +844,13 @@ esp_err_t nodelio_media_play_track(const nodelio_nvs_config_t *cfg, const nl_env
     s_paused = false;
     s_retry_count = 0;
     snprintf(s_now_title, sizeof(s_now_title), "%s", msg.title);
+    snprintf(s_now_artist, sizeof(s_now_artist), "%s", track->artist);
     snprintf(s_now_url, sizeof(s_now_url), "%s", msg.url);
     snprintf(s_now_key, sizeof(s_now_key), "%s", msg.device_key);
     /* 入队即亮播放条，避免等语音尾句时「有列表无播放器」 */
     nodelio_panel_ui_media_now_playing(s_now_title, true);
     if (strcmp(env_media_kind(), "live") != 0 && strcmp(env_media_kind(), "episode") != 0) {
-        nodelio_lyrics_request(cfg, track->title, track->artist);
+        nodelio_lyrics_request(cfg, track->title, track->artist, false);
     } else {
         nodelio_lyrics_clear();
     }
@@ -976,6 +983,83 @@ void nodelio_media_now_title(char *buf, size_t len)
     snprintf(buf, len, "%s", s_now_title);
 }
 
+void nodelio_media_now_artist(char *buf, size_t len)
+{
+    if (!buf || !len) {
+        return;
+    }
+    snprintf(buf, len, "%s", s_now_artist);
+}
+
+void nodelio_media_now_url(char *buf, size_t len)
+{
+    if (!buf || !len) {
+        return;
+    }
+    snprintf(buf, len, "%s", s_now_url);
+}
+
+uint32_t nodelio_media_position_ms(void)
+{
+    return Application::GetInstance().HttpAudioPositionMs();
+}
+
+uint32_t nodelio_media_duration_ms(void)
+{
+    return Application::GetInstance().HttpAudioDurationMs();
+}
+
+bool nodelio_media_seek_ms(uint32_t ms)
+{
+    const uint32_t dur = nodelio_media_duration_ms();
+    if (dur == 0 || !s_now_url[0]) {
+        return false;
+    }
+    if (ms >= dur) {
+        ms = dur > 200 ? dur - 200 : 0;
+    }
+    const size_t blen = Application::GetInstance().HttpAudioContentLength();
+    if (blen == 0) {
+        return false;
+    }
+    const uint32_t start_byte =
+        static_cast<uint32_t>((static_cast<uint64_t>(ms) * blen) / static_cast<uint64_t>(dur));
+    s_seeking = true;
+    s_suppress_ended = true;
+    s_paused = false;
+    s_started_url[0] = '\0';
+    char local_path[NL_ENV_URL];
+    const bool is_sd = nodelio_sd_resolve_url(s_now_url, local_path, sizeof(local_path));
+    Application::GetInstance().Schedule([ms, start_byte, is_sd,
+                                         local_path = std::string(is_sd ? local_path : ""),
+                                         url = std::string(s_now_url),
+                                         key = std::string(s_now_key)]() mutable {
+        auto &app = Application::GetInstance();
+        app.StopHttpAudio();
+        for (int i = 0; i < 40 && app.IsHttpAudioBusy(); ++i) {
+            vTaskDelay(pdMS_TO_TICKS(25));
+        }
+        bool ok = false;
+        if (is_sd && !local_path.empty()) {
+            ok = app.PlayLocalAudioFileFrom(local_path, start_byte, ms);
+        } else {
+            ok = app.PlayHttpAudioFrom(url, key, start_byte, ms);
+        }
+        s_suppress_ended = false;
+        s_seeking = false;
+        if (ok) {
+            s_playing = true;
+            s_paused = false;
+            snprintf(s_started_url, sizeof(s_started_url), "%s", url.c_str());
+            nodelio_panel_ui_media_now_playing(s_now_title, true);
+        } else {
+            ESP_LOGW(TAG, "seek failed ms=%u", (unsigned)ms);
+            nodelio_panel_ui_toast_defer("暂不支持跳转");
+        }
+    });
+    return true;
+}
+
 bool nodelio_media_has_session(void)
 {
     return s_playing;
@@ -984,7 +1068,7 @@ bool nodelio_media_has_session(void)
 void nodelio_media_on_playback_ended(bool success)
 {
     /* 暂停或换曲掐流：保留当前曲目，不自动跳下一首 */
-    if (s_paused || s_suppress_ended) {
+    if (s_paused || s_suppress_ended || s_seeking) {
         return;
     }
     /* 播放失败：清 s_started_url，否则 worker 会 should_skip_restart 假成功跳过重试 */
@@ -1011,7 +1095,8 @@ void nodelio_media_on_playback_ended(bool success)
         s_playing = false;
         s_started_url[0] = '\0';
         s_retry_count = 0;
-        /* 直播流断开不算播完，不要自动跳到下一台。播客单集和曲库仍切下一首。 */
+        /* 直播流断开不算播完，不要自动跳到下一台。播客单集和曲库仍切下一首。
+         * 无技能歌单（裸 play）时 media_next 会安全失败，走下方关播。 */
         if (!nodelio_skill_is_live_radio() && nodelio_skill_media_next()) {
             /* play_track 入队时已置 s_playing，供外层跳过 StopNotification */
             return;
@@ -1023,6 +1108,7 @@ void nodelio_media_on_playback_ended(bool success)
     s_now_url[0] = '\0';
     s_started_url[0] = '\0';
     s_now_title[0] = '\0';
+    s_now_artist[0] = '\0';
     s_now_key[0] = '\0';
     nodelio_panel_ui_media_now_playing("", false);
     reclaim_wake_dram_after_media();

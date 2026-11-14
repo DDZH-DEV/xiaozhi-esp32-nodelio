@@ -1,5 +1,6 @@
 #include "skill_ui_priv.h"
 #include "skill_support_ui.h"
+#include "skill_favorites.h"
 #include "sdkconfig.h"
 
 lv_obj_t *s_scrim = nullptr;
@@ -536,7 +537,7 @@ void nodelio_skill_bump_ttl(void)
 
 static void request_reshuffle(void);
 
-/** 曲库来源：0=在线曲库 1=内存卡（定义在下方来源切换段）。 */
+/** 曲库来源：0=在线 1=内存卡 2=相册 3=收藏。 */
 static int s_library_source;
 
 /** track | live | episode；无 env 时按 track */
@@ -1075,6 +1076,8 @@ extern "C" bool nodelio_skill_try_reopen_music_list(void)
                 s_library_source = 1;
             } else if (strcmp(s_env->app_id, "photo.sd") == 0) {
                 s_library_source = 2;
+            } else if (strcmp(s_env->app_id, "music.favorites") == 0) {
+                s_library_source = 3;
             } else {
                 s_library_source = 0;
             }
@@ -1894,12 +1897,16 @@ static void on_src_chip(lv_event_t *e)
         nodelio_skill_request_sd_photos();
         return;
     }
+    if (want == 3) {
+        nodelio_skill_request_favorites();
+        return;
+    }
     /* 回在线曲库：重新 invoke 云端 music.search（与「打开曲库」同一路径）。
      * 来源标记等回包到达后由 show() 按 app_id 更新，失败时仍停在内存卡，不会错标。 */
     request_reshuffle();
 }
 
-/** 曲库卡顶部的来源切换：在线曲库 / 内存卡。仅 music_list 显示。 */
+/** 曲库卡顶部来源：在线 / 内存卡 / 相册 / 收藏。仅 music_list。 */
 static void fill_source_bar(void)
 {
     if (!s_src_bar) {
@@ -1907,7 +1914,7 @@ static void fill_source_bar(void)
     }
     lv_obj_clean(s_src_bar);
     const bool music = s_env && strcmp(s_env->card_type, "music_list") == 0;
-    if (!music || !nodelio_sd_available()) {
+    if (!music) {
         lv_obj_add_flag(s_src_bar, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_height(s_src_bar, 0);
         return;
@@ -1916,8 +1923,12 @@ static void fill_source_bar(void)
     lv_obj_set_width(s_src_bar, LV_SIZE_CONTENT);
     lv_obj_set_height(s_src_bar, 40);
     lv_obj_move_to_index(s_src_bar, 0);
-    static const char *const kNames[3] = {"在线曲库", "内存卡", "内存卡相册"};
-    for (int i = 0; i < 3; i++) {
+    static const char *const kNames[4] = {"在线曲库", "内存卡", "内存卡相册", "收藏"};
+    const bool sd = nodelio_sd_available();
+    for (int i = 0; i < 4; i++) {
+        if ((i == 1 || i == 2) && !sd) {
+            continue;
+        }
         const bool selected = (i == s_library_source);
         lv_obj_t *chip = lv_obj_create(s_src_bar);
         lv_obj_remove_style_all(chip);
@@ -3717,12 +3728,14 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
     }
     s_env = env;
     s_have_env = true;
-    /* 来源跟随信封：music.sd / photo.sd；其余音乐列表回在线曲库。 */
+    /* 来源跟随信封：music.sd / photo.sd / music.favorites；其余回在线曲库。 */
     if (strcmp(s_env->card_type, "music_list") == 0) {
         if (strcmp(s_env->app_id, "music.sd") == 0) {
             s_library_source = 1;
         } else if (strcmp(s_env->app_id, "photo.sd") == 0) {
             s_library_source = 2;
+        } else if (strcmp(s_env->app_id, "music.favorites") == 0) {
+            s_library_source = 3;
         } else {
             s_library_source = 0;
         }

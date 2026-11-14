@@ -46,6 +46,19 @@ bool nodelio_media_resume_after_voice(void);
 bool nodelio_media_preempt_for_heavy_app(void);
 
 void nodelio_media_now_title(char *buf, size_t len);
+/** 当前曲艺人（可空）。 */
+void nodelio_media_now_artist(char *buf, size_t len);
+/** 当前播放 URL（http / sd:// / 相对路径解析后），可空。 */
+void nodelio_media_now_url(char *buf, size_t len);
+
+/** 已播毫秒 / 估算总时长（0=未知或直播）。 */
+uint32_t nodelio_media_position_ms(void);
+uint32_t nodelio_media_duration_ms(void);
+/**
+ * Seek：按比例映射字节并重启播放（本地 fseek / HTTP Range）。
+ * duration 未知或直播返回 false。
+ */
+bool nodelio_media_seek_ms(uint32_t ms);
 
 /** HTTP 通知音结束/失败时由 Application 回调，清理 playing 态。 */
 void nodelio_media_on_playback_ended(bool success);

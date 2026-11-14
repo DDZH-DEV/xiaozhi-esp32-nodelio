@@ -238,7 +238,8 @@ void nodelio_lyrics_clear(void)
     xSemaphoreGive(s_mu);
 }
 
-void nodelio_lyrics_request(const nodelio_nvs_config_t *cfg, const char *title, const char *artist)
+void nodelio_lyrics_request(const nodelio_nvs_config_t *cfg, const char *title, const char *artist,
+                            bool force)
 {
     if (!cfg || !title || !title[0] || !cfg->server_url[0] || !cfg->device_id[0]) {
         nodelio_lyrics_clear();
@@ -252,7 +253,7 @@ void nodelio_lyrics_request(const nodelio_nvs_config_t *cfg, const char *title, 
         return;
     }
     xSemaphoreTake(s_mu, portMAX_DELAY);
-    if (strcmp(s_key, key) == 0) {
+    if (!force && strcmp(s_key, key) == 0) {
         xSemaphoreGive(s_mu);
         return;
     }
@@ -269,8 +270,10 @@ void nodelio_lyrics_request(const nodelio_nvs_config_t *cfg, const char *title, 
     url_encode(title, title_q, sizeof(title_q));
     url_encode(art, artist_q, sizeof(artist_q));
     char path[800];
-    const int path_n = snprintf(path, sizeof(path), "/api/devices/%s/panel/lyrics?title=%s&artist=%s", cfg->device_id,
-                                title_q, artist_q);
+    const int path_n =
+        snprintf(path, sizeof(path),
+                 "/api/devices/%s/panel/lyrics?title=%s&artist=%s%s", cfg->device_id, title_q,
+                 artist_q, force ? "&force=1" : "");
     if (path_n < 0 || path_n >= static_cast<int>(sizeof(path))) {
         nodelio_lyrics_clear();
         return;
@@ -336,4 +339,62 @@ bool nodelio_lyrics_apply(lv_obj_t *label)
     snprintf(s_shown, sizeof(s_shown), "%s", text);
     lv_label_set_text(label, text);
     return true;
+}
+
+bool nodelio_lyrics_ready(void)
+{
+    ensure_mu();
+    if (!s_mu) {
+        return false;
+    }
+    xSemaphoreTake(s_mu, portMAX_DELAY);
+    const bool ok = s_line_n > 0;
+    xSemaphoreGive(s_mu);
+    return ok;
+}
+
+int nodelio_lyrics_line_count(void)
+{
+    ensure_mu();
+    if (!s_mu) {
+        return 0;
+    }
+    xSemaphoreTake(s_mu, portMAX_DELAY);
+    const int n = s_line_n;
+    xSemaphoreGive(s_mu);
+    return n;
+}
+
+int nodelio_lyrics_current_index(uint32_t position_ms)
+{
+    ensure_mu();
+    if (!s_mu) {
+        return -1;
+    }
+    xSemaphoreTake(s_mu, portMAX_DELAY);
+    const int n = s_line_n;
+    const bool synced = s_synced;
+    const int idx = pick_index(position_ms, n, synced);
+    xSemaphoreGive(s_mu);
+    return idx;
+}
+
+bool nodelio_lyrics_line_text(int idx, char *out, size_t out_len)
+{
+    if (!out || out_len == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    ensure_mu();
+    if (!s_mu) {
+        return false;
+    }
+    xSemaphoreTake(s_mu, portMAX_DELAY);
+    bool ok = false;
+    if (idx >= 0 && idx < s_line_n && s_lines[idx].text[0]) {
+        snprintf(out, out_len, "%s", s_lines[idx].text);
+        ok = true;
+    }
+    xSemaphoreGive(s_mu);
+    return ok;
 }

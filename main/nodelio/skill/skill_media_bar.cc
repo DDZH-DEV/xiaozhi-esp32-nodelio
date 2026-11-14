@@ -1,3 +1,5 @@
+#include "skill_favorites.h"
+#include "skill_immersive_player.h"
 #include "skill_lyrics.h"
 #include "skill_ui_priv.h"
 
@@ -205,6 +207,9 @@ void play_at(int idx)
         nl_ov_toast("本机暂不支持播放");
         return;
     }
+    if (!s_have_env || !s_env) {
+        return;
+    }
     if (idx < 0 || idx >= s_env->track_n || !s_env->tracks[idx].playback_url[0]) {
         return;
     }
@@ -240,7 +245,8 @@ void play_at(int idx)
 
 int neighbor_playable(int from, int dir)
 {
-    if (s_env->track_n <= 0 || (dir != 1 && dir != -1)) {
+    /* 文件浏览器等裸 play_track 无歌单时 s_env 为空；播完切下一首必须先判空。 */
+    if (!s_have_env || !s_env || s_env->track_n <= 0 || (dir != 1 && dir != -1)) {
         return -1;
     }
     /* from < 0：下一首从 0 起，上一首从末尾起（换一批后当前曲可能不在新列表里） */
@@ -266,6 +272,7 @@ void on_stop_now(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
         return;
     }
+    nodelio_skill_immersive_note_activity();
     nodelio_media_stop();
     /* 播放条和曲库一起退下，动画结束后释放对象 */
     dismiss_library_and_player();
@@ -276,6 +283,7 @@ void on_pause_now(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
         return;
     }
+    nodelio_skill_immersive_note_activity();
     if (nodelio_media_is_paused()) {
         nodelio_media_resume();
     } else {
@@ -290,6 +298,7 @@ void on_voice_now(lv_event_t *e)
         return;
     }
     Board::GetInstance().NoteUserActivity();
+    nodelio_skill_immersive_note_activity();
     nl_ov_toast("请说…");
     Application::GetInstance().Schedule([]() {
         auto &app = Application::GetInstance();
@@ -313,6 +322,7 @@ void on_prev_now(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
         return;
     }
+    nodelio_skill_immersive_note_activity();
     if (!nodelio_skill_media_prev()) {
         nl_ov_toast("没有上一首");
     }
@@ -323,6 +333,7 @@ void on_next_now(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
         return;
     }
+    nodelio_skill_immersive_note_activity();
     if (!nodelio_skill_media_next()) {
         nl_ov_toast("没有下一首");
     }
@@ -696,6 +707,7 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
         }
         raise_skill_layers();
         ensure_chrome_order();
+        nodelio_skill_immersive_on_now_playing("", false);
         return;
     }
 
@@ -706,6 +718,8 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
         show_mini_fab(playing);
         layout_skill_layers();
         ensure_chrome_order();
+        nodelio_skill_immersive_on_now_playing(title, playing);
+        nodelio_favorites_sync_immersive();
         return;
     }
 
@@ -730,4 +744,6 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
     }
     raise_skill_layers();
     ensure_chrome_order();
+    nodelio_skill_immersive_on_now_playing(title, playing);
+    nodelio_favorites_sync_immersive();
 }

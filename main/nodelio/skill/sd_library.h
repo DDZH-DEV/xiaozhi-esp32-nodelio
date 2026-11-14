@@ -5,6 +5,7 @@
 #include <esp_err.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -88,6 +89,8 @@ typedef struct nodelio_sd_entry {
     nodelio_sd_entry_kind_t kind;
     char name[NODELIO_SD_ENTRY_NAME_MAX];
     char path[NODELIO_SD_ENTRY_PATH_MAX];
+    /** 字节；目录为 0；stat 失败为 0。 */
+    uint64_t size_bytes;
 } nodelio_sd_entry_t;
 
 /**

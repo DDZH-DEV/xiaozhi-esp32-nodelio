@@ -4,13 +4,16 @@
 
 #include <lvgl.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/** 按曲名/艺人向本机服务端要歌词。直播、播客不要调。同曲已在查或已有则跳过。 */
-void nodelio_lyrics_request(const nodelio_nvs_config_t *cfg, const char *title, const char *artist);
+/** 按曲名/艺人向本机服务端要歌词。直播、播客不要调。同曲已在查或已有则跳过（force 除外）。 */
+void nodelio_lyrics_request(const nodelio_nvs_config_t *cfg, const char *title, const char *artist,
+                            bool force);
 
 void nodelio_lyrics_clear(void);
 
@@ -19,6 +22,17 @@ void nodelio_lyrics_clear(void);
  * 须在已持有显示锁时调用。
  */
 bool nodelio_lyrics_apply(lv_obj_t *label);
+
+/** 是否有可用歌词行。 */
+bool nodelio_lyrics_ready(void);
+
+/** 当前句下标（相对时间）；无则 -1。 */
+int nodelio_lyrics_current_index(uint32_t position_ms);
+
+/** 拷贝第 idx 行文本到 out；失败返回 false。 */
+bool nodelio_lyrics_line_text(int idx, char *out, size_t out_len);
+
+int nodelio_lyrics_line_count(void);
 
 #ifdef __cplusplus
 }

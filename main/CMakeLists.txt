@@ -1012,6 +1012,8 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/skill/skill_media_bar.cc"
         "nodelio/skill/media_player.cc"
         "nodelio/skill/skill_lyrics.cc"
+        "nodelio/skill/skill_immersive_player.cc"
+        "nodelio/skill/skill_favorites.cc"
     )
     list(APPEND INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/nodelio

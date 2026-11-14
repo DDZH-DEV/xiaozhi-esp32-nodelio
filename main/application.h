@@ -150,8 +150,12 @@ public:
     /** 本机 HTTP 音频（Ogg/Opus）；须在主任务或经 Schedule。与语音会话互斥。
      *  设备非 Idle 或上一首 HTTP 任务未退出时返回 false，调用方需稍后重试。 */
     bool PlayHttpAudio(std::string audio_url, std::string device_key = {});
+    /** HTTP 点播并从字节偏移续播（Seek）。 */
+    bool PlayHttpAudioFrom(std::string audio_url, std::string device_key, uint32_t start_byte,
+                           uint32_t start_position_ms);
     /** 内存卡本地音频（VFS 路径）；与 PlayHttpAudio 共用播放槽与结束回调。 */
     bool PlayLocalAudioFile(std::string file_path);
+    bool PlayLocalAudioFileFrom(std::string file_path, uint32_t start_byte, uint32_t start_position_ms);
     /** 点歌前关掉仍开着的语音通道，避免后续 TTS 抢解码器。 */
     void YieldVoiceForMedia();
     void StopHttpAudio();
@@ -159,6 +163,8 @@ public:
     bool HasHttpAudioPlaybackStarted() const;
     /** 本机 HTTP/本地文件播放进度（毫秒）。未在播时为 0。 */
     uint32_t HttpAudioPositionMs() const;
+    uint32_t HttpAudioDurationMs() const;
+    size_t HttpAudioContentLength() const;
     /**
      * 本地已处理口令（开 DSH/曲库等）：Abort + 短时丢弃云端否定 TTS。
      * 勿用过长窗口，否则会卡在 Listening、唤醒无响应。

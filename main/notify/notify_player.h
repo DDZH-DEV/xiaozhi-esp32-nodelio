@@ -35,12 +35,17 @@ public:
     explicit NotifyPlayer(AudioService& audio_service);
     ~NotifyPlayer();
 
+    /**
+     * HTTP 点播；start_byte>0 时发 Range（用于 Seek）。
+     * start_position_ms 为跳转后的媒体时间起点。
+     */
     bool Start(std::string audio_url, std::vector<NotifySubtitle> subtitles, uint32_t playback_id,
                SubtitleCallback subtitle_callback, FinishedCallback finished_callback,
-               std::string device_key = {});
+               std::string device_key = {}, uint32_t start_byte = 0, uint32_t start_position_ms = 0);
     /** 本地文件播放（内存卡）。file_path 为 VFS 路径；与 Start 共用同一播放槽。 */
     bool StartFile(std::string file_path, uint32_t playback_id, SubtitleCallback subtitle_callback,
-                   FinishedCallback finished_callback);
+                   FinishedCallback finished_callback, uint32_t start_byte = 0,
+                   uint32_t start_position_ms = 0);
     void Stop();
     void OnPlaybackProgress(uint32_t playback_id, uint32_t media_position_ms);
     void OnPlaybackDrained();
@@ -49,6 +54,12 @@ public:
     bool HasPlaybackStarted() const;
     /** 当前这首已送进播放器的媒体时间。未在播时为 0。 */
     uint32_t PlaybackPositionMs() const;
+    /** 估算总时长；未知/直播为 0。 */
+    uint32_t PlaybackDurationMs() const;
+    /** 内容字节长度（文件或 Content-Length）；未知为 0。 */
+    size_t PlaybackContentLength() const;
+    void SetPlaybackDurationMs(uint32_t duration_ms);
+    void SetPlaybackContentLength(size_t bytes);
 
 private:
     AudioService& audio_service_;
@@ -66,6 +77,10 @@ private:
     StaticTask_t* task_tcb_ = nullptr;
     uint32_t playback_id_ = 0;
     uint32_t last_playback_position_ms_ = 0;
+    uint32_t duration_ms_ = 0;
+    size_t content_length_ = 0;
+    uint32_t start_byte_ = 0;
+    uint32_t start_position_ms_ = 0;
     uint32_t underrun_count_ = 0;
     size_t next_subtitle_index_ = 0;
     bool active_ = false;

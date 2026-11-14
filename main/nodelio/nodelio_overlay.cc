@@ -16,6 +16,7 @@
 #include "panel_layout.h"
 #include "panel_ui.h"
 #include "media_player.h"
+#include "sd_files_ui.h"
 #include "skill_result_ui.h"
 #include "ui_theme.h"
 #include "ui_backdrop.h"
@@ -488,15 +489,19 @@ static bool pointer_is_down(void)
 }
 
 /** 方屏底部菜单与首页分页点：悬浮，触摸后出现、空闲自动收起，不占布局。
- *  宽屏经典模式左侧导轨常驻；沉浸 Dock 仅在首页跟随触摸自动收起，应用/设置页常驻。 */
+ *  宽屏经典模式左侧导轨常驻；沉浸 Dock 仅在首页跟随触摸自动收起，应用/设置页常驻。
+ *  首页若仍挂着技能/文件卡：Dock 也常显——62 槽位 96px 不随 Dock 伸缩，
+ *  收起只会留下一条空轨，和右侧应用并排时很突兀。 */
 void nl_ov_nav_chrome_sync(void)
 {
     const bool rail = nodelio_display_profile()->nav_width != 0;
     const bool on = s_visible && s_screen_on && s_nav_shown;
     if (ui_palette_is_immersive()) {
-        /* 非首页：Dock 常显；首页：与顶栏同空闲计时 */
-        const bool dock_on =
-            s_visible && s_screen_on && (s_active_tab != NL_TAB_HOME || s_nav_shown);
+        const bool app_open =
+            nodelio_skill_result_card_visible() || nodelio_skill_sd_files_visible();
+        /* 非首页 / 有应用卡：Dock 常显；纯首页空闲才收起 */
+        const bool dock_on = s_visible && s_screen_on &&
+                             (s_active_tab != NL_TAB_HOME || s_nav_shown || app_open);
         nl_dock_sync(s_tabbar, s_body, s_active_tab, dock_on);
         nl_ov_home_dots_set_visible(on);
         return;
