@@ -426,7 +426,7 @@ void nl_ov_apply_appearance(void)
         lv_obj_set_style_bg_color(s_tabbar, UI_PANEL, 0);
         lv_obj_set_style_border_color(s_tabbar, UI_BORDER, 0);
     }
-    nl_dock_sync(s_tabbar, s_body, s_active_tab, s_visible);
+    nl_ov_nav_chrome_sync();
     if (s_home) {
         lv_obj_set_style_bg_color(s_home, UI_BG, 0);
         lv_obj_set_style_bg_opa(s_home, page_opa, 0);
@@ -488,13 +488,16 @@ static bool pointer_is_down(void)
 }
 
 /** 方屏底部菜单与首页分页点：悬浮，触摸后出现、空闲自动收起，不占布局。
- *  宽屏左侧导轨常驻。 */
+ *  宽屏经典模式左侧导轨常驻；沉浸 Dock 仅在首页跟随触摸自动收起，应用/设置页常驻。 */
 void nl_ov_nav_chrome_sync(void)
 {
     const bool rail = nodelio_display_profile()->nav_width != 0;
     const bool on = s_visible && s_screen_on && s_nav_shown;
     if (ui_palette_is_immersive()) {
-        nl_dock_sync(s_tabbar, s_body, s_active_tab, s_visible);
+        /* 非首页：Dock 常显；首页：与顶栏同空闲计时 */
+        const bool dock_on =
+            s_visible && s_screen_on && (s_active_tab != NL_TAB_HOME || s_nav_shown);
+        nl_dock_sync(s_tabbar, s_body, s_active_tab, dock_on);
         nl_ov_home_dots_set_visible(on);
         return;
     }
@@ -1076,7 +1079,7 @@ void nl_ov_show_page(int tab)
             ui_tab_set_checked(s_tab_btns[i], i == tab);
         }
     }
-    nl_dock_sync(s_tabbar, s_body, tab, s_visible);
+    nl_ov_nav_chrome_sync();
     if (tab == NL_TAB_APPS) {
         nl_ov_apps_ensure();
     }
@@ -1379,7 +1382,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
         }
     }
     nl_dock_init(s_root);
-    nl_dock_sync(s_tabbar, s_body, s_active_tab, true);
+    nl_ov_nav_chrome_sync();
 
     /* 全局 AI 对话浮层抽屉（唤醒词触发，不依赖 Tab，挂在 lv_layer_top()） */
     nl_ov_create_ai_drawer(lv_layer_top());

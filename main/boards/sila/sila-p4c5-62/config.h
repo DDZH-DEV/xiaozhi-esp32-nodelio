@@ -34,8 +34,8 @@
 #define DISPLAY_HEIGHT 452
 
 /* TF/SD Slot0（SCH_P4X sheet 1）：4-bit + PWRn + CD。
- * Hosted 独占 SDMMC Slot1，Slot0 归本板曲库/内存卡播放使用。
- * PWRn 低有效：上电后由 sd_library 拉高使能，未挂载时断电。 */
+ * Hosted 独占 SDMMC Slot1，Slot0 归本板曲库（对齐 host_sdcard_with_hosted）。
+ * PWRn 低有效（AO3401）供卡 VDD；Slot0 IO/SD_VREF 须先开片内 LDO VO4@3.3V（IDF 文档）。 */
 #define SD_CARD_CLK_PIN GPIO_NUM_43
 #define SD_CARD_CMD_PIN GPIO_NUM_44
 #define SD_CARD_D0_PIN GPIO_NUM_39

@@ -1,18 +1,18 @@
 /*
- * ui_dock.cc — 段4 左侧悬浮白色胶囊 Dock（仅 P4 62 / 508 启用）。
+ * ui_dock.cc — 段4 左侧悬浮白色圆角 Dock（仅 P4 62 / 508 启用）。
  *
  * 5 个纵向入口（由上至下）：
  *   0 首页（NL_TAB_HOME）：青绿渐变底座 + HOME 图标
  *   1 应用（NL_TAB_APPS）：紫粉渐变底座 + EXPLORE 图标
  *   2 小智（语音对话）：拟物银白扬声器圆盘 + MIC 图标 → nodelio_overlay_show_chat()
- *   3 音乐（多媒体）：原生同心圆黑胶唱片（黑盘 + 暗纹环 + 红芯 + 中心孔）→ 恢复曲库或打开 SD 音乐
+ *   3 音乐（曲库/播放）：橙粉渐变 + MUSIC_NOTE → 恢复曲库或打开 SD 音乐
  *   4 设置（NL_TAB_SET）：翠绿渐变底座 + SETTINGS 图标
  *
  * 兼容性策略：
  *   - 62（nav_width=96）：不动 nav_width；沉浸模式下将原 s_tabbar 设为全透明占位槽，
- *     并在 dock_rect (16,16,76,420) 悬浮白胶囊。
- *   - 508（nav_width=0）：不动 37 处 nav_width 宽屏判断；沉浸模式下隐藏底部自动收起 Tab，
- *     在 dock_rect (12,16,68,688) 常驻悬浮白胶囊，并对 s_body 设 pad_left=84 避让。
+ *     并在 dock_rect.x/w 处按内容高度居中悬浮。
+ *   - 508（nav_width=0）：沉浸模式下隐藏底部 Tab；Dock 随触摸显示、空闲自动收起，
+ *     显示时对 s_body 设 pad_left 避让，隐藏时收回。
  */
 #include "ui_dock.h"
 
@@ -42,6 +42,9 @@ constexpr int kSlotVoice = 2;
 constexpr int kSlotMusic = 3;
 constexpr int kSlotSettings = 4;
 constexpr int kSquareLeftInset = 84; /* 508: dock_x(12) + dock_w(68) + gap(4) */
+constexpr int kDockRadius = 16; /* 勿用 CIRCLE，上下勿做成大胶囊半圆 */
+constexpr int kDockPadVer = 8;
+constexpr int kDockPadRow = 6;
 
 lv_obj_t *s_dock = nullptr;
 lv_obj_t *s_tiles[kDockSlots] = {nullptr};
@@ -62,7 +65,8 @@ lv_obj_t *make_grad_badge(lv_obj_t *parent, int sz, uint32_t c_top, uint32_t c_b
     lv_obj_remove_flag(b, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
 
     lv_obj_t *ic = lv_label_create(b);
-    lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
+    lv_obj_set_style_text_font(ic, sz >= 40 ? &font_material_symbols_30_4 : &font_material_symbols_20_4,
+                               0);
     lv_obj_set_style_text_color(ic, lv_color_white(), 0);
     lv_label_set_text(ic, symbol);
     lv_obj_center(ic);
@@ -97,54 +101,12 @@ void build_speaker_disc(lv_obj_t *tile, int badge_sz)
     lv_obj_remove_flag(ring, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *ic = lv_label_create(outer);
-    lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
+    lv_obj_set_style_text_font(
+        ic, badge_sz >= 40 ? &font_material_symbols_30_4 : &font_material_symbols_20_4, 0);
     lv_obj_set_style_text_color(ic, lv_color_hex(0x334155), 0);
     lv_label_set_text(ic, MATERIAL_SYMBOLS_MIC);
     lv_obj_center(ic);
     lv_obj_remove_flag(ic, LV_OBJ_FLAG_CLICKABLE);
-}
-
-/* 第 4 颗：同心圆拟物黑胶唱盘（黑盘 + 暗纹环 + 珊瑚红中心标 + 中心孔） */
-void build_vinyl_disc(lv_obj_t *tile, int badge_sz)
-{
-    lv_obj_t *disc = lv_obj_create(tile);
-    lv_obj_remove_style_all(disc);
-    lv_obj_set_size(disc, badge_sz, badge_sz);
-    lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(disc, lv_color_hex(0x18181b), 0);
-    lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(disc, 1, 0);
-    lv_obj_set_style_border_color(disc, lv_color_hex(0x3f3f46), 0);
-    lv_obj_center(disc);
-    lv_obj_remove_flag(disc, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
-
-    lv_obj_t *groove = lv_obj_create(disc);
-    lv_obj_remove_style_all(groove);
-    lv_obj_set_size(groove, badge_sz - 10, badge_sz - 10);
-    lv_obj_set_style_radius(groove, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_width(groove, 1, 0);
-    lv_obj_set_style_border_color(groove, lv_color_hex(0x52525b), 0);
-    lv_obj_set_style_border_opa(groove, LV_OPA_60, 0);
-    lv_obj_center(groove);
-    lv_obj_remove_flag(groove, LV_OBJ_FLAG_CLICKABLE);
-
-    lv_obj_t *core = lv_obj_create(disc);
-    lv_obj_remove_style_all(core);
-    lv_obj_set_size(core, 14, 14);
-    lv_obj_set_style_radius(core, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(core, lv_color_hex(0xef4444), 0);
-    lv_obj_set_style_bg_opa(core, LV_OPA_COVER, 0);
-    lv_obj_center(core);
-    lv_obj_remove_flag(core, LV_OBJ_FLAG_CLICKABLE);
-
-    lv_obj_t *hole = lv_obj_create(core);
-    lv_obj_remove_style_all(hole);
-    lv_obj_set_size(hole, 4, 4);
-    lv_obj_set_style_radius(hole, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(hole, lv_color_hex(0x18181b), 0);
-    lv_obj_set_style_bg_opa(hole, LV_OPA_COVER, 0);
-    lv_obj_center(hole);
-    lv_obj_remove_flag(hole, LV_OBJ_FLAG_CLICKABLE);
 }
 
 void on_dock_slot_clicked(lv_event_t *e)
@@ -200,35 +162,41 @@ extern "C" void nl_dock_init(lv_obj_t *root)
     if (!prof || prof->dock_rect.w == 0 || prof->dock_rect.h == 0) {
         return;
     }
+    /* 图标尽量贴满 Dock 宽度，避免白边里一圈小方块 */
+    const int tile_sz = std::max(52, (int)prof->dock_rect.w - 10);
+    const int badge_sz = tile_sz - 8;
+    const int dock_w = std::max((int)prof->dock_rect.w, tile_sz + 10);
+    const int dock_h =
+        kDockPadVer * 2 + tile_sz * kDockSlots + kDockPadRow * (kDockSlots - 1);
+    const int dock_y = std::max(8, ((int)prof->height - dock_h) / 2);
+
     s_dock = lv_obj_create(root);
     lv_obj_remove_style_all(s_dock);
     lv_obj_add_flag(s_dock, (lv_obj_flag_t)(LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_IGNORE_LAYOUT |
                                             LV_OBJ_FLAG_HIDDEN));
     lv_obj_remove_flag(s_dock, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(s_dock, prof->dock_rect.x, prof->dock_rect.y);
-    lv_obj_set_size(s_dock, prof->dock_rect.w, prof->dock_rect.h);
-    lv_obj_set_style_radius(s_dock, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_pos(s_dock, prof->dock_rect.x, dock_y);
+    lv_obj_set_size(s_dock, dock_w, dock_h);
+    lv_obj_set_style_radius(s_dock, kDockRadius, 0);
     lv_obj_set_style_bg_color(s_dock, UI_DOCK_BG, 0);
     lv_obj_set_style_bg_opa(s_dock, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_dock, 1, 0);
     lv_obj_set_style_border_color(s_dock, lv_color_hex(0xe2e8f0), 0);
-    lv_obj_set_style_shadow_width(s_dock, 18, 0);
-    lv_obj_set_style_shadow_offset_y(s_dock, 3, 0);
+    lv_obj_set_style_shadow_width(s_dock, 14, 0);
+    lv_obj_set_style_shadow_offset_y(s_dock, 2, 0);
     lv_obj_set_style_shadow_color(s_dock, UI_DOCK_SHADOW, 0);
     lv_obj_set_style_shadow_opa(s_dock, LV_OPA_30, 0);
-    lv_obj_set_style_pad_ver(s_dock, 14, 0);
+    lv_obj_set_style_pad_ver(s_dock, kDockPadVer, 0);
+    lv_obj_set_style_pad_row(s_dock, kDockPadRow, 0);
     lv_obj_set_flex_flow(s_dock, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(s_dock, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+    lv_obj_set_flex_align(s_dock, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
-
-    const int tile_sz = prof->dock_rect.w >= 74 ? 50 : 46;
-    const int badge_sz = tile_sz - 12;
 
     for (int i = 0; i < kDockSlots; ++i) {
         lv_obj_t *t = lv_obj_create(s_dock);
         lv_obj_remove_style_all(t);
         lv_obj_set_size(t, tile_sz, tile_sz);
-        lv_obj_set_style_radius(t, 14, 0);
+        lv_obj_set_style_radius(t, 16, 0);
         lv_obj_set_style_bg_color(t, lv_color_hex(0xf8fafc), 0);
         lv_obj_set_style_bg_opa(t, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(t, lv_color_hex(0xe2e8f0), LV_STATE_PRESSED);
@@ -251,7 +219,7 @@ extern "C" void nl_dock_init(lv_obj_t *root)
         } else if (i == kSlotVoice) {
             build_speaker_disc(t, badge_sz);
         } else if (i == kSlotMusic) {
-            build_vinyl_disc(t, badge_sz);
+            make_grad_badge(t, badge_sz, 0xf97316, 0xdb2777, MATERIAL_SYMBOLS_MUSIC_NOTE);
         } else {
             make_grad_badge(t, badge_sz, 0x34c759, 0x0d9488, MATERIAL_SYMBOLS_SETTINGS);
         }
@@ -293,7 +261,7 @@ extern "C" void nl_dock_sync(lv_obj_t *tabbar, lv_obj_t *body, int active_tab, b
         return;
     }
 
-    /* 沉浸模式：展示左侧白色胶囊 Dock */
+    /* 沉浸模式：左侧圆角 Dock。首页可空闲收起；应用/设置由调用方保持 shell_visible=true */
     if (s_dock) {
         if (shell_visible) {
             lv_obj_remove_flag(s_dock, LV_OBJ_FLAG_HIDDEN);
@@ -333,7 +301,8 @@ extern "C" void nl_dock_sync(lv_obj_t *tabbar, lv_obj_t *body, int active_tab, b
         }
     }
     if (body && !rail) {
-        lv_obj_set_style_pad_left(body, kSquareLeftInset, 0);
+        /* 仅 Dock 可见时避让；收起后收回左边距避免空条 */
+        lv_obj_set_style_pad_left(body, shell_visible ? kSquareLeftInset : 0, 0);
     }
 }
 
