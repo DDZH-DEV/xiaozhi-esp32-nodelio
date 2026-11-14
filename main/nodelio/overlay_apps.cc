@@ -372,19 +372,11 @@ static void open_app_at(int idx, bool reset_daily = true, bool force_weather_ref
                                 strcmp(env->card_type, "calendar_weather") == 0) {
                                 const uint32_t generation = a->daily_generation;
                                 const auto cfg = *a->cfg;
-                                char spoken[NL_ENV_SPOKEN];
-                                spoken[0] = '\0';
-                                if (env->spoken[0]) {
-                                    snprintf(spoken, sizeof(spoken), "%s", env->spoken);
-                                }
                                 Application::GetInstance().Schedule([env, generation, cfg]() {
                                     nodelio_skill_daily_update(&cfg, env, generation);
                                 });
-                                /* 问天气时通道应仍开着（open_app 不再误掐），云端 TTS 继续念；
-                                 * 这里把服务端 spoken 再 toast/字幕一次，方便核对 API 结果。 */
-                                if (spoken[0]) {
-                                    nodelio_panel_ui_announce_spoken(spoken);
-                                }
+                                /* 手动点开/刷新只上屏，不弹「小智回复」。
+                                 * 语音问天气由 MCP 返回 spoken 走云端 TTS，不经这条路径。 */
                                 ok = true;
                             } else {
                                 if (env)

@@ -867,7 +867,7 @@ void nl_ov_refresh_status_icons(bool wifi_ok, bool cloud_ok, const char *msg)
         const char *g = cloud_status_glyph(cloud_ok);
         if (s_cloud_glyph_last != g) {
             s_cloud_glyph_last = g;
-            lv_obj_set_style_text_font(s_cloud_lbl, &font_material_symbols_30_4, 0);
+            lv_obj_set_style_text_font(s_cloud_lbl, &font_material_symbols_20_4, 0);
             lv_label_set_text(s_cloud_lbl, g);
             changed = true;
         }
@@ -1327,7 +1327,8 @@ static void build_shell_on_lvgl(void * /*user_data*/)
     lv_obj_clear_flag(s_status_lbl, LV_OBJ_FLAG_CLICKABLE);
 
     s_cloud_lbl = lv_label_create(bar);
-    lv_obj_set_style_text_font(s_cloud_lbl, &font_material_symbols_30_4, 0);
+    /* 与 WiFi 同用 20px；30px 云形偏胖，顶栏会压过相邻图标。 */
+    lv_obj_set_style_text_font(s_cloud_lbl, &font_material_symbols_20_4, 0);
     lv_label_set_text(s_cloud_lbl, MATERIAL_SYMBOLS_CLOUD_OFF);
     s_cloud_glyph_last = MATERIAL_SYMBOLS_CLOUD_OFF;
     lv_obj_set_style_text_color(s_cloud_lbl, UI_ON_TILE, 0);
