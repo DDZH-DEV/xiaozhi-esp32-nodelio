@@ -1,5 +1,6 @@
 #include "sd_photo_ui.h"
 
+#include "application.h"
 #include "board.h"
 #include "display.h"
 #include "overlay_priv.h"
@@ -15,6 +16,7 @@
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #define TAG "nl_sd_photo"
@@ -266,6 +268,49 @@ extern "C" void nodelio_skill_sd_photo_show(int index)
     }
     ensure_shell();
     request_load(index);
+}
+
+extern "C" void nodelio_skill_sd_photo_show_path(const char *abs_path)
+{
+    if (!abs_path || !abs_path[0]) {
+        nl_ov_toast("无效路径");
+        return;
+    }
+    if (!nodelio_sd_available()) {
+        nl_ov_toast("本机没有内存卡");
+        return;
+    }
+    char *path_copy = static_cast<char *>(malloc(160));
+    if (!path_copy) {
+        nl_ov_toast("内存不足");
+        return;
+    }
+    snprintf(path_copy, 160, "%s", abs_path);
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Interactive,
+            [](void *p) {
+                char *path = static_cast<char *>(p);
+                nodelio_sd_mount();
+                if (!nodelio_sd_is_mounted()) {
+                    nodelio_panel_ui_toast_defer("未检测到内存卡");
+                    free(path);
+                    return;
+                }
+                (void)nodelio_sd_rescan_photos();
+                int idx = nodelio_sd_photo_index_of(path);
+                free(path);
+                if (idx < 0) {
+                    nodelio_panel_ui_toast_defer("找不到这张图");
+                    return;
+                }
+                Application::GetInstance().Schedule([idx]() {
+                    nodelio_skill_sd_photo_show(idx);
+                });
+            },
+            path_copy, [](void *p) { free(p); }, 0, "sd_photo_path")) {
+        free(path_copy);
+        nl_ov_toast("打开失败");
+    }
 }
 
 extern "C" bool nodelio_skill_sd_photo_visible(void)

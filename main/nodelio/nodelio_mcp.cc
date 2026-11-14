@@ -11,6 +11,7 @@
 #include "panel_ui.h"
 #include "overlay_priv.h"
 #include "media_player.h"
+#include "sd_files_ui.h"
 #include "skill_result_ui.h"
 #include "skill_runtime.h"
 
@@ -1911,8 +1912,9 @@ void nodelio_mcp_register_tools(void)
         "self.nodelio.open_app",
         "打开已装应用。听歌/曲库→name=曲库；电台/播客/新闻/天气同理。"
         "内存卡/TF卡/SD卡里的歌→name=内存卡（本机读卡，不走云端）。"
+        "浏览卡上文件→name=文件。"
         "工作台可指定 DeepSeek/ChatGPT/WorkBuddy；查看任务打开默认入口。禁云端 play_music。"
-        "name=曲库/内存卡/音乐/新闻/天气/电台/播客/空气/每日一篇/查看任务 或 app_id。",
+        "name=曲库/内存卡/文件/音乐/新闻/天气/电台/播客/空气/每日一篇/查看任务 或 app_id。",
         PropertyList({Property("name", kPropertyTypeString)}),
         [](const PropertyList& properties) -> ToolResult {
             std::string name = properties["name"].value<std::string>();
@@ -1920,7 +1922,12 @@ void nodelio_mcp_register_tools(void)
             if (name.empty()) {
                 return std::unexpected(std::string("name 不能为空"));
             }
-            /* 内存卡：本地挂卡+扫描，不经服务端技能 */
+            if (name.find("文件管理") != std::string::npos || name == "文件" ||
+                name.find("内存卡文件") != std::string::npos) {
+                nodelio_skill_request_sd_files();
+                return std::string("正在打开文件");
+            }
+            /* 内存卡曲库：本地挂卡+扫描，不经服务端技能 */
             if (name.find("内存卡") != std::string::npos || name.find("存储卡") != std::string::npos ||
                 name.find("SD卡") != std::string::npos || name.find("sd卡") != std::string::npos ||
                 name.find("TF卡") != std::string::npos || name.find("tf卡") != std::string::npos ||

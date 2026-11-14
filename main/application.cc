@@ -1927,8 +1927,14 @@ void Application::HandleStateChangedEvent() {
                     "neutral");  // Then set emotion (wechat mode checks child count)
             }
             audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(true);
 #if CONFIG_NODELIO_PANEL
+            /* 息屏且关「息屏语音唤醒」时勿强开 WakeNet，否则设置开关无效、续航崩掉。 */
+            if (nodelio_xiaozhi_enabled() &&
+                (nodelio_panel_ui_screen_on() || nodelio_wake_on_sleep_enabled())) {
+                audio_service_.EnableWakeWordDetection(true);
+            } else {
+                audio_service_.EnableWakeWordDetection(false);
+            }
             /* 云会话结束：无播歌时重新占唤醒坑，供下次点歌武装 */
             if (!nodelio_media_is_playing() && !nodelio_media_is_paused()) {
                 (void)nodelio_wake_dram_try_reclaim();
@@ -1941,6 +1947,8 @@ void Application::HandleStateChangedEvent() {
                 ESP_LOGI(TAG, "idle → play spoken notify cont=%d", cont ? 1 : 0);
                 StartNotification(std::move(url), {}, {}, !cont);
             }
+#else
+            audio_service_.EnableWakeWordDetection(true);
 #endif
             break;
         case kDeviceStateConnecting:

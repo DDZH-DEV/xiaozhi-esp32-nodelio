@@ -13,6 +13,7 @@
 #include "nodelio_http.h"
 #include "content_envelope.h"
 #include "panel_ui.h"
+#include "sd_files_ui.h"
 #include "sd_library.h"
 #include "sd_photo_ui.h"
 #include "skill_result_ui.h"
@@ -86,7 +87,7 @@ static void with_builtin_daily(nl_app_item* items, int& n) {
         items[1] = {};
         snprintf(items[1].id, sizeof(items[1].id), "builtin.files");
         snprintf(items[1].name, sizeof(items[1].name), "文件");
-        snprintf(items[1].desc, sizeof(items[1].desc), "内存卡歌曲与照片");
+        snprintf(items[1].desc, sizeof(items[1].desc), "浏览内存卡文件");
         items[1].enabled = true;
     }
     n = keep + extra;
@@ -245,7 +246,7 @@ static void open_app_at(int idx, bool reset_daily = true, bool force_weather_ref
         if (apps_wide() && s_split) {
             render_list();
         }
-        nodelio_skill_request_sd_library(false);
+        nodelio_skill_request_sd_files();
         return;
     }
     /* 播歌中再点曲库：恢复列表，勿重新 invoke（会换一批并误切歌） */
@@ -1447,6 +1448,7 @@ enum {
     OPEN_PLAN_PAGE,
     OPEN_PLAN_SD,
     OPEN_PLAN_SD_PHOTO,
+    OPEN_PLAN_SD_FILES,
     OPEN_PLAN_SKILL,
 };
 
@@ -1485,11 +1487,11 @@ static int plan_open_query(const char *query, OpenPlan *plan, bool log)
     }
     query = qbuf;
 
-    /* 内置文件：不经技能市场。有卡时应用页常驻。 */
+    /* 内置文件浏览器：不经技能市场。有卡时应用页常驻。 */
     if (strcmp(query, "文件") == 0 || strstr(query, "文件管理") || strstr(query, "文件管理器") ||
         strstr(query, "内存卡文件")) {
-        plan->kind = OPEN_PLAN_SD;
-        return OPEN_PLAN_SD;
+        plan->kind = OPEN_PLAN_SD_FILES;
+        return OPEN_PLAN_SD_FILES;
     }
     /* 内存卡相册优先于曲库：本机读卡 jpg，不经服务端。 */
     if (strstr(query, "内存卡相册") || strstr(query, "本地相册") || strstr(query, "卡相册") ||
@@ -1629,6 +1631,11 @@ bool nl_ov_apps_open_by_query(const char *query)
     if (kind == OPEN_PLAN_SD_PHOTO) {
         ESP_LOGI(TAG, "open_by_query: sd photos");
         nodelio_skill_request_sd_photos();
+        return true;
+    }
+    if (kind == OPEN_PLAN_SD_FILES) {
+        ESP_LOGI(TAG, "open_by_query: sd files");
+        nodelio_skill_request_sd_files();
         return true;
     }
     if (kind != OPEN_PLAN_SKILL || !plan.sid[0]) {

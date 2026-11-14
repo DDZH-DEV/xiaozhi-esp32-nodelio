@@ -35,6 +35,7 @@ LV_FONT_DECLARE(font_material_symbols_30_4);
 
 #include "audio_codec.h"
 #include "backlight.h"
+#include "battery_stats.h"
 
 #include <esp_app_desc.h>
 #include <esp_chip_info.h>
@@ -897,6 +898,27 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         }
         sys_kv_row(dev, "省电", line, nullptr);
         {
+            nodelio_battery_summary_t bs;
+            nodelio_battery_stats_get_summary(&bs);
+            if (bs.pct < 0) {
+                std::snprintf(line, sizeof(line), "-");
+            } else if (bs.charging) {
+                std::snprintf(line, sizeof(line), "充电 · %d%%", bs.pct);
+            } else if (!bs.ready) {
+                std::snprintf(line, sizeof(line), "%d%% · 学习中", bs.pct);
+            } else {
+                const int h = bs.remain_min / 60;
+                const int m = bs.remain_min % 60;
+                if (h > 0) {
+                    std::snprintf(line, sizeof(line), "%d%% · ~%dh%dm · %dmA", bs.pct, h, m,
+                                  bs.i_avg_ma);
+                } else {
+                    std::snprintf(line, sizeof(line), "%d%% · ~%dm · %dmA", bs.pct, m, bs.i_avg_ma);
+                }
+            }
+            sys_kv_row(dev, "电池", line, nullptr);
+        }
+        {
             std::string mac = SystemInfo::GetMacAddress();
             sys_kv_row(dev, "MAC", mac.c_str(), nullptr);
         }
@@ -936,6 +958,50 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         }
     } else if (page == SET_PAGE_POWER) {
         lv_obj_set_style_pad_row(body, 12, 0);
+
+        {
+            lv_obj_t *batt_card = settings_card(body, "电池续航");
+            lv_obj_set_style_pad_all(batt_card, 16, 0);
+            lv_obj_set_style_pad_row(batt_card, 8, 0);
+            nodelio_battery_summary_t bs;
+            nodelio_battery_stats_get_summary(&bs);
+            char batt_line[96];
+            if (bs.pct < 0) {
+                std::snprintf(batt_line, sizeof(batt_line), "无电池或未读到电量");
+            } else if (bs.charging) {
+                if (bs.ready) {
+                    std::snprintf(batt_line, sizeof(batt_line), "充电中 · %d%% · 上次放电约 %dmA", bs.pct,
+                                  bs.i_avg_ma);
+                } else {
+                    std::snprintf(batt_line, sizeof(batt_line), "充电中 · %d%%", bs.pct);
+                }
+            } else if (!bs.ready) {
+                std::snprintf(batt_line, sizeof(batt_line), "%d%% · 学习中（放电约20分钟后出估值）",
+                              bs.pct);
+            } else {
+                const int h = bs.remain_min / 60;
+                const int m = bs.remain_min % 60;
+                if (h > 0) {
+                    std::snprintf(batt_line, sizeof(batt_line), "%d%% · 约%d小时%d分 · 近平均 %dmA",
+                                  bs.pct, h, m, bs.i_avg_ma);
+                } else {
+                    std::snprintf(batt_line, sizeof(batt_line), "%d%% · 约%d分 · 近平均 %dmA", bs.pct, m,
+                                  bs.i_avg_ma);
+                }
+            }
+            lv_obj_t *batt_lab = lv_label_create(batt_card);
+            lv_label_set_text(batt_lab, batt_line);
+            nl_ov_set_font(batt_lab);
+            lv_obj_set_style_text_color(batt_lab, UI_TEXT, 0);
+            lv_label_set_long_mode(batt_lab, LV_LABEL_LONG_WRAP);
+            lv_obj_set_width(batt_lab, lv_pct(100));
+            lv_obj_t *batt_hint = lv_label_create(batt_card);
+            lv_label_set_text(batt_hint, "按电量变化估算，非实时电流表");
+            nl_ov_set_font(batt_hint);
+            lv_obj_set_style_text_color(batt_hint, UI_TEXT_TIP, 0);
+            lv_label_set_long_mode(batt_hint, LV_LABEL_LONG_WRAP);
+            lv_obj_set_width(batt_hint, lv_pct(100));
+        }
 
         lv_obj_t *ps_card = settings_card(body, "空闲断网");
         lv_obj_set_style_pad_all(ps_card, 16, 0);

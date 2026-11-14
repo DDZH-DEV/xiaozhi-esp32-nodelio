@@ -64,10 +64,41 @@ extern "C" bool nodelio_sd_photo_path(int index, char *path, size_t path_len)
     (void)path_len;
     return false;
 }
+extern "C" int nodelio_sd_photo_index_of(const char *abs_path)
+{
+    (void)abs_path;
+    return -1;
+}
+extern "C" esp_err_t nodelio_sd_list_dir(const char *dir_path, nodelio_sd_entry_t *out, int max,
+                                         int *out_n)
+{
+    (void)dir_path;
+    (void)out;
+    (void)max;
+    if (out_n) {
+        *out_n = 0;
+    }
+    return ESP_ERR_NOT_SUPPORTED;
+}
+extern "C" bool nodelio_sd_normalize_path(const char *in, char *out, size_t out_len)
+{
+    (void)in;
+    if (out && out_len) {
+        out[0] = '\0';
+    }
+    return false;
+}
+extern "C" int nodelio_sd_path_depth(const char *abs_path)
+{
+    (void)abs_path;
+    return -1;
+}
+extern "C" const char *nodelio_sd_mount_point(void) { return "/sdcard"; }
 
 #else /* CONFIG_NODELIO_SD_MUSIC */
 
 #include <dirent.h>
+#include <strings.h>
 #include <driver/gpio.h>
 #include <driver/sdmmc_host.h>
 #include <driver/sdspi_host.h>
@@ -858,6 +889,197 @@ bool nodelio_sd_photo_path(int index, char *path, size_t path_len)
     }
     snprintf(path, path_len, "%s", s_sd.photos[index]);
     return true;
+}
+
+int nodelio_sd_photo_index_of(const char *abs_path)
+{
+    if (!abs_path || !abs_path[0] || !s_sd.photos || s_sd.photo_count <= 0) {
+        return -1;
+    }
+    for (int i = 0; i < s_sd.photo_count; i++) {
+        if (strcmp(s_sd.photos[i], abs_path) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+const char *nodelio_sd_mount_point(void) { return NL_SD_MOUNT_POINT; }
+
+bool nodelio_sd_normalize_path(const char *in, char *out, size_t out_len)
+{
+    if (!out || out_len < 2) {
+        return false;
+    }
+    char raw[NODELIO_SD_ENTRY_PATH_MAX];
+    if (!in || !in[0] || strcmp(in, "/") == 0) {
+        snprintf(raw, sizeof(raw), "%s", NL_SD_MOUNT_POINT);
+    } else if (in[0] == '/') {
+        snprintf(raw, sizeof(raw), "%s", in);
+    } else {
+        snprintf(raw, sizeof(raw), "%s/%s", NL_SD_MOUNT_POINT, in);
+    }
+    /* 折叠 /./ 与禁止 .. */
+    char parts[12][64];
+    int nparts = 0;
+    const char *p = raw;
+    while (*p && nparts < 12) {
+        while (*p == '/') {
+            p++;
+        }
+        if (!*p) {
+            break;
+        }
+        const char *start = p;
+        while (*p && *p != '/') {
+            p++;
+        }
+        size_t len = static_cast<size_t>(p - start);
+        if (len == 0) {
+            continue;
+        }
+        if (len == 1 && start[0] == '.') {
+            continue;
+        }
+        if (len == 2 && start[0] == '.' && start[1] == '.') {
+            return false;
+        }
+        if (len >= sizeof(parts[0])) {
+            return false;
+        }
+        memcpy(parts[nparts], start, len);
+        parts[nparts][len] = '\0';
+        nparts++;
+    }
+    if (nparts == 0 || strcmp(parts[0], "sdcard") != 0) {
+        return false;
+    }
+    size_t used = 0;
+    out[0] = '\0';
+    for (int i = 0; i < nparts; i++) {
+        int wr = snprintf(out + used, out_len - used, "/%s", parts[i]);
+        if (wr <= 0 || static_cast<size_t>(wr) >= out_len - used) {
+            return false;
+        }
+        used += static_cast<size_t>(wr);
+    }
+    return true;
+}
+
+int nodelio_sd_path_depth(const char *abs_path)
+{
+    char norm[NODELIO_SD_ENTRY_PATH_MAX];
+    if (!nodelio_sd_normalize_path(abs_path, norm, sizeof(norm))) {
+        return -1;
+    }
+    const size_t root_len = strlen(NL_SD_MOUNT_POINT);
+    if (strncmp(norm, NL_SD_MOUNT_POINT, root_len) != 0) {
+        return -1;
+    }
+    const char *rest = norm + root_len;
+    if (*rest == '\0') {
+        return 0;
+    }
+    if (*rest != '/') {
+        return -1;
+    }
+    int depth = 0;
+    for (const char *q = rest; *q; q++) {
+        if (*q == '/') {
+            depth++;
+        }
+    }
+    return depth;
+}
+
+namespace {
+
+nodelio_sd_entry_kind_t classify_name(const char *name, bool is_dir)
+{
+    if (is_dir) {
+        return NODELIO_SD_ENTRY_DIR;
+    }
+    if (ext_supported(name)) {
+        return NODELIO_SD_ENTRY_AUDIO;
+    }
+    if (photo_ext_supported(name)) {
+        return NODELIO_SD_ENTRY_PHOTO;
+    }
+    return NODELIO_SD_ENTRY_OTHER;
+}
+
+int cmp_entry(const void *a, const void *b)
+{
+    const auto *ea = static_cast<const nodelio_sd_entry_t *>(a);
+    const auto *eb = static_cast<const nodelio_sd_entry_t *>(b);
+    const bool da = ea->kind == NODELIO_SD_ENTRY_DIR;
+    const bool db = eb->kind == NODELIO_SD_ENTRY_DIR;
+    if (da != db) {
+        return da ? -1 : 1;
+    }
+    return strcasecmp(ea->name, eb->name);
+}
+
+}  // namespace
+
+esp_err_t nodelio_sd_list_dir(const char *dir_path, nodelio_sd_entry_t *out, int max, int *out_n)
+{
+    if (out_n) {
+        *out_n = 0;
+    }
+    if (!out || max <= 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_sd.mounted) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    char abs[NODELIO_SD_ENTRY_PATH_MAX];
+    if (!nodelio_sd_normalize_path(dir_path, abs, sizeof(abs))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    DIR *d = opendir(abs);
+    if (!d) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    int n = 0;
+    struct dirent *ent = nullptr;
+    while ((ent = readdir(d)) != nullptr && n < max) {
+        if (!ent->d_name[0] || ent->d_name[0] == '.') {
+            continue;
+        }
+        char full[NODELIO_SD_ENTRY_PATH_MAX];
+        int wr = snprintf(full, sizeof(full), "%s/%s", abs, ent->d_name);
+        if (wr <= 0 || wr >= static_cast<int>(sizeof(full))) {
+            continue;
+        }
+        bool is_dir = (ent->d_type == DT_DIR);
+        if (ent->d_type == DT_UNKNOWN
+#ifdef DT_LNK
+            || ent->d_type == DT_LNK
+#endif
+        ) {
+            DIR *probe = opendir(full);
+            if (probe) {
+                closedir(probe);
+                is_dir = true;
+            } else {
+                is_dir = false;
+            }
+        }
+        nodelio_sd_entry_t *e = &out[n];
+        e->kind = classify_name(ent->d_name, is_dir);
+        snprintf(e->name, sizeof(e->name), "%s", ent->d_name);
+        snprintf(e->path, sizeof(e->path), "%s", full);
+        n++;
+    }
+    closedir(d);
+    if (n > 1) {
+        qsort(out, static_cast<size_t>(n), sizeof(out[0]), cmp_entry);
+    }
+    if (out_n) {
+        *out_n = n;
+    }
+    return ESP_OK;
 }
 
 #endif /* CONFIG_NODELIO_SD_MUSIC */

@@ -50,6 +50,12 @@ void nodelio_panel_ui_set_net_cb(nodelio_panel_ui_net_cb_t cb);
 /** 板级息屏/亮屏时调用：降频轮询；不再隐含断网. */
 void nodelio_panel_ui_notify_screen(bool on);
 
+/**
+ * 按亮/息屏与「息屏语音唤醒」开关开关 WakeNet（主任务调用）。
+ * 不走 screen_cb，避免被新闻等业务回调覆盖。
+ */
+void nodelio_panel_apply_wake_for_screen(bool screen_on);
+
 /** 板级断网/拉网时调用：触发 net_cb（勿在回调里阻塞）. */
 void nodelio_panel_ui_notify_net(bool on);
 

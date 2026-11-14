@@ -8,6 +8,7 @@
 #include "display/lcd_display.h"
 #include "wifi_board.h"
 #if CONFIG_NODELIO_PANEL
+#include "battery_stats.h"
 #include "board_info.h"
 #include "media_player.h"
 #include "nvs_config.h"
@@ -109,11 +110,13 @@ public:
             return false;
         }
 #if CONFIG_NODELIO_PANEL
-        lv_timer_set_period(
-            lv_display_get_refr_timer(display_),
-            idle ? CONFIG_NODELIO_UI_IDLE_REFRESH_MS : CONFIG_NODELIO_UI_ACTIVE_REFRESH_MS);
+        /* 息屏 500ms：不停 DPI（触摸耦合），只降 LVGL 脏区刷新。 */
+        const uint32_t idle_ms =
+            CONFIG_NODELIO_UI_IDLE_REFRESH_MS > 500 ? CONFIG_NODELIO_UI_IDLE_REFRESH_MS : 500;
+        lv_timer_set_period(lv_display_get_refr_timer(display_),
+                            idle ? idle_ms : CONFIG_NODELIO_UI_ACTIVE_REFRESH_MS);
 #else
-        lv_timer_set_period(lv_display_get_refr_timer(display_), idle ? 200 : 30);
+        lv_timer_set_period(lv_display_get_refr_timer(display_), idle ? 500 : 30);
 #endif
         lvgl_port_unlock();
         return true;
@@ -272,11 +275,26 @@ private:
                     if (lock) {
                         nodelio_panel_ui_notify_screen(!next_asleep);
                     }
+                    ESP_LOGI(kTag,
+                             "screen %s power_save=%d wake_on_sleep=%d wake_running=%d net_asleep=%d",
+                             next_asleep ? "off" : "on", net_save_.load() ? 1 : 0,
+                             nodelio_wake_on_sleep_enabled() ? 1 : 0,
+                             Application::GetInstance().GetAudioService().IsWakeWordRunning() ? 1
+                                                                                              : 0,
+                             net_asleep_.load() ? 1 : 0);
 #endif
                 }
                 HandlePmuIrq();
                 SampleAccelerometer();
 #if CONFIG_NODELIO_PANEL
+                /* 息屏约 10min 清缓存再读 PMU（不点亮），供 battery_stats 估流 */
+                if (asleep_.load() && batt_cached_at_ != 0) {
+                    const int64_t now_us = esp_timer_get_time();
+                    if ((now_us - batt_cached_at_) >= 10LL * 60 * 1000 * 1000) {
+                        batt_cached_at_ = 0;
+                    }
+                }
+                nodelio_battery_stats_tick();
                 const bool playing = nodelio_media_is_playing();
                 const bool hold_net = nodelio_skill_support_holds_network();
                 const bool want_net = net_save_.load() && !playing && !hold_net &&
@@ -284,9 +302,16 @@ private:
                                       Application::GetInstance().CanEnterSleepMode();
                 if (want_net) {
                     if (!net_asleep_.exchange(true)) {
+                        ESP_LOGI(kTag,
+                                 "net sleep enter asleep=%d wake_on_sleep=%d wake_running=%d",
+                                 asleep_.load() ? 1 : 0, nodelio_wake_on_sleep_enabled() ? 1 : 0,
+                                 Application::GetInstance().GetAudioService().IsWakeWordRunning()
+                                     ? 1
+                                     : 0);
                         nodelio_panel_ui_notify_net(false);
                     }
                 } else if (net_asleep_.exchange(false)) {
+                    ESP_LOGI(kTag, "net wake enter");
                     nodelio_panel_ui_notify_net(true);
                 }
 #endif

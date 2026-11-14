@@ -722,12 +722,16 @@ void NotifyPlayer::WorkerEntry(void* arg) {
 void NotifyPlayer::WorkerTask() {
     /* 每次播放重置 PSRAM 分配失败标志；播放中检测到即中止（emit/decode 路径）。 */
     s_psram_alloc_failed = false;
+    /* 必须先释放 mutex_ 再进 WorkerTaskLocal：后者内部会再 lock，
+     * 非递归 mutex 会死锁 → 无 "local play" 日志、15s 后功放超时关断、UI 仍显示播放中。 */
+    bool local = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!local_path_.empty()) {
-            WorkerTaskLocal();
-            return;
-        }
+        local = !local_path_.empty();
+    }
+    if (local) {
+        WorkerTaskLocal();
+        return;
     }
 #if CONFIG_BOARD_TYPE_SILA_86 && CONFIG_NODELIO_PANEL
     dram_epoch_ = nodelio_offline_cmd_dram_epoch();

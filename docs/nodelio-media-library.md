@@ -13,10 +13,12 @@
 | 应用层 | `Application::PlayLocalAudioFile()` | 与 `PlayHttpAudio` 共用 Notifying 播放槽 |
 | UI | `skill_result_ui.cc` | 来源 chip、批次、空态、`换一批` 语义 |
 | 语音/MCP | `offline_cmd_map.c` / `nodelio_mcp.cc` | 「打开内存卡」「放内存卡里的歌」同一条路径 |
+| 文件应用 | `sd_files_ui.cc` + `nodelio_sd_list_dir` | 应用页「文件」= 目录浏览；点音频/图片再进播放或相册，**不是**曲库 |
 
 ### 约定
 
-- 只列 `mp3 / wav / m4a`。列表里出现的文件必须能播：flac/aac/ogg 目前没有可用的分帧解析器，不列出。
+- 应用「文件」与「面板曲库」分开：前者浏览目录，后者才是 `music.search` / `music.sd` 歌单。
+- 曲库只列 `mp3 / wav / m4a`。列表里出现的文件必须能播：flac/aac/ogg 目前没有可用的分帧解析器，不列出。
 - 扫描上限 `NL_SD_MAX_FILES`=200、深度 3；每批 24 首（与 `NL_ENV_TRACK_MAX` 对齐）。
 - 挂载点 `/sdcard`，`playback_url` 形如 `sd:///sdcard/Music/a.mp3`，播放前由
   `nodelio_sd_resolve_url()` 还原为 VFS 路径。

@@ -1,5 +1,6 @@
 #include "register.h"
 
+#include "battery_stats.h"
 #include "board_info.h"
 #include "device_caps.h"
 #include "nodelio_http.h"
@@ -269,9 +270,15 @@ esp_err_t nodelio_device_heartbeat(const nodelio_nvs_config_t *cfg)
 
     char caps[1536];
     int n = nodelio_caps_export_json(caps, sizeof(caps));
-    char body[1600];
-    if (n > 0) {
+    char batt[288];
+    int bn = nodelio_battery_stats_format_json(batt, sizeof(batt));
+    char body[2048];
+    if (n > 0 && bn > 0) {
+        snprintf(body, sizeof(body), "{\"capabilities\":%s,\"battery\":%s}", caps, batt);
+    } else if (n > 0) {
         snprintf(body, sizeof(body), "{\"capabilities\":%s}", caps);
+    } else if (bn > 0) {
+        snprintf(body, sizeof(body), "{\"battery\":%s}", batt);
     } else {
         snprintf(body, sizeof(body), "{}");
     }

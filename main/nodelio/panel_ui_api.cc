@@ -207,6 +207,52 @@ extern "C" void nodelio_panel_ui_set_net_cb(nodelio_panel_ui_net_cb_t cb)
     s_net_cb = cb;
 }
 
+extern "C" void nodelio_panel_apply_wake_for_screen(bool screen_on)
+{
+    auto &app = Application::GetInstance();
+    auto &audio = app.GetAudioService();
+    const DeviceState st = app.GetDeviceState();
+    const bool wake_on_sleep = nodelio_wake_on_sleep_enabled();
+    const bool xiaozhi = nodelio_xiaozhi_enabled();
+
+    if (st == kDeviceStateListening || st == kDeviceStateSpeaking ||
+        st == kDeviceStateConnecting) {
+        ESP_LOGI(TAG, "wake apply skip busy state=%s screen=%d",
+                 DeviceStateMachine::GetStateName(st), screen_on ? 1 : 0);
+        return;
+    }
+
+    if (!xiaozhi) {
+        audio.EnableWakeWordDetection(false);
+        ESP_LOGI(TAG, "wake apply screen=%d xiaozhi=0 → wake off", screen_on ? 1 : 0);
+        return;
+    }
+
+    /* 播歌息屏：媒体自己武装唤醒，勿在此强关。 */
+    if (!screen_on && !wake_on_sleep &&
+        (nodelio_media_is_playing() || nodelio_media_is_paused())) {
+        ESP_LOGI(TAG, "wake apply screen=0 wake_on_sleep=0 media active → leave (running=%d)",
+                 audio.IsWakeWordRunning() ? 1 : 0);
+        return;
+    }
+
+    const bool want_wake = screen_on || wake_on_sleep;
+    if (!want_wake) {
+        audio.EnableWakeWordDetection(false);
+        ESP_LOGI(TAG, "wake apply screen=0 wake_on_sleep=0 → wake off (running=%d)",
+                 audio.IsWakeWordRunning() ? 1 : 0);
+        return;
+    }
+
+    if (st == kDeviceStateIdle || st == kDeviceStateNotifying) {
+        audio.EnableWakeWordDetection(true);
+        ESP_LOGI(TAG, "wake apply screen=%d wake_on_sleep=%d → wake on (running=%d)",
+                 screen_on ? 1 : 0, wake_on_sleep ? 1 : 0, audio.IsWakeWordRunning() ? 1 : 0);
+    } else {
+        ESP_LOGI(TAG, "wake apply skip state=%s want_wake=1", DeviceStateMachine::GetStateName(st));
+    }
+}
+
 extern "C" void nodelio_panel_ui_notify_screen(bool on)
 {
     if (on == s_screen_on) {
@@ -225,6 +271,8 @@ extern "C" void nodelio_panel_ui_notify_screen(bool on)
     if (s_screen_cb) {
         s_screen_cb(on);
     }
+    /* 电源钩子与业务 screen_cb 解耦；主任务改 AFE，避免 LVGL 回调里同步开关引擎。 */
+    Application::GetInstance().Schedule([on]() { nodelio_panel_apply_wake_for_screen(on); });
 }
 
 extern "C" void nodelio_panel_ui_notify_net(bool on)

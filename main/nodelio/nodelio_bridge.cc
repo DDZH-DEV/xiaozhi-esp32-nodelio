@@ -2,6 +2,7 @@
 #include "media_player.h"
 
 #include "application.h"
+#include "battery_stats.h"
 #include "board.h"
 #include "device_state.h"
 #include "diol_lan.h"
@@ -551,6 +552,7 @@ esp_err_t nodelio_bridge_start(void)
         return ESP_OK;
     }
     ESP_ERROR_CHECK_WITHOUT_ABORT(nodelio_nvs_init());
+    nodelio_battery_stats_init();
     s_starting = true;
     nodelio_log_heap("bridge start");
     /* 勿在 Application 主任务里阻塞 HTTP：否则息屏 Suspend 进不了主循环 → sync 超时 UAF */

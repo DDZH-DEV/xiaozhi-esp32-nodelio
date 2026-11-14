@@ -562,7 +562,13 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         }
         s_cfg.wake_on_sleep = on ? 1 : 0;
         nl_ov_persist_cfg_async();
-        Board::GetInstance().NoteUserActivity();
+        /* 已息屏时立刻按新开关关/开 WakeNet；勿 NoteUserActivity（会点亮屏幕）。 */
+        if (!nodelio_panel_ui_screen_on()) {
+            Application::GetInstance().Schedule(
+                []() { nodelio_panel_apply_wake_for_screen(false); });
+        } else {
+            Board::GetInstance().NoteUserActivity();
+        }
         nl_ov_toast(on ? "已开启息屏语音唤醒" : "已关闭息屏语音唤醒 · 触摸/按键唤醒");
         return ESP_OK;
     }

@@ -70,6 +70,41 @@ int nodelio_sd_fill_photo_envelope(nl_content_envelope_t *env, int *total_out);
 /** 按下标取 VFS 路径；越界返回 false。 */
 bool nodelio_sd_photo_path(int index, char *path, size_t path_len);
 
+/** 在已扫描的照片表里找绝对路径；未命中返回 -1。 */
+int nodelio_sd_photo_index_of(const char *abs_path);
+
+typedef enum {
+    NODELIO_SD_ENTRY_DIR = 0,
+    NODELIO_SD_ENTRY_AUDIO,
+    NODELIO_SD_ENTRY_PHOTO,
+    NODELIO_SD_ENTRY_OTHER,
+} nodelio_sd_entry_kind_t;
+
+#define NODELIO_SD_ENTRY_NAME_MAX 96
+#define NODELIO_SD_ENTRY_PATH_MAX 160
+#define NODELIO_SD_LIST_MAX 200
+
+typedef struct nodelio_sd_entry {
+    nodelio_sd_entry_kind_t kind;
+    char name[NODELIO_SD_ENTRY_NAME_MAX];
+    char path[NODELIO_SD_ENTRY_PATH_MAX];
+} nodelio_sd_entry_t;
+
+/**
+ * 列举单层目录（Job 线程调用）。dir_path 空则根 `/sdcard`。
+ * 目录优先、再按名排序；跳过 . / ..；路径必须落在挂载点下。
+ */
+esp_err_t nodelio_sd_list_dir(const char *dir_path, nodelio_sd_entry_t *out, int max, int *out_n);
+
+/** 规范化到挂载点下的绝对路径；失败返回 false。 */
+bool nodelio_sd_normalize_path(const char *in, char *out, size_t out_len);
+
+/** 相对挂载点的目录深度（根=0）。非法路径返回 -1。 */
+int nodelio_sd_path_depth(const char *abs_path);
+
+/** 挂载点字符串（"/sdcard"）。 */
+const char *nodelio_sd_mount_point(void);
+
 #ifdef __cplusplus
 }
 #endif
