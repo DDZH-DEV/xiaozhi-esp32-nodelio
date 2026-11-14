@@ -733,6 +733,21 @@ void dsh_fetch_session_detail(int track_idx)
     char ws[200] = {0};
     char sess[80] = {0};
     dsh_extract_arm(&s_env->tracks[track_idx], ws, sizeof(ws), sess, sizeof(sess));
+    /* 如果该任务正在执行中，先置空旧正文并占位提示，避免点入瞬间闪出上一轮执行结果 */
+    if (dsh_subtitle_is_running(s_env->tracks[track_idx].artist)) {
+        static const char kRunning[] = "任务正在执行中，稍后刷新结果…";
+        char *dup = static_cast<char *>(heap_caps_malloc(sizeof(kRunning), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!dup) {
+            dup = static_cast<char *>(malloc(sizeof(kRunning)));
+        }
+        if (dup) {
+            memcpy(dup, kRunning, sizeof(kRunning));
+            if (s_env->detail_body) {
+                heap_caps_free(s_env->detail_body);
+            }
+            s_env->detail_body = dup;
+        }
+    }
     Board::GetInstance().NoteUserActivity();
     restart_skill_ttl();
     dsh_fetch_detail(ws, sess, false);

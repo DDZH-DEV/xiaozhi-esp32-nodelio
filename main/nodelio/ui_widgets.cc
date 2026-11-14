@@ -3,6 +3,7 @@
 #include "board_info.h"
 #include "nvs_config.h"
 #include "sdkconfig.h"
+#include "ui_dock.h"
 
 void nl_ov_set_font(lv_obj_t *obj);
 int nl_ov_ui_line_box(void);
@@ -163,6 +164,17 @@ lv_obj_t *ui_make_settings_section(lv_obj_t *parent, const char *title)
     lv_obj_remove_style_all(card);
     lv_obj_set_width(card, lv_pct(100));
     lv_obj_set_height(card, LV_SIZE_CONTENT);
+#if NL_UI_SETTINGS_TILE_WALL
+    /* 磁贴自身已是白卡：分组容器只排版，不再套大白底。 */
+    const int gap = (nodelio_text_scale() == 1) ? 12 : 10;
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(card, 0, 0);
+    lv_obj_set_style_pad_row(card, gap, 0);
+    lv_obj_set_style_pad_column(card, gap, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_TRANSP, 0);
+#else
+    /* 单列列表行透明，需要分组白底托住。 */
     lv_obj_set_style_bg_color(card, UI_SURFACE, 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
@@ -170,16 +182,6 @@ lv_obj_t *ui_make_settings_section(lv_obj_t *parent, const char *title)
     lv_obj_set_style_border_color(card, UI_TILE_OFF_BORDER, 0);
     lv_obj_set_style_border_opa(card, LV_OPA_80, 0);
     ui_style_card(card);
-#if CONFIG_BOARD_TYPE_SILA_P4C5_508
-    /* 508：分组内两列磁贴墙 */
-    const int gap = (nodelio_text_scale() == 1) ? 12 : 10;
-    const int pad = (nodelio_text_scale() == 1) ? 12 : 10;
-    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_all(card, pad, 0);
-    lv_obj_set_style_pad_row(card, gap, 0);
-    lv_obj_set_style_pad_column(card, gap, 0);
-#else
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(card, 0, 0);
 #endif
@@ -192,7 +194,7 @@ int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out)
     const int gap = (nodelio_text_scale() == 1) ? 12 : 10;
     const auto *profile = nodelio_display_profile();
     if (avail < 160) {
-        avail = (int)profile->width - (int)profile->nav_width - 16 * 2;
+        avail = (int)profile->width - nl_dock_left_inset() - 16 * 2;
     }
     if (force_single_col) {
         int tile_w = (int)profile->width / 5;
@@ -207,9 +209,9 @@ int ui_settings_tile_width(int avail, bool force_single_col, int *columns_out)
         }
         return tile_w;
     }
-    /* 宽屏三列；方屏（含 508）两列。 */
-    const int max_cols = profile->nav_width ? 3 : 2;
-    const int min_tile = profile->nav_width ? 220 : 160;
+    /* 62/508 均为两列；宽不够时退回一列。 */
+    const int max_cols = 2;
+    const int min_tile = profile->nav_width ? 200 : 160;
     int columns = max_cols;
     while (columns > 1) {
         const int tw = (avail - gap * (columns - 1)) / columns;
@@ -228,7 +230,7 @@ int ui_settings_tile_height(void)
 {
     const int line = nl_ov_ui_line_box();
     const bool large = nodelio_text_scale() == 1;
-#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+#if NL_UI_SETTINGS_TILE_WALL
     /* 两列磁贴：略增高。 */
     int tile_h = (large ? 14 : 12) + line + (large ? 6 : 4) + line + (large ? 14 : 12);
     if (tile_h < (large ? 88 : UI_SETTINGS_TILE_H)) {
@@ -257,7 +259,7 @@ lv_obj_t *ui_make_settings_tile(lv_obj_t *parent, const char *glyph, const char 
     lv_obj_remove_style_all(btn);
     const int tile_h = ui_settings_tile_height();
     const bool large = nodelio_text_scale() == 1;
-#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+#if NL_UI_SETTINGS_TILE_WALL
     int avail = parent ? (int)lv_obj_get_content_width(parent) : 0;
     const int tile_w = ui_settings_tile_width(avail, force_single_col, nullptr);
     lv_obj_set_size(btn, tile_w, tile_h);

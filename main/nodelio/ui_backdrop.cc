@@ -19,6 +19,8 @@
 #include "jpg/jpeg_to_image.h"
 #include "ui_theme.h"
 
+#include <src/misc/cache/lv_cache.h>
+
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -31,10 +33,9 @@ namespace {
 
 constexpr const char *TAG = "nl_backdrop";
 constexpr const char *kSpiffsWallpaperPath = "/spiffs/wallpaper.jpg";
-constexpr int kCardRadius = 20;
 constexpr int kBlurRadius = 10;
 constexpr int kBlurPasses = 2;
-constexpr int kDarkenPct = 28; /* 保留 28% 亮度 ≈ 叠 72% 黑毛玻璃 */
+constexpr int kDarkenPct = 38; /* 自定义壁纸全局柔化压暗比例 */
 
 EXT_RAM_BSS_ATTR lv_image_dsc_t s_dsc;
 uint8_t *s_buf = nullptr;
@@ -50,17 +51,17 @@ struct BokehSpot {
 };
 
 constexpr BokehSpot kSpots[] = {
-    {820, 140, 260, 75, 110, 25},
-    {680, 220, 190, 55, 95, 20},
-    {910, 320, 210, 60, 100, 18},
-    {520, 130, 160, 38, 78, 16},
-    {260, 200, 180, 22, 56, 18},
-    {150, 680, 240, 12, 36, 15},
-    {760, 740, 220, 28, 64, 18},
-    {420, 520, 170, 24, 52, 14},
+    {780, 180, 340, 12, 28, 18},
+    {620, 260, 280, 9, 22, 14},
+    {880, 380, 260, 10, 24, 15},
+    {460, 160, 240, 7, 18, 12},
+    {240, 240, 260, 6, 15, 11},
+    {180, 720, 300, 5, 13, 10},
+    {740, 760, 280, 8, 19, 13},
+    {420, 540, 240, 6, 16, 11},
 };
 
-/* 生成森系林间散景壁纸（纯整数运算，带微噪点消除 RGB565 色带） */
+/* 生成深邃统一森系极光散景底图（无生硬分栏暗框，适配全屏/分栏任意前景布局） */
 void synth_forest_canopy(uint8_t *rgb, int w, int h)
 {
     const int min_dim = std::min(w, h);
@@ -70,7 +71,7 @@ void synth_forest_canopy(uint8_t *rgb, int w, int h)
     } spots[sizeof(kSpots) / sizeof(kSpots[0])];
     const int spot_n = (int)(sizeof(kSpots) / sizeof(kSpots[0]));
     for (int i = 0; i < spot_n; ++i) {
-        const int r = std::max(16, min_dim * kSpots[i].r_permil / 1000);
+        const int r = std::max(24, min_dim * kSpots[i].r_permil / 1000);
         spots[i] = {w * kSpots[i].cx_permil / 1000,
                     h * kSpots[i].cy_permil / 1000,
                     r * r,
@@ -84,13 +85,13 @@ void synth_forest_canopy(uint8_t *rgb, int w, int h)
         const int yn = (y * 256) / h; /* 0..255 */
         for (int x = 0; x < w; ++x, px += 3) {
             const int xn = (x * 256) / w; /* 0..255 */
-            /* 基础林间渐变：左下深邃暗绿 -> 右上阳光嫩绿 */
-            const int sun = (xn * (255 - yn * 3 / 4)) >> 8;
-            int r = 14 + (sun * 58 >> 8) + ((255 - yn) * 18 >> 8);
-            int g = 38 + (sun * 118 >> 8) + ((255 - yn) * 42 >> 8);
-            int b = 22 + (sun * 28 >> 8) + (xn * 18 >> 8);
+            /* 柔和深邃冷森渐变：左下幽暗松石 -> 右上微光翠绿，不抢前景卡片对比度 */
+            const int sun = (xn * (255 - yn * 2 / 3)) >> 8;
+            int r = 6 + (sun * 12 >> 8) + ((255 - yn) * 5 >> 8);
+            int g = 14 + (sun * 26 >> 8) + ((255 - yn) * 11 >> 8);
+            int b = 11 + (sun * 16 >> 8) + (xn * 7 >> 8);
 
-            /* 叠加散景光斑（二次衰减，无开方） */
+            /* 叠加柔和散景光晕 */
             for (int i = 0; i < spot_n; ++i) {
                 const int dx = x - spots[i].cx;
                 const int dy = y - spots[i].cy;
@@ -104,12 +105,11 @@ void synth_forest_canopy(uint8_t *rgb, int w, int h)
                 }
             }
 
-            /* 叶片层次微纹理 + 蓝噪声抖动 */
-            const int canopy = (((x * 5 + y * 3) ^ (x * 13 - y * 7)) >> 4) & 7;
-            const int dither = ((x * 17 + y * 31) ^ (x * y)) & 7;
-            r = std::clamp(r + canopy - 3 + (dither >> 1), 0, 255);
-            g = std::clamp(g + canopy * 2 - 4 + dither, 0, 255);
-            b = std::clamp(b + (canopy >> 1) - 2 + (dither >> 1), 0, 255);
+            /* 微噪点抖动消除色带 */
+            const int dither = ((x * 17 + y * 31) ^ (x * y)) & 3;
+            r = std::clamp(r + (dither >> 1) - 1, 0, 255);
+            g = std::clamp(g + dither - 1, 0, 255);
+            b = std::clamp(b + (dither >> 1) - 1, 0, 255);
             px[0] = (uint8_t)r;
             px[1] = (uint8_t)g;
             px[2] = (uint8_t)b;
@@ -226,39 +226,16 @@ void blur_v(uint8_t *rgb, int w, int h, const nodelio_rect_t &r, uint8_t *tmp)
     }
 }
 
-bool in_round_rect(int x, int y, const nodelio_rect_t &r, int rad)
+void soften_full_backdrop(uint8_t *rgb, int w, int h, uint8_t *tmp)
 {
-    const int lx = x - r.x, ly = y - r.y;
-    const int dx = lx < rad ? rad - lx : (lx >= r.w - rad ? lx - (r.w - rad - 1) : 0);
-    const int dy = ly < rad ? rad - ly : (ly >= r.h - rad ? ly - (r.h - rad - 1) : 0);
-    return dx * dx + dy * dy <= rad * rad;
-}
-
-void bake_cards(uint8_t *baked, const uint8_t *src, int w, int h, const nodelio_rect_t *rects,
-                int n, uint8_t *tmp)
-{
-    for (int i = 0; i < n; ++i) {
-        if (rects[i].w == 0 || rects[i].h == 0) continue;
-        for (int p = 0; p < kBlurPasses; ++p) {
-            blur_h(baked, w, rects[i], tmp);
-            blur_v(baked, w, h, rects[i], tmp);
-        }
+    const nodelio_rect_t full = {0, 0, (uint16_t)w, (uint16_t)h};
+    for (int p = 0; p < kBlurPasses; ++p) {
+        blur_h(rgb, w, full, tmp);
+        blur_v(rgb, w, h, full, tmp);
     }
-    for (int i = 0; i < n; ++i) {
-        const nodelio_rect_t &r = rects[i];
-        if (r.w == 0 || r.h == 0) continue;
-        for (int y = r.y; y < r.y + r.h && y < h; ++y) {
-            for (int x = r.x; x < r.x + r.w && x < w; ++x) {
-                const size_t o = ((size_t)y * w + x) * 3;
-                if (in_round_rect(x, y, r, kCardRadius)) {
-                    for (int c = 0; c < 3; ++c) {
-                        baked[o + c] = (uint8_t)(baked[o + c] * kDarkenPct / 100);
-                    }
-                } else {
-                    memcpy(baked + o, src + o, 3);
-                }
-            }
-        }
+    const size_t total = (size_t)w * h * 3;
+    for (size_t i = 0; i < total; ++i) {
+        rgb[i] = (uint8_t)(rgb[i] * kDarkenPct / 100);
     }
 }
 
@@ -312,12 +289,10 @@ bool build_backdrop(const uint8_t *custom_jpeg, size_t custom_len)
 
     const size_t work_sz = (size_t)w * h * 3;
     auto *src = static_cast<uint8_t *>(heap_caps_malloc(work_sz, MALLOC_CAP_SPIRAM));
-    auto *baked = static_cast<uint8_t *>(heap_caps_malloc(work_sz, MALLOC_CAP_SPIRAM));
     auto *tmp = static_cast<uint8_t *>(heap_caps_malloc((size_t)std::max(w, h) * 3, MALLOC_CAP_SPIRAM));
-    if (!src || !baked || !tmp) {
+    if (!src || !tmp) {
         ESP_LOGE(TAG, "backdrop work alloc fail");
         heap_caps_free(src);
-        heap_caps_free(baked);
         heap_caps_free(tmp);
         return false;
     }
@@ -335,17 +310,13 @@ bool build_backdrop(const uint8_t *custom_jpeg, size_t custom_len)
     }
     const int64_t t1 = esp_timer_get_time();
 
-    memcpy(baked, src, work_sz);
-    const nodelio_display_profile_t *prof = nodelio_display_profile();
-    if (prof) {
-        const nodelio_rect_t rects[2] = {prof->hero_rect, prof->list_rect};
-        bake_cards(baked, src, w, h, rects, 2, tmp);
+    if (loaded) {
+        soften_full_backdrop(src, w, h, tmp);
     }
-    to_display(baked, w, h, cf, s_buf);
+    to_display(src, w, h, cf, s_buf);
     const int64_t t2 = esp_timer_get_time();
 
     heap_caps_free(src);
-    heap_caps_free(baked);
     heap_caps_free(tmp);
 
     memset(&s_dsc, 0, sizeof(s_dsc));

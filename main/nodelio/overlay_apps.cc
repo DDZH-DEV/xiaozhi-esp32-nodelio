@@ -1,5 +1,6 @@
 #include "overlay_priv.h"
 #include "panel_jobs.h"
+#include "ui_dock.h"
 #include "ui_widgets.h"
 #include "ui_work_stats.h"
 
@@ -120,7 +121,7 @@ static bool apps_sila86(void)
 static int apps_body_w(void)
 {
     const auto *p = nodelio_display_profile();
-    return (int)p->width - (int)p->nav_width;
+    return (int)p->width - nl_dock_left_inset();
 }
 
 static int apps_pane_target_w(bool split)
@@ -589,6 +590,8 @@ static void render_list(void)
         lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
                               LV_FLEX_ALIGN_START);
+        lv_obj_set_style_pad_top(s_list, 0, 0);
+        lv_obj_set_style_pad_bottom(s_list, 12, 0);
         lv_obj_set_style_pad_row(s_list, large ? 10 : 8, 0);
         lv_obj_set_style_pad_column(s_list, 0, 0);
     } else if (wide_grid) {
@@ -603,7 +606,8 @@ static void render_list(void)
         lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_ROW_WRAP);
         lv_obj_set_flex_align(s_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_START);
-        lv_obj_set_style_pad_top(s_list, 4, 0);
+        lv_obj_set_style_pad_top(s_list, 20, 0);
+        lv_obj_set_style_pad_bottom(s_list, 56, 0);
         lv_obj_set_style_pad_row(s_list, large ? 40 : 32, 0);
         lv_obj_set_style_pad_column(s_list, gap, 0);
     } else {
@@ -672,7 +676,8 @@ static void render_list(void)
             lv_obj_set_width(view.subtitle, lv_pct(100));
         }
         const bool focused = s_split && i == s_focus_idx;
-        const bool paint_chrome = created || s_force_paint || view.focused != focused;
+        const bool paint_chrome =
+            created || s_force_paint || view.focused != focused || view.rail != (int8_t)rail;
         if (paint_chrome) {
             if (rail) {
                 ui_style_card(view.card);
@@ -680,7 +685,7 @@ static void render_list(void)
                 lv_obj_set_style_bg_color(view.card,
                                           focused ? (light ? UI_ACCENT : UI_SELECTION) : UI_SURFACE, 0);
                 lv_obj_set_style_bg_opa(view.card, LV_OPA_COVER, 0);
-                lv_obj_set_style_border_width(view.card, focused && !light ? 1 : 0, 0);
+                lv_obj_set_style_border_width(view.card, !light ? 1 : 0, 0);
                 lv_obj_set_style_border_color(view.card, focused ? UI_ACCENT : UI_TILE_OFF_BORDER, 0);
                 lv_obj_set_style_border_opa(view.card, focused ? LV_OPA_COVER : LV_OPA_80, 0);
             } else {
@@ -807,8 +812,15 @@ static void render_list(void)
 void nl_ov_apps_reapply_appearance(void)
 {
     if (s_page) {
+        const bool is_wide = apps_wide();
+        const bool imm = ui_palette_is_immersive();
         lv_obj_set_style_bg_color(s_page, UI_BG, 0);
-        lv_obj_set_style_bg_opa(s_page, ui_palette_is_immersive() ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_opa(s_page, imm ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_top(s_page, (is_wide || imm) ? 12 : 32, 0);
+        lv_obj_set_style_pad_bottom(s_page, (is_wide || imm) ? 12 : 52, 0);
+    }
+    if (s_list_pane) {
+        apps_apply_pane(apps_pane_target_w(s_split), s_split);
     }
     if (s_hint) {
         lv_obj_set_style_text_color(s_hint, UI_TEXT_MUTED, 0);
@@ -1656,9 +1668,10 @@ void nl_ov_build_apps(void)
     lv_obj_set_style_bg_opa(s_page, ui_palette_is_immersive() ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(s_page, kAppsPagePadH, 0);
     const bool is_wide = apps_wide();
-    /* P4 状态栏悬浮不占位：顶垫略紧，首排更靠上仍避开状态栏。 */
-    lv_obj_set_style_pad_top(s_page, is_wide ? (NL_UI_STATUS_H + 4) : 32, 0);
-    lv_obj_set_style_pad_bottom(s_page, is_wide ? 8 : 52, 0);
+    const bool imm = ui_palette_is_immersive();
+    /* P4 与沉浸式左右 Dock / 技能卡统一上下 12px 留白，分栏左轨顶底严丝合缝。 */
+    lv_obj_set_style_pad_top(s_page, (is_wide || imm) ? 12 : 32, 0);
+    lv_obj_set_style_pad_bottom(s_page, (is_wide || imm) ? 12 : 52, 0);
     lv_obj_set_style_pad_row(s_page, is_wide ? 8 : 4, 0);
     lv_obj_set_flex_flow(s_page, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(s_page, LV_OBJ_FLAG_SCROLLABLE);

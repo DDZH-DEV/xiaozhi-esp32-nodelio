@@ -1747,24 +1747,25 @@ void nl_ov_open_settings_detail(set_page_id_t page)
 static void settings_tile(lv_obj_t *parent, const char *glyph, const char *title, const char *sub,
                           uint32_t accent, const char *right_icon, lv_event_cb_t cb)
 {
-#if CONFIG_BOARD_TYPE_SILA_P4C5_508
-    const bool force_single_col = false;
-#else
+#if NL_UI_SETTINGS_TILE_WALL
+    /* 62：技能卡占右时强制单列；508 方屏始终两列。 */
     const bool force_single_col =
         nodelio_display_profile()->nav_width != 0 && nodelio_skill_result_card_visible();
+#else
+    const bool force_single_col = false;
 #endif
     const char* symbol = material_symbols_get_utf8(glyph);
     auto* tile = ui_make_settings_tile(parent, symbol ? symbol : MATERIAL_SYMBOLS_EXPLORE, title,
                                        sub, accent, right_icon, cb, force_single_col);
     auto* icon = lv_obj_get_child(lv_obj_get_child(tile, 0), 0);
-#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+#if NL_UI_SETTINGS_TILE_WALL
     lv_obj_set_style_text_font(icon, &font_material_symbols_30_4, 0);
 #else
     lv_obj_set_style_text_font(icon, &font_material_symbols_20_4, 0);
 #endif
 }
 
-#if !CONFIG_BOARD_TYPE_SILA_P4C5_508
+#if !NL_UI_SETTINGS_TILE_WALL
 static void hub_section_seal(lv_obj_t *sec)
 {
     if (!sec) {
@@ -1791,10 +1792,10 @@ static void fill_settings_hub(void)
     }
     const lv_coord_t keep_y = lv_obj_get_scroll_y(s_settings);
     lv_obj_clean(s_settings);
-    /* 全板统一：常用 / 连接 / 系统 分组（508 组内仍两列磁贴）。 */
+    /* 全板统一：常用 / 连接 / 系统 分组（62/508 组内两列磁贴）。 */
     lv_obj_set_flex_flow(s_settings, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s_settings, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+#if NL_UI_SETTINGS_TILE_WALL
     const int set_gap = nodelio_text_scale() == 1 ? 14 : 12;
 #else
     const int set_gap = nodelio_text_scale() == 1 ? 16 : 14;
@@ -1803,13 +1804,15 @@ static void fill_settings_hub(void)
     lv_obj_set_style_pad_column(s_settings, 0, 0);
     lv_obj_set_style_pad_left(s_settings, 16, 0);
     lv_obj_set_style_pad_right(s_settings, 16, 0);
-#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+#if NL_UI_SETTINGS_TILE_WALL
+    const bool is_wide = nodelio_display_profile()->nav_width > 0;
+    lv_obj_set_style_pad_top(s_settings,
+                             ui_palette_is_immersive() ? 12 : (is_wide ? 16 : 28), 0);
+    lv_obj_set_style_pad_bottom(s_settings,
+                                ui_palette_is_immersive() ? 16 : (is_wide ? 20 : 54), 0);
+#else
     lv_obj_set_style_pad_top(s_settings, 28, 0);
     lv_obj_set_style_pad_bottom(s_settings, 54, 0);
-#else
-    const bool is_wide = nodelio_display_profile()->nav_width > 0;
-    lv_obj_set_style_pad_top(s_settings, is_wide ? 16 : 28, 0);
-    lv_obj_set_style_pad_bottom(s_settings, is_wide ? 20 : 54, 0);
 #endif
     lv_obj_set_style_bg_color(s_settings, UI_BG, 0);
     lv_obj_set_style_bg_opa(s_settings, ui_palette_is_immersive() ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
@@ -1823,8 +1826,8 @@ static void fill_settings_hub(void)
                   nl_ov_ui_mode_name(s_cfg.ui_mode));
 
     lv_obj_t *sec = ui_make_settings_section(s_settings, "常用");
-#if CONFIG_BOARD_TYPE_SILA_P4C5_508
-    lv_obj_update_layout(s_settings); /* 组内两列宽度依赖 content_width */
+#if NL_UI_SETTINGS_TILE_WALL
+    lv_obj_update_layout(s_body ? s_body : s_settings); /* 组内两列宽度依赖 content_width */
 #endif
     lv_obj_t *host = sec;
     settings_tile(host, "brightness_6", "显示与声音", bri_sub, UI_C_INFO, nullptr,
@@ -1852,11 +1855,11 @@ static void fill_settings_hub(void)
         settings_tile(host, "music_note", "播放器", media_sub, UI_C_PURPLE, nullptr,
                       [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_MEDIA); });
     }
-#if !CONFIG_BOARD_TYPE_SILA_P4C5_508
+#if !NL_UI_SETTINGS_TILE_WALL
     hub_section_seal(sec);
 #endif
     sec = ui_make_settings_section(s_settings, "连接");
-#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+#if NL_UI_SETTINGS_TILE_WALL
     lv_obj_update_layout(s_settings);
 #endif
     host = sec;
@@ -1873,11 +1876,11 @@ static void fill_settings_hub(void)
         settings_tile(host, "mic", "语音助手", voice_sub, 0x8E44AD, nullptr,
                       [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_VOICE); });
     }
-#if !CONFIG_BOARD_TYPE_SILA_P4C5_508
+#if !NL_UI_SETTINGS_TILE_WALL
     hub_section_seal(sec);
 #endif
     sec = ui_make_settings_section(s_settings, "系统");
-#if CONFIG_BOARD_TYPE_SILA_P4C5_508
+#if NL_UI_SETTINGS_TILE_WALL
     lv_obj_update_layout(s_settings);
 #endif
     host = sec;
@@ -1897,7 +1900,7 @@ static void fill_settings_hub(void)
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_DIAGNOSTICS); });
     settings_tile(host, "restart_alt", "恢复出厂", "清空并重启", UI_C_DANGER, nullptr,
                   [](lv_event_t*) { nl_ov_open_settings_detail(SET_PAGE_RESET); });
-#if !CONFIG_BOARD_TYPE_SILA_P4C5_508
+#if !NL_UI_SETTINGS_TILE_WALL
     hub_section_seal(sec);
 #endif
 

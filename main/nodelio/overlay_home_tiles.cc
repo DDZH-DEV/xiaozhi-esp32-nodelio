@@ -2043,13 +2043,14 @@ static void fill_home_launcher(void)
     lv_obj_set_layout(s_home, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(s_home, LV_FLEX_FLOW_COLUMN);
     /* 侧栏条目少时整组垂直居中，避免两张卡贴在顶上、下面一大块空 */
+    const bool wide_center = !side && nodelio_display_profile()->width >= 1000;
     lv_obj_set_flex_align(s_home,
                           (pins == 0 || (side && pins <= 2)) ? LV_FLEX_ALIGN_CENTER
                                                               : LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_hor(s_home, side ? 16 : 20, 0);
-    lv_obj_set_style_pad_ver(s_home, side ? 16 : 12, 0);
-    lv_obj_set_style_pad_row(s_home, side ? 12 : 10, 0);
+    lv_obj_set_style_pad_hor(s_home, side ? 16 : (wide_center ? 140 : 20), 0);
+    lv_obj_set_style_pad_ver(s_home, side ? 16 : 16, 0);
+    lv_obj_set_style_pad_row(s_home, side ? 12 : 14, 0);
     lv_obj_add_flag(s_home, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_home, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_home, LV_SCROLLBAR_MODE_OFF);
@@ -2063,11 +2064,11 @@ static void fill_home_launcher(void)
     lv_obj_set_flex_align(hdr, side ? LV_FLEX_ALIGN_START : LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(hdr, side ? 4 : 6, 0);
-    lv_obj_set_style_pad_bottom(hdr, side ? 6 : 0, 0);
+    lv_obj_set_style_pad_bottom(hdr, side ? 6 : 4, 0);
     lv_obj_clear_flag(hdr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
     lv_obj_t *title = lv_label_create(hdr);
-    nl_ov_set_font(title);
+    nl_ov_set_font_title(title);
     lv_label_set_text(title, "启动台");
     /* 标题在内容区画布上，跟正文同色（浅色勿用 ON_TILE 白字） */
     lv_obj_set_style_text_color(title, UI_TEXT, 0);

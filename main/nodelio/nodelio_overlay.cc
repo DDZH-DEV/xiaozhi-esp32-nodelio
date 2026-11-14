@@ -426,7 +426,7 @@ void nl_ov_apply_appearance(void)
         lv_obj_set_style_bg_color(s_tabbar, UI_PANEL, 0);
         lv_obj_set_style_border_color(s_tabbar, UI_BORDER, 0);
     }
-    nl_dock_sync(s_tabbar, s_body, s_tab, s_visible);
+    nl_dock_sync(s_tabbar, s_body, s_active_tab, s_visible);
     if (s_home) {
         lv_obj_set_style_bg_color(s_home, UI_BG, 0);
         lv_obj_set_style_bg_opa(s_home, page_opa, 0);
@@ -494,7 +494,7 @@ void nl_ov_nav_chrome_sync(void)
     const bool rail = nodelio_display_profile()->nav_width != 0;
     const bool on = s_visible && s_screen_on && s_nav_shown;
     if (ui_palette_is_immersive()) {
-        nl_dock_sync(s_tabbar, s_body, s_tab, s_visible);
+        nl_dock_sync(s_tabbar, s_body, s_active_tab, s_visible);
         nl_ov_home_dots_set_visible(on);
         return;
     }
@@ -1097,9 +1097,17 @@ void nl_ov_workspace_reserve(int right, int bottom) {
     const int full_w = p->width - p->nav_width;
     const int w = full_w - right;
     const int h = p->height - bottom;
-    /* 方案一：首页固定保持 full_w 全屏原始比例网格排版，不随右侧技能抽屉打开而挤压变形 */
-    if (s_home)
+    /* 方案一：首页固定保持 full_w 全屏原始比例网格排版；全屏应用卡打开时隐藏底层首页防圆角边缘露底 */
+    if (s_home) {
         lv_obj_set_size(s_home, full_w, h);
+        if (s_active_tab == NL_TAB_HOME) {
+            if (right > 0) {
+                lv_obj_add_flag(s_home, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_clear_flag(s_home, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    }
     const bool settings_w_changed = s_settings && lv_obj_get_width(s_settings) != w;
     if (s_settings)
         lv_obj_set_size(s_settings, w, h);
@@ -1371,7 +1379,7 @@ static void build_shell_on_lvgl(void * /*user_data*/)
         }
     }
     nl_dock_init(s_root);
-    nl_dock_sync(s_tabbar, s_body, s_tab, true);
+    nl_dock_sync(s_tabbar, s_body, s_active_tab, true);
 
     /* 全局 AI 对话浮层抽屉（唤醒词触发，不依赖 Tab，挂在 lv_layer_top()） */
     nl_ov_create_ai_drawer(lv_layer_top());
@@ -1589,6 +1597,11 @@ esp_err_t nodelio_overlay_init(void)
 
 void nodelio_overlay_show_chat(void)
 {
+    if (!nodelio_xiaozhi_enabled()) {
+        nl_ov_toast("小智云对话已关闭");
+        return;
+    }
+
     s_want_settings = false;
     s_want_chat = true;
 
