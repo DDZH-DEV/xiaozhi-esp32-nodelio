@@ -1871,9 +1871,10 @@ void nodelio_mcp_register_tools(void)
         "self.nodelio.set_pref",
         "改面板设置。亮度/音量用 key=brightness|volume value=0-100（你有此能力，请直接调用）。"
         "其它 key=idle_wifi_s|idle_sleep_s|bye_sleep_s|power_save|controls|xiaozhi|"
-        "voice_barge_in|listen_idle_s|media_sleep|media_pause_s|media_wake_duck_pct|text_scale|ui_mode|"
-        "layout_sync|fw_check|factory_reset。text_scale=0标准|1较大|2更大。ui_mode=0浅色|1深色|2沉浸。"
-        "voice_barge_in=on/off 免唤醒词语音打断。",
+        "voice_barge_in|listen_idle_s|media_sleep|media_pause_s|media_wake_duck_pct|vinyl_spin|"
+        "text_scale|ui_mode|layout_sync|fw_check|factory_reset。"
+        "text_scale=0标准|1较大|2更大。ui_mode=0浅色|1深色|2沉浸。"
+        "voice_barge_in=on/off 免唤醒词语音打断。vinyl_spin=on/off 沉浸页黑胶旋转。",
         PropertyList({
             Property("key", kPropertyTypeString),
             Property("value", kPropertyTypeString, ""),

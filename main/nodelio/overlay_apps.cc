@@ -249,10 +249,20 @@ static void open_app_at(int idx, bool reset_daily = true, bool force_weather_ref
         nodelio_skill_request_sd_files();
         return;
     }
-    /* 播歌中再点曲库：恢复列表，勿重新 invoke（会换一批并误切歌） */
-    if (nodelio_skill_id_is_music(s_items[idx].id) &&
-        (nodelio_media_is_playing() || nodelio_media_is_paused()) &&
-        nodelio_skill_try_reopen_music_list()) {
+    /* 再点在线曲库：有缓存就恢复；换批只走顶栏刷新钮（服务端 browse 每次都会打乱） */
+    if (strstr(s_items[idx].id, "music.search") != nullptr ||
+        strstr(s_items[idx].id, "music_search") != nullptr) {
+        if (nodelio_skill_try_reopen_online_music_list()) {
+            if (apps_wide() && s_split) {
+                render_list();
+            }
+            return;
+        }
+    } else if ((strstr(s_items[idx].id, "radio.stations") != nullptr ||
+                strstr(s_items[idx].id, "podcast.latest") != nullptr) &&
+               (nodelio_media_is_playing() || nodelio_media_is_paused()) &&
+               nodelio_skill_try_reopen_list_for(s_items[idx].id)) {
+        /* 同技能再点：恢复本列表；播客↔电台互切不走这里，须重新 invoke */
         if (apps_wide() && s_split) {
             render_list();
         }

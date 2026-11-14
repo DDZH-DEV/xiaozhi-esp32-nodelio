@@ -9,6 +9,7 @@
 #include "nl_url_util.h"
 #include "nodelio_http.h"
 #include "panel_jobs.h"
+#include "system_info.h"
 #include "ui_widgets.h"
 #include "wake_dram.h"
 #include "wifi_provision.h"
@@ -367,6 +368,9 @@ void nl_ov_trigger_screenshot(void)
         return;
     }
     last_click_ms = now;
+
+    /* 原主循环 10s 刷堆，改截图前打一次，少刷 UART */
+    SystemInfo::PrintHeapStats();
 
     bool shot_fab_hidden_temp = false;
     if (s_shot_fab && !lv_obj_has_flag(s_shot_fab, LV_OBJ_FLAG_HIDDEN)) {

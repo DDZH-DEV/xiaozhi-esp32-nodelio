@@ -11,7 +11,10 @@
 extern "C" {
 #endif
 
-/** 按曲名/艺人向本机服务端要歌词。直播、播客不要调。同曲已在查或已有则跳过（force 除外）。 */
+/**
+ * 按曲名/艺人要歌词：本机 SERVER → lrclib → lrcmux。
+ * cfg 可空或无 server（仅走公开接口）。直播、播客不要调。同曲已在查或已有则跳过（force 除外）。
+ */
 void nodelio_lyrics_request(const nodelio_nvs_config_t *cfg, const char *title, const char *artist,
                             bool force);
 

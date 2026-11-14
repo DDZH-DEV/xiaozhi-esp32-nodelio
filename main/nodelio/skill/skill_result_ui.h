@@ -37,10 +37,22 @@ bool nodelio_skill_result_is_visible(void);
 bool nodelio_skill_result_card_visible(void);
 
 /**
- * 播放中再点曲库：恢复已有 music_list（含 stash），不重新 invoke。
+ * 恢复已有 music_list（含 stash），不重新 invoke。
  * 成功则列表上屏并返回 true。
  */
 bool nodelio_skill_try_reopen_music_list(void);
+
+/**
+ * 仅恢复「在线曲库」缓存（排除内存卡/相册/收藏/电台/播客）。
+ * 再点应用入口应用这个；换批只走顶栏刷新钮。
+ */
+bool nodelio_skill_try_reopen_online_music_list(void);
+
+/**
+ * 按技能族恢复列表（电台↔电台、播客↔播客）。
+ * 互切不同技能必须返回 false，走重新 invoke。
+ */
+bool nodelio_skill_try_reopen_list_for(const char *skill_id);
 
 /** 电台/播客抢占停歌时清空 stash，避免再点曲库误恢复旧歌单。 */
 void nodelio_skill_clear_music_stash(void);

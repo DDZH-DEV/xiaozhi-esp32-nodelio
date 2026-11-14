@@ -400,7 +400,10 @@ void nodelio_skill_result_reapply_appearance(void)
             paint_round_btn(lv_obj_get_child(s_now_btns, 4), UI_SURFACE, UI_TEXT);
         }
         if (n > 5) {
-            paint_round_btn(lv_obj_get_child(s_now_btns, 5), UI_CAPSULE_OFF, UI_TEXT_SUB);
+            paint_round_btn(lv_obj_get_child(s_now_btns, 5), UI_TILE_SWITCH, UI_ACCENT_SOFT);
+        }
+        if (n > 6) {
+            paint_round_btn(lv_obj_get_child(s_now_btns, 6), UI_CAPSULE_OFF, UI_TEXT_SUB);
         }
     }
     if (s_mini_fab) {
@@ -861,8 +864,8 @@ static int list_row_h(void)
     if (gap > 4) {
         gap = 4;
     }
-    const int art_h = nl_ov_ui_font_compact() ? lv_font_get_line_height(nl_ov_ui_font_compact())
-                                              : font_h;
+    /* 艺人与歌名同字号，靠颜色区分层级 */
+    const int art_h = font_h;
     const int text_h = font_h + gap + art_h;
     const int mark = music_end_sz();
     int inner = text_h > mark ? text_h : mark;
@@ -1053,37 +1056,103 @@ void reopen_list(void)
     ensure_chrome_order();
 }
 
-extern "C" bool nodelio_skill_try_reopen_music_list(void)
+static bool music_list_is_online(const nl_content_envelope_t *env)
 {
-    if (s_env && strcmp(s_env->card_type, "music_list") == 0 && s_env->track_n > 0) {
+    if (!env || strcmp(env->card_type, "music_list") != 0 || env->track_n <= 0) {
+        return false;
+    }
+    /* 本地来源不算在线缓存 */
+    if (strcmp(env->app_id, "music.sd") == 0 || strcmp(env->app_id, "photo.sd") == 0 ||
+        strcmp(env->app_id, "music.favorites") == 0) {
+        return false;
+    }
+    /* 电台/播客也是 music_list，不能当「在线曲库」缓存误恢复 */
+    if (strstr(env->app_id, "radio") != nullptr || strstr(env->app_id, "podcast") != nullptr) {
+        return false;
+    }
+    return true;
+}
+
+/** 电台/播客：仅当当前信封同技能族才恢复，避免互切时错开旧列表。 */
+static bool music_list_matches_skill(const nl_content_envelope_t *env, const char *skill_id)
+{
+    if (!env || !skill_id || !skill_id[0] || strcmp(env->card_type, "music_list") != 0 ||
+        env->track_n <= 0) {
+        return false;
+    }
+    if (strstr(skill_id, "radio") != nullptr) {
+        return strstr(env->app_id, "radio") != nullptr;
+    }
+    if (strstr(skill_id, "podcast") != nullptr) {
+        return strstr(env->app_id, "podcast") != nullptr;
+    }
+    return false;
+}
+
+static bool reopen_music_env(nl_content_envelope_t *env)
+{
+    if (!env || strcmp(env->card_type, "music_list") != 0 || env->track_n <= 0) {
+        return false;
+    }
+    if (env == s_env) {
         reopen_list();
         return true;
     }
+    DisplayLockGuard lock(nl_ov_disp());
+    if (!lock) {
+        return false;
+    }
+    if (s_env && s_env != env) {
+        free_skill_env();
+    }
+    if (env == s_music_stash) {
+        s_music_stash = nullptr;
+    }
+    s_env = env;
+    s_have_env = true;
+    if (strcmp(s_env->app_id, "music.sd") == 0) {
+        s_library_source = 1;
+    } else if (strcmp(s_env->app_id, "photo.sd") == 0) {
+        s_library_source = 2;
+    } else if (strcmp(s_env->app_id, "music.favorites") == 0) {
+        s_library_source = 3;
+    } else {
+        s_library_source = 0;
+    }
+    reopen_list();
+    return true;
+}
+
+extern "C" bool nodelio_skill_try_reopen_music_list(void)
+{
+    if (s_env && strcmp(s_env->card_type, "music_list") == 0 && s_env->track_n > 0) {
+        return reopen_music_env(s_env);
+    }
     if (s_music_stash && strcmp(s_music_stash->card_type, "music_list") == 0 &&
         s_music_stash->track_n > 0) {
-        {
-            DisplayLockGuard lock(nl_ov_disp());
-            if (!lock) {
-                return false;
-            }
-            if (s_env && s_env != s_music_stash) {
-                free_skill_env();
-            }
-            s_env = s_music_stash;
-            s_music_stash = nullptr;
-            s_have_env = true;
-            if (strcmp(s_env->app_id, "music.sd") == 0) {
-                s_library_source = 1;
-            } else if (strcmp(s_env->app_id, "photo.sd") == 0) {
-                s_library_source = 2;
-            } else if (strcmp(s_env->app_id, "music.favorites") == 0) {
-                s_library_source = 3;
-            } else {
-                s_library_source = 0;
-            }
-        }
-        reopen_list();
-        return true;
+        return reopen_music_env(s_music_stash);
+    }
+    return false;
+}
+
+extern "C" bool nodelio_skill_try_reopen_online_music_list(void)
+{
+    if (music_list_is_online(s_env)) {
+        return reopen_music_env(s_env);
+    }
+    if (music_list_is_online(s_music_stash)) {
+        return reopen_music_env(s_music_stash);
+    }
+    return false;
+}
+
+extern "C" bool nodelio_skill_try_reopen_list_for(const char *skill_id)
+{
+    if (music_list_matches_skill(s_env, skill_id)) {
+        return reopen_music_env(s_env);
+    }
+    if (music_list_matches_skill(s_music_stash, skill_id)) {
+        return reopen_music_env(s_music_stash);
     }
     return false;
 }
@@ -1658,6 +1727,19 @@ static void on_filter_chip(lv_event_t *e)
     if (f->selected) {
         return;
     }
+    if (strcmp(s_env->card_type, "analytics_summary") == 0) {
+        nl_env_invoke_action_t ia;
+        memset(&ia, 0, sizeof(ia));
+        snprintf(ia.id, sizeof(ia.id), "filter");
+        snprintf(ia.title, sizeof(ia.title), "%s", f->title[0] ? f->title : "范围");
+        snprintf(ia.app_id, sizeof(ia.app_id), "support.inbox");
+        char esc[NL_ENV_WS_PATH * 2];
+        json_escape_str(esc, sizeof(esc), f->workspace);
+        snprintf(ia.params_json, sizeof(ia.params_json),
+                 "{\"op\":\"analytics_summary\",\"range\":\"%s\"}", esc);
+        run_invoke_action(&ia);
+        return;
+    }
     if (strcmp(s_env->app_id, "support.inbox") == 0 ||
         strcmp(s_env->card_type, "support_inbox") == 0) {
         invoke_filter_support_inbox(f);
@@ -1935,6 +2017,9 @@ static void fill_source_bar(void)
         lv_obj_set_height(chip, 34);
         lv_obj_set_width(chip, LV_SIZE_CONTENT);
         lv_obj_set_style_pad_hor(chip, 16, 0);
+        /* 普惠字视觉重心偏下：底垫略大，字在胶囊里更居中 */
+        lv_obj_set_style_pad_top(chip, 0, 0);
+        lv_obj_set_style_pad_bottom(chip, 3, 0);
         lv_obj_set_style_radius(chip, 17, 0);
         lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(chip, 1, 0);
@@ -1957,6 +2042,7 @@ static void fill_source_bar(void)
         nl_ov_set_font(lbl);
         lv_label_set_text(lbl, kNames[i]);
         lv_obj_set_style_text_color(lbl, selected ? UI_ON_TILE : UI_TEXT_SUB, 0);
+        lv_obj_set_style_translate_y(lbl, -1, 0);
     }
 }
 
@@ -1980,6 +2066,8 @@ static void fill_filters(void)
         lv_obj_set_height(chip, 36);
         lv_obj_set_width(chip, LV_SIZE_CONTENT);
         lv_obj_set_style_pad_hor(chip, 14, 0);
+        lv_obj_set_style_pad_top(chip, 0, 0);
+        lv_obj_set_style_pad_bottom(chip, 3, 0);
         lv_obj_set_style_radius(chip, 18, 0);
         lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(chip, 1, 0);
@@ -2001,6 +2089,7 @@ static void fill_filters(void)
         nl_ov_set_font(lbl);
         lv_label_set_text(lbl, f->title[0] ? f->title : "?");
         lv_obj_set_style_text_color(lbl, f->selected ? UI_ON_TILE : UI_TEXT_SUB, 0);
+        lv_obj_set_style_translate_y(lbl, -1, 0);
     }
     /* 不在此处 scroll_to_view：会强制整树 layout，语音/主循环路径易触发 task_wdt */
 }
@@ -2330,6 +2419,7 @@ static void null_skill_widget_ptrs(void)
     s_now_pause_btn = nullptr;
     s_now_prev_btn = nullptr;
     s_now_next_btn = nullptr;
+    s_now_immersive_btn = nullptr;
     s_mini_fab = nullptr;
     s_mini_ic = nullptr;
     s_hdr = nullptr;
@@ -2851,10 +2941,17 @@ static void ensure_card(void)
         s_now_next_btn =
             make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_SKIP_NEXT, on_next_now);
         make_play_ctrl_btn(s_now_btns, UI_SURFACE, UI_TEXT, MATERIAL_SYMBOLS_STOP, on_stop_now);
+        /* 沉浸：仅宽屏；图标用双上箭表示展开全屏播放 */
+        s_now_immersive_btn =
+            make_play_ctrl_btn(s_now_btns, UI_TILE_SWITCH, UI_ACCENT_SOFT,
+                               MATERIAL_SYMBOLS_KEYBOARD_DOUBLE_ARROW_UP, on_immersive_now);
         make_icon_btn(s_now_btns, UI_CAPSULE_OFF, UI_TEXT_SUB, MATERIAL_SYMBOLS_KEYBOARD_ARROW_DOWN,
                       on_minimize);
         if (!wide) {
             lv_obj_add_flag(now_mic, LV_OBJ_FLAG_HIDDEN);
+            if (s_now_immersive_btn) {
+                lv_obj_add_flag(s_now_immersive_btn, LV_OBJ_FLAG_HIDDEN);
+            }
         }
     }
 
@@ -2894,6 +2991,7 @@ void apply_card_chrome(void)
     const bool music = strcmp(s_env->card_type, "music_list") == 0;
     const bool news = strcmp(s_env->card_type, "news_list") == 0;
     const bool daily = strcmp(s_env->card_type, "calendar_weather") == 0;
+    const bool analytics = strcmp(s_env->card_type, "analytics_summary") == 0;
     const bool dsh_detail =
         s_env->detail_body && s_env->detail_body[0] && nl_workbench_app(s_env->app_id);
     /* 曲库改全量滚动后不再占分页钮；新闻中间钮=收起；内存卡多批时中间钮=下一批 */
@@ -2902,7 +3000,7 @@ void apply_card_chrome(void)
                          (s_library_source == 2 && nodelio_sd_photo_batch_count() > 1);
     const bool support = strcmp(s_env->card_type, "support_thread") == 0;
     const bool support_inbox = strcmp(s_env->card_type, "support_inbox") == 0;
-    const bool compact = !music && !news && !daily && !support && !support_inbox &&
+    const bool compact = !music && !news && !daily && !analytics && !support && !support_inbox &&
                          !mid_btn && !dsh_detail && s_env->filter_n == 0 && s_env->track_n <= 4;
     /* 字号条仅新闻详情；切到其它卡或列表时收起 */
     if (!news || s_news_detail < 0) {
@@ -2996,6 +3094,232 @@ void apply_card_chrome(void)
     }
 }
 
+/** 访问统计：三枚 KPI 卡 + 可选爬虫说明 + 简易日柱。 */
+static void fill_analytics_summary(void)
+{
+    if (!s_card_list || !s_env) {
+        return;
+    }
+    lv_obj_clean(s_card_list);
+    bzero(s_row_idx_labels, sizeof(s_row_idx_labels));
+    bzero(s_row_btns, sizeof(s_row_btns));
+    lv_obj_add_flag(s_card_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(s_card_list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(s_card_list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_pad_row(s_card_list, 10, 0);
+    lv_obj_set_style_pad_bottom(s_card_list, 12, 0);
+
+    if (s_card_sub) {
+        lv_label_set_text(s_card_sub, "顶栏切换今天/本周/本月");
+    }
+
+    int kpi_idx[3];
+    int kpi_n = 0;
+    int bot_i = -1;
+    int ts_idx[16];
+    int ts_n = 0;
+    int64_t kpi_max = 1;
+    int64_t ts_max = 1;
+    for (int i = 0; i < s_env->track_n; i++) {
+        const char *id = s_env->tracks[i].id;
+        if (strncmp(id, "kpi_", 4) == 0) {
+            if (strcmp(id, "kpi_bot") == 0) {
+                bot_i = i;
+                continue;
+            }
+            if (kpi_n < 3) {
+                kpi_idx[kpi_n++] = i;
+                const int64_t v = atoll(s_env->tracks[i].title);
+                if (v > kpi_max) {
+                    kpi_max = v;
+                }
+            }
+        } else if (strncmp(id, "ts_", 3) == 0 && ts_n < 16) {
+            ts_idx[ts_n++] = i;
+            const int64_t v = atoll(s_env->tracks[i].title);
+            if (v > ts_max) {
+                ts_max = v;
+            }
+        }
+    }
+
+    if (kpi_n <= 0) {
+        lv_obj_t *empty = lv_label_create(s_card_list);
+        nl_ov_set_font(empty);
+        lv_label_set_text(empty, s_env->spoken[0] ? s_env->spoken : "暂无访问数据");
+        lv_obj_set_style_text_color(empty, UI_TEXT, 0);
+        lv_obj_set_width(empty, lv_pct(100));
+        lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
+        apply_card_chrome();
+        return;
+    }
+
+    lv_obj_t *kpi_row = lv_obj_create(s_card_list);
+    lv_obj_remove_style_all(kpi_row);
+    lv_obj_set_width(kpi_row, lv_pct(100));
+    lv_obj_set_height(kpi_row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(kpi_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(kpi_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(kpi_row, 10, 0);
+    lv_obj_clear_flag(kpi_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    for (int k = 0; k < kpi_n; k++) {
+        const nl_env_track_t *tr = &s_env->tracks[kpi_idx[k]];
+        const int64_t val = atoll(tr->title);
+        lv_obj_t *card = lv_obj_create(kpi_row);
+        lv_obj_remove_style_all(card);
+        lv_obj_set_flex_grow(card, 1);
+        lv_obj_set_style_min_width(card, 0, 0);
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(card, ui_palette_is_dark() ? UI_FIELD : UI_SURFACE, 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
+        lv_obj_set_style_pad_all(card, 12, 0);
+        lv_obj_set_style_pad_row(card, 6, 0);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        if (ui_palette_is_dark()) {
+            lv_obj_set_style_border_width(card, 1, 0);
+            lv_obj_set_style_border_color(card, UI_TILE_OFF_BORDER, 0);
+            lv_obj_set_style_border_opa(card, LV_OPA_50, 0);
+        } else {
+            ui_style_card(card);
+        }
+
+        lv_obj_t *lab = lv_label_create(card);
+        nl_ov_set_font_compact(lab);
+        lv_label_set_text(lab, tr->artist[0] ? tr->artist : "—");
+        lv_obj_set_style_text_color(lab, UI_TEXT_MUTED, 0);
+
+        lv_obj_t *num = lv_label_create(card);
+        nl_ov_set_font(num);
+        lv_label_set_text(num, tr->title[0] ? tr->title : "0");
+        lv_obj_set_style_text_color(num, UI_TEXT, 0);
+
+        lv_obj_t *bar_bg = lv_obj_create(card);
+        lv_obj_remove_style_all(bar_bg);
+        lv_obj_set_width(bar_bg, lv_pct(100));
+        lv_obj_set_height(bar_bg, 6);
+        lv_obj_set_style_radius(bar_bg, 3, 0);
+        lv_obj_set_style_bg_color(bar_bg, UI_CAPSULE_OFF, 0);
+        lv_obj_set_style_bg_opa(bar_bg, LV_OPA_COVER, 0);
+        lv_obj_clear_flag(bar_bg, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *bar = lv_obj_create(bar_bg);
+        lv_obj_remove_style_all(bar);
+        int pct = (int)((val * 100) / kpi_max);
+        if (pct < 4 && val > 0) {
+            pct = 4;
+        }
+        if (pct > 100) {
+            pct = 100;
+        }
+        lv_obj_set_width(bar, lv_pct(pct > 0 ? pct : 2));
+        lv_obj_set_height(bar, 6);
+        lv_obj_set_style_radius(bar, 3, 0);
+        lv_obj_set_style_bg_color(bar, UI_ACCENT, 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        lv_obj_align(bar, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_clear_flag(bar, LV_OBJ_FLAG_CLICKABLE);
+    }
+
+    if (bot_i >= 0) {
+        const nl_env_track_t *bot = &s_env->tracks[bot_i];
+        lv_obj_t *bot_card = lv_obj_create(s_card_list);
+        lv_obj_remove_style_all(bot_card);
+        lv_obj_set_width(bot_card, lv_pct(100));
+        lv_obj_set_height(bot_card, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(bot_card, UI_CAPSULE_OFF, 0);
+        lv_obj_set_style_bg_opa(bot_card, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(bot_card, UI_RADIUS_SM, 0);
+        lv_obj_set_style_pad_all(bot_card, 10, 0);
+        lv_obj_set_flex_flow(bot_card, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(bot_card, 2, 0);
+        lv_obj_clear_flag(bot_card, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *bt = lv_label_create(bot_card);
+        nl_ov_set_font(bt);
+        char line[96];
+        snprintf(line, sizeof(line), "疑似爬虫浏览 %s", bot->title[0] ? bot->title : "0");
+        lv_label_set_text(bt, line);
+        lv_obj_set_style_text_color(bt, UI_TEXT_SUB, 0);
+
+        lv_obj_t *bs = lv_label_create(bot_card);
+        nl_ov_set_font_compact(bs);
+        lv_label_set_text(bs, bot->artist[0] ? bot->artist : "已从访客统计中排除");
+        lv_obj_set_style_text_color(bs, UI_TEXT_MUTED, 0);
+        lv_obj_set_width(bs, lv_pct(100));
+        lv_label_set_long_mode(bs, LV_LABEL_LONG_DOT);
+    }
+
+    if (ts_n > 1) {
+        lv_obj_t *sec = lv_label_create(s_card_list);
+        nl_ov_set_font_compact(sec);
+        lv_label_set_text(sec, "趋势（浏览量）");
+        lv_obj_set_style_text_color(sec, UI_TEXT_MUTED, 0);
+
+        lv_obj_t *chart = lv_obj_create(s_card_list);
+        lv_obj_remove_style_all(chart);
+        lv_obj_set_width(chart, lv_pct(100));
+        lv_obj_set_height(chart, 88);
+        lv_obj_set_style_bg_color(chart, ui_palette_is_dark() ? UI_FIELD : UI_SURFACE, 0);
+        lv_obj_set_style_bg_opa(chart, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(chart, UI_RADIUS_MD, 0);
+        lv_obj_set_style_pad_all(chart, 10, 0);
+        lv_obj_set_flex_flow(chart, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(chart, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_END,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(chart, 4, 0);
+        lv_obj_clear_flag(chart, LV_OBJ_FLAG_SCROLLABLE);
+        if (ui_palette_is_dark()) {
+            lv_obj_set_style_border_width(chart, 1, 0);
+            lv_obj_set_style_border_color(chart, UI_TILE_OFF_BORDER, 0);
+            lv_obj_set_style_border_opa(chart, LV_OPA_40, 0);
+        }
+
+        for (int i = 0; i < ts_n; i++) {
+            const nl_env_track_t *tr = &s_env->tracks[ts_idx[i]];
+            const int64_t v = atoll(tr->title);
+            int h = (int)((v * 60) / ts_max);
+            if (h < 3 && v > 0) {
+                h = 3;
+            }
+            if (h > 60) {
+                h = 60;
+            }
+            lv_obj_t *col = lv_obj_create(chart);
+            lv_obj_remove_style_all(col);
+            lv_obj_set_flex_grow(col, 1);
+            lv_obj_set_height(col, lv_pct(100));
+            lv_obj_set_style_min_width(col, 0, 0);
+            lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(col, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_row(col, 4, 0);
+            lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *bar = lv_obj_create(col);
+            lv_obj_remove_style_all(bar);
+            lv_obj_set_width(bar, lv_pct(70));
+            lv_obj_set_height(bar, h > 0 ? h : 2);
+            lv_obj_set_style_radius(bar, 3, 0);
+            lv_obj_set_style_bg_color(bar, UI_ACCENT, 0);
+            lv_obj_set_style_bg_opa(bar, v > 0 ? LV_OPA_COVER : LV_OPA_30, 0);
+            lv_obj_clear_flag(bar, LV_OBJ_FLAG_CLICKABLE);
+
+            lv_obj_t *dl = lv_label_create(col);
+            nl_ov_set_font_compact(dl);
+            lv_label_set_text(dl, tr->artist[0] ? tr->artist : "");
+            lv_obj_set_style_text_color(dl, UI_TEXT_MUTED, 0);
+            lv_obj_set_style_text_align(dl, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_width(dl, lv_pct(100));
+            lv_label_set_long_mode(dl, LV_LABEL_LONG_CLIP);
+        }
+    }
+
+    apply_card_chrome();
+}
+
 void fill_list(void)
 {
     if (!s_card_list || !s_env) {
@@ -3008,6 +3332,22 @@ void fill_list(void)
     hide_support_title_nav();
     fill_filters(); /* news 等无 filters 时收起横条 */
     fill_source_bar();
+    if (strcmp(s_env->card_type, "analytics_summary") == 0) {
+        stop_dsh_detail_poll();
+        stop_dsh_status_anims();
+        s_dsh_focus_row = nullptr;
+        dsh_hide_confirm_bar();
+        if (s_dsh_status) {
+            lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_height(s_dsh_status, 0);
+        }
+        if (s_dsh_detail_bar) {
+            lv_obj_add_flag(s_dsh_detail_bar, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_height(s_dsh_detail_bar, 0);
+        }
+        fill_analytics_summary();
+        return;
+    }
     if (strcmp(s_env->card_type, "calendar_weather") == 0) {
         stop_dsh_detail_poll();
         stop_dsh_status_anims();
@@ -3340,11 +3680,7 @@ void fill_list(void)
             lv_obj_set_height(t, font_h);
 
             lv_obj_t *a = lv_label_create(txt);
-            if (music_card) {
-                nl_ov_set_font_compact(a);
-            } else {
-                nl_ov_set_font(a);
-            }
+            nl_ov_set_font(a);
             if (s_env->tracks[i].artist[0]) {
                 lv_label_set_text(a, s_env->tracks[i].artist);
             } else if (music_card) {
@@ -3352,7 +3688,9 @@ void fill_list(void)
             } else {
                 lv_label_set_text(a, " ");
             }
-            lv_obj_set_style_text_color(a, support_unread ? UI_WARN : UI_TEXT_MUTED, 0);
+            /* 浅色模式 MUTED 偏淡；曲库艺人用 SUB 保证可读 */
+            lv_obj_set_style_text_color(
+                a, support_unread ? UI_WARN : (music_card ? UI_TEXT_SUB : UI_TEXT_MUTED), 0);
             lv_obj_set_width(a, lv_pct(100));
             /* 简介按真实行数定高。客服副文固定两行：来源和预览。 */
             const int sub_lines =
@@ -3398,8 +3736,7 @@ void fill_list(void)
                 sub_h = font_h * 2 + lsp;
             }
             if (music_card) {
-                const lv_font_t *cf = nl_ov_ui_font_compact();
-                sub_h = cf ? lv_font_get_line_height(cf) : font_h;
+                sub_h = font_h;
             }
             lv_obj_set_height(a, sub_h);
             lv_obj_set_height(txt, LV_SIZE_CONTENT);

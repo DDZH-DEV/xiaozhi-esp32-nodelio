@@ -12,6 +12,7 @@ lv_obj_t *s_now_btns = nullptr;
 lv_obj_t *s_now_pause_btn = nullptr;
 lv_obj_t *s_now_prev_btn = nullptr;
 lv_obj_t *s_now_next_btn = nullptr;
+lv_obj_t *s_now_immersive_btn = nullptr;
 lv_obj_t *s_mini_fab = nullptr;
 lv_obj_t *s_mini_ic = nullptr;
 lv_anim_t s_now_border_anim;
@@ -86,6 +87,15 @@ void apply_now_media_chrome(bool playing, bool paused, bool list_open)
     }
     if (s_now_next_btn) {
         lv_obj_clear_flag(s_now_next_btn, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_now_immersive_btn) {
+        const bool wide = nodelio_display_profile()->nav_width != 0;
+        const bool live = nodelio_skill_is_live_radio();
+        if (wide && !live && (playing || paused)) {
+            lv_obj_clear_flag(s_now_immersive_btn, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(s_now_immersive_btn, LV_OBJ_FLAG_HIDDEN);
+        }
     }
     if (!s_now_sub) {
         return;
@@ -337,6 +347,23 @@ void on_next_now(lv_event_t *e)
     if (!nodelio_skill_media_next()) {
         nl_ov_toast("没有下一首");
     }
+}
+
+void on_immersive_now(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    Board::GetInstance().NoteUserActivity();
+    if (nodelio_skill_is_live_radio()) {
+        nl_ov_toast("直播不支持沉浸");
+        return;
+    }
+    if (!nodelio_media_is_playing() && !nodelio_media_is_paused()) {
+        nl_ov_toast("请先播放歌曲");
+        return;
+    }
+    nodelio_skill_immersive_show();
 }
 
 void set_pause_btn_icon(bool playing)
@@ -708,6 +735,18 @@ void nodelio_panel_ui_media_now_playing(const char *title, bool playing)
         raise_skill_layers();
         ensure_chrome_order();
         nodelio_skill_immersive_on_now_playing("", false);
+        return;
+    }
+
+    /* 沉浸已盖住列表/播放条：只刷新沉浸层，勿再亮下层动画 */
+    if (nodelio_skill_immersive_visible()) {
+        if (s_now_lbl) {
+            lv_label_set_text(s_now_lbl, title);
+        }
+        set_pause_btn_icon(playing);
+        stop_now_anims();
+        nodelio_skill_immersive_on_now_playing(title, playing);
+        nodelio_favorites_sync_immersive();
         return;
     }
 

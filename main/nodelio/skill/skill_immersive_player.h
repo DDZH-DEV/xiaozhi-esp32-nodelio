@@ -6,11 +6,20 @@
 extern "C" {
 #endif
 
-/** 播放中空闲进入沉浸页；触摸退出。live/episode 不进。 */
+/**
+ * 同步播放状态（仅宽屏 P4；sila-86 方屏禁用）。
+ * 不自动进沉浸；进沉浸只走底栏按钮。live 不进。
+ */
 void nodelio_skill_immersive_on_now_playing(const char *title, bool playing);
 
-/** 用户活动：重置进入计时；若已沉浸则退出。 */
+/** 用户主动进入沉浸（底栏按钮）。宽屏 + 非 live + 正在播/暂停。 */
+void nodelio_skill_immersive_show(void);
+
+/** 兼容旧调用；沉浸不再空闲自动进入，此函数为空操作。 */
 void nodelio_skill_immersive_note_activity(void);
+
+/** 播放器设置改黑胶旋转后立刻套用（沉浸未开则无操作）。 */
+void nodelio_skill_immersive_apply_vinyl_pref(void);
 
 bool nodelio_skill_immersive_visible(void);
 

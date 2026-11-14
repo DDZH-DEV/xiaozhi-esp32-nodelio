@@ -690,6 +690,24 @@ void NotifyPlayer::SetPlaybackContentLength(size_t bytes) {
     content_length_ = bytes;
 }
 
+void NotifyPlayer::EstimateDurationFromLengthKbps(int kbps) {
+    size_t blen = 0;
+    uint32_t cur = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        blen = content_length_;
+        cur = duration_ms_;
+    }
+    if (cur > 0 || blen < 4096 || kbps <= 0) {
+        return;
+    }
+    const uint64_t ms =
+        (static_cast<uint64_t>(blen) * 8ull * 1000ull) / static_cast<uint64_t>(kbps * 1000);
+    if (ms > 500 && ms < 24ull * 3600ull * 1000ull) {
+        SetPlaybackDurationMs(static_cast<uint32_t>(ms));
+    }
+}
+
 bool NotifyPlayer::IsCancelled(uint32_t playback_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return cancelled_ || !active_ || playback_id != playback_id_;
@@ -946,6 +964,13 @@ void NotifyPlayer::WorkerTask() {
                 ESP_LOGI(TAG, "stream kind=%s ctype=%s prefetch=%u icy=%d", kn, ctype.c_str(),
                          (unsigned)prefetch.size(), icy.metaint);
             }
+            if (!prefetch_fail && icy.metaint <= 0) {
+                if (kind == StreamKind::kOgg) {
+                    EstimateDurationFromLengthKbps(80);
+                } else if (kind == StreamKind::kMp3 || kind == StreamKind::kM4a) {
+                    EstimateDurationFromLengthKbps(128);
+                }
+            }
             if (!prefetch_fail && kind == StreamKind::kOgg) {
                 success = PlayOgg(http.get(), playback_id, prefetch.data(), prefetch.size());
             } else if (!prefetch_fail && kind == StreamKind::kMp3) {
@@ -1053,6 +1078,11 @@ bool NotifyPlayer::WorkerTaskLocal() {
                                                          : "unknown";
             ESP_LOGI(TAG, "local kind=%s head=%u", kn, static_cast<unsigned>(head.size()));
             if (!IsCancelled(playback_id)) {
+                if (kind == StreamKind::kMp3 || kind == StreamKind::kM4a) {
+                    EstimateDurationFromLengthKbps(128);
+                } else if (kind == StreamKind::kOgg) {
+                    EstimateDurationFromLengthKbps(80);
+                }
                 if (kind == StreamKind::kMp3) {
                     success = PlayMp3(&file, playback_id, head.data(), head.size(), nullptr);
                 } else if (kind == StreamKind::kM4a) {
@@ -1433,6 +1463,25 @@ bool NotifyPlayer::PlayFileWav(Http* http, uint32_t playback_id, const uint8_t* 
         return false;
     }
 
+    {
+        size_t blen = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            blen = content_length_;
+        }
+        if (blen > data_off && sample_rate > 0 && channels > 0 && bits >= 8) {
+            const size_t pcm = blen - data_off;
+            const uint64_t bytes_per_sec =
+                static_cast<uint64_t>(sample_rate) * channels * (bits / 8);
+            if (bytes_per_sec > 0) {
+                const uint64_t ms = pcm * 1000ull / bytes_per_sec;
+                if (ms > 200 && ms < 24ull * 3600ull * 1000ull) {
+                    SetPlaybackDurationMs(static_cast<uint32_t>(ms));
+                }
+            }
+        }
+    }
+
     const int out_rate = Board::GetInstance().GetAudioCodec()->output_sample_rate();
     const size_t frame_bytes = static_cast<size_t>(channels) * (bits / 8);
     if (frame_bytes == 0) {
@@ -1616,16 +1665,14 @@ bool NotifyPlayer::PlayMp3(Http* http, uint32_t playback_id, const uint8_t* firs
             return;
         }
         size_t blen = 0;
-        uint32_t cur_dur = 0;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             blen = content_length_;
-            cur_dur = duration_ms_;
         }
-        if (cur_dur > 0 || blen == 0) {
+        if (blen == 0) {
             return;
         }
-        /* bitrate 单位 kbps：duration_ms ≈ bytes * 8 / bitrate */
+        /* bitrate 单位 kbps：用真实码率覆盖 128kbps 预估值 */
         const uint64_t ms = (static_cast<uint64_t>(blen) * 8ull * 1000ull) /
                             static_cast<uint64_t>(stream_bitrate);
         if (ms > 500 && ms < 24ull * 3600ull * 1000ull) {

@@ -111,6 +111,7 @@ void nodelio_nvs_cache_get(nodelio_nvs_config_t *out)
     out->wake_on_sleep = 0;
     out->controls_en = 1;
     out->media_sleep_en = 1;
+    out->vinyl_spin_en = 0;
     out->idle_sleep_s = NODELIO_IDLE_SLEEP_DEFAULT;
     out->idle_wifi_s = NODELIO_IDLE_WIFI_DEFAULT;
     out->goodbye_sleep_s = NODELIO_BYE_SLEEP_DEFAULT;
@@ -199,6 +200,7 @@ static void apply_defaults(nodelio_nvs_config_t *out)
     if (out->media_sleep_en > 1) {
         out->media_sleep_en = 1;
     }
+    out->vinyl_spin_en = out->vinyl_spin_en ? 1 : 0;
     out->idle_sleep_s =
         clamp_u16(out->idle_sleep_s, NODELIO_IDLE_SLEEP_MIN, NODELIO_IDLE_SLEEP_MAX,
                   NODELIO_IDLE_SLEEP_DEFAULT);
@@ -298,6 +300,7 @@ static void apply_defaults_for_save(nodelio_nvs_config_t *out)
     if (out->media_sleep_en > 1) {
         out->media_sleep_en = 1;
     }
+    out->vinyl_spin_en = out->vinyl_spin_en ? 1 : 0;
     if (out->text_scale > NODELIO_TEXT_SCALE_MAX) {
         out->text_scale = NODELIO_TEXT_SCALE_DEFAULT;
     }
@@ -372,6 +375,7 @@ static esp_err_t load_config_impl(void *ctx) {
     out->wake_on_sleep = 0;
     out->controls_en = 1;
     out->media_sleep_en = 1;
+    out->vinyl_spin_en = 0;
     out->idle_sleep_s = NODELIO_IDLE_SLEEP_DEFAULT;
     out->idle_wifi_s = NODELIO_IDLE_WIFI_DEFAULT;
     out->goodbye_sleep_s = NODELIO_BYE_SLEEP_DEFAULT;
@@ -479,6 +483,12 @@ static esp_err_t load_config_impl(void *ctx) {
         v = 0;
         if (nvs_get_u8(h, "md_duck", &v) == ESP_OK) {
             out->media_wake_duck_pct = v;
+        }
+        v = 0;
+        if (nvs_get_u8(h, "vn_spin", &v) == ESP_OK) {
+            out->vinyl_spin_en = v ? 1 : 0;
+        } else {
+            out->vinyl_spin_en = 0;
         }
         v = NODELIO_TEXT_SCALE_DEFAULT;
         if (nvs_get_u8(h, "txt_scl", &v) == ESP_OK) {
@@ -635,6 +645,7 @@ static esp_err_t save_config_impl(void *ctx) {
     NL_ACCUM(nvs_set_u16(h, "lis_idle", tmp->listen_idle_s));
     NL_ACCUM(nvs_set_u16(h, "md_pause", tmp->media_pause_s));
     NL_ACCUM(nvs_set_u8(h, "md_duck", tmp->media_wake_duck_pct));
+    NL_ACCUM(nvs_set_u8(h, "vn_spin", tmp->vinyl_spin_en ? 1 : 0));
     NL_ACCUM(nvs_set_u8(h, "txt_scl", tmp->text_scale));
     NL_ACCUM(nvs_set_u8(h, "ui_mode", clamp_ui_mode(tmp->ui_mode)));
     NL_ACCUM(nvs_set_u8(h, "nt_snd", tmp->notice_sound > 3 ? 1 : tmp->notice_sound));
@@ -971,6 +982,14 @@ uint8_t nodelio_media_wake_duck_pct(void)
     }
     return s_ram.media_wake_duck_pct ? s_ram.media_wake_duck_pct
                                      : NODELIO_MEDIA_WAKE_DUCK_DEFAULT;
+}
+
+bool nodelio_vinyl_spin_enabled(void)
+{
+    if (!s_ram_ok) {
+        return false;
+    }
+    return s_ram.vinyl_spin_en != 0;
 }
 
 uint8_t nodelio_text_scale(void)

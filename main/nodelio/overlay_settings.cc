@@ -1209,6 +1209,45 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         lv_label_set_long_mode(ms_hint, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(ms_hint, lv_pct(100));
 
+        lv_obj_t *vs_card = settings_card(body, "沉浸页黑胶");
+        lv_obj_set_style_pad_all(vs_card, 16, 0);
+        lv_obj_set_style_pad_row(vs_card, 12, 0);
+
+        lv_obj_t *vs_row = lv_obj_create(vs_card);
+        lv_obj_remove_style_all(vs_row);
+        lv_obj_set_width(vs_row, lv_pct(100));
+        lv_obj_set_height(vs_row, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(vs_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(vs_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(vs_row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *vs_lab = lv_label_create(vs_row);
+        lv_label_set_text(vs_lab, "封面旋转");
+        nl_ov_set_font(vs_lab);
+        lv_obj_set_style_text_color(vs_lab, UI_TEXT, 0);
+
+        lv_obj_t *vs_sw = lv_switch_create(vs_row);
+        ui_style_switch(vs_sw);
+        if (s_cfg.vinyl_spin_en) {
+            lv_obj_add_state(vs_sw, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(vs_sw, LV_STATE_CHECKED);
+        }
+        lv_obj_add_event_cb(
+            vs_sw,
+            [](lv_event_t *e) {
+                bool on = lv_obj_has_state((lv_obj_t *)lv_event_get_target(e), LV_STATE_CHECKED);
+                (void)nodelio_panel_ui_set_pref("vinyl_spin", on ? "on" : "off", nullptr, 0);
+            },
+            LV_EVENT_VALUE_CHANGED, nullptr);
+        lv_obj_t *vs_hint = lv_label_create(vs_card);
+        lv_label_set_text(vs_hint, "默认关闭；开启会加重界面占用，播歌时偶发卡顿可保持关闭");
+        nl_ov_set_font(vs_hint);
+        lv_obj_set_style_text_color(vs_hint, UI_TEXT_TIP, 0);
+        lv_label_set_long_mode(vs_hint, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(vs_hint, lv_pct(100));
+
         char sec[16];
         if (!s_cfg.media_pause_s) {
             s_cfg.media_pause_s = NODELIO_MEDIA_PAUSE_DEFAULT;

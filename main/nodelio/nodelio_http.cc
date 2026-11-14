@@ -2,6 +2,7 @@
 #include <esp_random.h>
 #include "workbench.h"
 
+#include "board.h"
 #include "nodelio_bridge.h"
 #include "wifi_provision.h"
 
@@ -481,8 +482,98 @@ static esp_err_t http_exchange_once(const char *method, const char *url, const c
         return ESP_ERR_INVALID_ARG;
     }
     if (https) {
-        ESP_LOGW(TAG, "https not supported on LAN path yet: %s", url);
-        return ESP_ERR_NOT_SUPPORTED;
+        /* 外网 TLS：走小智 CreateHttp（与 OTA 同栈）；裸 TCP 仅支持 http:// */
+        auto *network = Board::GetInstance().GetNetwork();
+        if (!network) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        auto http = network->CreateHttp(0);
+        if (!http) {
+            return ESP_ERR_NO_MEM;
+        }
+        int timeout_ms = io_ms > 0 ? io_ms : 10000;
+        if (timeout_ms < 8000) {
+            timeout_ms = 8000;
+        }
+        http->SetTimeout(timeout_ms);
+        http->SetHeader("User-Agent", "NodeLio-Panel");
+        if (device_key && device_key[0]) {
+            http->SetHeader("X-Device-Key", device_key);
+        }
+        if (if_none_match && if_none_match[0]) {
+            http->SetHeader("If-None-Match", if_none_match);
+        }
+        ESP_LOGI(TAG, "%s %s (https)", method, url);
+        auto opened = http->Open(method ? method : "GET", url);
+        if (pace) {
+            pace->mark_sent();
+        }
+        if (!opened) {
+            ESP_LOGW(TAG, "https open fail: %s", opened.error().ToString().c_str());
+            if (out_empty_recv) {
+                *out_empty_recv = true;
+            }
+            return ESP_FAIL;
+        }
+        auto status_r = http->GetStatusCode();
+        if (!status_r) {
+            http->Close();
+            if (out_empty_recv) {
+                *out_empty_recv = true;
+            }
+            return ESP_FAIL;
+        }
+        const int status = *status_r;
+        if (out_status) {
+            *out_status = status;
+        }
+
+        esp_err_t ret = ESP_OK;
+        if (out_n) {
+            *out_n = 0;
+            if (!resp || resp_cap <= 0) {
+                http->Close();
+                return ESP_ERR_INVALID_ARG;
+            }
+            size_t got = 0;
+            while (got < static_cast<size_t>(resp_cap)) {
+                auto nr = http->Read(resp + got, static_cast<size_t>(resp_cap) - got);
+                if (!nr || *nr <= 0) {
+                    break;
+                }
+                got += static_cast<size_t>(*nr);
+            }
+            *out_n = got;
+            if (status != 200 && status != 201 && status != 304) {
+                ESP_LOGW(TAG, "%s %s → HTTP %d (bin n=%u)", method, url, status, (unsigned)got);
+                ret = ESP_FAIL;
+            } else {
+                ESP_LOGI(TAG, "%s %s → HTTP %d (bin n=%u)", method, url, status, (unsigned)got);
+            }
+        } else {
+            if (resp && resp_cap > 0) {
+                resp[0] = '\0';
+            }
+            std::string body = http->ReadAll();
+            if (resp && resp_cap > 0) {
+                size_t n = body.size();
+                if (n >= static_cast<size_t>(resp_cap)) {
+                    n = static_cast<size_t>(resp_cap) - 1;
+                }
+                if (n > 0) {
+                    memcpy(resp, body.data(), n);
+                }
+                resp[n] = '\0';
+            }
+            if (status != 200 && status != 201 && status != 304) {
+                ESP_LOGW(TAG, "%s %s → HTTP %d", method, url, status);
+                ret = ESP_FAIL;
+            } else {
+                ESP_LOGI(TAG, "%s %s → HTTP %d", method, url, status);
+            }
+        }
+        http->Close();
+        return ret;
     }
 
     /* 单次短超时 connect（勿先 probe 再连，翻倍延迟） */
@@ -705,9 +796,11 @@ static esp_err_t http_exchange(const char *method, const char *url, const char *
 
     /* 用户触发的技能/正文请求不能等语音结束：新闻打开后还要在同一会话问「要读吗」。
      * 心跳等后台请求仍让路给 MQTT。 */
+    /* 封面/歌词/外网 TLS：播放 Notifying 时 voice=1，勿干等 3.5s quiet */
     const bool ui_content =
         strstr(url, "/panel/news/") != nullptr || strstr(url, "/panel/snapshot") != nullptr ||
-        strstr(url, "/panel/command") != nullptr ||
+        strstr(url, "/panel/command") != nullptr || strstr(url, "/panel/lyrics") != nullptr ||
+        strncmp(url, "https://", 8) == 0 ||
         (strstr(url, "/panel/skills/") != nullptr && strstr(url, "/invoke") != nullptr);
     if (!ui_content) {
         uint32_t wait_ms = 4000;

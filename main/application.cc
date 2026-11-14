@@ -445,16 +445,6 @@ void Application::Run() {
             FinishNewsReadPlayback();
             HandleListenIdleTick();
 #endif
-
-            // Print debug info every 10 seconds（息屏跳过，少打 UART）
-            if (clock_ticks_ % 10 == 0) {
-                auto* bl = Board::GetInstance().GetBacklight();
-                if (!bl || bl->brightness() > 0) {
-                    SystemInfo::PrintHeapStats();
-                }
-                // SystemInfo::PrintTaskList();
-                // SystemInfo::PrintTaskCpuUsage(pdMS_TO_TICKS(1000));
-            }
         }
     }
 }

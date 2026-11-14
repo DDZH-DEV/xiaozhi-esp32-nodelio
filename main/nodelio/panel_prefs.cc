@@ -11,6 +11,7 @@
 #include "offline_cmd.h"
 #include "panel_layout.h"
 #include "panel_ui.h"
+#include "skill_immersive_player.h"
 #include "skill_result_ui.h"
 #include "ui_theme.h"
 
@@ -727,6 +728,17 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         nl_ov_toast("唤醒时音量已保存");
         return ESP_OK;
     }
+    if (strcasecmp(key, "vinyl_spin") == 0 || strcasecmp(key, "vinyl_spin_en") == 0) {
+        bool on = false;
+        if (!parse_on_off(value, &on, err, err_len)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        s_cfg.vinyl_spin_en = on ? 1 : 0;
+        nl_ov_persist_cfg_async();
+        nodelio_skill_immersive_apply_vinyl_pref();
+        nl_ov_toast(on ? "黑胶旋转已开" : "黑胶旋转已关");
+        return ESP_OK;
+    }
     if (strcasecmp(key, "text_scale") == 0) {
         uint8_t scale = 0;
         if (!parse_text_scale(value, &scale, err, err_len)) {
@@ -918,6 +930,10 @@ extern "C" esp_err_t nodelio_panel_ui_get_pref(const char *key, char *buf, size_
         std::snprintf(buf, len, "%d",
                       (int)(s_cfg.media_wake_duck_pct ? s_cfg.media_wake_duck_pct
                                                       : NODELIO_MEDIA_WAKE_DUCK_DEFAULT));
+        return ESP_OK;
+    }
+    if (strcasecmp(key, "vinyl_spin") == 0 || strcasecmp(key, "vinyl_spin_en") == 0) {
+        std::snprintf(buf, len, "%s", s_cfg.vinyl_spin_en ? "on" : "off");
         return ESP_OK;
     }
     if (strcasecmp(key, "text_scale") == 0) {

@@ -78,7 +78,8 @@ static void degrade_card_type(nl_content_envelope_t *out)
         return;
     }
     if (strcmp(out->card_type, "support_inbox") == 0 ||
-        strcmp(out->card_type, "support_thread") == 0) {
+        strcmp(out->card_type, "support_thread") == 0 ||
+        strcmp(out->card_type, "analytics_summary") == 0) {
         return;
     }
     if (strcmp(out->card_type, "music_list") == 0) {

@@ -16,8 +16,8 @@ extern "C" {
 bool nodelio_http_wait_lan_ready(uint32_t timeout_ms);
 
 /**
- * 走小智 EspNetwork/HttpClient（与 OTA 同栈），勿用裸 esp_http_client。
- * device_key 可空；resp 可空。成功时 *out_status 为 HTTP 状态码。
+ * http:// 走短 TCP；https:// 走小智 CreateHttp（与 OTA 同栈）。
+ * 勿在业务里再裸开 esp_http_client。device_key 可空；resp 可空。成功时 *out_status 为 HTTP 状态码。
  */
 esp_err_t nodelio_http_post_json(const char *url, const char *device_key, const char *body, int *out_status,
                                  char *resp, int resp_cap);
