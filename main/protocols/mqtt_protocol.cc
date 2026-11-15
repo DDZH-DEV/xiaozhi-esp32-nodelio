@@ -409,14 +409,7 @@ void MqttProtocol::CloseAudioChannel(bool send_goodbye) {
     }
 }
 
-bool MqttProtocol::OpenAudioChannel() {
-    if (mqtt_ == nullptr || !mqtt_->IsConnected()) {
-        ESP_LOGI(TAG, "MQTT is not connected, try to connect now");
-        if (!StartMqttClient(true)) {
-            return false;
-        }
-    }
-
+bool MqttProtocol::WaitServerHello(int timeout_ms) {
     error_occurred_ = false;
     session_id_ = "";
     xEventGroupClearBits(event_group_handle_, MQTT_PROTOCOL_SERVER_HELLO_EVENT);
@@ -426,13 +419,28 @@ bool MqttProtocol::OpenAudioChannel() {
         return false;
     }
 
-    // 等待服务器响应
     EventBits_t bits = xEventGroupWaitBits(event_group_handle_, MQTT_PROTOCOL_SERVER_HELLO_EVENT,
-                                           pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
-    if (!(bits & MQTT_PROTOCOL_SERVER_HELLO_EVENT)) {
-        ESP_LOGE(TAG, "Failed to receive server hello");
-        SetError(Lang::Strings::SERVER_TIMEOUT);
-        return false;
+                                           pdTRUE, pdFALSE, pdMS_TO_TICKS(timeout_ms));
+    return (bits & MQTT_PROTOCOL_SERVER_HELLO_EVENT) != 0;
+}
+
+bool MqttProtocol::OpenAudioChannel() {
+    if (mqtt_ == nullptr || !mqtt_->IsConnected()) {
+        ESP_LOGI(TAG, "MQTT is not connected, try to connect now");
+        if (!StartMqttClient(true)) {
+            return false;
+        }
+    }
+
+    /* P4 Hosted + MAX_MODEM 下常见：IsConnected=true 但下行已死，Publish QoS0 仍返回成功，
+     * 首轮 hello 白等 10s。超时后强制拆线重连再试一次。 */
+    if (!WaitServerHello(10000)) {
+        ESP_LOGW(TAG, "server hello timeout — force MQTT reconnect and retry");
+        if (!StartMqttClient(true) || !WaitServerHello(10000)) {
+            ESP_LOGE(TAG, "Failed to receive server hello");
+            SetError(Lang::Strings::SERVER_TIMEOUT);
+            return false;
+        }
     }
 
     auto network = Board::GetInstance().GetNetwork();

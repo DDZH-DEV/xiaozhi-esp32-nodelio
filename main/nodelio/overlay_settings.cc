@@ -539,45 +539,53 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         nl_ov_set_font(hint);
         lv_obj_set_style_text_color(hint, UI_TEXT_TIP, 0);
 
-        static const char *k_notice_snd[] = {"关闭", "轻响", "成功", "警示"};
-        static const char *k_notice_val[] = {"0", "1", "2", "3"};
-        const int snd = s_cfg.notice_sound > 3 ? 1 : s_cfg.notice_sound;
-        lv_obj_t *snd_band = audio_ctrl_band(body, "提醒声音", k_notice_snd[snd], nullptr);
-        lv_obj_t *snd_row = lv_obj_create(snd_band);
-        lv_obj_remove_style_all(snd_row);
-        lv_obj_set_width(snd_row, lv_pct(100));
-        lv_obj_set_height(snd_row, 44);
-        lv_obj_set_flex_flow(snd_row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(snd_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(snd_row, 8, 0);
-        lv_obj_clear_flag(snd_row, LV_OBJ_FLAG_SCROLLABLE);
-        for (int i = 0; i < 4; i++) {
-            const bool on = snd == i;
-            lv_obj_t *chip = lv_obj_create(snd_row);
-            lv_obj_remove_style_all(chip);
-            lv_obj_set_flex_grow(chip, 1);
-            lv_obj_set_height(chip, 44);
-            lv_obj_set_style_radius(chip, 12, 0);
-            lv_obj_set_style_bg_color(chip, on ? UI_ACCENT : UI_CAPSULE_OFF, 0);
-            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
-            lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(
-                chip,
-                [](lv_event_t *e) {
-                    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
-                        return;
-                    }
-                    const int want = (int)(intptr_t)lv_event_get_user_data(e);
-                    (void)nodelio_panel_ui_set_pref("notice_sound", k_notice_val[want], nullptr, 0);
-                    nl_ov_open_settings_detail(SET_PAGE_DISP);
-                },
-                LV_EVENT_CLICKED, (void *)(intptr_t)i);
-            lv_obj_t *lbl = lv_label_create(chip);
-            nl_ov_set_font(lbl);
-            lv_label_set_text(lbl, k_notice_snd[i]);
-            lv_obj_set_style_text_color(lbl, on ? UI_ON_TILE : UI_TEXT_SUB, 0);
-            lv_obj_center(lbl);
+        static const char *k_notice_snd[] = {"关", "1", "2", "3", "4", "5", "6"};
+        static const char *k_notice_val[] = {"0", "1", "2", "3", "4", "5", "6"};
+        static const char *k_notice_title[] = {"关闭", "音效1", "音效2", "音效3",
+                                              "音效4", "音效5", "音效6"};
+        const int snd = (s_cfg.notice_sound > 6) ? 1 : (int)s_cfg.notice_sound;
+        lv_obj_t *snd_band = audio_ctrl_band(body, "提醒声音", k_notice_title[snd], nullptr);
+        /* 两行：关+1–3 / 4–6，避免七枚芯片挤成一条。 */
+        for (int row = 0; row < 2; row++) {
+            lv_obj_t *snd_row = lv_obj_create(snd_band);
+            lv_obj_remove_style_all(snd_row);
+            lv_obj_set_width(snd_row, lv_pct(100));
+            lv_obj_set_height(snd_row, 44);
+            lv_obj_set_flex_flow(snd_row, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(snd_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
+                                  LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_column(snd_row, 8, 0);
+            lv_obj_clear_flag(snd_row, LV_OBJ_FLAG_SCROLLABLE);
+            const int begin = (row == 0) ? 0 : 4;
+            const int end = (row == 0) ? 4 : 7;
+            for (int i = begin; i < end; i++) {
+                const bool on = snd == i;
+                lv_obj_t *chip = lv_obj_create(snd_row);
+                lv_obj_remove_style_all(chip);
+                lv_obj_set_flex_grow(chip, 1);
+                lv_obj_set_height(chip, 44);
+                lv_obj_set_style_radius(chip, 12, 0);
+                lv_obj_set_style_bg_color(chip, on ? UI_ACCENT : UI_CAPSULE_OFF, 0);
+                lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+                lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+                lv_obj_add_event_cb(
+                    chip,
+                    [](lv_event_t *e) {
+                        if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+                            return;
+                        }
+                        const int want = (int)(intptr_t)lv_event_get_user_data(e);
+                        (void)nodelio_panel_ui_set_pref("notice_sound", k_notice_val[want], nullptr,
+                                                        0);
+                        nl_ov_open_settings_detail(SET_PAGE_DISP);
+                    },
+                    LV_EVENT_CLICKED, (void *)(intptr_t)i);
+                lv_obj_t *lbl = lv_label_create(chip);
+                nl_ov_set_font(lbl);
+                lv_label_set_text(lbl, k_notice_snd[i]);
+                lv_obj_set_style_text_color(lbl, on ? UI_ON_TILE : UI_TEXT_SUB, 0);
+                lv_obj_center(lbl);
+            }
         }
         lv_obj_t *snd_hint = lv_label_create(snd_band);
         lv_label_set_text(snd_hint, "进线、待确认和告警亮屏时播放；点一下可试听");
@@ -611,7 +619,7 @@ void nl_ov_open_settings_detail(set_page_id_t page)
             },
             LV_EVENT_VALUE_CHANGED, nullptr);
         lv_obj_t *rep_hint = lv_label_create(snd_band);
-        lv_label_set_text(rep_hint, "打开后，待处理的进线或告警大约每 12 秒再响一次，直到被处理");
+        lv_label_set_text(rep_hint, "打开后，进线、告警或日历提醒大约每 12 秒再响一次，直到被处理");
         nl_ov_set_font(rep_hint);
         lv_obj_set_style_text_color(rep_hint, UI_TEXT_TIP, 0);
         lv_label_set_long_mode(rep_hint, LV_LABEL_LONG_WRAP);
@@ -996,7 +1004,7 @@ void nl_ov_open_settings_detail(set_page_id_t page)
             lv_label_set_long_mode(batt_lab, LV_LABEL_LONG_WRAP);
             lv_obj_set_width(batt_lab, lv_pct(100));
             lv_obj_t *batt_hint = lv_label_create(batt_card);
-            lv_label_set_text(batt_hint, "按电量变化估算，非实时电流表");
+            lv_label_set_text(batt_hint, "按电量变化估算（含息屏待机），非实时电流表");
             nl_ov_set_font(batt_hint);
             lv_obj_set_style_text_color(batt_hint, UI_TEXT_TIP, 0);
             lv_label_set_long_mode(batt_hint, LV_LABEL_LONG_WRAP);

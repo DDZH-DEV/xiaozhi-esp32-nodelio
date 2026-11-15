@@ -23,7 +23,8 @@ void nodelio_battery_stats_init(void);
 
 /**
  * 由板级 idle 轮询调用（约 1Hz）。内部按亮/息屏节流采 PMU。
- * 无电池时 no-op。
+ * 未插电一律按放电累计（息屏微电流 PMU 常报 idle，不可依赖 discharging）。
+ * 插电时会先结算窗口再关闭。无电池时 no-op。
  */
 void nodelio_battery_stats_tick(void);
 

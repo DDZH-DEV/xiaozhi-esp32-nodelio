@@ -30,13 +30,13 @@ constexpr int kMaxDepth = 3;
 constexpr int kListMax = NODELIO_SD_LIST_MAX;
 /* 单页最多建这么多行 obj；再多才分页。列表可滑，不再写死 6 行。 */
 constexpr int kPageObjBudget = 48;
-constexpr int kRowH = 40;
-constexpr int kRowGap = 4;
-constexpr int kIconW = 28;
-constexpr int kSizeW = 72;
-constexpr int kHdrBudget = 56;
-constexpr int kFootBudget = 44;
-constexpr int kCardPad = 12;
+constexpr int kRowH = 52;
+constexpr int kRowGap = 6;
+constexpr int kIconBox = 36;
+constexpr int kSizeW = 78;
+constexpr int kHdrBudget = 64;
+constexpr int kFootBudget = 48;
+constexpr int kCardPad = 14;
 /* 与 overlay_apps apps_pane_target_w(true) 一致；勿等 s_split 再量宽。 */
 constexpr int kAppsRailW = 220;
 
@@ -146,7 +146,7 @@ lv_color_t kind_icon_color(nodelio_sd_entry_kind_t k)
         case NODELIO_SD_ENTRY_DIR:
             return UI_ACCENT;
         case NODELIO_SD_ENTRY_AUDIO:
-            return UI_ACCENT;
+            return UI_PURPLE;
         case NODELIO_SD_ENTRY_PHOTO:
             return UI_INFO;
         default:
@@ -262,6 +262,7 @@ lv_obj_t *make_chip_btn(lv_obj_t *parent, const char *label, lv_event_cb_t cb)
     lv_obj_set_style_radius(btn, 20, 0);
     lv_obj_set_style_bg_color(btn, UI_CAPSULE_OFF, 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(btn, 8);
     if (cb) {
@@ -277,13 +278,14 @@ lv_obj_t *make_chip_btn(lv_obj_t *parent, const char *label, lv_event_cb_t cb)
 
 lv_obj_t *make_close_btn(lv_obj_t *parent)
 {
-    constexpr int kSz = 48;
+    constexpr int kSz = 44;
     lv_obj_t *btn = lv_obj_create(parent);
     lv_obj_remove_style_all(btn);
     lv_obj_set_size(btn, kSz, kSz);
     lv_obj_set_style_radius(btn, kSz / 2, 0);
     lv_obj_set_style_bg_color(btn, UI_CAPSULE_OFF, 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(btn, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(btn, 16);
     lv_obj_add_event_cb(btn, [](lv_event_t *) { nodelio_skill_sd_files_hide(); }, LV_EVENT_CLICKED,
@@ -601,12 +603,12 @@ void fill_list_locked()
         constexpr int kRelMax = 96;
         const int n = s_ui.entry_n > 0 ? s_ui.entry_n : 0;
         if (n <= 0) {
-            snprintf(line, sizeof(line), "%.*s · 空", kRelMax, rel);
+            snprintf(line, sizeof(line), "%.*s  空", kRelMax, rel);
         } else if (pages > 1) {
-            snprintf(line, sizeof(line), "%.*s · %d项 · %d/%d页", kRelMax, rel, n, s_ui.page + 1,
+            snprintf(line, sizeof(line), "%.*s  %d项  第%d/%d页", kRelMax, rel, n, s_ui.page + 1,
                      pages);
         } else {
-            snprintf(line, sizeof(line), "%.*s · %d项", kRelMax, rel, n);
+            snprintf(line, sizeof(line), "%.*s  %d项", kRelMax, rel, n);
         }
         lv_label_set_text(s_ui.sub, line);
     }
@@ -616,6 +618,9 @@ void fill_list_locked()
         nl_ov_set_font(empty);
         lv_label_set_text(empty, "此文件夹为空");
         lv_obj_set_style_text_color(empty, UI_TEXT_TIP, 0);
+        lv_obj_set_width(empty, lv_pct(100));
+        lv_obj_set_style_pad_top(empty, 36, 0);
+        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
         return;
     }
 
@@ -627,28 +632,37 @@ void fill_list_locked()
     }
     for (int i = start; i < end; i++) {
         const nodelio_sd_entry_t *ent = &s_ui.entries[i];
+        const bool is_dir = ent->kind == NODELIO_SD_ENTRY_DIR;
         lv_obj_t *row = lv_obj_create(s_ui.list);
         lv_obj_remove_style_all(row);
         lv_obj_set_width(row, lv_pct(100));
         lv_obj_set_height(row, kRowH);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_hor(row, 8, 0);
-        lv_obj_set_style_pad_column(row, 8, 0);
-        /* 直角、无阴影：避免大量 ext_draw 计算拖死 LVGL */
-        lv_obj_set_style_radius(row, 0, 0);
+        lv_obj_set_style_pad_hor(row, 12, 0);
+        lv_obj_set_style_pad_column(row, 10, 0);
+        lv_obj_set_style_radius(row, UI_RADIUS_SM, 0);
         lv_obj_set_style_bg_color(row, UI_SURFACE_OFF, 0);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(row, UI_SURFACE_PRESSED, LV_STATE_PRESSED);
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_event_cb(row, on_entry_click, LV_EVENT_CLICKED,
                             reinterpret_cast<void *>(static_cast<intptr_t>(i)));
 
-        lv_obj_t *ic = lv_label_create(row);
+        lv_obj_t *icon_box = lv_obj_create(row);
+        lv_obj_remove_style_all(icon_box);
+        lv_obj_set_size(icon_box, kIconBox, kIconBox);
+        lv_obj_set_style_radius(icon_box, UI_RADIUS_SM, 0);
+        lv_obj_set_style_bg_color(icon_box, kind_icon_color(ent->kind), 0);
+        lv_obj_set_style_bg_opa(icon_box, LV_OPA_20, 0);
+        lv_obj_clear_flag(icon_box,
+                          (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+        lv_obj_t *ic = lv_label_create(icon_box);
         lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
         lv_label_set_text(ic, kind_icon(ent->kind));
         lv_obj_set_style_text_color(ic, kind_icon_color(ent->kind), 0);
-        lv_obj_set_width(ic, kIconW);
+        lv_obj_center(ic);
 
         lv_obj_t *name = lv_label_create(row);
         nl_ov_set_font(name);
@@ -658,14 +672,22 @@ void fill_list_locked()
         lv_obj_set_style_min_width(name, 0, 0);
         lv_obj_set_style_text_color(name, UI_TEXT, 0);
 
-        char sz[16];
-        format_size(ent->size_bytes, ent->kind == NODELIO_SD_ENTRY_DIR, sz, sizeof(sz));
-        lv_obj_t *size = lv_label_create(row);
-        nl_ov_set_font(size);
-        lv_label_set_text(size, sz);
-        lv_obj_set_width(size, kSizeW);
-        lv_obj_set_style_text_align(size, LV_TEXT_ALIGN_RIGHT, 0);
-        lv_obj_set_style_text_color(size, UI_TEXT_MUTED, 0);
+        if (is_dir) {
+            lv_obj_t *chev = lv_label_create(row);
+            lv_obj_set_style_text_font(chev, &font_material_symbols_20_4, 0);
+            lv_label_set_text(chev, MATERIAL_SYMBOLS_KEYBOARD_ARROW_RIGHT);
+            lv_obj_set_style_text_color(chev, UI_TEXT_MUTED, 0);
+        } else {
+            char sz[16];
+            format_size(ent->size_bytes, false, sz, sizeof(sz));
+            lv_obj_t *size = lv_label_create(row);
+            nl_ov_set_font(size);
+            lv_obj_set_style_text_font(size, nl_ov_ui_font_compact(), 0);
+            lv_label_set_text(size, sz);
+            lv_obj_set_width(size, kSizeW);
+            lv_obj_set_style_text_align(size, LV_TEXT_ALIGN_RIGHT, 0);
+            lv_obj_set_style_text_color(size, UI_TEXT_MUTED, 0);
+        }
     }
 }
 
@@ -708,7 +730,12 @@ void ensure_shell()
     lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(hdr, 8, 0);
+    lv_obj_set_style_pad_column(hdr, 10, 0);
+    lv_obj_set_style_pad_bottom(hdr, 10, 0);
+    lv_obj_set_style_border_side(hdr, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(hdr, 1, 0);
+    lv_obj_set_style_border_color(hdr, UI_BORDER, 0);
+    lv_obj_set_style_border_opa(hdr, LV_OPA_40, 0);
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *hdr_txt = lv_obj_create(hdr);
@@ -716,17 +743,18 @@ void ensure_shell()
     lv_obj_set_flex_grow(hdr_txt, 1);
     lv_obj_set_height(hdr_txt, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(hdr_txt, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(hdr_txt, 2, 0);
+    lv_obj_set_style_pad_row(hdr_txt, 4, 0);
     lv_obj_set_style_min_width(hdr_txt, 0, 0);
     lv_obj_clear_flag(hdr_txt, LV_OBJ_FLAG_SCROLLABLE);
 
     s_ui.title = lv_label_create(hdr_txt);
-    nl_ov_set_font(s_ui.title);
+    nl_ov_set_font_title(s_ui.title);
     lv_label_set_text(s_ui.title, "文件");
     lv_obj_set_style_text_color(s_ui.title, UI_TEXT, 0);
 
     s_ui.sub = lv_label_create(hdr_txt);
     nl_ov_set_font(s_ui.sub);
+    lv_obj_set_style_text_font(s_ui.sub, nl_ov_ui_font_compact(), 0);
     lv_label_set_text(s_ui.sub, "/");
     lv_label_set_long_mode(s_ui.sub, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s_ui.sub, lv_pct(100));
@@ -819,13 +847,14 @@ void show_listing(const char *cwd, const nodelio_sd_entry_t *entries, int n)
     nl_ov_apps_notify_skill_open(true);
     layout_shell();
     fill_list_locked();
+    if (s_ui.scrim) {
+        lv_obj_move_foreground(s_ui.scrim);
+    }
     if (s_ui.card) {
         lv_obj_move_foreground(s_ui.card);
     }
-    if (s_ui.scrim) {
-        lv_obj_move_foreground(s_ui.scrim);
-        lv_obj_move_foreground(s_ui.card);
-    }
+    /* 文件卡与截图 fab 同在 layer_top；抬卡后必须再抬 chrome，否则截图钮被压住 */
+    nl_ov_raise_chrome();
 }
 
 struct OpenArg {

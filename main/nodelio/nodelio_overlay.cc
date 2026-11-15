@@ -1676,12 +1676,15 @@ void nodelio_overlay_show_chat(void)
     if (s_visible && s_ready) {
         DisplayLockGuard lock(nl_ov_disp());
         if (lock) {
+            /* FAB/底栏/磁贴：用户主动进对话，允许从最小化展开 */
+            nl_ov_ai_expand();
             nl_ov_show_ai_drawer_session(phase);
         }
     } else {
         nodelio_overlay_show(false);
         DisplayLockGuard lock(nl_ov_disp());
         if (lock) {
+            nl_ov_ai_expand();
             nl_ov_show_ai_drawer_session(phase);
         }
     }

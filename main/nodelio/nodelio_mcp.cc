@@ -1117,14 +1117,14 @@ static ToolResult invoke_skill(const nodelio_nvs_config_t* cfg, const std::strin
         {
             DisplayLockGuard lock(nl_ov_disp());
             if (lock) {
-                (void)nl_ov_apps_open_by_query("日历与天气");
+                (void)nl_ov_apps_open_by_query("天气");
             }
         }
         ESP_LOGI(TAG, "invoke weather spoken=%s", spoken[0] ? spoken : "(empty)");
         if (spoken[0]) {
             return std::string(spoken);
         }
-        return std::string("已打开日历与天气");
+        return std::string("已打开天气");
     }
 
     /* 双投递：UI Envelope + 模型短摘要；开播只信 Host display.auto_play */
@@ -1912,11 +1912,12 @@ void nodelio_mcp_register_tools(void)
 
     mcp.AddTool(
         "self.nodelio.open_app",
-        "打开已装应用。听歌/曲库→name=曲库；电台/播客/新闻/天气同理。"
+        "打开已装应用。听歌/曲库→name=曲库；电台/播客/新闻/天气/日历同理。"
         "内存卡/TF卡/SD卡里的歌→name=内存卡（本机读卡，不走云端）。"
         "浏览卡上文件→name=文件。"
         "工作台可指定 DeepSeek/ChatGPT/WorkBuddy；查看任务打开默认入口。禁云端 play_music。"
-        "name=曲库/内存卡/文件/音乐/新闻/天气/电台/播客/空气/每日一篇/查看任务 或 app_id。",
+        "name=曲库/内存卡/文件/音乐/新闻/天气/日历/全部提醒/电台/播客/空气/每日一篇/查看任务 或 app_id。"
+        "天气→天气页；日历→月历页；全部提醒/我的提醒→按日期分组列表。",
         PropertyList({Property("name", kPropertyTypeString)}),
         [](const PropertyList& properties) -> ToolResult {
             std::string name = properties["name"].value<std::string>();

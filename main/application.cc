@@ -1505,7 +1505,9 @@ void Application::HandleToggleChatEvent() {
 static void EnsureNetReadyAfterScreenSleep()
 {
 #if !CONFIG_BOARD_TYPE_SILA_86
-    // P4 keeps Hosted connected during screen sleep; never wait for DHCP on the main task.
+    /* P4 息屏不断 Hosted，勿在主任务等 DHCP。
+     * 但 MAX_MODEM 下小智 MQTT 常假连（IsConnected=true、hello 无下行）；
+     * 真正修复在 MqttProtocol::OpenAudioChannel 超时强制重连。 */
     return;
 #endif
     auto display = Board::GetInstance().GetDisplay();
@@ -1956,8 +1958,10 @@ void Application::HandleStateChangedEvent() {
             /* 唤醒建链即亮屏（sila PowerSaveTimer WakeUp） */
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 #if CONFIG_NODELIO_PANEL
-            /* CONNECT 紧凑「唤醒中」晚 1s 再弹（overlay 内） */
-            nodelio_overlay_show_connecting();
+            /* 读新闻续段也会 Connecting；勿强制弹抽屉挡住正文（已最小化则保持）。 */
+            if (!news_reading_ && !nodelio_skill_news_ui_active()) {
+                nodelio_overlay_show_connecting();
+            }
 #endif
             break;
         case kDeviceStateListening:
@@ -1965,7 +1969,9 @@ void Application::HandleStateChangedEvent() {
             display->SetEmotion("neutral");
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 #if CONFIG_NODELIO_PANEL
-            nodelio_overlay_show_chat();
+            if (!news_reading_ && !nodelio_skill_news_ui_active()) {
+                nodelio_overlay_show_chat();
+            }
             /* 首唤问候 UDP 常早于 speaking：先开输出，避免功放/解码未就绪吞掉第一句 */
             if (auto* codec = board.GetAudioCodec()) {
                 codec->EnableOutput(true);

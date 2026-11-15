@@ -390,6 +390,10 @@ bool nl_ov_ai_farewell_closing(void);
 bool nl_ov_ai_user_dismissed(void);
 /** 用户已最小化：会话继续，只显示右下角圆钮 */
 bool nl_ov_ai_is_minimized(void);
+/** 最小化小智抽屉（读文章等场景自动收起，会话不停） */
+void nl_ov_ai_minimize(void);
+/** 用户主动展开（点悬浮钮 / FAB / 底栏小智） */
+void nl_ov_ai_expand(void);
 void nl_ov_ai_raise_mini_fab(void);
 void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, const char *msg_text);
 /** 已持显示锁。清掉关闭/最小化/告别抑制，立刻弹出聆听抽屉（客服「自己说」）。 */

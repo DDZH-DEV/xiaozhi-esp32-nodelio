@@ -320,11 +320,21 @@ static void ensure_notice_modal(void)
     style_notice_chrome();
 }
 
+static bool notice_is_reminder(const nodelio_panel_notice_t *it)
+{
+    return it && it->app_id[0] && strcmp(it->app_id, "builtin.reminder") == 0;
+}
+
+/** 标签文案与主色：日历提醒永远走品牌绿，不跟旧缓存里的 alert 发红。 */
 static const char *mode_tag_text(const nodelio_panel_notice_t *it, lv_color_t *out_color)
 {
     if (!it) {
         if (out_color) *out_color = UI_ACCENT;
         return "通知";
+    }
+    if (notice_is_reminder(it)) {
+        if (out_color) *out_color = UI_ACCENT;
+        return "提醒";
     }
     if (strcmp(it->mode, "alert") == 0 || strcmp(it->severity, "critical") == 0) {
         if (out_color) *out_color = UI_DANGER;
@@ -336,6 +346,17 @@ static const char *mode_tag_text(const nodelio_panel_notice_t *it, lv_color_t *o
     }
     if (out_color) *out_color = UI_ACCENT;
     return "通知";
+}
+
+static const char *notice_source_label(const nodelio_panel_notice_t *it)
+{
+    if (!it || !it->app_id[0]) {
+        return nullptr;
+    }
+    if (notice_is_reminder(it)) {
+        return "日历";
+    }
+    return it->app_id;
 }
 
 static void fill_notice_rows(void)
@@ -377,22 +398,31 @@ static void fill_notice_rows(void)
         }
         lv_color_t tag_color = UI_ACCENT;
         const char *tag_str = mode_tag_text(it, &tag_color);
+        const bool is_rem = notice_is_reminder(it);
+        const bool is_alert = !is_rem && (strcmp(it->mode, "alert") == 0 ||
+                                          strcmp(it->severity, "critical") == 0);
         const bool can_open = it->invoke_app[0] != '\0' || it->app_id[0] != '\0';
+        const char *src = notice_source_label(it);
 
         lv_obj_t *row = lv_obj_create(s_notice_list);
         lv_obj_remove_style_all(row);
         lv_obj_set_width(row, lv_pct(100));
         lv_obj_set_height(row, LV_SIZE_CONTENT);
-        lv_obj_set_style_min_height(row, 62, 0);
-        lv_obj_set_style_bg_color(row, UI_TILE_OFF, 0);
+        lv_obj_set_style_min_height(row, 72, 0);
+        lv_obj_set_style_bg_color(row, is_alert ? UI_DANGER_BG : (is_rem ? UI_SELECTION : UI_SURFACE),
+                                  0);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(row, UI_RADIUS_MD, 0);
+        lv_obj_set_style_radius(row, UI_RADIUS_SM, 0);
         lv_obj_set_style_border_width(row, 1, 0);
-        lv_obj_set_style_border_color(row, tag_color, 0);
-        lv_obj_set_style_border_opa(row, LV_OPA_60, 0);
-        lv_obj_set_style_pad_hor(row, 12, 0);
-        lv_obj_set_style_pad_ver(row, 10, 0);
-        lv_obj_set_style_pad_column(row, 10, 0);
+        lv_obj_set_style_border_color(row, is_alert ? UI_DANGER : (is_rem ? UI_ACCENT : UI_BORDER),
+                                      0);
+        lv_obj_set_style_border_opa(row, is_alert ? LV_OPA_40 : (is_rem ? LV_OPA_40 : LV_OPA_50), 0);
+        if (!ui_palette_is_dark() && !is_alert) {
+            ui_style_card(row);
+        }
+        lv_obj_set_style_pad_hor(row, 14, 0);
+        lv_obj_set_style_pad_ver(row, 12, 0);
+        lv_obj_set_style_pad_column(row, 12, 0);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
@@ -407,21 +437,44 @@ static void fill_notice_rows(void)
         lv_obj_remove_style_all(left);
         lv_obj_set_height(left, LV_SIZE_CONTENT);
         lv_obj_set_flex_grow(left, 1);
+        lv_obj_set_style_min_width(left, 0, 0);
         lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_style_pad_row(left, 4, 0);
+        lv_obj_set_style_pad_row(left, 6, 0);
         lv_obj_clear_flag(left, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_clear_flag(left, LV_OBJ_FLAG_CLICKABLE);
 
-        lv_obj_t *meta = lv_label_create(left);
-        nl_ov_set_font_compact(meta);
-        char mtxt[96];
-        if (it->app_id[0]) {
-            std::snprintf(mtxt, sizeof(mtxt), "[%s] %s", tag_str, it->app_id);
-        } else {
-            std::snprintf(mtxt, sizeof(mtxt), "[%s]", tag_str);
+        lv_obj_t *meta_row = lv_obj_create(left);
+        lv_obj_remove_style_all(meta_row);
+        lv_obj_set_width(meta_row, lv_pct(100));
+        lv_obj_set_height(meta_row, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(meta_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(meta_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(meta_row, 8, 0);
+        lv_obj_clear_flag(meta_row,
+                          (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+
+        lv_obj_t *chip = lv_obj_create(meta_row);
+        lv_obj_remove_style_all(chip);
+        lv_obj_set_size(chip, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_hor(chip, 8, 0);
+        lv_obj_set_style_pad_ver(chip, 2, 0);
+        lv_obj_set_style_radius(chip, UI_RADIUS_XS, 0);
+        lv_obj_set_style_bg_color(chip, tag_color, 0);
+        lv_obj_set_style_bg_opa(chip, LV_OPA_20, 0);
+        lv_obj_clear_flag(chip, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+        lv_obj_t *chip_lbl = lv_label_create(chip);
+        nl_ov_set_font_compact(chip_lbl);
+        lv_label_set_text(chip_lbl, tag_str);
+        lv_obj_set_style_text_color(chip_lbl, tag_color, 0);
+        lv_obj_center(chip_lbl);
+
+        if (src && src[0]) {
+            lv_obj_t *src_lbl = lv_label_create(meta_row);
+            nl_ov_set_font_compact(src_lbl);
+            lv_label_set_text(src_lbl, src);
+            lv_obj_set_style_text_color(src_lbl, UI_TEXT_MUTED, 0);
         }
-        lv_label_set_text(meta, mtxt);
-        lv_obj_set_style_text_color(meta, tag_color, 0);
 
         lv_obj_t *ttl = lv_label_create(left);
         nl_ov_set_font(ttl);
@@ -442,7 +495,7 @@ static void fill_notice_rows(void)
             lv_obj_t *open_btn = lv_button_create(btns);
             lv_obj_remove_style_all(open_btn);
             lv_obj_set_size(open_btn, LV_SIZE_CONTENT, 34);
-            lv_obj_set_style_pad_hor(open_btn, 12, 0);
+            lv_obj_set_style_pad_hor(open_btn, 14, 0);
             lv_obj_set_style_radius(open_btn, 17, 0);
             lv_obj_set_style_bg_color(open_btn, tag_color, 0);
             lv_obj_set_style_bg_opa(open_btn, LV_OPA_COVER, 0);
@@ -453,8 +506,8 @@ static void fill_notice_rows(void)
                                 const_cast<char *>(it->notice_id));
             lv_obj_t *ol = lv_label_create(open_btn);
             nl_ov_set_font_compact(ol);
-            lv_label_set_text(ol, "查看");
-            lv_obj_set_style_text_color(ol, UI_ON_TILE, 0);
+            lv_label_set_text(ol, is_rem ? "打开" : "查看");
+            lv_obj_set_style_text_color(ol, lv_color_white(), 0);
         }
 
         lv_obj_t *dis_btn = lv_button_create(btns);
@@ -464,7 +517,7 @@ static void fill_notice_rows(void)
         lv_obj_set_style_bg_color(dis_btn, UI_SURFACE, 0);
         lv_obj_set_style_bg_opa(dis_btn, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(dis_btn, 1, 0);
-        lv_obj_set_style_border_color(dis_btn, UI_TILE_OFF_BORDER, 0);
+        lv_obj_set_style_border_color(dis_btn, UI_BORDER, 0);
         lv_obj_set_flex_flow(dis_btn, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(dis_btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);

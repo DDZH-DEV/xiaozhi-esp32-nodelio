@@ -63,6 +63,7 @@ private:
     bool transport_suspended_ = false;
 
     bool StartMqttClient(bool report_error=false);
+    bool WaitServerHello(int timeout_ms);
     void ParseServerHello(const cJSON* root);
     bool DecodeHexString(const std::string& hex_string, std::string& decoded);
     bool CryptAesCtr(const uint8_t* input, size_t input_size, const uint8_t* nonce, uint8_t* output);

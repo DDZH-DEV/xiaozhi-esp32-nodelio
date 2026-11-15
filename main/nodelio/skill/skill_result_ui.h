@@ -21,12 +21,19 @@ void nodelio_skill_result_show(const nodelio_nvs_config_t *cfg, nl_content_envel
 
 void nodelio_skill_result_hide(void);
 
-/** Built-in calendar opens offline; refresh may only update this open session. */
-uint32_t nodelio_skill_daily_open(bool reset_view);
+/**
+ * Built-in calendar opens offline; refresh may only update this open session.
+ * weather_tab=true → 天气页；false → 月历页。已打开且 reset_view=false 时不切页。
+ */
+uint32_t nodelio_skill_daily_open(bool reset_view, bool weather_tab);
 /** 消息里的日历提醒：打开今天的日详情，不走技能 invoke。 */
 uint32_t nodelio_skill_daily_open_reminders(void);
+/** 全部提醒列表（按下次提醒日期分组）。 */
+uint32_t nodelio_skill_daily_open_all_reminders(void);
 void nodelio_skill_daily_update(const nodelio_nvs_config_t* cfg, nl_content_envelope_t* env,
                                 uint32_t generation);
+/** 当日气温 RAM 缓存是否可用（打开日历时可跳过联网）。 */
+bool nodelio_skill_daily_has_wx_cache(void);
 /** Reuse the shell clock tick; updates date highlighting only, never requests weather. */
 void nodelio_skill_daily_clock_tick(void);
 /** 提醒增删改后：若日历已开则重新拉圆点 / 当日列表。 */

@@ -509,19 +509,20 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         return ESP_OK;
     }
     if (strcasecmp(key, "notice_sound") == 0) {
-        int v = 0;
-        if (strcmp(value, "off") == 0 || strcmp(value, "关闭") == 0) {
+        int v = -1;
+        if (strcmp(value, "off") == 0 || strcmp(value, "关闭") == 0 || strcmp(value, "0") == 0) {
             v = 0;
-        } else if (strcmp(value, "popup") == 0 || strcmp(value, "轻响") == 0 || strcmp(value, "1") == 0) {
-            v = 1;
-        } else if (strcmp(value, "success") == 0 || strcmp(value, "成功") == 0 || strcmp(value, "2") == 0) {
+        } else if (strcmp(value, "popup") == 0 || strcmp(value, "轻响") == 0) {
+            v = 1; /* 旧名兼容 → 音效1 */
+        } else if (strcmp(value, "success") == 0 || strcmp(value, "成功") == 0) {
             v = 2;
-        } else if (strcmp(value, "alert") == 0 || strcmp(value, "警示") == 0 || strcmp(value, "3") == 0) {
+        } else if (strcmp(value, "alert") == 0 || strcmp(value, "警示") == 0) {
             v = 3;
-        } else if (strcmp(value, "0") == 0) {
-            v = 0;
-        } else {
-            pref_err(err, err_len, "提示音须为 关闭/轻响/成功/警示");
+        } else if (value[0] >= '1' && value[0] <= '6' && value[1] == '\0') {
+            v = value[0] - '0';
+        }
+        if (v < 0) {
+            pref_err(err, err_len, "提示音须为 关闭 / 1–6");
             return ESP_ERR_INVALID_ARG;
         }
         s_cfg.notice_sound = (uint8_t)v;
@@ -529,7 +530,13 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         if (v > 0) {
             nodelio_panel_ui_play_cue(v - 1);
         }
-        nl_ov_toast(v == 0 ? "已关闭提醒声" : (v == 2 ? "提醒声：成功" : (v == 3 ? "提醒声：警示" : "提醒声：轻响")));
+        if (v == 0) {
+            nl_ov_toast("已关闭提醒声");
+        } else {
+            char toast[24];
+            std::snprintf(toast, sizeof(toast), "提醒声：音效%d", v);
+            nl_ov_toast(toast);
+        }
         return ESP_OK;
     }
     if (strcasecmp(key, "notice_repeat") == 0) {

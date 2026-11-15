@@ -122,6 +122,9 @@ static void news_sync_read_btn_locked(void);
 /** true=仅摘要/标题，勿让模型声称「全文已读完」 */
 static bool s_speak_from_summary = false;
 static void news_scroll_to_byte(size_t byte_off);
+static void news_highlight_range(size_t start_byte, size_t end_byte);
+static void news_highlight_clear(void);
+static void news_style_body_selection(lv_obj_t *lbl);
 
 /** 单飞缓存：语音 read 与 UI worker 共用一次 HTTP，避免 net-lock 竞态把摘要盖上正文 */
 static SemaphoreHandle_t s_pull_mu = nullptr;
@@ -190,6 +193,7 @@ static void news_speak_clear(void)
     s_speak_id[0] = '\0';
     s_speak_title[0] = '\0';
     s_speak_from_summary = false;
+    news_highlight_clear();
     news_sync_read_btn_locked();
 }
 
@@ -283,6 +287,84 @@ static void news_speak_set(const char *id, const char *title, const char *body, 
 }
 
 /** 播报到哪，详情滚到哪。可在新闻 worker / Schedule 回调里调（内部加 Display 锁）。 */
+/** 朗读正文偏移 → 详情 label 字节偏移（摘要前缀「（仅摘要）\n」）。调用方已持显示锁。 */
+static size_t news_label_byte_for_speak(const char *txt, size_t speak_byte)
+{
+    size_t map_off = speak_byte;
+    if (s_speak_from_summary) {
+        const char *nl = strchr(txt, '\n');
+        if (nl) {
+            map_off += static_cast<size_t>(nl - txt) + 1;
+        }
+    }
+    const size_t len = strlen(txt);
+    if (map_off > len) {
+        map_off = len;
+    }
+    return news_utf8_floor(txt, map_off);
+}
+
+static uint32_t news_char_id_at(const char *txt, size_t byte_off)
+{
+    uint32_t char_id = 0;
+    size_t i = 0;
+    while (txt[i] && i < byte_off) {
+        if ((static_cast<unsigned char>(txt[i]) & 0xC0) != 0x80) {
+            char_id++;
+        }
+        i++;
+    }
+    return char_id;
+}
+
+static void news_style_body_selection(lv_obj_t *lbl)
+{
+    if (!lbl) {
+        return;
+    }
+    /* 当前朗读句：选区底 + 强调色字（LV_LABEL_TEXT_SELECTION） */
+    lv_obj_set_style_bg_color(lbl, UI_SELECTION, LV_PART_SELECTED);
+    lv_obj_set_style_bg_opa(lbl, LV_OPA_COVER, LV_PART_SELECTED);
+    lv_obj_set_style_text_color(lbl, UI_ACCENT, LV_PART_SELECTED);
+}
+
+static void news_highlight_clear(void)
+{
+    if (!s_news_body_lbl || !lv_obj_is_valid(s_news_body_lbl)) {
+        return;
+    }
+    lv_label_set_text_selection_start(s_news_body_lbl, LV_LABEL_TEXT_SELECTION_OFF);
+    lv_label_set_text_selection_end(s_news_body_lbl, LV_LABEL_TEXT_SELECTION_OFF);
+}
+
+/** 按朗读正文字节区间高亮；start/end 相对 s_speak_body。调用方已持显示锁。 */
+static void news_highlight_range(size_t start_byte, size_t end_byte)
+{
+    if (!s_news_body_lbl || !lv_obj_is_valid(s_news_body_lbl) || !s_speak_body ||
+        s_news_detail < 0 || !s_env || s_news_detail >= s_env->news_n ||
+        strcmp(s_speak_id, s_env->news[s_news_detail].id) != 0) {
+        return;
+    }
+    const char *txt = lv_label_get_text(s_news_body_lbl);
+    if (!txt || !txt[0] || strstr(txt, "正在加载") != nullptr) {
+        return;
+    }
+    if (end_byte < start_byte) {
+        const size_t t = start_byte;
+        start_byte = end_byte;
+        end_byte = t;
+    }
+    const size_t a = news_label_byte_for_speak(txt, start_byte);
+    const size_t b = news_label_byte_for_speak(txt, end_byte);
+    if (b <= a) {
+        news_highlight_clear();
+        return;
+    }
+    news_style_body_selection(s_news_body_lbl);
+    lv_label_set_text_selection_start(s_news_body_lbl, news_char_id_at(txt, a));
+    lv_label_set_text_selection_end(s_news_body_lbl, news_char_id_at(txt, b));
+}
+
 static void news_scroll_to_byte(size_t byte_off)
 {
     DisplayLockGuard lock(nl_ov_disp());
@@ -300,30 +382,12 @@ static void news_scroll_to_byte(size_t byte_off)
     if (!txt || !txt[0] || strstr(txt, "正在加载") != nullptr) {
         return;
     }
-    /* 摘要标签带「（仅摘要）\n」前缀，朗读正文从换行后算 */
-    size_t map_off = byte_off;
-    if (s_speak_from_summary) {
-        const char *nl = strchr(txt, '\n');
-        if (nl) {
-            map_off += static_cast<size_t>(nl - txt) + 1;
-        }
-    }
-    if (map_off > strlen(txt)) {
-        map_off = strlen(txt);
-    }
-    map_off = news_utf8_floor(txt, map_off);
+    const size_t map_off = news_label_byte_for_speak(txt, byte_off);
 
     lv_obj_update_layout(s_card_list);
     lv_obj_update_layout(s_news_body_lbl);
 
-    uint32_t char_id = 0;
-    size_t i = 0;
-    while (txt[i] && i < map_off) {
-        if ((static_cast<unsigned char>(txt[i]) & 0xC0) != 0x80) {
-            char_id++;
-        }
-        i++;
-    }
+    const uint32_t char_id = news_char_id_at(txt, map_off);
     lv_point_t pos = {};
     lv_label_get_letter_pos(s_news_body_lbl, char_id, &pos);
     const lv_coord_t view_h = lv_obj_get_content_height(s_card_list);
@@ -392,6 +456,7 @@ uint32_t nodelio_skill_news_on_sentence(const char* text) {
         return 0;
     }
     if (s_news_read_progress.Sentence(text, byte_offset)) {
+        news_highlight_range(byte_offset, s_news_read_progress.MatchedOffset());
         if (nodelio_panel_ui_screen_on()) {
             news_scroll_to_byte(byte_offset);
         }
@@ -511,6 +576,8 @@ static char *news_take_piece(bool *more_out, size_t max_bytes)
     s_speak_off = end;
     s_news_read_progress.Begin(std::string_view(s_speak_body + s_speak_off_prev, take),
                                s_speak_off_prev, end < s_speak_len);
+    /* 先标整段 chunk，字幕对齐后会收窄到当前句 */
+    news_highlight_range(s_speak_off_prev, s_speak_off);
     ESP_LOGI(TAG, "news chunk: token=%u begin=%u end=%u total=%u more=%d",
              (unsigned)s_news_read_progress.token(), (unsigned)s_speak_off_prev,
              (unsigned)s_speak_off, (unsigned)s_speak_len, end < s_speak_len);
@@ -902,6 +969,7 @@ static void news_apply_body_zoom(void)
         lv_obj_set_style_transform_scale_x(s_news_body_lbl, LV_SCALE_NONE, 0);
         lv_obj_set_style_transform_scale_y(s_news_body_lbl, LV_SCALE_NONE, 0);
         lv_obj_set_style_pad_bottom(s_news_body_lbl, 16, 0);
+        news_style_body_selection(s_news_body_lbl);
     }
     if (s_news_title_lbl && lv_obj_is_valid(s_news_title_lbl)) {
         lv_obj_set_style_text_font(s_news_title_lbl, font, 0);
@@ -945,6 +1013,8 @@ static void news_apply_body_label(int idx, uint32_t gen, const char *text, bool 
     s_news_body_heap = owned;
     lv_label_set_text_static(s_news_body_lbl, s_news_body_heap);
     lv_obj_set_style_text_color(s_news_body_lbl, from_summary ? UI_TEXT_DIM : UI_TEXT, 0);
+    news_style_body_selection(s_news_body_lbl);
+    news_highlight_clear();
     news_apply_body_zoom();
 }
 
@@ -1094,6 +1164,14 @@ static void news_time_short(const char *iso, char *out, size_t out_len)
     snprintf(out, out_len, "%s", iso);
 }
 
+/** 进详情 / 开朗读：收起小智抽屉一次，露出正文；用户点悬浮钮可再展开。 */
+static void news_minimize_ai_once(void)
+{
+    if (nl_ov_ai_session_active() && !nl_ov_ai_is_minimized()) {
+        nl_ov_ai_minimize();
+    }
+}
+
 static void on_news_row(lv_event_t *e)
 {
     const int idx = (int)(intptr_t)lv_event_get_user_data(e);
@@ -1101,6 +1179,7 @@ static void on_news_row(lv_event_t *e)
         return;
     }
     s_news_detail = idx;
+    news_minimize_ai_once();
     fill_list();
 }
 
@@ -1152,6 +1231,7 @@ static void on_news_read_btn(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
         return;
     }
+    news_minimize_ai_once();
     Application::GetInstance().Schedule([]() {
         auto &app = Application::GetInstance();
         if (app.IsNewsReading()) {
@@ -1348,6 +1428,7 @@ void fill_news(void)
         lv_label_set_long_mode(s_news_body_lbl, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(s_news_body_lbl, UI_TEXT_DIM, 0);
         lv_obj_set_style_pad_top(s_news_body_lbl, 2, 0);
+        news_style_body_selection(s_news_body_lbl);
         news_apply_body_zoom();
         news_enqueue_article(s_news_detail);
         return;
@@ -1486,6 +1567,10 @@ static bool news_step_locked(int delta, char *title, size_t title_len)
     }
     const bool same = (nxt == cur && cur >= 0);
     s_news_detail = nxt;
+    /* 列表→详情，或语音「读这篇」进详情：自动收一次小智抽屉 */
+    if (cur < 0 || !same) {
+        news_minimize_ai_once();
+    }
     if (!same) {
         fill_list();
     }
@@ -1734,6 +1819,8 @@ bool nodelio_skill_news_local_speak(const char *op, char *plain_out, size_t plai
         } else if (s_news_detail < 0 || s_news_detail >= s_env->news_n) {
             return false;
         }
+        /* continue 也可能在抽屉展开时点开：收一次让出正文 */
+        news_minimize_ai_once();
         idx = s_news_detail;
         gen = s_news_gen;
         snprintf(id, sizeof(id), "%s", s_env->news[idx].id);
@@ -1818,6 +1905,7 @@ bool nodelio_skill_try_news_pick_phrase(const char *text, bool *keep_cloud_tts)
             return false;
         }
         s_news_detail = ord - 1;
+        news_minimize_ai_once();
         if (s_minimized || (s_card && lv_obj_has_flag(s_card, LV_OBJ_FLAG_HIDDEN))) {
             s_minimized = false;
             hide_mini_fab();

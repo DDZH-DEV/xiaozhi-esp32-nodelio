@@ -26,6 +26,7 @@ static void on_voice_card(lv_event_t *e);
 static void on_voice_cancel(lv_event_t *e);
 static void on_voice_again(lv_event_t *e);
 static void on_voice_send(lv_event_t *e);
+static void on_support_meta_click(lv_event_t *e);
 
 static char s_voice_draft[NL_ENV_CHAT_TEXT];
 static uint64_t s_voice_draft_cid = 0;
@@ -279,8 +280,8 @@ bool chip_secondary(const char *title)
     if (!title || !title[0]) {
         return false;
     }
-    return strcmp(title, "返回列表") == 0 || strcmp(title, "不发") == 0 ||
-           strstr(title, "取消") != nullptr;
+    return strcmp(title, "返回列表") == 0 || strcmp(title, "返回会话") == 0 ||
+           strcmp(title, "不发") == 0 || strstr(title, "取消") != nullptr;
 }
 
 bool chip_is_nav(const char *title)
@@ -288,9 +289,14 @@ bool chip_is_nav(const char *title)
     if (!title || !title[0]) {
         return false;
     }
-    return strcmp(title, "返回列表") == 0 || strcmp(title, "取消托管") == 0 ||
-           strcmp(title, "取消倒计时") == 0 || strcmp(title, "不发") == 0 ||
-           strcmp(title, "接管") == 0 || strcmp(title, "扫码登录") == 0;
+    if (strcmp(title, "返回列表") == 0 || strcmp(title, "返回会话") == 0 ||
+        strcmp(title, "取消托管") == 0 || strcmp(title, "取消倒计时") == 0 ||
+        strcmp(title, "不发") == 0 || strcmp(title, "接管") == 0 ||
+        strcmp(title, "扫码登录") == 0 || strcmp(title, "记联系方式") == 0) {
+        return true;
+    }
+    /* 「写入手机/QQ/微信」顶栏展示，压在候选回复之上 */
+    return strncmp(title, "写入", 6) == 0;
 }
 
 /** 仅已接管才允许本地倒计时自动发；仅查看（有「接管」）禁止。 */
@@ -320,23 +326,26 @@ int nav_rank(const char *title)
     if (!title) {
         return 9;
     }
-    if (strcmp(title, "返回列表") == 0) {
+    if (strcmp(title, "返回列表") == 0 || strcmp(title, "返回会话") == 0) {
         return 0;
     }
-    if (strcmp(title, "取消托管") == 0) {
+    if (strcmp(title, "记联系方式") == 0 || strncmp(title, "写入", 6) == 0) {
         return 1;
     }
-    if (strcmp(title, "取消倒计时") == 0) {
+    if (strcmp(title, "取消托管") == 0) {
         return 2;
     }
-    if (strcmp(title, "不发") == 0) {
+    if (strcmp(title, "取消倒计时") == 0) {
         return 3;
     }
-    if (strcmp(title, "接管") == 0) {
+    if (strcmp(title, "不发") == 0) {
         return 4;
     }
-    if (strcmp(title, "扫码登录") == 0) {
+    if (strcmp(title, "接管") == 0) {
         return 5;
+    }
+    if (strcmp(title, "扫码登录") == 0) {
+        return 6;
     }
     return 8;
 }
@@ -1019,6 +1028,13 @@ void fill_support_nav(void)
             if (lbl) {
                 lv_obj_set_style_text_color(lbl, UI_ON_TILE, 0);
             }
+        } else if (strcmp(title, "记联系方式") == 0 || strncmp(title, "写入", 6) == 0) {
+            /* UTF-8「写入」3 字 = 6 bytes */
+            lv_obj_set_style_bg_color(btn, UI_WARN, 0);
+            lv_obj_t *lbl = lv_obj_get_child(btn, 0);
+            if (lbl) {
+                lv_obj_set_style_text_color(lbl, UI_ON_TILE, 0);
+            }
         } else if (strcmp(title, "扫码登录") == 0) {
             lv_obj_set_style_bg_color(btn, UI_ACCENT, 0);
             lv_obj_t *lbl = lv_obj_get_child(btn, 0);
@@ -1188,14 +1204,26 @@ void fill_action_bar(void)
             continue;
         }
         lv_obj_set_height(btn, 44);
-        lv_obj_set_width(btn, 48);
-        lv_obj_set_flex_grow(btn, 1);
-        lv_obj_set_style_min_width(btn, 0, 0);
-        if (chip_secondary(title)) {
-            lv_obj_set_style_bg_color(btn, UI_CAPSULE_OFF, 0);
+        const bool write_contact = strncmp(title, "写入", 6) == 0;
+        if (write_contact) {
+            lv_obj_set_width(btn, LV_SIZE_CONTENT);
+            lv_obj_set_flex_grow(btn, 1);
+            lv_obj_set_style_pad_hor(btn, 10, 0);
+            lv_obj_set_style_bg_color(btn, UI_WARN, 0);
             lv_obj_t *lbl = lv_obj_get_child(btn, 0);
             if (lbl) {
-                lv_obj_set_style_text_color(lbl, UI_TEXT_SUB, 0);
+                lv_obj_set_style_text_color(lbl, UI_ON_TILE, 0);
+            }
+        } else {
+            lv_obj_set_width(btn, 48);
+            lv_obj_set_flex_grow(btn, 1);
+            lv_obj_set_style_min_width(btn, 0, 0);
+            if (chip_secondary(title)) {
+                lv_obj_set_style_bg_color(btn, UI_CAPSULE_OFF, 0);
+                lv_obj_t *lbl = lv_obj_get_child(btn, 0);
+                if (lbl) {
+                    lv_obj_set_style_text_color(lbl, UI_TEXT_SUB, 0);
+                }
             }
         }
     }
@@ -1244,6 +1272,39 @@ void hide_support_presence_meta(void)
     }
 }
 
+static void on_support_meta_click(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    if (!s_have_env || !s_env || s_env->conversation_id == 0) {
+        return;
+    }
+    /* 资料页本身再点顶栏不重复拉取 */
+    if (strstr(s_env->display_title, "资料")) {
+        return;
+    }
+    cJSON *obj = cJSON_CreateObject();
+    if (!obj) {
+        return;
+    }
+    cJSON_AddStringToObject(obj, "op", "visitor_detail");
+    cJSON_AddNumberToObject(obj, "conversation_id", (double)s_env->conversation_id);
+    char *printed = cJSON_PrintUnformatted(obj);
+    cJSON_Delete(obj);
+    if (!printed || strlen(printed) >= NL_ENV_PARAMS) {
+        cJSON_free(printed);
+        return;
+    }
+    nl_env_invoke_action_t act{};
+    snprintf(act.app_id, sizeof(act.app_id), "support.inbox");
+    snprintf(act.title, sizeof(act.title), "访客资料");
+    snprintf(act.params_json, sizeof(act.params_json), "%s", printed);
+    cJSON_free(printed);
+    stop_support_auto();
+    run_invoke_action(&act);
+}
+
 void fill_support_presence_meta(void)
 {
     if (!s_card_sub || !s_env) {
@@ -1264,7 +1325,14 @@ void fill_support_presence_meta(void)
         lv_obj_set_flex_align(s_support_meta_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(s_support_meta_row, 6, 0);
+        lv_obj_set_style_pad_ver(s_support_meta_row, 2, 0);
+        lv_obj_set_style_pad_hor(s_support_meta_row, 4, 0);
+        lv_obj_set_style_radius(s_support_meta_row, UI_RADIUS_SM, 0);
+        lv_obj_set_style_bg_color(s_support_meta_row, UI_SURFACE, 0);
+        lv_obj_set_style_bg_opa(s_support_meta_row, LV_OPA_40, 0);
         lv_obj_clear_flag(s_support_meta_row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(s_support_meta_row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(s_support_meta_row, on_support_meta_click, LV_EVENT_CLICKED, nullptr);
         lv_obj_move_to_index(s_support_meta_row, lv_obj_get_index(s_card_sub));
     }
     lv_obj_clean(s_support_meta_row);

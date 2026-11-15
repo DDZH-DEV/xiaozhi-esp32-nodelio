@@ -161,6 +161,19 @@ bool nl_ov_ai_is_minimized(void)
     return s_ai_minimized;
 }
 
+void nl_ov_ai_minimize(void)
+{
+    if (!s_ai_drawer || s_ai_minimized || !nl_ov_ai_session_active()) {
+        return;
+    }
+    minimize_ai_drawer();
+}
+
+void nl_ov_ai_expand(void)
+{
+    expand_ai_drawer();
+}
+
 static void hide_ai_mini_fab(void)
 {
     if (s_ai_mini_fab) {
@@ -1259,7 +1272,7 @@ static void connect_delay_timer_cb(lv_timer_t *t)
     s_connect_pending_body[0] = '\0';
     s_connect_pending_has_body = false;
     s_connect_delay_force = true;
-    nl_ov_show_ai_drawer_locked(CHAT_CONNECT, "初始化中，请稍后...", nullptr);
+    nl_ov_show_ai_drawer_locked(CHAT_CONNECT, "正在连接小智…", nullptr);
 }
 
 static void arm_connect_delay(const char *status_text, const char *msg_text)
@@ -1267,7 +1280,7 @@ static void arm_connect_delay(const char *status_text, const char *msg_text)
     (void)status_text;
     (void)msg_text;
     nl_ov_utf8_copy(s_connect_pending_status, sizeof(s_connect_pending_status),
-                    "初始化中，请稍后...");
+                    "正在连接小智…");
     s_connect_pending_body[0] = '\0';
     s_connect_pending_has_body = false;
     if (!s_connect_delay_timer) {
@@ -1324,7 +1337,7 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
         st_def = "小智回复";
     } else if (phase == CHAT_CONNECT) {
         status_color = UI_C_WARN;
-        st_def = "初始化中，请稍后...";
+        st_def = "正在连接小智…";
     }
 
     /* 最小化：只刷隐藏抽屉文案 + 右下角图标色，禁止再展开 */
@@ -1332,7 +1345,7 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
         cancel_connect_delay_timer();
         if (s_ai_drawer_status) {
             const char *st = (phase == CHAT_CONNECT)
-                                 ? "初始化中，请稍后..."
+                                 ? "正在连接小智…"
                                  : (status_text && status_text[0] ? status_text : st_def);
             lv_label_set_text(s_ai_drawer_status, st);
             lv_obj_set_style_text_color(s_ai_drawer_status, lv_color_hex(status_color), 0);
@@ -1381,7 +1394,7 @@ void nl_ov_show_ai_drawer_locked(chat_phase_t phase, const char *status_text, co
     if (s_ai_drawer_status) {
         /* CONNECT 固定省电唤醒文案，不跟入网/DHCP 文案乱跳 */
         const char *st = (phase == CHAT_CONNECT)
-                             ? "初始化中，请稍后..."
+                             ? "正在连接小智…"
                              : (status_text && status_text[0] ? status_text : st_def);
         lv_label_set_text(s_ai_drawer_status, st);
         lv_obj_set_style_text_color(s_ai_drawer_status, lv_color_hex(status_color), 0);
@@ -1429,12 +1442,13 @@ void nl_ov_show_ai_drawer_session(chat_phase_t phase)
 {
     s_ai_user_dismissed = false;
     s_ai_farewell_closing = false;
-    s_ai_minimized = false;
+    /* 勿清 s_ai_minimized：读新闻续段会 Listening/Connecting 重入，
+     * 若强制展开会挡住正文；用户点悬浮钮/FAB 再 expand。 */
     const char *status = "小智在听…";
     if (phase == CHAT_SPEAK) {
         status = "小智回复";
     } else if (phase == CHAT_CONNECT) {
-        status = "初始化中，请稍后...";
+        status = "正在连接小智…";
     } else if (phase == CHAT_IDLE) {
         status = "待命";
     }

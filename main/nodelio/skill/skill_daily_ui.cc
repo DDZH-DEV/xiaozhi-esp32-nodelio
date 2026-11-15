@@ -5,6 +5,7 @@
 /* Built-in daily view. No polling task or calendar dependency. */
 static uint32_t s_daily_generation;
 static bool s_daily_weather;
+static bool s_daily_all_rem; /* 全部提醒列表（按日期分组） */
 static int s_daily_year;
 static int s_daily_month;
 static int s_daily_date_key;
@@ -24,16 +25,32 @@ static bool s_rem_fetching;
 static uint32_t s_rem_fetch_gen; /* invalidate 递增；过期响应丢弃并补拉 */
 
 enum { kDailyRemMax = 12 };
+/** 0=普通 1=30 分钟内需要办 2=已过点 */
+enum { kRemToneNormal = 0, kRemToneDueSoon = 1, kRemToneMissed = 2 };
 struct daily_rem_item {
     int id;
     char title[48];
     char time[8];
     char recur[12];
-    bool missed;
+    uint8_t tone;
 };
 EXT_RAM_BSS_ATTR static daily_rem_item s_rem_day_items[kDailyRemMax];
 static int s_rem_day_n;
 static int s_rem_day_key; /* 已加载的 focus 日 YYYYMMDD */
+
+enum { kDailyAllRemMax = 40 };
+struct daily_all_rem_item {
+    int id;
+    int ymd; /* 分组键 YYYYMMDD，来自 nextFireAt / 今天 */
+    char title[48];
+    char time[8];
+    char recur[12];
+    uint8_t tone;
+};
+EXT_RAM_BSS_ATTR static daily_all_rem_item s_rem_all_items[kDailyAllRemMax];
+static int s_rem_all_n;
+static bool s_rem_all_ok;
+static bool s_rem_all_fetching;
 
 static bool daily_rem_has(int day) {
     return day >= 1 && day <= 31 && (s_rem_day_bits & (1u << day)) != 0;
@@ -72,6 +89,7 @@ static void daily_redraw(void) {
 
 static void daily_reminders_fetch_month(void);
 static void daily_reminders_fetch_day(int ymd);
+static void daily_reminders_fetch_all(void);
 
 /** 日详情：完成这一次，或删除整条（含以后的重复）。 */
 static void daily_reminder_mutate(int id, bool cancel) {
@@ -113,10 +131,15 @@ static void daily_reminder_mutate(int id, bool cancel) {
                     if (status == 200) {
                         nl_ov_toast(cancel ? "已删除" : "已完成");
                         s_rem_day_key = 0;
+                        s_rem_all_ok = false;
                         s_rem_bits_year = 0;
-                        daily_reminders_fetch_month();
-                        if (s_daily_focus)
-                            daily_reminders_fetch_day(s_daily_focus);
+                        if (s_daily_all_rem)
+                            daily_reminders_fetch_all();
+                        else {
+                            daily_reminders_fetch_month();
+                            if (s_daily_focus)
+                                daily_reminders_fetch_day(s_daily_focus);
+                        }
                         daily_redraw();
                     } else {
                         nl_ov_toast("操作失败");
@@ -138,15 +161,29 @@ static void daily_action(lv_event_t* e) {
         daily_reminder_mutate(action - 200000, false);
         return;
     }
-    if (action == 40) {
+    if (action == 50) {
+        /* 月历 → 全部提醒 */
+        s_daily_all_rem = true;
         s_daily_focus = 0;
+        s_daily_weather = false;
+        s_rem_all_ok = false;
+    } else if (action == 40) {
+        if (s_daily_all_rem) {
+            s_daily_all_rem = false;
+        } else {
+            s_daily_focus = 0;
+        }
     } else if (action >= 1 && action <= 31) {
-        if (s_daily_year)
+        if (s_daily_year) {
+            s_daily_all_rem = false;
             s_daily_focus = s_daily_year * 10000 + s_daily_month * 100 + action;
+        }
     } else if (action == 10) {
+        s_daily_all_rem = false;
         s_daily_focus = 0;
         daily_reset_month();
     } else if (s_daily_year && (action == 11 || action == 12)) {
+        s_daily_all_rem = false;
         s_daily_focus = 0;
         s_daily_month += action == 11 ? -1 : 1;
         if (s_daily_month < 1) {
@@ -162,16 +199,18 @@ static void daily_action(lv_event_t* e) {
         s_rem_bits_year = 0;
     }
     daily_redraw();
-    if (s_daily_focus)
+    if (s_daily_all_rem)
+        daily_reminders_fetch_all();
+    else if (s_daily_focus)
         daily_reminders_fetch_day(s_daily_focus);
     else if (!s_daily_weather)
         daily_reminders_fetch_month();
 }
 
 /* 两页之间左右滑动切换。日历在左、天气在右：向左滑进天气，向右滑回日历。
- * 点开某一天时先看详情，滑动留给正文。 */
+ * 点开某一天 / 全部提醒时先看详情，滑动留给正文。 */
 static void daily_gesture(lv_event_t*) {
-    if (s_daily_focus)
+    if (s_daily_focus || s_daily_all_rem)
         return;
     lv_indev_t* indev = lv_indev_active();
     if (!indev)
@@ -437,6 +476,8 @@ static void daily_reminders_fetch_day(int ymd) {
                             const cJSON* tm = cJSON_GetObjectItemCaseSensitive(it, "time");
                             const cJSON* recur = cJSON_GetObjectItemCaseSensitive(it, "recur");
                             const cJSON* missed = cJSON_GetObjectItemCaseSensitive(it, "missed");
+                            const cJSON* due_soon =
+                                cJSON_GetObjectItemCaseSensitive(it, "dueSoon");
                             const cJSON* st = cJSON_GetObjectItemCaseSensitive(it, "status");
                             if (cJSON_IsString(st) && st->valuestring &&
                                 strcmp(st->valuestring, "active") != 0)
@@ -450,7 +491,12 @@ static void daily_reminders_fetch_day(int ymd) {
                             if (cJSON_IsString(recur) && recur->valuestring)
                                 snprintf(items[n].recur, sizeof(items[n].recur), "%s",
                                          recur->valuestring);
-                            items[n].missed = cJSON_IsTrue(missed);
+                            if (cJSON_IsTrue(missed))
+                                items[n].tone = kRemToneMissed;
+                            else if (cJSON_IsTrue(due_soon))
+                                items[n].tone = kRemToneDueSoon;
+                            else
+                                items[n].tone = kRemToneNormal;
                             n++;
                         }
                     }
@@ -484,16 +530,146 @@ static void daily_reminders_fetch_day(int ymd) {
     }
 }
 
+static void daily_reminders_fetch_all(void) {
+    if (s_rem_all_ok || s_rem_all_fetching)
+        return;
+    nodelio_nvs_config_t cfg{};
+    nl_ov_cfg_for_http(&cfg);
+    if (!cfg.server_url[0] || !cfg.device_id[0] || !cfg.device_key[0])
+        return;
+    if (nodelio_wifi_is_asleep() || !nodelio_wifi_has_ip())
+        return;
+    auto* cfgp = static_cast<nodelio_nvs_config_t*>(malloc(sizeof(nodelio_nvs_config_t)));
+    if (!cfgp)
+        return;
+    *cfgp = cfg;
+    s_rem_all_fetching = true;
+    if (!nodelio::SubmitPanelJob(
+            nodelio::PanelJobLane::Background,
+            [](void* p) {
+                auto* c = static_cast<nodelio_nvs_config_t*>(p);
+                char base[160];
+                nl_url_strip_base(c->server_url, base, sizeof(base));
+                char url[288];
+                snprintf(url, sizeof(url), "%s/api/devices/%s/panel/reminders", base, c->device_id);
+                char buf[6144];
+                buf[0] = '\0';
+                int status = 0;
+                (void)nodelio_http_get_ms(url, c->device_key, nullptr, &status, buf, sizeof(buf) - 1,
+                                          6000);
+                free(c);
+                daily_all_rem_item items[kDailyAllRemMax];
+                memset(items, 0, sizeof(items));
+                int n = 0;
+                struct tm today{};
+                int today_ymd = 0;
+                if (daily_today(&today))
+                    today_ymd = (today.tm_year + 1900) * 10000 + (today.tm_mon + 1) * 100 +
+                                today.tm_mday;
+                if (status == 200) {
+                    cJSON* root = cJSON_Parse(buf);
+                    const cJSON* arr =
+                        root ? cJSON_GetObjectItemCaseSensitive(root, "items") : nullptr;
+                    if (cJSON_IsArray(arr)) {
+                        const cJSON* it = nullptr;
+                        cJSON_ArrayForEach(it, arr) {
+                            if (n >= kDailyAllRemMax)
+                                break;
+                            const cJSON* id = cJSON_GetObjectItemCaseSensitive(it, "id");
+                            const cJSON* title = cJSON_GetObjectItemCaseSensitive(it, "title");
+                            const cJSON* tm = cJSON_GetObjectItemCaseSensitive(it, "time");
+                            const cJSON* recur = cJSON_GetObjectItemCaseSensitive(it, "recur");
+                            const cJSON* missed = cJSON_GetObjectItemCaseSensitive(it, "missed");
+                            const cJSON* due_soon =
+                                cJSON_GetObjectItemCaseSensitive(it, "dueSoon");
+                            const cJSON* next = cJSON_GetObjectItemCaseSensitive(it, "nextFireAt");
+                            const cJSON* st = cJSON_GetObjectItemCaseSensitive(it, "status");
+                            if (cJSON_IsString(st) && st->valuestring &&
+                                strcmp(st->valuestring, "active") != 0)
+                                continue;
+                            if (!cJSON_IsNumber(id) || !cJSON_IsString(title) || !title->valuestring)
+                                continue;
+                            int ymd = today_ymd;
+                            if (cJSON_IsString(next) && next->valuestring &&
+                                strlen(next->valuestring) >= 10) {
+                                int yy = 0, mm = 0, dd = 0;
+                                if (sscanf(next->valuestring, "%d-%d-%d", &yy, &mm, &dd) == 3 &&
+                                    yy >= 1970 && mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31)
+                                    ymd = yy * 10000 + mm * 100 + dd;
+                            }
+                            items[n].id = (int)id->valuedouble;
+                            items[n].ymd = ymd;
+                            snprintf(items[n].title, sizeof(items[n].title), "%s",
+                                     title->valuestring);
+                            if (cJSON_IsString(tm) && tm->valuestring)
+                                snprintf(items[n].time, sizeof(items[n].time), "%s",
+                                         tm->valuestring);
+                            if (cJSON_IsString(recur) && recur->valuestring)
+                                snprintf(items[n].recur, sizeof(items[n].recur), "%s",
+                                         recur->valuestring);
+                            if (cJSON_IsTrue(missed))
+                                items[n].tone = kRemToneMissed;
+                            else if (cJSON_IsTrue(due_soon))
+                                items[n].tone = kRemToneDueSoon;
+                            else
+                                items[n].tone = kRemToneNormal;
+                            n++;
+                        }
+                    }
+                    if (root)
+                        cJSON_Delete(root);
+                }
+                /* 按日期再按时间排序，便于分组渲染 */
+                for (int i = 0; i + 1 < n; ++i) {
+                    for (int j = i + 1; j < n; ++j) {
+                        const bool swap = items[j].ymd < items[i].ymd ||
+                                          (items[j].ymd == items[i].ymd &&
+                                           strcmp(items[j].time, items[i].time) < 0);
+                        if (swap) {
+                            daily_all_rem_item tmp = items[i];
+                            items[i] = items[j];
+                            items[j] = tmp;
+                        }
+                    }
+                }
+                auto* pack = static_cast<daily_all_rem_item*>(
+                    malloc(sizeof(daily_all_rem_item) * (size_t)kDailyAllRemMax + sizeof(int)));
+                if (!pack) {
+                    Application::GetInstance().Schedule([]() { s_rem_all_fetching = false; });
+                    return;
+                }
+                memcpy(pack, items, sizeof(daily_all_rem_item) * (size_t)n);
+                *reinterpret_cast<int*>(pack + kDailyAllRemMax) = n;
+                Application::GetInstance().Schedule([pack]() {
+                    const int n = *reinterpret_cast<const int*>(pack + kDailyAllRemMax);
+                    memcpy(s_rem_all_items, pack, sizeof(daily_all_rem_item) * (size_t)n);
+                    s_rem_all_n = n;
+                    s_rem_all_ok = true;
+                    s_rem_all_fetching = false;
+                    free(pack);
+                    if (daily_is_open() && s_daily_all_rem)
+                        daily_redraw();
+                });
+            },
+            cfgp, [](void* p) { free(p); })) {
+        free(cfgp);
+        s_rem_all_fetching = false;
+    }
+}
+
 void nodelio_skill_daily_reminders_invalidate(void) {
     s_rem_bits_year = 0;
     s_rem_bits_month = 0;
     s_rem_day_key = 0;
+    s_rem_all_ok = false;
     s_rem_day_bits = 0;
     ++s_rem_fetch_gen; /* 作废在飞月历圆点响应 */
     Application::GetInstance().Schedule([]() {
         if (!daily_is_open())
             return;
-        if (s_daily_focus)
+        if (s_daily_all_rem)
+            daily_reminders_fetch_all();
+        else if (s_daily_focus)
             daily_reminders_fetch_day(s_daily_focus);
         else if (!s_daily_weather)
             daily_reminders_fetch_month();
@@ -503,26 +679,29 @@ void nodelio_skill_daily_reminders_invalidate(void) {
 /* ---- 日历 -------------------------------------------------------------- */
 
 /** 日期行之间的留白（相邻两行「15 / 22」之间）。 */
-static const int kCalRowGap = 14;
+static const int kCalRowGap = 10;
 /** 公历与农历行距（负值：农历上移靠拢）。 */
 static const int kCalNumSubLineSpace = -3;
-/** 当日选中底：四向加宽，绿底包住文字与右侧角标。 */
-static const int kCalTodayPadY = 12;
-static const int kCalTodayPadX = 14;
+/** 当日绿底内边距；角标走左右 gutter，不靠 FLOATING/translate。 */
+static const int kCalTodayPadY = 10;
+static const int kCalTodayPadX = 10;
+static const int kCalRemBadge = 8;
 /** 无底部提示后的固定开销（月份条+表头+页脚圆点）。 */
 static const int kCalFixed = 84;
 
-/** 日期格高按结果卡可用高度倒推。 */
+/** 日期格高按结果卡可用高度倒推；须能装下今日绿底 pad + 两行字。 */
 static int daily_cell_h(int rows) {
     const auto* p = nodelio_display_profile();
     const int card_h = p ? (int)p->result_max_height + NL_UI_STATUS_H : 460;
     if (rows < 1)
         rows = 1;
-    for (int cell = 56; cell > 34; --cell) {
+    /* 今日：padY*2 + 公历≈22 + 农历≈16 ≈ 62；格高下限高于此。 */
+    const int want = kCalTodayPadY * 2 + 40;
+    for (int cell = 84; cell >= want; --cell) {
         if (kCalFixed + rows * (cell + kCalRowGap) <= card_h - 6)
             return cell;
     }
-    return 34;
+    return want;
 }
 
 /** 星期表头：细一号、弱一级，只做方位提示，不画分隔线。 */
@@ -574,6 +753,7 @@ static void daily_calendar(lv_obj_t* body) {
     lv_obj_clear_flag(spacer, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
     /* 「今天」改成无底色的文字钮，与两侧箭头同一视觉语言。 */
     daily_icon_text_btn(monthbar, "今天", 10, UI_ACCENT);
+    daily_icon_text_btn(monthbar, "提醒", 50, UI_TEXT_SUB);
 
     struct tm first{};
     first.tm_year = s_daily_year - 1900;
@@ -620,19 +800,24 @@ static void daily_calendar(lv_obj_t* body) {
         const bool have_sub =
             nl_almanac_build(s_daily_year, s_daily_month, day, &info) && info.label[0];
 
-        /* 文字胶囊：公历/农历靠拢；当日底包住文字+角标（左右加宽）。 */
+        /*
+         * 绿底 COLUMN + 中层 ROW：左 gutter | 文字 | 右 gutter（角标置顶）。
+         * 左右等宽保证「15」光学居中；角标全程在 flex 流里，不 FLOATING/translate。
+         */
+        const int pad_x = current ? kCalTodayPadX : (has_rem ? 6 : 0);
+        const int pad_y = current ? kCalTodayPadY : (has_rem ? 4 : 0);
+        const int gutter = has_rem ? kCalRemBadge : 0;
+
         lv_obj_t* pill = lv_obj_create(cell);
         lv_obj_remove_style_all(pill);
         lv_obj_set_size(pill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(pill, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(pill, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_flex_align(pill, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_row(pill, 0, 0);
-        lv_obj_set_style_pad_top(pill, current ? kCalTodayPadY : (has_rem ? 4 : 0), 0);
-        lv_obj_set_style_pad_bottom(pill, current ? kCalTodayPadY : 0, 0);
-        lv_obj_set_style_pad_left(pill, current ? kCalTodayPadX : (has_rem ? 6 : 0), 0);
-        lv_obj_set_style_pad_right(pill, current ? kCalTodayPadX : (has_rem ? 6 : 0), 0);
+        lv_obj_set_style_pad_hor(pill, pad_x, 0);
+        lv_obj_set_style_pad_ver(pill, pad_y, 0);
         lv_obj_clear_flag(pill, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+        lv_obj_set_style_clip_corner(pill, false, 0);
         if (current) {
             lv_obj_set_style_bg_color(pill, UI_SELECTION, 0);
             lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, 0);
@@ -640,15 +825,38 @@ static void daily_calendar(lv_obj_t* body) {
         }
         lv_obj_center(pill);
 
+        lv_obj_t* mid = lv_obj_create(pill);
+        lv_obj_remove_style_all(mid);
+        lv_obj_set_size(mid, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(mid, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(mid, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(mid, 0, 0);
+        lv_obj_clear_flag(mid, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+
+        if (gutter > 0) {
+            lv_obj_t* left = lv_obj_create(mid);
+            lv_obj_remove_style_all(left);
+            lv_obj_set_size(left, gutter, 1);
+            lv_obj_clear_flag(left, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+        }
+
+        lv_obj_t* text_col = lv_obj_create(mid);
+        lv_obj_remove_style_all(text_col);
+        lv_obj_set_size(text_col, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(text_col, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(text_col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_row(text_col, 0, 0);
+        lv_obj_clear_flag(text_col, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+
         char number[12];
         snprintf(number, sizeof(number), "%d", day);
-        lv_obj_t* num = lv_label_create(pill);
+        lv_obj_t* num = lv_label_create(text_col);
         nl_ov_set_font(num);
         lv_label_set_text(num, number);
         lv_obj_set_width(num, LV_SIZE_CONTENT);
         lv_obj_set_style_text_align(num, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_line_space(num, 0, 0);
-        lv_obj_set_style_pad_bottom(num, 0, 0);
         lv_obj_set_style_text_color(num, current ? UI_ACCENT : UI_TEXT, 0);
 
         if (have_sub) {
@@ -659,7 +867,7 @@ static void daily_calendar(lv_obj_t* body) {
                 sub_c = UI_WARN;
             else if (current)
                 sub_c = UI_ACCENT;
-            lv_obj_t* sub = lv_label_create(pill);
+            lv_obj_t* sub = lv_label_create(text_col);
             nl_ov_set_font(sub);
             lv_obj_set_style_text_font(sub, nl_ov_ui_font_compact(), 0);
             lv_label_set_text(sub, info.label);
@@ -670,17 +878,23 @@ static void daily_calendar(lv_obj_t* body) {
             lv_obj_set_style_text_color(sub, sub_c, 0);
         }
 
-        /* 角标挂在格子右上（cell 定宽高）；勿挂 pill，否则窄内容下 RIGHT_MID 会看起来像居中。 */
-        if (has_rem) {
-            lv_obj_t* badge = lv_obj_create(cell);
+        if (gutter > 0) {
+            lv_obj_t* right = lv_obj_create(mid);
+            lv_obj_remove_style_all(right);
+            lv_obj_set_size(right, gutter, LV_SIZE_CONTENT);
+            lv_obj_set_flex_flow(right, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(right, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END,
+                                  LV_FLEX_ALIGN_START);
+            lv_obj_clear_flag(right, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+
+            lv_obj_t* badge = lv_obj_create(right);
             lv_obj_remove_style_all(badge);
-            lv_obj_set_size(badge, 10, 10);
+            lv_obj_set_size(badge, kCalRemBadge, kCalRemBadge);
             lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
             lv_obj_set_style_bg_color(badge, UI_DANGER, 0);
             lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
-            lv_obj_add_flag(badge, (lv_obj_flag_t)(LV_OBJ_FLAG_IGNORE_LAYOUT | LV_OBJ_FLAG_FLOATING));
-            lv_obj_clear_flag(badge, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
-            lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, -4, 4);
+            lv_obj_clear_flag(badge,
+                              (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
         }
     }
 }
@@ -1177,15 +1391,28 @@ static lv_obj_t* daily_chip(lv_obj_t* parent, const char* text, lv_color_t fg) {
     return chip;
 }
 
-static void daily_luck_row(lv_obj_t* parent, const char* tag, lv_color_t tag_c, const char* text) {
-    lv_obj_t* row = daily_box(parent, LV_FLEX_FLOW_ROW, false);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(row, 8, 0);
+/** 曜夜下卡片无阴影，补一条淡描边，两栏才分得清。 */
+static void daily_card_edge(lv_obj_t* card) {
+    if (!card || !ui_palette_is_dark())
+        return;
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_color(card, UI_BORDER, 0);
+    lv_obj_set_style_border_opa(card, LV_OPA_40, 0);
+}
 
-    /* 宜 / 忌 胶囊徽章 */
-    lv_obj_t* badge = lv_obj_create(row);
+/** 宜/忌块：标签 + 事项竖排（compact），可放进双列以免左卡空洞。 */
+static void daily_luck_block(lv_obj_t* parent, const char* tag, lv_color_t tag_c, const char* text) {
+    lv_obj_t* block = daily_box(parent, LV_FLEX_FLOW_COLUMN, false);
+    lv_obj_set_style_pad_row(block, 3, 0);
+    lv_obj_set_style_min_width(block, 0, 0);
+    lv_obj_set_flex_grow(block, 1);
+    lv_obj_set_flex_align(block, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    lv_obj_t* badge = lv_obj_create(block);
     lv_obj_remove_style_all(badge);
-    lv_obj_set_size(badge, 26, 22);
+    lv_obj_set_size(badge, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_hor(badge, 8, 0);
+    lv_obj_set_style_pad_ver(badge, 2, 0);
     lv_obj_set_style_radius(badge, UI_RADIUS_XS, 0);
     lv_obj_set_style_bg_color(badge, tag_c, 0);
     lv_obj_set_style_bg_opa(badge, LV_OPA_20, 0);
@@ -1197,19 +1424,107 @@ static void daily_luck_row(lv_obj_t* parent, const char* tag, lv_color_t tag_c, 
     lv_obj_set_style_text_color(mark, tag_c, 0);
     lv_obj_center(mark);
 
-    /* 内容文字 */
-    lv_obj_t* value = lv_label_create(row);
-    nl_ov_set_font(value);
-    lv_label_set_long_mode(value, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(value, text && text[0] ? text : "—");
-    lv_obj_set_style_text_color(value, UI_TEXT, 0);
-    lv_obj_set_flex_grow(value, 1);
+    if (!text || !text[0]) {
+        lv_obj_t* empty = daily_label(block, "—", UI_TEXT_MUTED);
+        lv_obj_set_style_text_font(empty, nl_ov_ui_font_compact(), 0);
+        return;
+    }
+
+    const char* p = text;
+    while (*p) {
+        while (*p == ' ' || *p == '\t')
+            ++p;
+        if (!*p)
+            break;
+        const char* start = p;
+        while (*p && *p != ' ' && *p != '\t')
+            ++p;
+        char item[24];
+        size_t n = (size_t)(p - start);
+        if (n >= sizeof(item))
+            n = sizeof(item) - 1;
+        memcpy(item, start, n);
+        item[n] = '\0';
+        lv_obj_t* lab = daily_label(block, item, UI_TEXT);
+        lv_obj_set_width(lab, lv_pct(100));
+        lv_obj_set_style_text_align(lab, LV_TEXT_ALIGN_LEFT, 0);
+    }
 }
 
 /** 宽结果区（P4 侧栏卡等）日详情左右分栏，避免竖条空档。 */
 static bool daily_day_wide(void) {
     const auto* p = nodelio_display_profile();
     return p && p->result_width >= 560;
+}
+
+/**
+ * 提醒磁贴三态：普通白底 / 30 分钟内琥珀「需要办」/ 过点淡红「已过点」。
+ * 宽屏不再用 flex_grow 把完成/删除甩到屏幕最右侧。
+ */
+static void daily_rem_tile(lv_obj_t* parent, int id, const char* when, const char* title, uint8_t tone,
+                           const char* extra, bool compact_width) {
+    const bool due_soon = tone == kRemToneDueSoon;
+    const bool missed = tone == kRemToneMissed;
+    lv_obj_t* tile = lv_obj_create(parent);
+    lv_obj_remove_style_all(tile);
+    if (compact_width)
+        lv_obj_set_size(tile, 420, LV_SIZE_CONTENT);
+    else
+        lv_obj_set_size(tile, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(tile, 12, 0);
+    lv_obj_set_style_pad_row(tile, 8, 0);
+    lv_obj_set_style_radius(tile, UI_RADIUS_SM, 0);
+    /* 黄底用暖琥珀磁贴色（tile_gpio），红底用 danger_bg，普通白卡 */
+    lv_obj_set_style_bg_color(tile, missed ? UI_DANGER_BG : (due_soon ? UI_TILE_GPIO : UI_SURFACE),
+                              0);
+    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(tile, 1, 0);
+    lv_obj_set_style_border_color(tile, missed ? UI_DANGER : (due_soon ? UI_WARN : UI_BORDER), 0);
+    lv_obj_set_style_border_opa(tile, missed ? LV_OPA_30 : (due_soon ? LV_OPA_50 : LV_OPA_40), 0);
+    if (!ui_palette_is_dark() && !missed && !due_soon)
+        ui_style_card(tile);
+    lv_obj_clear_flag(tile, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+    lv_obj_t* meta = daily_box(tile, LV_FLEX_FLOW_ROW, false);
+    lv_obj_set_flex_align(meta, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(meta, 6, 0);
+
+    const lv_color_t time_fg = missed ? UI_DANGER_FG : (due_soon ? UI_WARN : UI_ACCENT);
+    const lv_color_t time_bg = missed ? UI_DANGER : (due_soon ? UI_WARN : UI_ACCENT);
+    lv_obj_t* time_badge = lv_obj_create(meta);
+    lv_obj_remove_style_all(time_badge);
+    lv_obj_set_size(time_badge, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_hor(time_badge, 8, 0);
+    lv_obj_set_style_pad_ver(time_badge, 3, 0);
+    lv_obj_set_style_radius(time_badge, UI_RADIUS_SM, 0);
+    lv_obj_set_style_bg_color(time_badge, time_bg, 0);
+    lv_obj_set_style_bg_opa(time_badge, LV_OPA_20, 0);
+    lv_obj_clear_flag(time_badge, (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
+    lv_obj_t* tm = lv_label_create(time_badge);
+    nl_ov_set_font(tm);
+    lv_obj_set_style_text_font(tm, nl_ov_ui_font_compact(), 0);
+    lv_label_set_text(tm, when && when[0] ? when : "—");
+    lv_obj_set_style_text_color(tm, time_fg, 0);
+    lv_obj_center(tm);
+
+    if (missed)
+        daily_chip(meta, "已过点", UI_DANGER_FG);
+    else if (due_soon)
+        daily_chip(meta, "需要办", UI_WARN);
+    if (extra && extra[0])
+        daily_chip(meta, extra, UI_TEXT_MUTED);
+
+    lv_obj_t* act = daily_box(tile, LV_FLEX_FLOW_ROW, false);
+    lv_obj_set_flex_align(act, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(act, 8, 0);
+
+    lv_obj_t* tx = daily_label(act, title && title[0] ? title : "提醒", UI_TEXT);
+    lv_obj_set_flex_grow(tx, 1);
+    lv_obj_set_style_min_width(tx, 0, 0);
+
+    daily_action_btn(act, "完成", 200000 + id, lv_color_white(), UI_ACCENT);
+    daily_action_btn(act, "删除", 300000 + id, UI_DANGER_FG, UI_DANGER_BG);
 }
 
 static void daily_day_fill_reminders(lv_obj_t* rem) {
@@ -1225,62 +1540,27 @@ static void daily_day_fill_reminders(lv_obj_t* rem) {
     }
     for (int i = 0; i < s_rem_day_n; ++i) {
         const daily_rem_item* it = &s_rem_day_items[i];
-        lv_obj_t* row = lv_obj_create(rem);
-        lv_obj_remove_style_all(row);
-        lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(row, 6, 0);
-        lv_obj_set_style_pad_ver(row, 1, 0);
-        lv_obj_clear_flag(row, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-
-        char left[24];
+        char when[24];
         if (it->time[0])
-            snprintf(left, sizeof(left), "%s", it->time);
+            snprintf(when, sizeof(when), "%s", it->time);
         else if (strcmp(it->recur, "daily") == 0)
-            snprintf(left, sizeof(left), "每天");
+            snprintf(when, sizeof(when), "每天");
         else if (strcmp(it->recur, "weekly") == 0)
-            snprintf(left, sizeof(left), "每周");
+            snprintf(when, sizeof(when), "每周");
         else
-            snprintf(left, sizeof(left), "一次");
-
-        lv_obj_t* time_badge = lv_obj_create(row);
-        lv_obj_remove_style_all(time_badge);
-        lv_obj_set_size(time_badge, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_set_style_pad_hor(time_badge, 7, 0);
-        lv_obj_set_style_pad_ver(time_badge, 2, 0);
-        lv_obj_set_style_radius(time_badge, UI_RADIUS_SM, 0);
-        lv_obj_set_style_bg_color(time_badge, it->missed ? UI_WARN : UI_ACCENT, 0);
-        lv_obj_set_style_bg_opa(time_badge, LV_OPA_20, 0);
-        lv_obj_clear_flag(time_badge,
-                          (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
-        lv_obj_t* tm = lv_label_create(time_badge);
-        nl_ov_set_font(tm);
-        lv_obj_set_style_text_font(tm, nl_ov_ui_font_compact(), 0);
-        lv_label_set_text(tm, left);
-        lv_obj_set_style_text_color(tm, it->missed ? UI_WARN : UI_ACCENT, 0);
-        lv_obj_center(tm);
-
-        char line[72];
-        if (it->missed)
-            snprintf(line, sizeof(line), "%s · 已过点", it->title);
-        else
-            snprintf(line, sizeof(line), "%s", it->title);
-        lv_obj_t* tx = daily_label(row, line, UI_TEXT);
-        lv_obj_set_flex_grow(tx, 1);
-
-        daily_action_btn(row, "完成", 200000 + it->id, UI_TEXT_SUB, UI_SURFACE_PRESSED);
-        daily_action_btn(row, "删除", 300000 + it->id, UI_DANGER, UI_SURFACE_PRESSED);
+            snprintf(when, sizeof(when), "一次");
+        daily_rem_tile(rem, it->id, when, it->title, it->tone, nullptr, false);
     }
 }
 
-/** 点开某一天：宽屏左右分栏（黄历 | 待办），方屏仍单列但间距收紧。 */
+/** 点开某一天：宽屏双卡（左黄历竖排 | 右待办），方屏上下叠。
+ *  勿对宽屏列设 width=0：父级 SIZE_CONTENT 时会把双卡高度挤没。 */
 static void daily_day(lv_obj_t* body) {
     const int y = s_daily_focus / 10000;
     const int m = (s_daily_focus / 100) % 100;
     const int d = s_daily_focus % 100;
     const bool wide = daily_day_wide();
-    lv_obj_set_style_pad_row(body, wide ? 6 : 6, 0);
+    lv_obj_set_style_pad_row(body, 10, 0);
 
     nl_almanac_t info{};
     const bool info_ok = nl_almanac_build(y, m, d, &info);
@@ -1294,7 +1574,7 @@ static void daily_day(lv_obj_t* body) {
     mktime(&when);
     static const char* week[] = {"周日", "周一", "周二", "周三", "周四", "周五", "周六"};
 
-    /* 顶栏：返回 + 日期 + 黄道胶囊 + 农历一行 */
+    /* 顶栏：返回 + 日期 + 黄道胶囊（农历改入黄历卡内） */
     lv_obj_t* head = daily_box(body, LV_FLEX_FLOW_ROW, false);
     lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(head, 6, 0);
@@ -1302,14 +1582,12 @@ static void daily_day(lv_obj_t* body) {
     lv_obj_set_style_pad_right(head, 44, 0);
     daily_icon_btn(head, MATERIAL_SYMBOLS_KEYBOARD_ARROW_LEFT, 40, UI_TEXT_SUB);
 
-    lv_obj_t* title_box = daily_box(head, LV_FLEX_FLOW_COLUMN, false);
-    lv_obj_set_flex_grow(title_box, 1);
-    lv_obj_set_style_pad_row(title_box, 1, 0);
-
-    lv_obj_t* top_line = daily_box(title_box, LV_FLEX_FLOW_ROW, false);
+    lv_obj_t* top_line = daily_box(head, LV_FLEX_FLOW_ROW, false);
+    lv_obj_set_flex_grow(top_line, 1);
     lv_obj_set_flex_align(top_line, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(top_line, 6, 0);
     lv_obj_set_style_pad_row(top_line, 0, 0);
+    lv_obj_set_style_min_width(top_line, 0, 0);
 
     char title[48];
     snprintf(title, sizeof(title), "%d月%d日 %s", m, d, week[when.tm_wday]);
@@ -1321,11 +1599,6 @@ static void daily_day(lv_obj_t* body) {
         snprintf(luck_tag, sizeof(luck_tag), "%s · %s", info.huangdao ? "黄道吉日" : "黑道日",
                  info.tian_shen[0] ? info.tian_shen : "吉神");
         daily_chip(top_line, luck_tag, info.huangdao ? UI_SUCCESS : UI_TEXT_MUTED);
-    }
-
-    if (info_ok && info.lunar_line[0]) {
-        lv_obj_t* lunar = daily_label(title_box, info.lunar_line, UI_TEXT_DIM);
-        lv_obj_set_style_text_font(lunar, nl_ov_ui_font_compact(), 0);
     }
 
     if (!info_ok) {
@@ -1343,103 +1616,79 @@ static void daily_day(lv_obj_t* body) {
             daily_chip(chips, info.term, UI_WARN);
     }
 
-    /* 宽屏：左黄历、右待办；方屏仍上下叠，但块间距收紧。 */
-    lv_obj_t* almanac_parent = body;
-    lv_obj_t* rem_parent = body;
+    /* 宽屏双卡并排；方屏上下叠。列宽用 flex，禁止 width=0。 */
+    lv_obj_t* cols = nullptr;
     if (wide) {
-        lv_obj_t* cols = daily_box(body, LV_FLEX_FLOW_ROW, false);
-        lv_obj_set_style_pad_column(cols, 8, 0);
+        cols = daily_box(body, LV_FLEX_FLOW_ROW, false);
+        lv_obj_set_style_pad_column(cols, 12, 0);
         lv_obj_set_style_pad_row(cols, 0, 0);
+        /* 整块内容略离左边，不要贴死卡缘 */
+        lv_obj_set_style_pad_left(cols, 10, 0);
         lv_obj_set_flex_align(cols, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-
-        almanac_parent = daily_box(cols, LV_FLEX_FLOW_COLUMN, false);
-        lv_obj_set_flex_grow(almanac_parent, 1);
-        lv_obj_set_style_pad_row(almanac_parent, 0, 0);
-        lv_obj_set_style_min_width(almanac_parent, 0, 0);
-
-        rem_parent = daily_box(cols, LV_FLEX_FLOW_COLUMN, false);
-        lv_obj_set_width(rem_parent, lv_pct(40));
-        lv_obj_set_style_pad_row(rem_parent, 0, 0);
-        lv_obj_set_style_min_width(rem_parent, 0, 0);
     }
+    lv_obj_t* card_host = cols ? cols : body;
 
-    lv_obj_t* luck = daily_box(almanac_parent, LV_FLEX_FLOW_COLUMN, true);
-    lv_obj_set_style_pad_all(luck, 8, 0);
-    lv_obj_set_style_pad_row(luck, 4, 0);
-
-    lv_obj_t* meta_row = daily_box(luck, LV_FLEX_FLOW_ROW, false);
-    lv_obj_set_flex_align(meta_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(meta_row, 0, 0);
-
-    char duty[64];
-    snprintf(duty, sizeof(duty), "值日 · %s", info.zhi_xing[0] ? info.zhi_xing : "平");
-    lv_obj_t* duty_l = daily_label(meta_row, duty, UI_TEXT);
-    lv_obj_set_width(duty_l, LV_SIZE_CONTENT);
-    lv_obj_set_style_text_font(duty_l, nl_ov_ui_font_compact(), 0);
-
-    char cs[64];
-    snprintf(cs, sizeof(cs), "冲煞 · %s", info.chong_sha[0] ? info.chong_sha : "无");
-    lv_obj_t* cs_l = daily_label(meta_row, cs, UI_TEXT_DIM);
-    lv_obj_set_width(cs_l, LV_SIZE_CONTENT);
-    lv_obj_set_style_text_font(cs_l, nl_ov_ui_font_compact(), 0);
-
+    /* 左卡：黄历。宽屏宜|忌双列填宽，事项仍各自竖排，避免单列空洞。 */
+    lv_obj_t* luck = daily_box(card_host, LV_FLEX_FLOW_COLUMN, true);
+    daily_card_edge(luck);
     if (wide) {
-        lv_obj_t* yj = daily_box(luck, LV_FLEX_FLOW_ROW, false);
-        lv_obj_set_style_pad_column(yj, 10, 0);
-        lv_obj_set_style_pad_row(yj, 0, 0);
-        lv_obj_t* yi_col = daily_box(yj, LV_FLEX_FLOW_COLUMN, false);
-        lv_obj_set_flex_grow(yi_col, 1);
-        lv_obj_set_style_pad_row(yi_col, 0, 0);
-        lv_obj_set_style_min_width(yi_col, 0, 0);
-        daily_luck_row(yi_col, "宜", UI_SUCCESS, info.yi);
-        lv_obj_t* ji_col = daily_box(yj, LV_FLEX_FLOW_COLUMN, false);
-        lv_obj_set_flex_grow(ji_col, 1);
-        lv_obj_set_style_pad_row(ji_col, 0, 0);
-        lv_obj_set_style_min_width(ji_col, 0, 0);
-        daily_luck_row(ji_col, "忌", UI_DANGER, info.ji);
+        lv_obj_set_flex_grow(luck, 1);
+        lv_obj_set_style_min_width(luck, 0, 0);
+        lv_obj_set_width(luck, LV_SIZE_CONTENT);
     } else {
-        daily_luck_row(luck, "宜", UI_SUCCESS, info.yi);
-        daily_luck_row(luck, "忌", UI_DANGER, info.ji);
+        lv_obj_set_style_pad_left(luck, 10, 0);
     }
+    lv_obj_set_style_pad_all(luck, 16, 0);
+    lv_obj_set_style_pad_left(luck, 20, 0);
+    lv_obj_set_style_pad_row(luck, 10, 0);
+    lv_obj_set_flex_align(luck, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    daily_label(luck, "黄历", UI_TEXT_SUB);
+    if (info.lunar_line[0]) {
+        lv_obj_t* lunar = daily_label(luck, info.lunar_line, UI_TEXT);
+        lv_obj_set_width(lunar, lv_pct(100));
+    }
+
+    lv_obj_t* meta = daily_box(luck, LV_FLEX_FLOW_ROW_WRAP, false);
+    lv_obj_set_style_pad_column(meta, 8, 0);
+    lv_obj_set_style_pad_row(meta, 4, 0);
+    char duty[40];
+    snprintf(duty, sizeof(duty), "值日 · %s", info.zhi_xing[0] ? info.zhi_xing : "平");
+    daily_chip(meta, duty, UI_TEXT_SUB);
+    char cs[48];
+    snprintf(cs, sizeof(cs), "冲煞 · %s", info.chong_sha[0] ? info.chong_sha : "无");
+    daily_chip(meta, cs, UI_TEXT_MUTED);
+
+    lv_obj_t* yj = daily_box(luck, wide ? LV_FLEX_FLOW_ROW : LV_FLEX_FLOW_COLUMN, false);
+    lv_obj_set_style_pad_column(yj, 16, 0);
+    lv_obj_set_style_pad_row(yj, 8, 0);
+    lv_obj_set_style_min_width(yj, 0, 0);
+    daily_luck_block(yj, "宜", UI_SUCCESS, info.yi);
+    daily_luck_block(yj, "忌", UI_DANGER, info.ji);
 
     if (info.pengzu[0]) {
         lv_obj_t* peng = lv_label_create(luck);
         nl_ov_set_font(peng);
-        lv_obj_set_style_text_font(peng, nl_ov_ui_font_compact(), 0);
-        lv_label_set_long_mode(peng, LV_LABEL_LONG_DOT);
+        lv_label_set_long_mode(peng, LV_LABEL_LONG_WRAP);
         lv_label_set_text(peng, info.pengzu);
         lv_obj_set_style_text_color(peng, UI_TEXT_MUTED, 0);
+        lv_obj_set_style_text_align(peng, LV_TEXT_ALIGN_LEFT, 0);
         lv_obj_set_width(peng, lv_pct(100));
     }
 
-    lv_obj_t* rem = daily_box(rem_parent, LV_FLEX_FLOW_COLUMN, true);
-    lv_obj_set_style_pad_all(rem, 8, 0);
-    lv_obj_set_style_pad_row(rem, 4, 0);
-    char rem_title_str[32];
-    if (s_rem_day_key == s_daily_focus && s_rem_day_n > 0)
-        snprintf(rem_title_str, sizeof(rem_title_str), "待办提醒 (%d)", s_rem_day_n);
-    else
-        snprintf(rem_title_str, sizeof(rem_title_str), "待办提醒");
-    lv_obj_t* rem_title = daily_label(rem, rem_title_str, UI_TEXT_DIM);
-    lv_obj_set_style_text_font(rem_title, nl_ov_ui_font_compact(), 0);
-    daily_day_fill_reminders(rem);
-
-    /* 历史上的今天：标题并入卡内，少一层空隙 */
-    lv_obj_t* hist = daily_box(body, LV_FLEX_FLOW_COLUMN, true);
-    lv_obj_set_style_pad_all(hist, 8, 0);
-    lv_obj_set_style_pad_row(hist, 4, 0);
-    lv_obj_t* hist_title = daily_label(hist, "历史上的今天", UI_TEXT_DIM);
-    lv_obj_set_style_text_font(hist_title, nl_ov_ui_font_compact(), 0);
+    /* 与上方彭祖/宜忌拉开，避免贴在一起 */
+    lv_obj_t* hist_sec = daily_box(luck, LV_FLEX_FLOW_COLUMN, false);
+    lv_obj_set_style_pad_top(hist_sec, 8, 0);
+    lv_obj_set_style_pad_row(hist_sec, 6, 0);
+    daily_label(hist_sec, "历史上的今天", UI_TEXT_SUB);
     nl_hist_item_t items[6];
     const int n = nl_history_on_day(m, d, items, 6);
     if (n <= 0) {
-        lv_obj_t* empty = daily_label(hist, "暂无收录", UI_TEXT_MUTED);
-        lv_obj_set_style_text_font(empty, nl_ov_ui_font_compact(), 0);
+        daily_label(hist_sec, "暂无收录", UI_TEXT_MUTED);
     } else {
         const int show = wide ? (n > 3 ? 3 : n) : n;
         for (int i = 0; i < show; ++i) {
-            lv_obj_t* row = daily_box(hist, LV_FLEX_FLOW_ROW, false);
+            lv_obj_t* row = daily_box(hist_sec, LV_FLEX_FLOW_ROW, false);
             lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                                   LV_FLEX_ALIGN_CENTER);
             lv_obj_set_style_pad_column(row, 6, 0);
@@ -1447,32 +1696,118 @@ static void daily_day(lv_obj_t* body) {
 
             char year[16];
             snprintf(year, sizeof(year), "%u年", items[i].year);
-            lv_obj_t* y_chip = lv_obj_create(row);
-            lv_obj_remove_style_all(y_chip);
-            lv_obj_set_size(y_chip, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_obj_set_style_pad_hor(y_chip, 6, 0);
-            lv_obj_set_style_pad_ver(y_chip, 1, 0);
-            lv_obj_set_style_radius(y_chip, UI_RADIUS_XS, 0);
-            lv_obj_set_style_bg_color(y_chip, UI_ACCENT, 0);
-            lv_obj_set_style_bg_opa(y_chip, LV_OPA_20, 0);
-            lv_obj_clear_flag(y_chip,
-                              (lv_obj_flag_t)(LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE));
-            lv_obj_t* yl = lv_label_create(y_chip);
-            nl_ov_set_font(yl);
-            lv_obj_set_style_text_font(yl, nl_ov_ui_font_compact(), 0);
-            lv_label_set_text(yl, year);
-            lv_obj_set_style_text_color(yl, UI_ACCENT, 0);
-            lv_obj_center(yl);
+            daily_chip(row, year, UI_ACCENT);
 
             lv_obj_t* tx = lv_label_create(row);
             nl_ov_set_font(tx);
-            lv_obj_set_style_text_font(tx, nl_ov_ui_font_compact(), 0);
             lv_label_set_long_mode(tx, LV_LABEL_LONG_DOT);
             lv_label_set_text(tx, items[i].text);
             lv_obj_set_style_text_color(tx, UI_TEXT, 0);
             lv_obj_set_flex_grow(tx, 1);
-            lv_obj_set_width(tx, lv_pct(80));
+            lv_obj_set_style_min_width(tx, 0, 0);
         }
+    }
+
+    /* 右卡：待办，条目用磁贴，操作跟标题在一起 */
+    lv_obj_t* rem = daily_box(card_host, LV_FLEX_FLOW_COLUMN, true);
+    daily_card_edge(rem);
+    if (wide) {
+        lv_obj_set_width(rem, lv_pct(42));
+        lv_obj_set_style_min_width(rem, 0, 0);
+    }
+    lv_obj_set_style_pad_all(rem, 14, 0);
+    lv_obj_set_style_pad_row(rem, 10, 0);
+    char rem_title_str[32];
+    if (s_rem_day_key == s_daily_focus && s_rem_day_n > 0)
+        snprintf(rem_title_str, sizeof(rem_title_str), "待办提醒 · %d", s_rem_day_n);
+    else
+        snprintf(rem_title_str, sizeof(rem_title_str), "待办提醒");
+    daily_label(rem, rem_title_str, UI_TEXT_SUB);
+    daily_day_fill_reminders(rem);
+}
+
+/** 全部提醒：按日分组；宽屏磁贴换行，避免一行拉满整屏。 */
+static void daily_all_reminders(lv_obj_t* body) {
+    lv_obj_set_style_pad_row(body, 8, 0);
+    lv_obj_set_style_pad_left(body, 12, 0);
+    lv_obj_set_style_pad_right(body, 12, 0);
+    const bool wide = daily_day_wide();
+
+    lv_obj_t* head = daily_box(body, LV_FLEX_FLOW_ROW, false);
+    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(head, 6, 0);
+    lv_obj_set_style_pad_row(head, 0, 0);
+    lv_obj_set_style_pad_right(head, 44, 0);
+    daily_icon_btn(head, MATERIAL_SYMBOLS_KEYBOARD_ARROW_LEFT, 40, UI_TEXT_SUB);
+    lv_obj_t* title = daily_label(head, "全部提醒", UI_TEXT, true);
+    lv_obj_set_width(title, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(title, 1);
+
+    if (!s_rem_all_ok) {
+        lv_obj_t* tip = daily_label(body, "正在同步…", UI_TEXT_MUTED);
+        lv_obj_set_style_text_font(tip, nl_ov_ui_font_compact(), 0);
+        return;
+    }
+    if (s_rem_all_n <= 0) {
+        lv_obj_t* empty = daily_label(body, "还没有提醒", UI_TEXT_MUTED);
+        lv_obj_set_style_text_font(empty, nl_ov_ui_font_compact(), 0);
+        return;
+    }
+
+    static const char* week[] = {"周日", "周一", "周二", "周三", "周四", "周五", "周六"};
+    int last_ymd = -1;
+    lv_obj_t* group = nullptr;
+    lv_obj_t* list = nullptr;
+    for (int i = 0; i < s_rem_all_n; ++i) {
+        const daily_all_rem_item* it = &s_rem_all_items[i];
+        if (it->ymd != last_ymd) {
+            last_ymd = it->ymd;
+            const int y = it->ymd / 10000;
+            const int m = (it->ymd / 100) % 100;
+            const int d = it->ymd % 100;
+            struct tm when{};
+            when.tm_year = y - 1900;
+            when.tm_mon = m - 1;
+            when.tm_mday = d;
+            when.tm_hour = 12;
+            when.tm_isdst = -1;
+            mktime(&when);
+            char hdr[48];
+            snprintf(hdr, sizeof(hdr), "%d月%d日 %s", m, d, week[when.tm_wday]);
+            /* 日期作分组标题：正文级字号，不再套一层灰底卡片 */
+            group = daily_box(body, LV_FLEX_FLOW_COLUMN, false);
+            lv_obj_set_style_pad_row(group, 8, 0);
+            if (i > 0)
+                lv_obj_set_style_pad_top(group, 6, 0);
+            lv_obj_t* hl = daily_label(group, hdr, UI_TEXT, true);
+            lv_obj_set_width(hl, LV_SIZE_CONTENT);
+            list = daily_box(group, wide ? LV_FLEX_FLOW_ROW_WRAP : LV_FLEX_FLOW_COLUMN, false);
+            lv_obj_set_style_pad_column(list, 8, 0);
+            lv_obj_set_style_pad_row(list, 8, 0);
+        }
+        if (!group || !list)
+            continue;
+
+        char when[24];
+        if (it->time[0])
+            snprintf(when, sizeof(when), "%s", it->time);
+        else if (strcmp(it->recur, "daily") == 0)
+            snprintf(when, sizeof(when), "每天");
+        else if (strcmp(it->recur, "weekly") == 0)
+            snprintf(when, sizeof(when), "每周");
+        else
+            snprintf(when, sizeof(when), "一次");
+
+        const char* extra = nullptr;
+        if (strcmp(it->recur, "daily") == 0)
+            extra = "每天";
+        else if (strcmp(it->recur, "weekly") == 0)
+            extra = "每周";
+        /* when 已是「每天/每周」时勿重复挂 extra */
+        if (extra && strcmp(when, extra) == 0)
+            extra = nullptr;
+
+        daily_rem_tile(list, it->id, when, it->title, it->tone, extra, wide);
     }
 }
 
@@ -1492,7 +1827,9 @@ void fill_calendar_weather(void) {
     lv_obj_set_scroll_dir(s_card_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_card_list, LV_SCROLLBAR_MODE_AUTO);
     const char* sub = "15 天天气 · 右滑看月历";
-    if (s_daily_focus && !s_daily_weather)
+    if (s_daily_all_rem)
+        sub = "按下次提醒时间分组";
+    else if (s_daily_focus && !s_daily_weather)
         sub = "黄历与历史上的今天";
     else if (!s_daily_weather)
         sub = "点日期看黄历 · 左滑看天气";
@@ -1504,16 +1841,21 @@ void fill_calendar_weather(void) {
 
     /* 无标签：两页靠左右滑动切换，页脚用圆点与提示说明手势。 */
     const bool detail = s_daily_focus && !s_daily_weather;
-    if (detail)
+    const bool all_rem = s_daily_all_rem && !s_daily_weather;
+    if (all_rem)
+        daily_all_reminders(body);
+    else if (detail)
         daily_day(body);
     else if (s_daily_weather)
         daily_weather(body);
     else
         daily_calendar(body);
-    if (!detail)
+    if (!detail && !all_rem)
         daily_pager_footer(body);
     lv_obj_scroll_to_y(s_card_list, 0, LV_ANIM_OFF);
-    if (detail)
+    if (all_rem)
+        daily_reminders_fetch_all();
+    else if (detail)
         daily_reminders_fetch_day(s_daily_focus);
     else if (!s_daily_weather)
         daily_reminders_fetch_month();
@@ -1534,8 +1876,22 @@ static int daily_today_key(void) {
     return (today.tm_year + 1900) * 10000 + (today.tm_mon + 1) * 100 + today.tm_mday;
 }
 
+static bool daily_temp_ok(const nl_env_daily_t* d) {
+    return d && d->temperature[0] && strcmp(d->temperature, "—") != 0 &&
+           strcmp(d->temperature, "--") != 0 && strcmp(d->temperature, "--°") != 0;
+}
+
+static bool daily_wx_cache_ready(void) {
+    const int day = daily_today_key();
+    return s_wx_cache_ok && day && s_wx_cache_day == day && daily_temp_ok(&s_wx_cache_daily);
+}
+
+bool nodelio_skill_daily_has_wx_cache(void) {
+    return daily_wx_cache_ready();
+}
+
 static void daily_cache_store(const nl_content_envelope_t* env) {
-    if (!env || env->daily.temperature[0] == '\0') {
+    if (!env || !daily_temp_ok(&env->daily)) {
         return;
     }
     const int day = daily_today_key();
@@ -1571,7 +1927,7 @@ static nl_content_envelope_t* daily_shell_env(void) {
     return env;
 }
 
-uint32_t nodelio_skill_daily_open(bool reset_view) {
+uint32_t nodelio_skill_daily_open(bool reset_view, bool weather_tab) {
     const uint32_t generation = daily_bump_generation();
     if (!reset_view && daily_is_open()) {
         daily_redraw();
@@ -1580,7 +1936,8 @@ uint32_t nodelio_skill_daily_open(bool reset_view) {
     auto* env = daily_shell_env();
     if (!env)
         return 0;
-    s_daily_weather = true;
+    s_daily_weather = weather_tab;
+    s_daily_all_rem = false;
     s_daily_focus = 0;
     daily_reset_month();
     nodelio_skill_result_show(nullptr, env, false);
@@ -1599,6 +1956,7 @@ uint32_t nodelio_skill_daily_open_reminders(void) {
         daily_reset_month();
     }
     s_daily_weather = false;
+    s_daily_all_rem = false;
     s_daily_focus = focus;
     s_rem_day_key = 0;
     if (daily_is_open()) {
@@ -1609,6 +1967,27 @@ uint32_t nodelio_skill_daily_open_reminders(void) {
     if (!env)
         return 0;
     nodelio_skill_result_show(nullptr, env, false);
+    return generation;
+}
+
+uint32_t nodelio_skill_daily_open_all_reminders(void) {
+    const uint32_t generation = daily_bump_generation();
+    s_daily_weather = false;
+    s_daily_all_rem = true;
+    s_daily_focus = 0;
+    s_rem_all_ok = false;
+    if (!s_daily_year)
+        daily_reset_month();
+    if (daily_is_open()) {
+        daily_redraw();
+        daily_reminders_fetch_all();
+        return generation;
+    }
+    auto* env = daily_shell_env();
+    if (!env)
+        return 0;
+    nodelio_skill_result_show(nullptr, env, false);
+    daily_reminders_fetch_all();
     return generation;
 }
 
@@ -1631,6 +2010,27 @@ void nodelio_skill_daily_update(const nodelio_nvs_config_t* cfg, nl_content_enve
     if (!lock || generation != s_daily_generation || !daily_is_open()) {
         free_owned_env(env);
         return;
+    }
+    /* 新包无有效气温：保留当日缓存画面，最多并入新空气质量，避免「暂不可用」盖掉好数据 */
+    if (!daily_temp_ok(&env->daily) && daily_wx_cache_ready()) {
+        const bool air_new = env->daily.air[0] != '\0';
+        char air[sizeof(env->daily.air)];
+        char air_upd[sizeof(env->daily.air_updated)];
+        air[0] = '\0';
+        air_upd[0] = '\0';
+        if (air_new) {
+            snprintf(air, sizeof(air), "%s", env->daily.air);
+            snprintf(air_upd, sizeof(air_upd), "%s", env->daily.air_updated);
+        }
+        env->daily = s_wx_cache_daily;
+        if (air_new) {
+            snprintf(env->daily.air, sizeof(env->daily.air), "%s", air);
+            snprintf(env->daily.air_updated, sizeof(env->daily.air_updated), "%s", air_upd);
+        }
+        if (s_wx_cache_spoken[0]) {
+            snprintf(env->spoken, sizeof(env->spoken), "%s", s_wx_cache_spoken);
+        }
+        env->daily.message[0] = '\0';
     }
     daily_cache_store(env);
     const int scroll_y = s_card_list ? lv_obj_get_scroll_y(s_card_list) : 0;

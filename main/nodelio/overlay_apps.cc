@@ -227,7 +227,8 @@ static void apps_split_failed(void)
     });
 }
 
-static void open_app_at(int idx, bool reset_daily = true, bool force_weather_refresh = false) {
+static void open_app_at(int idx, bool reset_daily = true, bool force_weather_refresh = false,
+                        bool weather_tab = true) {
     if (idx < 0 || idx >= s_item_n) {
         return;
     }
@@ -274,12 +275,17 @@ static void open_app_at(int idx, bool reset_daily = true, bool force_weather_ref
         return;
     }
     const uint32_t view_epoch = nodelio_panel_begin_skill_view();
-    const uint32_t daily_generation = daily ? nodelio_skill_daily_open(reset_daily) : 0;
+    const uint32_t daily_generation =
+        daily ? nodelio_skill_daily_open(reset_daily, weather_tab) : 0;
     if (daily && !daily_generation)
         return;
     /* 宽屏先不收列表。结果卡真正出现时再折叠；打不开则保持整列。 */
     if (apps_wide() && s_split) {
         render_list();
+    }
+    /* 当日气温已缓存且非手动刷新：直接用缓存，不再每次打开打 Open-Meteo */
+    if (daily && !force_weather_refresh && nodelio_skill_daily_has_wx_cache()) {
+        return;
     }
     if (daily && !nodelio_wifi_is_connected()) {
         nl_ov_toast("当前离线，日历可用；联网后刷新天气");
@@ -1451,19 +1457,34 @@ enum {
     OPEN_PLAN_SD,
     OPEN_PLAN_SD_PHOTO,
     OPEN_PLAN_SD_FILES,
+    OPEN_PLAN_DAILY_ALL_REM,
     OPEN_PLAN_SKILL,
 };
 
 struct OpenPlan {
     int kind;
     char sid[72];
+    bool daily_weather; /* builtin.daily：天气页 vs 月历页 */
 };
+
+/** 口令偏好：含天气/空气 → 天气页；仅日历 → 月历；「日历与天气」含天气故仍天气。 */
+static bool daily_query_wants_weather(const char *query) {
+    if (!query || !query[0])
+        return true;
+    if (strstr(query, "天气") || strstr(query, "weather") || strstr(query, "空气") ||
+        strstr(query, "air"))
+        return true;
+    if (strstr(query, "日历") || strstr(query, "calendar"))
+        return false;
+    return true;
+}
 
 /** 只判断打不打得开，不切页、不请求。sid 拷进 plan，避免指向列表内部。 */
 static int plan_open_query(const char *query, OpenPlan *plan, bool log)
 {
     plan->kind = OPEN_PLAN_NONE;
     plan->sid[0] = '\0';
+    plan->daily_weather = true;
     if (!query || !query[0]) {
         if (log) {
             ESP_LOGW(TAG, "open_by_query: empty");
@@ -1508,6 +1529,12 @@ static int plan_open_query(const char *query, OpenPlan *plan, bool log)
         plan->kind = OPEN_PLAN_SD;
         return OPEN_PLAN_SD;
     }
+    /* 全部提醒：短名入口，勿与「提醒我…」创建口令混淆。 */
+    if (strcmp(query, "全部提醒") == 0 || strcmp(query, "我的提醒") == 0 ||
+        strcmp(query, "所有提醒") == 0 || strcmp(query, "提醒列表") == 0) {
+        plan->kind = OPEN_PLAN_DAILY_ALL_REM;
+        return OPEN_PLAN_DAILY_ALL_REM;
+    }
 
     /* 明确平台优先；泛称工作台使用已装默认入口，兼容仅安装 DSH 的旧配置。 */
     const char* alias_id = nl_workbench_named_app(query);
@@ -1538,14 +1565,13 @@ static int plan_open_query(const char *query, OpenPlan *plan, bool log)
                strstr(query, "新闻") || strstr(query, "news")) {
         alias_id = "news.latest";
     } else if (strstr(query, "天气") || strstr(query, "weather") || strstr(query, "日历") ||
-               strstr(query, "calendar")) {
+               strstr(query, "calendar") || strstr(query, "空气") || strstr(query, "air")) {
         alias_id = "builtin.daily";
+        plan->daily_weather = daily_query_wants_weather(query);
     } else if (strstr(query, "电台") || strstr(query, "radio")) {
         alias_id = "radio.stations";
     } else if (strstr(query, "播客") || strstr(query, "podcast")) {
         alias_id = "podcast.latest";
-    } else if (strstr(query, "空气") || strstr(query, "air")) {
-        alias_id = "builtin.daily";
     } else if (strstr(query, "一篇") || strstr(query, "美文") || strstr(query, "article") ||
                strstr(query, "每日一文")) {
         alias_id = "article.daily";
@@ -1605,6 +1631,8 @@ static int plan_open_query(const char *query, OpenPlan *plan, bool log)
         return OPEN_PLAN_NONE;
     }
     snprintf(plan->sid, sizeof(plan->sid), "%.*s", (int)sizeof(plan->sid) - 1, sid);
+    if (strcmp(plan->sid, "builtin.daily") == 0)
+        plan->daily_weather = daily_query_wants_weather(query);
     plan->kind = OPEN_PLAN_SKILL;
     return OPEN_PLAN_SKILL;
 }
@@ -1640,23 +1668,28 @@ bool nl_ov_apps_open_by_query(const char *query)
         nodelio_skill_request_sd_files();
         return true;
     }
+    if (kind == OPEN_PLAN_DAILY_ALL_REM) {
+        ESP_LOGI(TAG, "open_by_query: all reminders");
+        (void)nodelio_skill_daily_open_all_reminders();
+        return true;
+    }
     if (kind != OPEN_PLAN_SKILL || !plan.sid[0]) {
         return false;
     }
-    ESP_LOGI(TAG, "open_by_query invoke sid=%s", plan.sid);
+    ESP_LOGI(TAG, "open_by_query invoke sid=%s weather=%d", plan.sid,
+             plan.daily_weather ? 1 : 0);
     /* 新闻/每日一篇已在前台：云端二次 open_app 勿再 invoke，否则列表重刷并再问「要读吗」 */
     if (nodelio_skill_news_ui_active() &&
         (strstr(query, "新闻") || strstr(query, "news") || strstr(query, "一篇") ||
          strstr(query, "美文") || strstr(query, "article") || strstr(plan.sid, "news") ||
-         strstr(plan.sid, "daily") || strstr(plan.sid, "article") ||
-         strcmp(plan.sid, "builtin.daily") == 0)) {
+         strstr(plan.sid, "article") || strcmp(plan.sid, "article.daily") == 0)) {
         ESP_LOGI(TAG, "open_by_query: news already open, skip re-invoke sid=%s", plan.sid);
         return true;
     }
     if (strcmp(plan.sid, "builtin.daily") == 0) {
         for (int i = 0; i < s_item_n; ++i) {
             if (strcmp(s_items[i].id, plan.sid) == 0) {
-                open_app_at(i);
+                open_app_at(i, true, false, plan.daily_weather);
                 return true;
             }
         }

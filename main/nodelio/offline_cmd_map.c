@@ -361,6 +361,8 @@ static const nodelio_oc_catalog_entry_t k_oc_catalog[] = {
     {"应用", "打开内存卡 / 放内存卡里的歌 / 听本地音乐"},
     {"应用", "打开新闻"},
     {"应用", "打开天气 / 再问天气 / 刷新天气"},
+    {"应用", "打开日历"},
+    {"应用", "全部提醒 / 我的提醒"},
     {"应用", "打开电台"},
     {"应用", "打开播客"},
     {"应用", "打开空气 / 再问空气 / 刷新空气"},
@@ -1180,7 +1182,8 @@ static bool app_query_plausible(const char *q)
 static bool is_known_app_name(const char *name)
 {
     static const char *const kKnown[] = {
-        "新闻", "曲库", "取库", "去库", "趣库", "音乐", "电台", "播客", "天气", "空气",
+        "新闻", "曲库", "取库", "去库", "趣库", "音乐", "电台", "播客", "天气", "日历", "空气",
+        "全部提醒", "我的提醒", "所有提醒", "提醒列表",
         "一句", "名言", "一篇", "每日一篇", "美文", "工作台", "deepseek", "DeepSeek",
     };
     if (!name || !name[0]) {
@@ -1462,7 +1465,7 @@ static bool try_open_named_app(const char *phrase)
     /* 「打开新闻阅读第一篇」→ 只开新闻（阅读留给卡内旁路） */
     {
         static const char *const kShort[] = {"新闻", "曲库", "取库", "音乐", "电台", "播客", "天气",
-                                             "空气", "一句", "名言", "一篇", "每日一篇", "美文"};
+                                             "日历", "空气", "一句", "名言", "一篇", "每日一篇", "美文"};
         for (size_t i = 0; i < sizeof(kShort) / sizeof(kShort[0]); i++) {
             const size_t sl = strlen(kShort[i]);
             if (strncmp(name, kShort[i], sl) == 0 && name[sl] != '\0' &&
@@ -1798,6 +1801,16 @@ static bool try_open_intent_app(const char *phrase)
         ESP_LOGI(TAG, "intent open → 天气 phrase='%s'", phrase);
         return nodelio_panel_ui_open_app("天气");
     }
+    if (strstr(phrase, "看日历") || strstr(phrase, "打开日历") || strstr(phrase, "日历页面") ||
+        strstr(phrase, "日历页")) {
+        ESP_LOGI(TAG, "intent open → 日历 phrase='%s'", phrase);
+        return nodelio_panel_ui_open_app("日历");
+    }
+    if (strstr(phrase, "全部提醒") || strstr(phrase, "我的提醒") || strstr(phrase, "所有提醒") ||
+        strstr(phrase, "提醒列表") || strstr(phrase, "查看提醒")) {
+        ESP_LOGI(TAG, "intent open → 全部提醒 phrase='%s'", phrase);
+        return nodelio_panel_ui_open_app("全部提醒");
+    }
     if (strstr(phrase, "空气质量") || strstr(phrase, "看空气")) {
         ESP_LOGI(TAG, "intent open → 空气 phrase='%s'", phrase);
         return nodelio_panel_ui_open_app("空气");
@@ -1821,9 +1834,10 @@ static bool try_open_bare_known_app(const char *phrase)
         "新闻",     "面板新闻", "新闻面板",
         "最新新闻", "RSS订阅", "rss订阅", "RSS 订阅",
         "财经新闻", "财新闻", /* 「看新闻」的常见 ASR 残句；只匹配整个短句。 */
-        "天气",     "空气",     "一句",     "名言",     "一篇",     "每日一篇", "美文",
+        "天气",     "日历",     "空气",     "全部提醒", "我的提醒", "所有提醒", "提醒列表",
+        "一句",     "名言",     "一篇",     "每日一篇", "美文",
         "网络电台", "radio",    "podcast",
-        "music",    "news",     "weather",  "DSH",      "dsh",      "DSH任务",  "DSH进度",
+        "music",    "news",     "weather",  "calendar", "DSH",      "dsh",      "DSH任务",  "DSH进度",
         "查看任务", "任务情况", "任务列表", "任务详情", "任务应用", "任务表情", /* 表情=情况 ASR
                                                                                    误识 */
         "派活",

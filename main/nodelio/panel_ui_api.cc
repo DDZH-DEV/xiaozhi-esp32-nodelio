@@ -949,11 +949,13 @@ static void notice_do_invoke(const nodelio_panel_notice_t *n)
 static esp_timer_handle_t s_notice_repeat_tmr = nullptr;
 static bool s_notice_boot_remind_done = false;
 
+enum { kNoticeSoundMax = 6 };
+
 static int notice_sound_cue(void)
 {
     nodelio_nvs_config_t cfg{};
     nodelio_nvs_cache_get(&cfg);
-    if (cfg.notice_sound == 0 || cfg.notice_sound > 3) {
+    if (cfg.notice_sound == 0 || cfg.notice_sound > kNoticeSoundMax) {
         return -1;
     }
     return (int)cfg.notice_sound - 1;
@@ -963,10 +965,28 @@ static bool notice_repeat_on(void)
 {
     nodelio_nvs_config_t cfg{};
     nodelio_nvs_cache_get(&cfg);
-    return cfg.notice_repeat != 0 && cfg.notice_sound >= 1 && cfg.notice_sound <= 3;
+    return cfg.notice_repeat != 0 && cfg.notice_sound >= 1 &&
+           cfg.notice_sound <= kNoticeSoundMax;
 }
 
-/** 未点开的 action/alert；0=最新。仅 info 不算。 */
+static bool notice_is_reminder_app(const nodelio_panel_notice_t *it)
+{
+    return it && it->app_id[0] && strcmp(it->app_id, "builtin.reminder") == 0;
+}
+
+/** 需要人处理才会循环响：进线/告警，以及日历提醒（info 也算）。 */
+static bool notice_needs_attention(const nodelio_panel_notice_t *it)
+{
+    if (!it) {
+        return false;
+    }
+    if (notice_is_reminder_app(it)) {
+        return true;
+    }
+    return strcmp(it->mode, "action") == 0 || strcmp(it->mode, "alert") == 0;
+}
+
+/** 未点开的待处理项（action/alert/日历提醒）；取最新一条。 */
 static const nodelio_panel_notice_t *notice_newest_action_alert(void)
 {
     if (!s_notice_items) {
@@ -974,7 +994,7 @@ static const nodelio_panel_notice_t *notice_newest_action_alert(void)
     }
     for (int i = 0; i < s_notice_n; ++i) {
         const nodelio_panel_notice_t *it = &s_notice_items[i];
-        if (strcmp(it->mode, "action") == 0 || strcmp(it->mode, "alert") == 0) {
+        if (notice_needs_attention(it)) {
             return it;
         }
     }
@@ -1047,8 +1067,7 @@ static void notice_play_arrival(const nodelio_panel_notice_t *n)
     if (cue >= 0) {
         nodelio_panel_ui_play_cue(cue);
     }
-    const bool needs_person = strcmp(n->mode, "action") == 0 || strcmp(n->mode, "alert") == 0;
-    if (needs_person) {
+    if (notice_needs_attention(n)) {
         notice_repeat_start();
     } else if (!notice_newest_action_alert()) {
         notice_repeat_stop();
@@ -1115,7 +1134,8 @@ static void notice_present(const nodelio_panel_notice_t *n)
             s_notice_active_id[0] = '\0';
             notice_repeat_stop();
         }
-    } else {
+    } else if (!notice_is_reminder_app(n)) {
+        /* 日历提醒单独处理：提示音与云端朗读抢解码队列会卡顿。 */
         const char *toast = n->title[0] ? n->title : nullptr;
         if (!toast) {
             if (strcmp(n->reason, "needs_you") == 0) {
@@ -1134,10 +1154,17 @@ static void notice_present(const nodelio_panel_notice_t *n)
         notice_play_arrival(n);
     }
 
-    /* 日历提醒：念一次标题，并刷新已开日历的圆点；不 invoke 技能卡 */
-    if (!notice_is_quiet_refresh(n) && n->app_id[0] && strcmp(n->app_id, "builtin.reminder") == 0) {
-        if (n->title[0]) {
+    /* 日历提醒：只走一条音频路径。
+     * 小智开着 → Toast + 念标题（不播 OGG、不开 12s 循环，避免与 TTS 抢喇叭）；
+     * 小智关着 → 退回普通提示音。 */
+    if (!notice_is_quiet_refresh(n) && notice_is_reminder_app(n)) {
+        const char *toast = n->title[0] ? n->title : "提醒";
+        nl_ov_toast(toast);
+        notice_repeat_stop();
+        if (nodelio_xiaozhi_enabled() && n->title[0]) {
             nodelio_panel_ui_request_cloud_speak(n->title);
+        } else {
+            notice_play_arrival(n);
         }
         nodelio_skill_daily_reminders_invalidate();
         return;
@@ -1548,13 +1575,25 @@ extern "C" void nodelio_panel_ui_play_cue(int cue)
         auto& app = Application::GetInstance();
         switch (cue) {
         case 0:
-            app.PlaySound(Lang::Sounds::OGG_POPUP);
+            app.PlaySound(Lang::Sounds::OGG_NOTICE1);
             break;
         case 1:
-            app.PlaySound(Lang::Sounds::OGG_SUCCESS);
+            app.PlaySound(Lang::Sounds::OGG_NOTICE2);
+            break;
+        case 2:
+            app.PlaySound(Lang::Sounds::OGG_NOTICE3);
+            break;
+        case 3:
+            app.PlaySound(Lang::Sounds::OGG_NOTICE4);
+            break;
+        case 4:
+            app.PlaySound(Lang::Sounds::OGG_NOTICE5);
+            break;
+        case 5:
+            app.PlaySound(Lang::Sounds::OGG_NOTICE6);
             break;
         default:
-            app.PlaySound(Lang::Sounds::OGG_EXCLAMATION);
+            app.PlaySound(Lang::Sounds::OGG_NOTICE1);
             break;
         }
     });
