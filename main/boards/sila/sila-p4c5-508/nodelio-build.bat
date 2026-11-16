@@ -47,6 +47,9 @@ set "PATH=D:\Espressif\python_env\idf6.1_py3.11_env\Scripts;D:\Espressif\tools\i
 call "%IDF_PATH%\export.bat"
 if errorlevel 1 exit /b 1
 cd /d "!REPO!"
+call "!REPO!\scripts\nodelio_activate_build_slot.bat" sila_p4c5_508_!VARIANT!
+if errorlevel 1 exit /b 1
+call "!REPO!\.build-slots\env.cmd"
 python "!REPO!\scripts\nodelio_patch_esp_ml307.py"
 if errorlevel 1 exit /b 1
 
@@ -67,33 +70,48 @@ echo [p4c5-508] build !BOARD_DIR! --name !BUILD_NAME! ...
 echo [p4c5-508] full path reconfigures sdkconfig; UI-only changes: nodelio-build.bat --quick
 python scripts\build.py !BOARD_DIR! --name !BUILD_NAME!
 if errorlevel 1 exit /b 1
+call :import_root_build_to_slot
+call "!REPO!\scripts\nodelio_activate_build_slot.bat" sila_p4c5_508_!VARIANT!
+call "!REPO!\.build-slots\env.cmd"
 call :sync_ota
 exit /b %ERRORLEVEL%
 
 :quick_build
-if not exist sdkconfig (
+set "CFG=!NODELIO_SDKCONFIG!"
+if not exist "!CFG!" set "CFG=sdkconfig"
+if not exist "!CFG!" (
   echo [p4c5-508] no sdkconfig - run once without --quick
   exit /b 1
 )
-findstr /b /c:"CONFIG_BOARD_TYPE_SILA_P4C5_508=y" sdkconfig >nul
+findstr /b /c:"CONFIG_BOARD_TYPE_SILA_P4C5_508=y" "!CFG!" >nul
 if errorlevel 1 (
   echo [p4c5-508] sdkconfig is not this board - run once without --quick
   exit /b 1
 )
-findstr /c:"!PART_CSV!" sdkconfig >nul
+findstr /c:"!PART_CSV!" "!CFG!" >nul
 if errorlevel 1 (
   echo [p4c5-508] sdkconfig partition is not !VARIANT! - run without --quick
   exit /b 1
 )
-echo [p4c5-508] incremental idf.py build ^(!VARIANT!^; no reconfigure^) ...
-idf.py build
+echo [p4c5-508] incremental slot build ^(!VARIANT!^; no reconfigure^) ...
+call "!REPO!\scripts\nodelio_idf.cmd" build
 if errorlevel 1 exit /b 1
 call :sync_ota
 exit /b %ERRORLEVEL%
 
+:import_root_build_to_slot
+if not exist "build\xiaozhi.bin" exit /b 0
+if "!NODELIO_BUILD_DIR!"=="" exit /b 0
+echo [p4c5-508] copy root build\ -^> slot !NODELIO_BUILD_DIR!
+robocopy "build" "!NODELIO_BUILD_DIR!" /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS >nul
+if exist "sdkconfig" copy /Y "sdkconfig" "!NODELIO_SDKCONFIG!" >nul
+exit /b 0
+
 :sync_ota
 echo [p4c5-508] sync panel OTA board=sila_p4c5_508 variant=!VARIANT! channel=!CHANNEL! ...
-python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --board sila_p4c5_508 --variant !VARIANT! --channel !CHANNEL!
+set "SYNC_BD="
+if not "!NODELIO_BUILD_DIR!"=="" set "SYNC_BD=--build-dir !NODELIO_BUILD_DIR!"
+python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --board sila_p4c5_508 --variant !VARIANT! --channel !CHANNEL! !SYNC_BD!
 if errorlevel 1 (
   echo [p4c5-508] WARN panel OTA sync failed ^(build ok^)
   exit /b 0

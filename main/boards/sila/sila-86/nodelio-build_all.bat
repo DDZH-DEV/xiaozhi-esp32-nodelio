@@ -16,18 +16,20 @@ set "PATH=D:\Espressif\python_env\idf6.1_py3.11_env\Scripts;D:\Espressif\tools\i
 call "%IDF_PATH%\export.bat"
 if errorlevel 1 exit /b 1
 cd /d "%REPO%"
+call "%REPO%\scripts\nodelio_activate_build_slot.bat" sila_86
+if errorlevel 1 exit /b 1
 python "%REPO%\scripts\nodelio_patch_esp_ml307.py"
 if errorlevel 1 exit /b 1
-rem P4 and 86 share this tree's sdkconfig. Last P4 build leaves esp32p4 selected.
+rem Other panels parked in .build-slots\; only missing/wrong slot triggers reconfigure.
 rem build.py already runs merge-bin.
 findstr /b /c:"CONFIG_BOARD_TYPE_SILA_86=y" sdkconfig >nul
 if errorlevel 1 (
   echo [sila-86] sdkconfig is not SILA_86. Reconfigure esp32s3 via build.py.
-  echo [sila-86] this fullcleans the current build directory.
+  echo [sila-86] previous panel cache kept under .build-slots\
   python scripts\build.py sila/sila-86 --name sila-86
   if errorlevel 1 exit /b 1
   echo [sila-86] sync panel OTA manifest + bin to Z-Y ...
-  python "%REPO%\scripts\nodelio_sync_panel_ota.py" --root "%REPO%"
+  python "%REPO%\scripts\nodelio_sync_panel_ota.py" --root "%REPO%" --board sila_86 --variant none --channel dev
   if errorlevel 1 (
     echo [sila-86] WARN panel OTA sync failed ^(build+merge ok^)
     exit /b 0
@@ -48,7 +50,7 @@ if errorlevel 1 (
     "$c=Get-Content sdkconfig -Raw; $c=$c -replace 'CONFIG_SR_MN_CN_NONE=y','# CONFIG_SR_MN_CN_NONE is not set'; $c=$c -replace '# CONFIG_SR_MN_CN_MULTINET6_QUANT is not set','CONFIG_SR_MN_CN_MULTINET6_QUANT=y'; if ($c -notmatch 'CONFIG_SR_MN_CN_MULTINET6_QUANT=y') { $c=$c + \"`nCONFIG_SR_MN_CN_MULTINET6_QUANT=y`n\" }; Set-Content sdkconfig -Value $c -Encoding ascii -NoNewline"
 )
 echo [sila-86] build stamp (code-change day serial) ...
-python "%REPO%\scripts\nodelio_build_stamp.py" --root "%REPO%"
+python "%REPO%\scripts\nodelio_build_stamp.py" --root "%REPO%" --board sila_86 --variant none
 if errorlevel 1 (
   echo [sila-86] build stamp failed
   exit /b 1

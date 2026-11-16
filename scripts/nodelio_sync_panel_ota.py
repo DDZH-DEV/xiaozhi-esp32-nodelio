@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -106,6 +107,16 @@ def read_stamp(header: Path) -> str:
     raise SystemExit(f"NODELIO_BUILD_STAMP not found in {header}")
 
 
+def read_stamp_variant(header: Path) -> str:
+    """编译期写入的闪存变体；app bin 本身不含分区表，以此核对菜单所选 --variant。"""
+    text = header.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("#define NODELIO_OTA_VARIANT "):
+            return line.split('"', 2)[1].strip().lower()
+    return "none"
+
+
 def empty_fw() -> dict:
     return {"version": "0.0.0", "url": "", "force": 0}
 
@@ -171,6 +182,12 @@ def main() -> int:
         help="dev=只发带号包；stable=写 latest + firmware",
     )
     ap.add_argument("--skip-bin", action="store_true", help="only refresh json")
+    ap.add_argument(
+        "--build-dir",
+        type=Path,
+        default=None,
+        help="directory containing xiaozhi.bin (default: <root>/build or NODELIO_BUILD_DIR)",
+    )
     args = ap.parse_args()
 
     if args.board == "sila_86":
@@ -196,12 +213,27 @@ def main() -> int:
         print("[panel-ota] missing stamp header — run nodelio_build_stamp.py first", file=sys.stderr)
         return 1
     stamp = read_stamp(header)
+    built_variant = read_stamp_variant(header)
+    if built_variant != variant:
+        print(
+            f"[panel-ota] ERROR: stamp NODELIO_OTA_VARIANT={built_variant!r} "
+            f"!= --variant {variant!r}（xiaozhi.bin 无分区表，以最近一次编译 stamp 为准）。"
+            f"请用匹配变体的 flash/build 再 sync，或改菜单选项。",
+            file=sys.stderr,
+        )
+        return 1
     expect = CHIP_IMAGE_ID[spec["chip"]]
 
     stamped_name = f"xiaozhi-{stamp}.bin"
     stamped_url = f"{spec['cdn']}/{stamped_name}"
     latest_url = f"{spec['cdn']}/xiaozhi-latest.bin"
-    src = root / "build" / "xiaozhi.bin"
+    if args.build_dir is not None:
+        build_dir = args.build_dir.resolve()
+    elif os.environ.get("NODELIO_BUILD_DIR"):
+        build_dir = Path(os.environ["NODELIO_BUILD_DIR"]).resolve()
+    else:
+        build_dir = root / "build"
+    src = build_dir / "xiaozhi.bin"
     if not args.skip_bin:
         if not src.is_file():
             print(f"[panel-ota] missing {src}; manifest not updated", file=sys.stderr)

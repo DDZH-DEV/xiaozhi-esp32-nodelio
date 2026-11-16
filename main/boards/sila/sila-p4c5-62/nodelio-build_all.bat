@@ -33,70 +33,74 @@ set "PATH=D:\Espressif\python_env\idf6.1_py3.11_env\Scripts;D:\Espressif\tools\i
 call "%IDF_PATH%\export.bat"
 if errorlevel 1 exit /b 1
 cd /d "!REPO!"
+call "!REPO!\scripts\nodelio_activate_build_slot.bat" sila_p4c5_62_!VARIANT!
+if errorlevel 1 exit /b 1
+call "!REPO!\.build-slots\env.cmd"
 python "!REPO!\scripts\nodelio_patch_esp_ml307.py"
 if errorlevel 1 exit /b 1
 
-echo [p4c5-62] build stamp ^(sila_p4c5_62 day serial^) ...
-python "!REPO!\scripts\nodelio_build_stamp.py" --root "!REPO!" --board sila_p4c5_62
+echo [p4c5-62] build stamp ^(sila_p4c5_62 variant=!VARIANT!^) ...
+python "!REPO!\scripts\nodelio_build_stamp.py" --root "!REPO!" --board sila_p4c5_62 --variant !VARIANT!
 if errorlevel 1 (
   echo [p4c5-62] build stamp failed
   exit /b 1
 )
 
-rem 86 与本板共用仓库 sdkconfig。上次编过 86 或另一种 Flash 时必须走 build.py。
+set "CFG=!NODELIO_SDKCONFIG!"
+if not exist "!CFG!" set "CFG=sdkconfig"
 set "NEED_FULL=1"
-if exist sdkconfig (
-  findstr /b /c:"CONFIG_BOARD_TYPE_SILA_P4C5_62=y" sdkconfig >nul
+if exist "!CFG!" (
+  findstr /b /c:"CONFIG_BOARD_TYPE_SILA_P4C5_62=y" "!CFG!" >nul
   if not errorlevel 1 (
-    findstr /c:"nodelio-p4c5-!VARIANT!.csv" sdkconfig >nul
+    findstr /c:"nodelio-p4c5-!VARIANT!.csv" "!CFG!" >nul
     if not errorlevel 1 set "NEED_FULL=0"
   )
 )
 
 if "!NEED_FULL!"=="1" (
   echo [p4c5-62] sdkconfig is not !BUILD_NAME!. Reconfigure esp32p4 via build.py.
-  echo [p4c5-62] this fullcleans the current build directory. build.py already merge-bin.
+  echo [p4c5-62] previous panel cache kept under .build-slots\; result copied into this slot.
   python scripts\build.py !BOARD_DIR! --name !BUILD_NAME!
   if errorlevel 1 exit /b 1
+  if not "!NODELIO_BUILD_DIR!"=="" robocopy "build" "!NODELIO_BUILD_DIR!" /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS >nul
+  if exist "sdkconfig" if not "!NODELIO_SDKCONFIG!"=="" copy /Y "sdkconfig" "!NODELIO_SDKCONFIG!" >nul
   goto verify
 )
 
-echo [p4c5-62] building !BUILD_NAME! ...
-idf.py build
+echo [p4c5-62] building !BUILD_NAME! ^(slot^) ...
+call "!REPO!\scripts\nodelio_idf.cmd" build
 if errorlevel 1 exit /b %ERRORLEVEL%
 
 echo [p4c5-62] merge-bin full flash image ...
-idf.py merge-bin
+call "!REPO!\scripts\nodelio_idf.cmd" merge-bin
 if errorlevel 1 exit /b %ERRORLEVEL%
 
 :verify
-if not exist build\xiaozhi.bin (
-  echo [p4c5-62] missing build\xiaozhi.bin
+set "BD=build"
+if not "!NODELIO_BUILD_DIR!"=="" set "BD=!NODELIO_BUILD_DIR!"
+if not exist "!BD!\xiaozhi.bin" (
+  echo [p4c5-62] missing !BD!\xiaozhi.bin
   exit /b 1
 )
-if not exist build\generated_assets.bin (
-  echo [p4c5-62] missing build\generated_assets.bin
+if not exist "!BD!\generated_assets.bin" (
+  echo [p4c5-62] missing !BD!\generated_assets.bin
   exit /b 1
 )
-if not exist build\flash_args (
-  echo [p4c5-62] missing build\flash_args
+if not exist "!BD!\flash_args" (
+  echo [p4c5-62] missing !BD!\flash_args
   exit /b 1
 )
-if not exist build\merged-binary.bin (
-  echo [p4c5-62] missing build\merged-binary.bin after merge-bin
+if not exist "!BD!\merged-binary.bin" (
+  echo [p4c5-62] missing !BD!\merged-binary.bin after merge-bin
   exit /b 1
 )
 
-for %%A in (build\merged-binary.bin) do echo [p4c5-62] OK merged-binary.bin %%~zA bytes
-for %%A in (build\xiaozhi.bin) do echo [p4c5-62]    xiaozhi.bin %%~zA bytes
-for %%A in (build\generated_assets.bin) do echo [p4c5-62]    generated_assets.bin %%~zA bytes
+for %%A in ("!BD!\merged-binary.bin") do echo [p4c5-62] OK merged-binary.bin %%~zA bytes
+for %%A in ("!BD!\xiaozhi.bin") do echo [p4c5-62]    xiaozhi.bin %%~zA bytes
+for %%A in ("!BD!\generated_assets.bin") do echo [p4c5-62]    generated_assets.bin %%~zA bytes
 
-if /I not "!VARIANT!"=="32m" (
-  echo [p4c5-62] !VARIANT! is not the OTA package; skip sila-panel-update.json
-  exit /b 0
-)
 echo [p4c5-62] sync panel OTA manifest + bin to Z-Y ...
-python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --board sila_p4c5_62
+python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --board sila_p4c5_62 --variant !VARIANT! --channel dev --build-dir "!BD!"
 if errorlevel 1 (
   echo [p4c5-62] WARN panel OTA sync failed ^(build+merge ok^)
   exit /b 0

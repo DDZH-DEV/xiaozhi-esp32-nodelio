@@ -49,16 +49,27 @@ if /I "!BOARD!"=="sila_86" (
   )
 )
 
-if not exist "!REPO!\build\xiaozhi.bin" (
-  echo [promote] ERROR: missing !REPO!\build\xiaozhi.bin — build first
+set "SLOT="
+if /I "!BOARD!"=="sila_86" set "SLOT=sila_86"
+if /I "!BOARD!"=="sila_p4c5_62" set "SLOT=sila_p4c5_62_!VARIANT!"
+if /I "!BOARD!"=="sila_p4c5_508" set "SLOT=sila_p4c5_508_!VARIANT!"
+if not "!SLOT!"=="" call "!REPO!\scripts\nodelio_activate_build_slot.bat" !SLOT!
+if exist "!REPO!\.build-slots\env.cmd" call "!REPO!\.build-slots\env.cmd"
+set "BUILD_BIN="
+if not "!NODELIO_BUILD_DIR!"=="" if exist "!NODELIO_BUILD_DIR!\xiaozhi.bin" set "BUILD_BIN=!NODELIO_BUILD_DIR!\xiaozhi.bin"
+if "!BUILD_BIN!"=="" if exist "!REPO!\build\xiaozhi.bin" set "BUILD_BIN=!REPO!\build\xiaozhi.bin"
+if "!BUILD_BIN!"=="" (
+  echo [promote] ERROR: missing xiaozhi.bin — build/flash first
   exit /b 1
 )
+for %%I in ("!BUILD_BIN!") do set "BUILD_DIR=%%~dpI"
+if "!BUILD_DIR:~-1!"=="\" set "BUILD_DIR=!BUILD_DIR:~0,-1!"
 
-echo [promote] sync stable board=!BOARD! variant=!VARIANT! ...
+echo [promote] sync stable board=!BOARD! variant=!VARIANT! from !BUILD_BIN! ...
 if /I "!BOARD!"=="sila_86" (
-  python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --board sila_86 --variant none --channel stable
+  python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --board sila_86 --variant none --channel stable --build-dir "!BUILD_DIR!"
 ) else (
-  python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --board !BOARD! --variant !VARIANT! --channel stable
+  python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --board !BOARD! --variant !VARIANT! --channel stable --build-dir "!BUILD_DIR!"
 )
 if errorlevel 1 (
   echo [promote] sync failed

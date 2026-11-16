@@ -32,19 +32,29 @@ set "PATH=D:\Espressif\python_env\idf6.1_py3.11_env\Scripts;D:\Espressif\tools\i
 call "%IDF_PATH%\export.bat"
 if errorlevel 1 exit /b 1
 cd /d "%REPO%"
+set "SLOT=sila_86"
+if /I "!BL_MODE!"=="pwm" set "SLOT=sila_86_pwm"
+call "%REPO%\scripts\nodelio_activate_build_slot.bat" !SLOT!
+if errorlevel 1 exit /b 1
+call "%REPO%\.build-slots\env.cmd"
 python "%REPO%\scripts\nodelio_patch_esp_ml307.py"
 if errorlevel 1 exit /b 1
-rem P4 and 86 share this tree's sdkconfig. Last P4 build leaves esp32p4 selected.
-findstr /b /c:"CONFIG_BOARD_TYPE_SILA_86=y" sdkconfig >nul
+rem Other panels cached under .build-slots\; only missing/wrong slot triggers reconfigure.
+set "CFG=!NODELIO_SDKCONFIG!"
+if not exist "!CFG!" set "CFG=sdkconfig"
+findstr /b /c:"CONFIG_BOARD_TYPE_SILA_86=y" "!CFG!" >nul
 if errorlevel 1 (
   echo [sila-86] sdkconfig is not SILA_86. Reconfigure esp32s3 via build.py.
-  echo [sila-86] this fullcleans the current build directory.
-  if /I "%BL_MODE%"=="pwm" (
+  echo [sila-86] previous panel cache kept under .build-slots\
+  if /I "!BL_MODE!"=="pwm" (
     python scripts\build.py sila/sila-86 --name sila-86-pwm
   ) else (
     python scripts\build.py sila/sila-86 --name sila-86
   )
   if errorlevel 1 exit /b 1
+  call :import_root_build_to_slot
+  call "%REPO%\scripts\nodelio_activate_build_slot.bat" !SLOT!
+  call "%REPO%\.build-slots\env.cmd"
   call :sync_ota
   exit /b %ERRORLEVEL%
 )
@@ -103,16 +113,27 @@ if errorlevel 1 (
   echo [sila-86] build stamp failed
   exit /b 1
 )
-echo [sila-86] building ...
-idf.py build
+if exist sdkconfig if not "!NODELIO_SDKCONFIG!"=="" copy /Y sdkconfig "!NODELIO_SDKCONFIG!" >nul
+echo [sila-86] building ^(slot !SLOT!^) ...
+call "%REPO%\scripts\nodelio_idf.cmd" build
 if errorlevel 1 exit /b %ERRORLEVEL%
 
 call :sync_ota
 exit /b %ERRORLEVEL%
 
+:import_root_build_to_slot
+if not exist "build\xiaozhi.bin" exit /b 0
+if "!NODELIO_BUILD_DIR!"=="" exit /b 0
+echo [sila-86] copy root build\ -^> slot !NODELIO_BUILD_DIR!
+robocopy "build" "!NODELIO_BUILD_DIR!" /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS >nul
+if exist "sdkconfig" copy /Y "sdkconfig" "!NODELIO_SDKCONFIG!" >nul
+exit /b 0
+
 :sync_ota
 echo [sila-86] sync panel OTA channel=!CHANNEL! ...
-python "%REPO%\scripts\nodelio_sync_panel_ota.py" --root "%REPO%" --board sila_86 --variant none --channel !CHANNEL!
+set "SYNC_BD="
+if not "!NODELIO_BUILD_DIR!"=="" set "SYNC_BD=--build-dir !NODELIO_BUILD_DIR!"
+python "%REPO%\scripts\nodelio_sync_panel_ota.py" --root "%REPO%" --board sila_86 --variant none --channel !CHANNEL! !SYNC_BD!
 if errorlevel 1 (
   echo [sila-86] WARN panel OTA sync failed ^(build ok^)
   exit /b 0

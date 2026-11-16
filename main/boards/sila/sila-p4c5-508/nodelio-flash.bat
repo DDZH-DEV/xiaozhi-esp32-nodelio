@@ -52,16 +52,25 @@ call "%IDF_PATH%\export.bat"
 if errorlevel 1 exit /b 1
 cd /d "!REPO!"
 
+rem Per-board object cache under .build-slots\
+call "!REPO!\scripts\nodelio_activate_build_slot.bat" sila_p4c5_508_!VARIANT!
+if errorlevel 1 exit /b 1
+call "!REPO!\.build-slots\env.cmd"
+if "!NODELIO_BUILD_DIR!"=="" (
+  echo [p4c5-508] ERROR: NODELIO_BUILD_DIR unset after activate
+  exit /b 1
+)
+
 if "!NOFRESH!"=="1" goto after_build
 if "!QUICK!"=="1" goto quick_build
 
 set "NEED_FULL=1"
 if "!REBUILD!"=="1" goto do_full_build
-if not exist sdkconfig goto do_full_build
-if not exist build\flash_args goto do_full_build
-findstr /b /c:"CONFIG_BOARD_TYPE_SILA_P4C5_508=y" sdkconfig >nul
+if not exist "!NODELIO_SDKCONFIG!" goto do_full_build
+if not exist "!NODELIO_BUILD_DIR!\flash_args" goto do_full_build
+findstr /b /c:"CONFIG_BOARD_TYPE_SILA_P4C5_508=y" "!NODELIO_SDKCONFIG!" >nul
 if errorlevel 1 goto do_full_build
-findstr /c:"!PART_CSV!" sdkconfig >nul
+findstr /c:"!PART_CSV!" "!NODELIO_SDKCONFIG!" >nul
 if errorlevel 1 goto do_full_build
 set "NEED_FULL=0"
 goto do_incremental
@@ -71,9 +80,9 @@ if "!NEED_FULL!"=="0" goto do_incremental
 goto run_full_build
 
 :do_incremental
-echo [p4c5-508] sdkconfig already !BUILD_NAME! - incremental idf.py build
+echo [p4c5-508] sdkconfig already !BUILD_NAME! - incremental slot build
 echo [p4c5-508] pass --rebuild to reconfigure, --nofresh to skip compile
-idf.py build
+call "!REPO!\scripts\nodelio_idf.cmd" build
 if errorlevel 1 exit /b 1
 goto after_build
 
@@ -84,42 +93,48 @@ idf.py --version
 if errorlevel 1 exit /b 1
 
 echo [p4c5-508] full reconfigure !BOARD_DIR! --name !BUILD_NAME! ...
+echo [p4c5-508] NOTE: build.py still uses root build\; result is copied into the slot
 python scripts\build.py !BOARD_DIR! --name !BUILD_NAME!
 if errorlevel 1 exit /b 1
 
-rem build.py uses subprocess; re-export so PATH sticks for flash
 call "%IDF_PATH%\export.bat"
 if errorlevel 1 exit /b 1
 cd /d "!REPO!"
+call :import_root_build_to_slot
+call "!REPO!\scripts\nodelio_activate_build_slot.bat" sila_p4c5_508_!VARIANT!
+if errorlevel 1 exit /b 1
+call "!REPO!\.build-slots\env.cmd"
 
 :after_build
-if not exist build\flash_args (
-  echo [p4c5-508] missing build\flash_args - full first-flash needs flash_args, not app-only
+if not exist "!NODELIO_BUILD_DIR!\flash_args" (
+  echo [p4c5-508] missing !NODELIO_BUILD_DIR!\flash_args - full first-flash needs flash_args, not app-only
   echo [p4c5-508] run without --nofresh, or: python scripts\build.py !BOARD_DIR! --name !BUILD_NAME!
   exit /b 1
 )
-if not exist build\xiaozhi.bin (
-  echo [p4c5-508] missing build\xiaozhi.bin
+if not exist "!NODELIO_BUILD_DIR!\xiaozhi.bin" (
+  echo [p4c5-508] missing !NODELIO_BUILD_DIR!\xiaozhi.bin
   exit /b 1
 )
 
-if not exist sdkconfig (
+set "CFG=!NODELIO_SDKCONFIG!"
+if not exist "!CFG!" set "CFG=sdkconfig"
+if not exist "!CFG!" (
   echo [p4c5-508] missing sdkconfig
   exit /b 1
 )
-findstr /b /c:"CONFIG_BOARD_TYPE_SILA_P4C5_508=y" sdkconfig >nul
+findstr /b /c:"CONFIG_BOARD_TYPE_SILA_P4C5_508=y" "!CFG!" >nul
 if errorlevel 1 (
   echo [p4c5-508] CONFIG_BOARD_TYPE_SILA_P4C5_508 not set - refuse flash ^(wrong board build^)
   exit /b 1
 )
-findstr /c:"!PART_CSV!" sdkconfig >nul
+findstr /c:"!PART_CSV!" "!CFG!" >nul
 if errorlevel 1 (
   echo [p4c5-508] WARN partition table may not match !VARIANT! ^(!PART_CSV!^)
   echo [p4c5-508] 16m/32m layouts are not app-only OTA compatible - rebuild for this variant
 )
 
 if /i "!VARIANT!"=="16m" (
-  findstr /b /c:"CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y" sdkconfig >nul
+  findstr /b /c:"CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y" "!CFG!" >nul
   if errorlevel 1 (
     echo [p4c5-508] WARN expected CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y for --16m
   )
@@ -129,33 +144,43 @@ call :resolve_port
 if errorlevel 1 exit /b 1
 call :free_port
 echo [p4c5-508] flash+monitor on !PORT! ^(P4 USB Serial/JTAG; variant=!VARIANT!; C5 NOT flashed^) ...
-idf.py -p !PORT! flash monitor
+call "!REPO!\scripts\nodelio_idf.cmd" -p !PORT! flash monitor
 exit /b %ERRORLEVEL%
 
 :quick_build
-if not exist sdkconfig (
+set "CFG=!NODELIO_SDKCONFIG!"
+if not exist "!CFG!" set "CFG=sdkconfig"
+if not exist "!CFG!" (
   echo [p4c5-508] no sdkconfig - run once without --quick
   exit /b 1
 )
-findstr /b /c:"CONFIG_BOARD_TYPE_SILA_P4C5_508=y" sdkconfig >nul
+findstr /b /c:"CONFIG_BOARD_TYPE_SILA_P4C5_508=y" "!CFG!" >nul
 if errorlevel 1 (
   echo [p4c5-508] sdkconfig is not this board - run once without --quick
   exit /b 1
 )
-findstr /c:"!PART_CSV!" sdkconfig >nul
+findstr /c:"!PART_CSV!" "!CFG!" >nul
 if errorlevel 1 (
   echo [p4c5-508] sdkconfig partition is not !VARIANT! - run without --quick
   exit /b 1
 )
 echo [p4c5-508] incremental build + app-flash ^(!VARIANT!^) ...
-idf.py build
+call "!REPO!\scripts\nodelio_idf.cmd" build
 if errorlevel 1 exit /b 1
 call :resolve_port
 if errorlevel 1 exit /b 1
 call :free_port
 echo [p4c5-508] app-flash+monitor on !PORT! ...
-idf.py -p !PORT! app-flash monitor
+call "!REPO!\scripts\nodelio_idf.cmd" -p !PORT! app-flash monitor
 exit /b %ERRORLEVEL%
+
+:import_root_build_to_slot
+if not exist "build\xiaozhi.bin" exit /b 0
+if "!NODELIO_BUILD_DIR!"=="" exit /b 0
+echo [p4c5-508] copy root build\ -^> slot !NODELIO_BUILD_DIR!
+robocopy "build" "!NODELIO_BUILD_DIR!" /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS >nul
+if exist "sdkconfig" copy /Y "sdkconfig" "!NODELIO_SDKCONFIG!" >nul
+exit /b 0
 
 :resolve_port
 if not "!PORT!"=="" exit /b 0

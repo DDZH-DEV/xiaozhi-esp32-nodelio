@@ -109,6 +109,7 @@ Keep detailed or fast-changing information in those files, not here. Add a neste
 - UI：`ui_theme.h` / `ui_widgets.*` / `nodelio_overlay.cc`；几何走 **`display_profile`**；禁止裸 hex
 - **禁止** `idf.py flash`；OOM 时 `idf.py build -- -j2`；禁止擅自定时拉布局
 - 一次只编一块板；产品身份仍用 `board_id`；**P4 OTA 按分区变体分流**（编译进固件的 16m/32m，不是运行时测容量）
+- **多板编译缓存**：`nodelio-flash/build.bat` 调 `scripts/nodelio_activate_build_slot.bat`，对象文件在 `.build-slots/<slot>/build/`（如 `sila_86`、`sila_p4c5_62_32m`、`sila_p4c5_508_16m`）。增量编译走 `scripts/nodelio_idf.cmd`（`idf.py -B`）；切板不 fullclean。首次该槽仍要完整 configure（`build.py` 仍写根 `build/`，随后拷进槽）。OTA sync 用 `--build-dir` / `NODELIO_BUILD_DIR`
 - **面板 OTA 键**：清单读 `boards[ota_key]`。`ota_key=sila_86`；P4 为 `{board_id}_{16m|32m}`（如 `sila_p4c5_62_32m`、`sila_p4c5_508_16m`）。默认变体：62=`32m`、508=`16m`；旧键无后缀 alias 镜像默认变体。CDN 分目录：`esp32p4-sila-p4c5-62-{16,32}m` / `esp32p4-sila-p4c5-508-{16,32}m`。**禁止**跨板/跨变体互刷；换容量须整包含分区表
 - **面板 OTA 双通道**：`nodelio-build.bat --16m|--32m` 均按当前 VARIANT sync+upload；默认只发 **dev**（带号包）；用户「检查更新」读 `firmware`（`xiaozhi-latest.bin`）。发用户包：`--stable` 或 `scripts/nodelio_promote_panel_ota.bat --board … --variant …`。离线：`--no-upload`。开发通道：设备信息「构建号」连点 5 次确认后刷 `dev`
 - 编译期 `NODELIO_OTA_VARIANT`（stamp `--variant`）；设备信息 Flash 行显示变体；Upgrade 前校验镜像 ≤ ota 分区

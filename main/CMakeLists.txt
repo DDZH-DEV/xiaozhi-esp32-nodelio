@@ -500,14 +500,23 @@ if(CONFIG_NODELIO_PANEL AND NOT CMAKE_BUILD_EARLY_EXPANSION)
     else()
         set(NODELIO_STAMP_BOARD sila_86)
     endif()
+    # OTA 变体与分区表/Flash 容量一致：P4 32MB→32m，其余 P4→16m；86→none
+    if(NODELIO_STAMP_BOARD STREQUAL "sila_86")
+        set(NODELIO_STAMP_VARIANT none)
+    elseif(CONFIG_ESPTOOLPY_FLASHSIZE_32MB)
+        set(NODELIO_STAMP_VARIANT 32m)
+    else()
+        set(NODELIO_STAMP_VARIANT 16m)
+    endif()
     add_custom_target(nodelio_gen_build_stamp
         COMMAND ${PYTHON} ${NODELIO_STAMP_PY}
                 --root ${PROJECT_DIR}
                 --board ${NODELIO_STAMP_BOARD}
+                --variant ${NODELIO_STAMP_VARIANT}
                 --out ${NODELIO_STAMP_H}
         BYPRODUCTS ${NODELIO_STAMP_H}
         WORKING_DIRECTORY ${PROJECT_DIR}
-        COMMENT "NodeLio panel build stamp YYYYMMDD.NNN"
+        COMMENT "NodeLio panel build stamp YYYYMMDD.NNN (${NODELIO_STAMP_BOARD}/${NODELIO_STAMP_VARIANT})"
         VERBATIM
     )
     add_dependencies(${COMPONENT_LIB} nodelio_gen_build_stamp)

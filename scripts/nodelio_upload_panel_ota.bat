@@ -2,13 +2,18 @@
 setlocal EnableDelayedExpansion
 chcp 65001 >nul
 
-rem Upload sila panel OTA manifest + board-variant bin dir
+rem Upload sila panel OTA：优先用本机 build\xiaozhi.bin（flash/调试产物）sync 进 CDN 目录再传，不重编。
 rem   nodelio_upload_panel_ota.bat
 rem   nodelio_upload_panel_ota.bat --board sila_p4c5_62 --variant 32m yes
-rem   nodelio_upload_panel_ota.bat --board sila_86 yes
+rem   nodelio_upload_panel_ota.bat --board sila_86 --channel stable yes
+rem
+rem 版本号：来自 nodelio_build_stamp.h（上次编译/刷机写入）。
+rem   channel=dev    → 只更新清单 boards.*.dev（测试通道）
+rem   channel=stable → 同 bin 再写 boards.*.firmware（用户「检查更新」）；不涨号、不重编
 
 set "WINSCP=D:\SOFT\WinSCP-6.3.6-Portable\WinSCP.com"
 set "CRED=D:\SITES\NodeLio\deploy\credentials.local.bat"
+set "REPO=D:\xz25"
 set "ZY_WORKS=D:\SITES\Z-Y\public\works"
 set "BOARD="
 set "VARIANT="
@@ -109,9 +114,9 @@ if "!VARIANT!"=="" (
 :menu_channel
 if not "!CHANNEL!"=="" goto :resolve_paths
 echo.
-echo 通道（仅提示；实际上传该板目录全部 *.bin + 清单）：
-echo  1^) dev
-echo  2^) stable
+echo 通道（版本号=上次编译 stamp；固件=本机 build\xiaozhi.bin，不重编）：
+echo  1^) dev     测试通道（带号包）
+echo  2^) stable  确认当前测试版给用户「检查更新」（同 bin，只改 firmware）
 echo.
 set "CSEL="
 set /p "CSEL=记录通道 [1-2，默认 1]: "
@@ -152,12 +157,12 @@ if /I "!BOARD!"=="sila_p4c5_508" (
 )
 if "!BIN_REL!"=="" (
   echo [panel-upload] ERROR: bad board/variant "!BOARD!" / "!VARIANT!"
-  exit /b 1
+  goto :fail_pause
 )
 
 if not exist "%WINSCP%" (
   echo [panel-upload] ERROR: WinSCP not found: %WINSCP%
-  exit /b 1
+  goto :fail_pause
 )
 
 if exist "%CRED%" call "%CRED%"
@@ -173,18 +178,57 @@ set "MANIFEST=%ZY_WORKS%\sila-panel-update.json"
 set "LEGACY=%ZY_WORKS%\esp32s3-slia-86-update.json"
 set "BIN_DIR=%ZY_WORKS%\!BIN_REL!"
 
+rem Prefer active build-slot bin (flash/debug cache), then root build\
+set "BUILD_BIN="
+set "SLOT="
+if /I "!BOARD!"=="sila_86" set "SLOT=sila_86"
+if /I "!BOARD!"=="sila_p4c5_62" set "SLOT=sila_p4c5_62_!VARIANT!"
+if /I "!BOARD!"=="sila_p4c5_508" set "SLOT=sila_p4c5_508_!VARIANT!"
+if exist "!REPO!\.build-slots\env.cmd" call "!REPO!\.build-slots\env.cmd"
+if not "!NODELIO_BUILD_DIR!"=="" if exist "!NODELIO_BUILD_DIR!\xiaozhi.bin" set "BUILD_BIN=!NODELIO_BUILD_DIR!\xiaozhi.bin"
+if "!BUILD_BIN!"=="" if not "!SLOT!"=="" if exist "!REPO!\.build-slots\!SLOT!\build\xiaozhi.bin" set "BUILD_BIN=!REPO!\.build-slots\!SLOT!\build\xiaozhi.bin"
+if "!BUILD_BIN!"=="" if exist "!REPO!\build\xiaozhi.bin" set "BUILD_BIN=!REPO!\build\xiaozhi.bin"
+
 if not exist "!MANIFEST!" (
   echo [panel-upload] ERROR: missing !MANIFEST!
-  exit /b 1
+  goto :fail_pause
 )
-if not exist "!BIN_DIR!\" (
+
+rem 有本机编译产物则 sync（flash/调试刚编的 bin → CDN 目录 + 清单版本号），不重编
+set "NEED_SYNC=0"
+if exist "!BUILD_BIN!" set "NEED_SYNC=1"
+if not exist "!BIN_DIR!" set "NEED_SYNC=1"
+dir /b "!BIN_DIR!\*.bin" >nul 2>&1
+if errorlevel 1 set "NEED_SYNC=1"
+
+if "!NEED_SYNC!"=="1" (
+  if not exist "!BUILD_BIN!" (
+    echo [panel-upload] ERROR: CDN 目录无 bin，且缺少 !BUILD_BIN!
+    echo [panel-upload] 先用 nodelio-flash.bat / nodelio-build.bat 编过再上传
+    goto :fail_pause
+  )
+  for %%I in ("!BUILD_BIN!") do set "BUILD_DIR=%%~dpI"
+  if "!BUILD_DIR:~-1!"=="\" set "BUILD_DIR=!BUILD_DIR:~0,-1!"
+  echo [panel-upload] sync from !BUILD_BIN! -^> ota_key=!OTA_KEY! channel=!CHANNEL!
+  if /I "!BOARD!"=="sila_86" (
+    python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --zy-works "!ZY_WORKS!" --board sila_86 --variant none --channel !CHANNEL! --build-dir "!BUILD_DIR!"
+  ) else (
+    python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --zy-works "!ZY_WORKS!" --board !BOARD! --variant !VARIANT! --channel !CHANNEL! --build-dir "!BUILD_DIR!"
+  )
+  if errorlevel 1 (
+    echo [panel-upload] ERROR: sync failed
+    goto :fail_pause
+  )
+)
+
+if not exist "!BIN_DIR!" (
   echo [panel-upload] ERROR: missing bin dir !BIN_DIR!
-  exit /b 1
+  goto :fail_pause
 )
 dir /b "!BIN_DIR!\*.bin" >nul 2>&1
 if errorlevel 1 (
-  echo [panel-upload] ERROR: no .bin in !BIN_DIR!
-  exit /b 1
+  echo [panel-upload] ERROR: no .bin in !BIN_DIR! after sync
+  goto :fail_pause
 )
 
 if not "!AUTO!"=="" goto decide
@@ -233,7 +277,14 @@ set "ERR=!errorlevel!"
 del /f /q "!SCRIPT!" >nul 2>&1
 if not "!ERR!"=="0" (
   echo [panel-upload] ERROR: WinSCP failed, code !ERR!
-  exit /b !ERR!
+  set "EXITCODE=!ERR!"
+  goto :fail_pause
 )
 echo [panel-upload] done ota_key=!OTA_KEY! channel=!CHANNEL!
+if "!FROM_MENU!"=="1" pause
 exit /b 0
+
+:fail_pause
+if "!FROM_MENU!"=="1" pause
+if not defined EXITCODE set "EXITCODE=1"
+exit /b !EXITCODE!
