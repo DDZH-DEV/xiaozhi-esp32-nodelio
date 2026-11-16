@@ -118,8 +118,10 @@ public:
     void WakeWordInvoke(const std::string& wake_word);
     bool UpgradeFirmware(const std::string& url, const std::string& version = "");
 #if CONFIG_NODELIO_PANEL
-    /** 设置页手工触发：查小智云固件版本，有新版则升级；后台任务，可重入挡. */
+    /** 设置页「检查固件更新」：只查稳定通道 boards.*.firmware，有新版直接升级. */
     void RequestManualFirmwareCheck();
+    /** 设置页「开发固件」：查 boards.*.dev，有新版则弹确认，确认后再升级. */
+    void RequestManualDevFirmwareCheck();
     /**
      * 设置页：切官方或自定义小智语音服。official=true 擦掉 wifi/ota_url 后拉 CONFIG_OTA_URL；
      * 否则写入 custom_url 再 POST。成功后重启；需激活码时 toast 提示，失败不重启。

@@ -861,10 +861,41 @@ void nl_ov_open_settings_detail(set_page_id_t page)
             std::string ua = SystemInfo::GetUserAgent();
             sys_kv_row(dev, "固件", ua.c_str(), nullptr);
         }
-        /* 构建号：与顶栏、OTA 同一套；改 nodelio/sila 源码才涨 */
+        /* 构建号：与顶栏、OTA 同一套；连点 5 次触发开发通道检查（设置页不暴露入口） */
         {
             std::snprintf(line, sizeof(line), "V%s", NODELIO_BUILD_STAMP);
-            sys_kv_row(dev, "构建号", line, nullptr);
+            lv_obj_t *stamp_row = sys_kv_row(dev, "构建号", line, nullptr);
+#if CONFIG_FIRMWARE_OTA_ENABLED
+            lv_obj_add_flag(stamp_row, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(
+                stamp_row,
+                [](lv_event_t *e) {
+                    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+                        return;
+                    }
+                    static int taps = 0;
+                    static int64_t last_us = 0;
+                    const int64_t now = esp_timer_get_time();
+                    if (last_us == 0 || (now - last_us) > 2000000LL) {
+                        taps = 0;
+                    }
+                    last_us = now;
+                    taps++;
+                    if (taps < 5) {
+                        return;
+                    }
+                    taps = 0;
+                    last_us = 0;
+                    char err[64];
+                    if (nodelio_panel_ui_set_pref("fw_check_dev", "", err, sizeof(err)) != ESP_OK &&
+                        err[0]) {
+                        nl_ov_toast(err);
+                    }
+                },
+                LV_EVENT_CLICKED, nullptr);
+#else
+            (void)stamp_row;
+#endif
         }
         {
             const esp_app_desc_t *app = esp_app_get_description();
@@ -949,9 +980,19 @@ void nl_ov_open_settings_detail(set_page_id_t page)
         std::snprintf(line, sizeof(line), "%s x%d", SystemInfo::GetChipModelName().c_str(),
                       (int)chip.cores);
         sys_kv_row(run, "芯片", line, nullptr);
-        std::snprintf(line, sizeof(line), "%u MB",
-                      (unsigned)(SystemInfo::GetFlashSize() / (1024 * 1024)));
-        sys_kv_row(run, "Flash", line, nullptr);
+        {
+            const unsigned mb = (unsigned)(SystemInfo::GetFlashSize() / (1024 * 1024));
+#if defined(NODELIO_OTA_VARIANT)
+            if (NODELIO_OTA_VARIANT[0] && strcmp(NODELIO_OTA_VARIANT, "none") != 0) {
+                std::snprintf(line, sizeof(line), "%u MB · OTA %s", mb, NODELIO_OTA_VARIANT);
+            } else {
+                std::snprintf(line, sizeof(line), "%u MB", mb);
+            }
+#else
+            std::snprintf(line, sizeof(line), "%u MB", mb);
+#endif
+            sys_kv_row(run, "Flash", line, nullptr);
+        }
         sys_kv_row(run, "运行", "-", &s_sys_up_lbl);
         sys_kv_row(run, "任务", "-", &s_sys_tasks_lbl);
         sys_kv_row(run, "DRAM", "-", &s_sys_dram_lbl);
@@ -2066,3 +2107,112 @@ void nl_ov_settings_reapply_text_scale(void)
         nl_ov_open_settings_detail(page);
     }
 }
+
+#if CONFIG_FIRMWARE_OTA_ENABLED
+namespace {
+lv_obj_t *s_fw_dev_mask = nullptr;
+char s_fw_dev_ver[48] = {};
+char s_fw_dev_url[320] = {};
+
+void fw_dev_confirm_close(bool accepted)
+{
+    if (s_fw_dev_mask) {
+        lv_obj_delete(s_fw_dev_mask);
+        s_fw_dev_mask = nullptr;
+    }
+    if (!accepted) {
+        nodelio_panel_fw_check_release_busy();
+        nl_ov_toast("已取消");
+        return;
+    }
+    if (s_fw_dev_url[0] == '\0') {
+        nodelio_panel_fw_check_release_busy();
+        nl_ov_toast("升级地址无效");
+        return;
+    }
+    char tip[80];
+    std::snprintf(tip, sizeof(tip), "开始升级开发固件 %s",
+                  s_fw_dev_ver[0] ? s_fw_dev_ver : "");
+    nl_ov_toast(tip);
+    const bool ok =
+        Application::GetInstance().UpgradeFirmware(s_fw_dev_url, s_fw_dev_ver);
+    nodelio_panel_fw_check_release_busy();
+    if (!ok) {
+        nl_ov_toast("升级失败");
+    }
+}
+} // namespace
+
+extern "C" void nodelio_panel_ui_fw_dev_confirm(const char *version, const char *url)
+{
+    if (!version || !url || url[0] == '\0') {
+        nodelio_panel_fw_check_release_busy();
+        nl_ov_toast("开发固件信息无效");
+        return;
+    }
+    DisplayLockGuard lock(nl_ov_disp());
+    if (s_fw_dev_mask) {
+        lv_obj_delete(s_fw_dev_mask);
+        s_fw_dev_mask = nullptr;
+    }
+    std::snprintf(s_fw_dev_ver, sizeof(s_fw_dev_ver), "%s", version);
+    std::snprintf(s_fw_dev_url, sizeof(s_fw_dev_url), "%s", url);
+
+    s_fw_dev_mask = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_fw_dev_mask);
+    lv_obj_set_size(s_fw_dev_mask, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(s_fw_dev_mask, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_fw_dev_mask, LV_OPA_50, 0);
+    lv_obj_set_flex_flow(s_fw_dev_mask, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_fw_dev_mask, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(s_fw_dev_mask, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *card = lv_obj_create(s_fw_dev_mask);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_width(card, lv_pct(86));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(card, UI_PANEL, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, UI_RADIUS_MD, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_style_pad_row(card, 12, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, "开发固件更新");
+    nl_ov_set_font_title(title);
+    lv_obj_set_style_text_color(title, UI_TEXT, 0);
+
+    char body[96];
+    std::snprintf(body, sizeof(body), "发现开发版 V%s\n确认后开始升级", version);
+    lv_obj_t *msg = lv_label_create(card);
+    lv_label_set_text(msg, body);
+    nl_ov_set_font(msg);
+    lv_obj_set_style_text_color(msg, UI_TEXT_DIM, 0);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, lv_pct(100));
+
+    lv_obj_t *row = lv_obj_create(card);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_width(row, lv_pct(100));
+    lv_obj_set_height(row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 10, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    ui_make_text_btn(row, "取消", 2, [](lv_event_t *) { fw_dev_confirm_close(false); });
+    ui_make_text_btn(row, "确认升级", 0, [](lv_event_t *) { fw_dev_confirm_close(true); });
+}
+#else
+extern "C" void nodelio_panel_ui_fw_dev_confirm(const char *version, const char *url)
+{
+    (void)version;
+    (void)url;
+    nodelio_panel_fw_check_release_busy();
+}
+#endif

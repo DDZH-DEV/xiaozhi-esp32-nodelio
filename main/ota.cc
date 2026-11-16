@@ -9,6 +9,9 @@
 #ifndef NODELIO_BUILD_STAMP
 #define NODELIO_BUILD_STAMP "0.0.0"
 #endif
+#ifndef NODELIO_OTA_VARIANT
+#define NODELIO_OTA_VARIANT "none"
+#endif
 #endif
 
 #include <freertos/FreeRTOS.h>
@@ -73,6 +76,37 @@ Ota::Ota() {
 
 Ota::~Ota() {
 }
+
+#if CONFIG_NODELIO_PANEL
+const char* Ota::PanelOtaVariant() {
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508
+    return NODELIO_OTA_VARIANT;
+#else
+    return "none";
+#endif
+}
+
+std::string Ota::PanelOtaKey() {
+#if CONFIG_BOARD_TYPE_SILA_P4C5_62
+    const char* board_id = "sila_p4c5_62";
+    const char* def_variant = "32m";
+#elif CONFIG_BOARD_TYPE_SILA_P4C5_508
+    const char* board_id = "sila_p4c5_508";
+    const char* def_variant = "16m";
+#else
+    return std::string("sila_86");
+#endif
+    const char* v = PanelOtaVariant();
+    if (v == nullptr || v[0] == '\0' || strcmp(v, "none") == 0) {
+        /* stamp 未写变体时按该板默认容量发键，避免落到无后缀旧键误升 */
+        v = def_variant;
+    }
+    std::string key = board_id;
+    key.push_back('_');
+    key.append(v);
+    return key;
+}
+#endif
 
 std::string Ota::GetCheckVersionUrl() {
     Settings settings("wifi", false);
@@ -282,15 +316,17 @@ std::unique_ptr<Http> Ota::SetupHttp() {
 /* 
  * Specification: https://ccnphfhqs21z.feishu.cn/wiki/FjW6wZmisimNBBkov6OcmfvknVd
  */
-NetworkResult<> Ota::CheckVersion() {
+NetworkResult<> Ota::CheckVersion(OtaFirmwareChannel channel) {
     auto app_desc = esp_app_get_description();
 
     // Check if there is a new firmware version available
 #if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
     current_version_ = NODELIO_BUILD_STAMP;
-    ESP_LOGI(TAG, "Current build stamp: %s (app_desc=%s)", current_version_.c_str(),
-             app_desc ? app_desc->version : "?");
+    ESP_LOGI(TAG, "Current build stamp: %s (app_desc=%s) channel=%s", current_version_.c_str(),
+             app_desc ? app_desc->version : "?",
+             channel == OtaFirmwareChannel::kDev ? "dev" : "stable");
 #else
+    (void)channel;
     current_version_ = app_desc->version;
     ESP_LOGI(TAG, "Current version: %s", current_version_.c_str());
 #endif
@@ -351,31 +387,56 @@ NetworkResult<> Ota::CheckVersion() {
     }
 
 #if CONFIG_NODELIO_PANEL && (CONFIG_BOARD_TYPE_SILA_86 || CONFIG_BOARD_TYPE_SILA_P4C5_62 || CONFIG_BOARD_TYPE_SILA_P4C5_508)
-    /* 只读 boards.<board_id>.firmware。86 旧清单没有 boards 时才回退顶层 firmware。 */
+    /* 先查 boards.<ota_key>（P4=board_id_16m|32m）；再回退 boards.<board_id>（旧清单/默认变体 alias）。
+     * 86 旧清单无 boards 时，仅 stable 回退顶层 firmware。 */
     has_activation_code_ = false;
     has_activation_challenge_ = false;
     has_mqtt_config_ = false;
     has_websocket_config_ = false;
     has_server_time_ = false;
     has_new_version_ = false;
+    firmware_version_.clear();
+    firmware_url_.clear();
 #if CONFIG_BOARD_TYPE_SILA_P4C5_62
     const char* board_id = "sila_p4c5_62";
+    const char* def_variant = "32m";
 #elif CONFIG_BOARD_TYPE_SILA_P4C5_508
     const char* board_id = "sila_p4c5_508";
+    const char* def_variant = "16m";
 #else
     const char* board_id = "sila_86";
+    const char* def_variant = "none";
 #endif
+    const std::string ota_key = PanelOtaKey();
+    const char* fw_key = channel == OtaFirmwareChannel::kDev ? "dev" : "firmware";
     cJSON *firmware = nullptr;
     cJSON *boards = cJSON_GetObjectItem(root, "boards");
     if (cJSON_IsObject(boards)) {
-        cJSON *mine = cJSON_GetObjectItem(boards, board_id);
+        cJSON *mine = cJSON_GetObjectItem(boards, ota_key.c_str());
         if (cJSON_IsObject(mine)) {
-            firmware = cJSON_GetObjectItem(mine, "firmware");
-        } else {
-            ESP_LOGW(TAG, "Panel OTA manifest has no boards.%s", board_id);
+            firmware = cJSON_GetObjectItem(mine, fw_key);
+        }
+        /* 默认变体固件可回退无后缀旧键（兼容已上线清单） */
+        if (!cJSON_IsObject(firmware)) {
+            const char* v = PanelOtaVariant();
+            const bool is_default =
+                (strcmp(board_id, "sila_86") == 0) ||
+                (v && strcmp(v, def_variant) == 0) ||
+                (v && strcmp(v, "none") == 0);
+            if (is_default) {
+                cJSON *legacy = cJSON_GetObjectItem(boards, board_id);
+                if (cJSON_IsObject(legacy)) {
+                    firmware = cJSON_GetObjectItem(legacy, fw_key);
+                }
+            }
+        }
+        if (!cJSON_IsObject(firmware)) {
+            ESP_LOGW(TAG, "Panel OTA manifest has no boards.%s (or legacy %s)", ota_key.c_str(),
+                     board_id);
         }
     }
-    if (!cJSON_IsObject(firmware) && strcmp(board_id, "sila_86") == 0) {
+    if (!cJSON_IsObject(firmware) && channel == OtaFirmwareChannel::kStable &&
+        strcmp(board_id, "sila_86") == 0) {
         firmware = cJSON_GetObjectItem(root, "firmware");
     }
     if (cJSON_IsObject(firmware)) {
@@ -393,14 +454,15 @@ NetworkResult<> Ota::CheckVersion() {
             if (cJSON_IsNumber(force) && force->valueint == 1) {
                 has_new_version_ = true;
             }
-            ESP_LOGI(TAG, "manifest board=%s version=%s current=%s newer=%d url=%s", board_id,
-                     firmware_version_.c_str(), current_version_.c_str(), has_new_version_ ? 1 : 0,
-                     firmware_url_.c_str());
+            ESP_LOGI(TAG, "manifest ota_key=%s channel=%s version=%s current=%s newer=%d url=%s",
+                     ota_key.c_str(), fw_key, firmware_version_.c_str(), current_version_.c_str(),
+                     has_new_version_ ? 1 : 0, firmware_url_.c_str());
         } else {
-            ESP_LOGW(TAG, "Panel OTA manifest missing firmware.version/url");
+            ESP_LOGW(TAG, "Panel OTA manifest missing %s.version/url for %s", fw_key,
+                     ota_key.c_str());
         }
     } else {
-        ESP_LOGW(TAG, "Panel OTA manifest has no firmware for %s", board_id);
+        ESP_LOGW(TAG, "Panel OTA manifest has no %s for %s", fw_key, ota_key.c_str());
     }
     cJSON_Delete(root);
     return {};
@@ -589,6 +651,12 @@ bool Ota::Upgrade(const std::string& firmware_url, std::function<void(int progre
     size_t content_length = http->GetBodyLength();
     if (content_length == 0) {
         ESP_LOGE(TAG, "Failed to get content length");
+        return false;
+    }
+    if (content_length > update_partition->size) {
+        ESP_LOGE(TAG, "Firmware %u bytes > ota partition %lu bytes (variant mismatch?)",
+                 (unsigned)content_length, (unsigned long)update_partition->size);
+        http->Close();
         return false;
     }
 

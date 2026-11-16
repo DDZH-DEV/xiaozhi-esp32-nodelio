@@ -11,12 +11,18 @@
 #include "board.h"
 #include "network_error.h"
 
+enum class OtaFirmwareChannel {
+    kStable = 0, /* boards.*.firmware → 用户「检查更新」 */
+    kDev = 1,    /* boards.*.dev → 「开发固件」带号包 */
+};
+
 class Ota {
 public:
     Ota();
     ~Ota();
 
-    NetworkResult<> CheckVersion();
+    /** 墙板：channel 选 stable(firmware) 或 dev；其它板忽略 channel。 */
+    NetworkResult<> CheckVersion(OtaFirmwareChannel channel = OtaFirmwareChannel::kStable);
     /**
      * 墙板：向小智语音 OTA 地址 POST 设备信息，只写入 mqtt/websocket（及激活信息）。
      * 忽略响应里的 firmware；不碰墙板固件清单。url 空则用官方 CONFIG_OTA_URL。
@@ -47,6 +53,12 @@ public:
     std::string GetCheckVersionUrl();
     /** 语音云 OTA：wifi/ota_url，空则官方 CONFIG_OTA_URL（不是墙板固件清单）。 */
     static std::string GetVoiceOtaUrl();
+#if CONFIG_NODELIO_PANEL
+    /** 清单键：P4 为 board_id_16m|32m；86 为 sila_86。 */
+    static std::string PanelOtaKey();
+    /** 编译进固件的分区变体：none|16m|32m。 */
+    static const char* PanelOtaVariant();
+#endif
 
 private:
     void ClearVoiceTransportNvs();

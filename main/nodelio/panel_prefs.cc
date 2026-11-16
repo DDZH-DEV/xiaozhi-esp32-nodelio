@@ -861,6 +861,15 @@ extern "C" esp_err_t nodelio_panel_ui_set_pref(const char *key, const char *valu
         app.RequestManualFirmwareCheck();
         return ESP_OK;
     }
+    if (strcasecmp(key, "fw_check_dev") == 0) {
+        auto &app = Application::GetInstance();
+        if (app.GetDeviceState() != kDeviceStateIdle) {
+            pref_err(err, err_len, "请先结束对话再检查开发固件");
+            return ESP_ERR_INVALID_STATE;
+        }
+        app.RequestManualDevFirmwareCheck();
+        return ESP_OK;
+    }
     if (strcasecmp(key, "factory_reset") == 0) {
         /* 语音不执行重置，只打开确认页 */
         nodelio_panel_ui_goto(NL_UI_RESET);

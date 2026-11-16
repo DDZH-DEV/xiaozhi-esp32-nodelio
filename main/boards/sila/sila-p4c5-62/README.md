@@ -190,8 +190,13 @@ NodeLio 产品身份为 `board_id=sila_p4c5_62`、`type_code=WALL_PANEL`，注�
 将来切换要按对应构建产物的 `flash_args` 完整处理，并先保留需要的用户配置。
 勿仅复制一个 `xiaozhi.bin` 就当成完整首烧包。
 
-在线升级读 `sila-panel-update.json` 的 `boards.sila_p4c5_62`，只写本板 `xiaozhi.bin`，开机不自动刷。
-不更新 C5 从机固件，也不在 16m / 32m 槽之间互刷。它不修改安全 eFuse。
+在线升级读 `sila-panel-update.json` 的 **ota_key**（非裸 `board_id`）：
+- `sila_p4c5_62_32m` / `sila_p4c5_62_16m`（本板）；CDN `iot-firmwares/esp32p4-sila-p4c5-62-{32,16}m/`
+- 旧固件仍认 `boards.sila_p4c5_62`，发版默认变体（32m）时 sync 会镜像该 alias
+- 每键下 `firmware`=稳定（`xiaozhi-latest.bin`，「检查更新」）；`dev`=带号包（「构建号」连点 5 次确认后升）
+
+`nodelio-build.bat --16m|--32m` 都会按当前 VARIANT sync+upload；默认只发 dev；`--stable` 或 `scripts/nodelio_promote_panel_ota.bat --board sila_p4c5_62 --variant 32m|16m` 写用户通道。开机不自动刷。
+不更新 C5 从机固件；**禁止** 16m/32m app-only 互刷（槽大小不同）。它不修改安全 eFuse。
 
 本板在 `main/idf_component.yml` 固定 LVGL **9.5.0**、esp_lvgl_port **2.9.0**，
 通过板型 Kconfig 条件选择；其它板仍使用原来的 ~9.5.0 / ~2.9.0。

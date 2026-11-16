@@ -3,6 +3,7 @@
 #include "battery_stats.h"
 #include "board_info.h"
 #include "device_caps.h"
+#include "hw_info.h"
 #include "nodelio_http.h"
 #include "sdkconfig.h"
 
@@ -19,7 +20,7 @@
 
 static const char *TAG = "nl_reg";
 
-#define FW_VERSION "0.3.18"
+#define FW_VERSION "0.3.19"
 
 static esp_err_t ensure_ids(nodelio_nvs_config_t* cfg) {
     bool dirty = false;
@@ -204,6 +205,13 @@ esp_err_t nodelio_device_register(nodelio_nvs_config_t *cfg)
     if (!feature_array || !cJSON_AddItemToObject(config, "features", feature_array)) {
         cJSON_Delete(feature_array);
         ok = false;
+    }
+    if (ok) {
+        cJSON *hw = nodelio_hw_info_build(board->info.board_id, FW_VERSION);
+        if (!hw || !cJSON_AddItemToObject(config, "hw", hw)) {
+            cJSON_Delete(hw);
+            ok = false;
+        }
     }
     char* config_json = ok ? cJSON_PrintUnformatted(config) : NULL;
     ok = config_json && cJSON_AddStringToObject(root, "config", config_json);

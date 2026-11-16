@@ -3,23 +3,29 @@ setlocal EnableDelayedExpansion
 chcp 65001 >nul
 
 rem SILA P4C5 6.2" - P4 host build only (does NOT flash P4 or C5)
-rem   nodelio-build.bat          default 32m (W25Q256)，会重新配置
+rem   nodelio-build.bat          default 32m（发 dev + 上传）
 rem   nodelio-build.bat --32m
 rem   nodelio-build.bat --16m    Flash>=16MiB board (capacity must be confirmed)
 rem   nodelio-build.bat --quick  本板已配过：只增量 idf.py build，不重新 cmake
+rem   nodelio-build.bat --stable 发稳定通道（xiaozhi-latest.bin）+ 上传
+rem   nodelio-build.bat --no-upload  只本地 sync
 rem
 rem Do NOT use sila-86 nodelio-build.bat. This wraps:
 rem   python scripts/build.py sila/sila-p4c5-62 --name sila-p4c5-62-32m
 
 set "VARIANT=32m"
 set "QUICK=0"
+set "CHANNEL=dev"
+set "NO_UPLOAD=0"
 :parse
 if "%~1"=="" goto :parsed
 if /I "%~1"=="--16m" set "VARIANT=16m"& shift& goto :parse
 if /I "%~1"=="--32m" set "VARIANT=32m"& shift& goto :parse
 if /I "%~1"=="--quick" set "QUICK=1"& shift& goto :parse
+if /I "%~1"=="--stable" set "CHANNEL=stable"& shift& goto :parse
+if /I "%~1"=="--no-upload" set "NO_UPLOAD=1"& shift& goto :parse
 echo [p4c5-62] unknown arg: %~1
-echo [p4c5-62] usage: nodelio-build.bat [--32m^|--16m] [--quick]
+echo [p4c5-62] usage: nodelio-build.bat [--32m^|--16m] [--quick] [--stable] [--no-upload]
 exit /b 1
 :parsed
 
@@ -43,7 +49,7 @@ idf.py --version
 if errorlevel 1 exit /b 1
 
 echo [p4c5-62] build stamp ^(sila_p4c5_62 day serial^) ...
-python "!REPO!\scripts\nodelio_build_stamp.py" --root "!REPO!" --board sila_p4c5_62
+python "!REPO!\scripts\nodelio_build_stamp.py" --root "!REPO!" --board sila_p4c5_62 --variant !VARIANT!
 if errorlevel 1 (
   echo [p4c5-62] build stamp failed
   exit /b 1
@@ -80,14 +86,20 @@ call :sync_ota
 exit /b %ERRORLEVEL%
 
 :sync_ota
-if /I not "!VARIANT!"=="32m" (
-  echo [p4c5-62] !VARIANT! is not the OTA package; skip sila-panel-update.json
-  exit /b 0
-)
-echo [p4c5-62] sync panel OTA manifest + bin to Z-Y ...
-python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --board sila_p4c5_62
+echo [p4c5-62] sync panel OTA board=sila_p4c5_62 variant=!VARIANT! channel=!CHANNEL! ...
+python "!REPO!\scripts\nodelio_sync_panel_ota.py" --root "!REPO!" --board sila_p4c5_62 --variant !VARIANT! --channel !CHANNEL!
 if errorlevel 1 (
   echo [p4c5-62] WARN panel OTA sync failed ^(build ok^)
+  exit /b 0
+)
+if "!NO_UPLOAD!"=="1" (
+  echo [p4c5-62] --no-upload: skip remote upload
+  exit /b 0
+)
+echo [p4c5-62] upload panel OTA ...
+call "!REPO!\scripts\nodelio_upload_panel_ota.bat" --board sila_p4c5_62 --variant !VARIANT! --channel !CHANNEL! yes
+if errorlevel 1 (
+  echo [p4c5-62] WARN panel OTA upload failed ^(build ok^)
   exit /b 0
 )
 exit /b 0

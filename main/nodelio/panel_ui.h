@@ -112,6 +112,15 @@ void nodelio_panel_ui_play_cue(int cue);
 void nodelio_panel_ui_toast_defer(const char *text);
 
 /**
+ * 开发固件通道：有新版时弹确认（须在主任务 / Schedule 内调用）。
+ * 确定 → UpgradeFirmware；取消 → 释放检查 busy。
+ */
+void nodelio_panel_ui_fw_dev_confirm(const char *version, const char *url);
+
+/** 检查更新 / 开发固件互斥 busy 释放（确认取消或升级结束后调用）。 */
+void nodelio_panel_fw_check_release_busy(void);
+
+/**
  * 技能摘要上屏 + toast；有 audio_url（桥 SAPI WAV）则 Idle 后 HTTP 播报。
  * 无 URL 时仅 toast/上屏（勿当正文朗读）。
  */

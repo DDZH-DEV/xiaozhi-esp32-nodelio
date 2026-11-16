@@ -3340,18 +3340,26 @@ void Application::PollPanelAudioTest() {
     }
 }
 
+#if CONFIG_NODELIO_PANEL
+namespace {
+std::atomic<bool> g_fw_check_busy{false};
+}
+
+extern "C" void nodelio_panel_fw_check_release_busy(void) {
+    g_fw_check_busy.store(false);
+}
+
 void Application::RequestManualFirmwareCheck() {
 #if !CONFIG_FIRMWARE_OTA_ENABLED
     nodelio_panel_ui_toast_defer("此板暂未开放在线升级，请使用板级烧录包");
     return;
 #endif
-    static std::atomic<bool> busy{false};
-    if (busy.exchange(true)) {
+    if (g_fw_check_busy.exchange(true)) {
         nodelio_panel_ui_toast_defer("正在检查…");
         return;
     }
     if (GetDeviceState() != kDeviceStateIdle) {
-        busy = false;
+        g_fw_check_busy = false;
         nodelio_panel_ui_toast_defer("请先结束对话再检查");
         return;
     }
@@ -3359,30 +3367,31 @@ void Application::RequestManualFirmwareCheck() {
     BaseType_t ok = xTaskCreate(
         [](void* /*arg*/) {
             Ota ota;
-            auto check = ota.CheckVersion();
+            auto check = ota.CheckVersion(OtaFirmwareChannel::kStable);
             if (!check) {
                 ESP_LOGW(TAG, "manual firmware check failed: %s", check.error().ToString().c_str());
                 nodelio_panel_ui_toast_defer("检查失败，请稍后重试");
-                busy = false;
+                g_fw_check_busy = false;
                 vTaskDelete(nullptr);
                 return;
             }
             if (!ota.HasNewVersion()) {
-                ESP_LOGI(TAG, "manual check: current is latest (%s)", ota.GetCurrentVersion().c_str());
+                ESP_LOGI(TAG, "manual check stable: current is latest (%s)",
+                         ota.GetCurrentVersion().c_str());
                 nodelio_panel_ui_toast_defer("已是最新版本");
-                busy = false;
+                g_fw_check_busy = false;
                 vTaskDelete(nullptr);
                 return;
             }
             std::string url = ota.GetFirmwareUrl();
             std::string ver = ota.GetFirmwareVersion();
-            ESP_LOGI(TAG, "manual check: new firmware %s", ver.c_str());
+            ESP_LOGI(TAG, "manual check stable: new firmware %s", ver.c_str());
             Application::GetInstance().Schedule([url = std::move(url), ver = std::move(ver)]() {
                 char tip[72];
                 snprintf(tip, sizeof(tip), "发现新版本 %s，开始升级", ver.c_str());
                 nodelio_panel_ui_toast_defer(tip);
                 bool ok = Application::GetInstance().UpgradeFirmware(url, ver);
-                busy = false; /* 成功会 reboot；失败回 idle */
+                g_fw_check_busy = false; /* 成功会 reboot；失败回 idle */
                 if (!ok) {
                     nodelio_panel_ui_toast_defer("升级失败");
                 }
@@ -3391,10 +3400,64 @@ void Application::RequestManualFirmwareCheck() {
         },
         "fw_chk", 4096 * 3, nullptr, 2, nullptr);
     if (ok != pdPASS) {
-        busy = false;
+        g_fw_check_busy = false;
         nodelio_panel_ui_toast_defer("检查任务启动失败");
     }
 }
+
+void Application::RequestManualDevFirmwareCheck() {
+#if !CONFIG_FIRMWARE_OTA_ENABLED
+    nodelio_panel_ui_toast_defer("此板暂未开放在线升级，请使用板级烧录包");
+    return;
+#endif
+    if (g_fw_check_busy.exchange(true)) {
+        nodelio_panel_ui_toast_defer("正在检查…");
+        return;
+    }
+    if (GetDeviceState() != kDeviceStateIdle) {
+        g_fw_check_busy = false;
+        nodelio_panel_ui_toast_defer("请先结束对话再检查");
+        return;
+    }
+    nodelio_panel_ui_toast_defer("正在检查开发固件…");
+    BaseType_t ok = xTaskCreate(
+        [](void* /*arg*/) {
+            Ota ota;
+            auto check = ota.CheckVersion(OtaFirmwareChannel::kDev);
+            if (!check) {
+                ESP_LOGW(TAG, "manual dev firmware check failed: %s",
+                         check.error().ToString().c_str());
+                nodelio_panel_ui_toast_defer("检查失败，请稍后重试");
+                g_fw_check_busy = false;
+                vTaskDelete(nullptr);
+                return;
+            }
+            if (!ota.HasNewVersion()) {
+                ESP_LOGI(TAG, "manual check dev: current is latest (%s)",
+                         ota.GetCurrentVersion().c_str());
+                nodelio_panel_ui_toast_defer("开发通道已是最新");
+                g_fw_check_busy = false;
+                vTaskDelete(nullptr);
+                return;
+            }
+            std::string url = ota.GetFirmwareUrl();
+            std::string ver = ota.GetFirmwareVersion();
+            ESP_LOGI(TAG, "manual check dev: new firmware %s — wait confirm", ver.c_str());
+            Application::GetInstance().Schedule([url = std::move(url), ver = std::move(ver)]() {
+                /* 弹确认；接受/取消后由 UI 调 nodelio_panel_fw_check_release_busy */
+                nodelio_panel_ui_fw_dev_confirm(ver.c_str(), url.c_str());
+            });
+            vTaskDelete(nullptr);
+        },
+        "fw_chk_dev", 4096 * 3, nullptr, 2, nullptr);
+    if (ok != pdPASS) {
+        g_fw_check_busy = false;
+        nodelio_panel_ui_toast_defer("检查任务启动失败");
+    }
+}
+#else
+extern "C" void nodelio_panel_fw_check_release_busy(void) {}
+#endif
 
 void Application::RequestVoiceServerApply(bool official, std::string custom_url) {
     static std::atomic<bool> busy{false};

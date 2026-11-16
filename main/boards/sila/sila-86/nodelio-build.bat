@@ -1,16 +1,28 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 chcp 65001 >nul
 rem SILA-86 - build only
-rem   nodelio-build.bat          方案 A / R4：SY7200 常亮（FIXED_BACKLIGHT=y）
-rem   nodelio-build.bat pwm      方案 B / IP5306+RY3730：IO13 PWM 可调背光
+rem   nodelio-build.bat                 方案 A / R4：SY7200 常亮（FIXED_BACKLIGHT=y）；发 dev + 上传
+rem   nodelio-build.bat pwm             方案 B / IP5306+RY3730：IO13 PWM 可调背光
+rem   nodelio-build.bat --stable        发稳定通道（xiaozhi-latest.bin）+ 上传
+rem   nodelio-build.bat --no-upload     只本地 sync，不上传
 rem 可调背光板刷了 R4 固件会全黑（NoopBacklight 不推 IO13）。
 
 set "BL_MODE=r4"
-if /I "%~1"=="pwm" set "BL_MODE=pwm"
-if /I "%~1"=="b" set "BL_MODE=pwm"
-if /I "%~1"=="r4" set "BL_MODE=r4"
-if /I "%~1"=="a" set "BL_MODE=r4"
+set "CHANNEL=dev"
+set "NO_UPLOAD=0"
+:parse
+if "%~1"=="" goto :parsed
+if /I "%~1"=="pwm" set "BL_MODE=pwm"& shift& goto :parse
+if /I "%~1"=="b" set "BL_MODE=pwm"& shift& goto :parse
+if /I "%~1"=="r4" set "BL_MODE=r4"& shift& goto :parse
+if /I "%~1"=="a" set "BL_MODE=r4"& shift& goto :parse
+if /I "%~1"=="--stable" set "CHANNEL=stable"& shift& goto :parse
+if /I "%~1"=="--no-upload" set "NO_UPLOAD=1"& shift& goto :parse
+echo [sila-86] unknown arg: %~1
+echo [sila-86] usage: nodelio-build.bat [pwm^|r4] [--stable] [--no-upload]
+exit /b 1
+:parsed
 
 set "REPO=D:\xz25"
 set "IDF_PATH=D:\Espressif\frameworks\esp-idf-v6.1"
@@ -33,15 +45,10 @@ if errorlevel 1 (
     python scripts\build.py sila/sila-86 --name sila-86
   )
   if errorlevel 1 exit /b 1
-  echo [sila-86] sync panel OTA manifest + bin to Z-Y ...
-  python "%REPO%\scripts\nodelio_sync_panel_ota.py" --root "%REPO%"
-  if errorlevel 1 (
-    echo [sila-86] WARN panel OTA sync failed ^(build ok^)
-    exit /b 0
-  )
-  exit /b 0
+  call :sync_ota
+  exit /b %ERRORLEVEL%
 )
-echo [sila-86] backlight mode=%BL_MODE%
+echo [sila-86] backlight mode=%BL_MODE% channel=%CHANNEL%
 REM idf.py build ignores config.json sdkconfig_append; patch WiFi RX; disable MultiNet (~4MB PSRAM)
 findstr /b /c:"CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16" sdkconfig >nul
 if errorlevel 1 (
@@ -91,7 +98,7 @@ if errorlevel 1 (
     "$c=Get-Content sdkconfig -Raw; $c=$c -replace '# CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP is not set','CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y'; $c=$c -replace '# CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY is not set','CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y'; $c=$c -replace 'CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=\d+','CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=64'; $c=$c -replace 'CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=\d+','CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768'; Set-Content sdkconfig -Value $c -Encoding ascii -NoNewline"
 )
 echo [sila-86] build stamp (code-change day serial) ...
-python "%REPO%\scripts\nodelio_build_stamp.py" --root "%REPO%"
+python "%REPO%\scripts\nodelio_build_stamp.py" --root "%REPO%" --board sila_86 --variant none
 if errorlevel 1 (
   echo [sila-86] build stamp failed
   exit /b 1
@@ -100,10 +107,24 @@ echo [sila-86] building ...
 idf.py build
 if errorlevel 1 exit /b %ERRORLEVEL%
 
-echo [sila-86] sync panel OTA manifest + bin to Z-Y ...
-python "%REPO%\scripts\nodelio_sync_panel_ota.py" --root "%REPO%"
+call :sync_ota
+exit /b %ERRORLEVEL%
+
+:sync_ota
+echo [sila-86] sync panel OTA channel=!CHANNEL! ...
+python "%REPO%\scripts\nodelio_sync_panel_ota.py" --root "%REPO%" --board sila_86 --variant none --channel !CHANNEL!
 if errorlevel 1 (
   echo [sila-86] WARN panel OTA sync failed ^(build ok^)
+  exit /b 0
+)
+if "!NO_UPLOAD!"=="1" (
+  echo [sila-86] --no-upload: skip remote upload
+  exit /b 0
+)
+echo [sila-86] upload panel OTA ...
+call "%REPO%\scripts\nodelio_upload_panel_ota.bat" --board sila_86 --variant none --channel !CHANNEL! yes
+if errorlevel 1 (
+  echo [sila-86] WARN panel OTA upload failed ^(build ok^)
   exit /b 0
 )
 exit /b 0

@@ -12,7 +12,7 @@ extern "C" {
  * Ensure device_id / device_key exist in cfg (persist to NVS), then
  * POST {server}/api/devices/register with X-Device-Key.
  * On success, applies mqtt{} from response into cfg (+ NVS).
- * type_code from Kconfig (WALL_PANEL); config includes board_id/display/features.
+ * type_code from Kconfig (WALL_PANEL); config includes board_id/display/features/hw.
  */
 esp_err_t nodelio_device_register(nodelio_nvs_config_t *cfg);
 

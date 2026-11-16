@@ -24,6 +24,8 @@ WiFi SoftAP stays with Xiaozhi. NodeLio does **not** own STA.
 | 方案 A / R4（SY7200 接死 3.3V） | 常亮，`FIXED_BACKLIGHT=y` | `nodelio-build.bat` / `nodelio-flash.bat` |
 | 方案 B / IP5306+RY3730 | IO13 PWM 可调 | `nodelio-build.bat pwm` / `nodelio-flash.bat pwm` |
 
+OTA：默认编译发 **dev**（带号 bin）并上传；用户「检查更新」走 `firmware`/`xiaozhi-latest.bin`。发用户包加 `--stable`，或 `scripts/nodelio_promote_panel_ota.bat --board sila_86`。离线 `--no-upload`。
+
 **可调背光板刷了默认（R4）固件会全黑**：固件走 `NoopBacklight`，从不拉高 IO13。
 ```bat
 cd /d D:\xz25\main\boards\sila\sila-86

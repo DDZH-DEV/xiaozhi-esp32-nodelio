@@ -181,6 +181,7 @@ if(CONFIG_NODELIO_PANEL)
         "nodelio/offline_cmd.c"
         "nodelio/offline_cmd_map.c"
         "nodelio/nvs_config.c"
+        "nodelio/hw_info.c"
         "nodelio/register.c"
         "nodelio/nodelio_http.cc"
         "nodelio/mqtt_panel.c"
