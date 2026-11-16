@@ -176,6 +176,9 @@ extern bool s_dsh_row_pulse_on;
 extern lv_obj_t *s_dsh_focus_row; /* 续聊焦点行，rebuild 时清空 */
 extern lv_obj_t *s_dsh_pulse_rows[SKILL_LIST_ROWS]; /* 边框呼吸：焦点 + 执行中 */
 extern int s_dsh_pulse_n;
+extern lv_obj_t *s_dsh_spin_ics[SKILL_LIST_ROWS]; /* 执行中进度图标旋转 */
+extern int s_dsh_spin_n;
+extern bool s_dsh_icon_spin_on;
 extern dsh_ui_phase_t s_dsh_phase;
 extern char s_dsh_focus_sess[80];
 extern char s_dsh_focus_ws[200];
@@ -280,9 +283,11 @@ bool dsh_is_detail_view(void);
 void dsh_extract_arm(const nl_env_track_t *tr, char *ws, size_t ws_len, char *sess, size_t sess_len);
 bool dsh_track_is_focus(int track_idx);
 void stop_dsh_row_pulses(void);
+void stop_dsh_icon_spins(void);
 void stop_dsh_eq_anims(void);
 void stop_dsh_status_anims(void);
 void start_dsh_row_pulses(void);
+void start_dsh_icon_spins(void);
 void start_dsh_status_anims(void);
 void dsh_hide_confirm_bar(void);
 void dsh_clear_ui_phase(void);

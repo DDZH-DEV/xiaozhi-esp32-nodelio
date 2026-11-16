@@ -55,7 +55,7 @@ Windows 源码构建建议使用 `go build -o nodelio-bridge.exe ./cmd/nodelio-b
 - Linux：运行 `install.sh` 安装到 `~/.local/bin`。无 systemd 时登录自启接口明确返回不支持，可用发行版进程管理器执行 `serve`。
 - ARM32 不在首版矩阵中。系统最低版本、Linux 发行版兼容性仍需在目标机器验收。
 
-登录自启只管理桥，不打开第三方工作台。macOS LaunchAgent 在下次登录加载；关闭自启只移除后续登录注册，不终止当前程序。Linux 用户服务未开启 linger，默认随用户会话运行。
+登录自启只管理桥，不打开第三方工作台。Windows 登录任务延迟约 45 秒再拉起（等网络）；进程内首次连 Host 前还会再等网络就绪。macOS LaunchAgent 在下次登录加载并依赖 NetworkState；关闭自启只移除后续登录注册，不终止当前程序。Linux 用户服务未开启 linger，默认随用户会话运行。
 
 尚未实现 Windows Service / LaunchDaemon / systemd 系统服务的一键安装。需要未登录常驻时应先明确桌面代理与纯 API 服务的部署边界。
 

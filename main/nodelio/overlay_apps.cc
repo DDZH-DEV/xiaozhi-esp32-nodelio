@@ -1554,9 +1554,9 @@ static int plan_open_query(const char *query, OpenPlan *plan, bool log)
                strstr(query, "deepseek") != nullptr || strstr(query, "DeepSeek") != nullptr ||
                strstr(query, "DSH") != nullptr || strstr(query, "dsh") != nullptr ||
                strstr(query, "任务") != nullptr) {
-        /* 打开 DSH / 查看任务 / 派活 都进进度列表。带指令的投递走「让它…」。 */
-        alias_id =
-            find_installed_app_id("workbench.status", false) ? "workbench.status" : "dsh.status";
+        /* 打开 DSH / 查看任务 / 派活 都进进度列表。带指令的投递走「让它…」。
+         * 不再优先进「默认工作台」选择器；应用列表点具体平台即可。 */
+        alias_id = "dsh.status";
     } else if (strstr(query, "曲库") || strstr(query, "取库") || strstr(query, "去库") ||
                strstr(query, "趣库") || strstr(query, "音乐") || strstr(query, "music") ||
                strstr(query, "听歌") || strstr(query, "放歌") || strstr(query, "爱音乐")) {

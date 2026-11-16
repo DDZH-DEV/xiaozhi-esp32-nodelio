@@ -2431,11 +2431,14 @@ static void null_skill_widget_ptrs(void)
     s_news_body_lbl = nullptr;
     s_dsh_focus_row = nullptr;
     s_dsh_pulse_n = 0;
+    s_dsh_spin_n = 0;
     for (int i = 0; i < SKILL_LIST_ROWS; i++) {
         s_dsh_pulse_rows[i] = nullptr;
+        s_dsh_spin_ics[i] = nullptr;
     }
     s_dsh_eq_anim_on = false;
     s_dsh_row_pulse_on = false;
+    s_dsh_icon_spin_on = false;
     memset(s_row_idx_labels, 0, sizeof(s_row_idx_labels));
     memset(s_row_btns, 0, sizeof(s_row_btns));
 }
@@ -3583,7 +3586,8 @@ void fill_list(void)
                 lv_obj_set_style_border_opa(row, LV_OPA_60, 0);
                 lv_obj_set_style_pad_hor(row, comfortable ? 10 : 6, 0);
                 lv_obj_set_style_pad_ver(row, support_list ? 2 : (comfortable ? 8 : 0), 0);
-                lv_obj_set_style_pad_column(row, 6, 0);
+                /* 工作台：图标右侧间距更开；执行中行还会再拉到 14 */
+                lv_obj_set_style_pad_column(row, nl_workbench_app(s_env->app_id) ? 12 : 6, 0);
             }
             lv_obj_set_style_clip_corner(row, true, 0);
             lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
@@ -3609,7 +3613,10 @@ void fill_list(void)
                 lv_obj_add_state(row, LV_STATE_DISABLED);
             }
 
-            const int mark = music_card ? music_end_sz() : (comfortable ? 26 : 22);
+            const bool workbench_row = nl_workbench_app(s_env->app_id);
+            const int mark = music_card ? music_end_sz()
+                                       : (workbench_row ? (comfortable ? 34 : 28)
+                                                        : (comfortable ? 26 : 22));
             const bool support_unread = strcmp(s_env->card_type, "support_inbox") == 0 &&
                                         s_env->tracks[i].unread;
             lv_obj_t *idx_pod = lv_obj_create(row);
@@ -3705,7 +3712,7 @@ void fill_list(void)
                 cell_w = (cell_w - (music_card ? music_col_gap() : 6) * (cols - 1)) / cols;
             }
             const int side_pad = music_card ? music_row_pad_hor() : (comfortable ? 10 : 6);
-            const int gap = music_card ? 8 : 6;
+            const int gap = music_card ? 8 : (workbench_row ? 12 : 6);
             /* 曲库无行内播放钮；其它可播列表仍留右侧圆钮 */
             const bool has_play =
                 !music_card && can_play && s_env->tracks[i].playback_url[0];

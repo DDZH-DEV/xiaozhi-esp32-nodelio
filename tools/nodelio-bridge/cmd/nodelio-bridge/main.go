@@ -23,6 +23,17 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+// bestEffortWriter ignores write errors so a broken stderr (Windows GUI subsystem)
+// cannot suppress bridge.log via io.MultiWriter's fail-fast behavior.
+type bestEffortWriter struct{ w io.Writer }
+
+func (b bestEffortWriter) Write(p []byte) (int, error) {
+	if b.w != nil {
+		_, _ = b.w.Write(p)
+	}
+	return len(p), nil
+}
 func run(args []string) error {
 	command := "serve"
 	openUI := len(args) == 0
@@ -96,7 +107,9 @@ func run(args []string) error {
 		return err
 	}
 	defer logFile.Close()
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, logFile), nil)))
+	// Windows GUI builds (-H=windowsgui) often have an invalid stderr; MultiWriter
+	// stops on the first writer error, so file must come first and stderr must be best-effort.
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.MultiWriter(logFile, bestEffortWriter{os.Stderr}), nil)))
 	config, err := bridge.OpenConfig(*dir)
 	if err != nil {
 		return err

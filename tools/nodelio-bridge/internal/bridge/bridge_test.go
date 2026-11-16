@@ -474,8 +474,22 @@ func TestStartupDocumentsAndInstanceLock(t *testing.T) {
 			t.Fatal("unescaped XML")
 		}
 	}
+	win, _ := StartupDocument("windows", `C:\Apps & Tools\bridge.exe`, dir, "user")
+	if strings.Contains(win, `encoding="UTF-8"`) {
+		t.Fatal("schtasks rejects UTF-8 encoding declaration on BOM-less XML")
+	}
+	if !strings.Contains(win, "<Delay>PT45S</Delay>") {
+		t.Fatal("windows logon trigger needs network delay")
+	}
+	mac, _ := StartupDocument("darwin", "/Applications/NodeLio Bridge.app/Contents/MacOS/nodelio-bridge", dir, "501")
+	if !strings.Contains(mac, "<key>NetworkState</key><true/>") {
+		t.Fatal("macOS LaunchAgent should wait for network")
+	}
 	doc, _ := StartupDocument("linux", "/tmp/100% tool/$binary", dir, "1000")
 	if !strings.Contains(doc, "100%%") || !strings.Contains(doc, "$$binary") {
 		t.Fatal("systemd expansion not escaped")
+	}
+	if !strings.Contains(doc, "Wants=network-online.target") {
+		t.Fatal("linux unit should pull network-online")
 	}
 }

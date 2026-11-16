@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"runtime"
 	"strings"
 	"sync"
@@ -15,6 +17,45 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+// waitForHostNetwork covers login-autostart races where the process is up before
+// Wi-Fi/VPN/DNS. It only runs once per process; Host.Run still retries dials afterward.
+func waitForHostNetwork(ctx context.Context, raw string) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return
+	}
+	port := u.Port()
+	if port == "" {
+		if u.Scheme == "wss" || u.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	addr := net.JoinHostPort(u.Hostname(), port)
+	deadline, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	for attempt := 0; deadline.Err() == nil; attempt++ {
+		c, err := dialer.DialContext(deadline, "tcp", addr)
+		if err == nil {
+			_ = c.Close()
+			if attempt > 0 {
+				slog.Info("host network ready", "addr", addr, "attempts", attempt+1)
+			}
+			return
+		}
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-deadline.Done():
+			timer.Stop()
+			slog.Warn("host network wait timed out; continuing dial retries", "addr", addr, "error", err.Error())
+			return
+		case <-timer.C:
+		}
+	}
+}
 
 type Host struct {
 	e      *Engine
@@ -59,6 +100,7 @@ func (h *Host) enqueue(t Task) {
 }
 func (h *Host) Run(ctx context.Context) {
 	backoff := time.Second
+	waitedNetwork := false
 	for ctx.Err() == nil {
 		s := h.e.Config.Snapshot()
 		ws := strings.TrimSpace(s.Config.HostWS)
@@ -69,8 +111,14 @@ func (h *Host) Run(ctx context.Context) {
 			} else {
 				slog.Info("host ws skipped: host_token empty; paste bridge credential from APP")
 			}
-		} else if h.connection(ctx, s) {
-			backoff = time.Second
+		} else {
+			if !waitedNetwork {
+				waitForHostNetwork(ctx, ws)
+				waitedNetwork = true
+			}
+			if h.connection(ctx, s) {
+				backoff = time.Second
+			}
 		}
 		timer := time.NewTimer(backoff)
 	wait:

@@ -115,7 +115,7 @@ func TestMarketAdvertisesMainAppsAndLiveAvailability(t *testing.T) {
 		t.Fatal(err)
 	}
 	apps := arr(doc["apps"])
-	if len(apps) != 5 {
+	if len(apps) != 4 {
 		t.Fatalf("got %d visible apps", len(apps))
 	}
 	for _, raw := range apps {
@@ -124,8 +124,11 @@ func TestMarketAdvertisesMainAppsAndLiveAvailability(t *testing.T) {
 		if !strings.HasSuffix(id, ".status") {
 			t.Fatal("internal helper shown as standalone install")
 		}
+		if id == "workbench.status" {
+			t.Fatal("default workbench must stay off market index")
+		}
 		want := "disabled"
-		if id == "openai.status" || id == "workbench.status" {
+		if id == "openai.status" {
 			want = "ready"
 		}
 		if obj(a["availability"])["state"] != want {

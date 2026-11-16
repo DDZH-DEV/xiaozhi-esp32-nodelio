@@ -16,6 +16,9 @@ bool s_dsh_row_pulse_on = false;
 lv_obj_t *s_dsh_focus_row = nullptr; /* 续聊焦点行，rebuild 时清空 */
 lv_obj_t *s_dsh_pulse_rows[SKILL_LIST_ROWS] = {nullptr}; /* 边框呼吸：焦点 + 执行中 */
 int s_dsh_pulse_n = 0;
+lv_obj_t *s_dsh_spin_ics[SKILL_LIST_ROWS] = {nullptr}; /* 执行中进度图标旋转 */
+int s_dsh_spin_n = 0;
+bool s_dsh_icon_spin_on = false;
 dsh_ui_phase_t s_dsh_phase = DSH_UI_IDLE;
 char s_dsh_focus_sess[80] = {0};
 char s_dsh_focus_ws[200] = {0};
@@ -118,6 +121,29 @@ void stop_dsh_row_pulses(void)
     s_dsh_row_pulse_on = false;
 }
 
+static void anim_dsh_icon_spin(void *var, int32_t v)
+{
+    lv_obj_set_style_transform_rotation((lv_obj_t *)var, v, 0);
+}
+
+void stop_dsh_icon_spins(void)
+{
+    if (!s_dsh_icon_spin_on) {
+        s_dsh_spin_n = 0;
+        return;
+    }
+    for (int i = 0; i < s_dsh_spin_n; i++) {
+        lv_obj_t *ic = s_dsh_spin_ics[i];
+        if (ic) {
+            lv_anim_delete(ic, anim_dsh_icon_spin);
+            lv_obj_set_style_transform_rotation(ic, 0, 0);
+        }
+        s_dsh_spin_ics[i] = nullptr;
+    }
+    s_dsh_spin_n = 0;
+    s_dsh_icon_spin_on = false;
+}
+
 void stop_dsh_eq_anims(void)
 {
     if (!s_dsh_eq_anim_on) {
@@ -136,6 +162,7 @@ void stop_dsh_status_anims(void)
 {
     stop_dsh_eq_anims();
     stop_dsh_row_pulses();
+    stop_dsh_icon_spins();
 }
 
 static void dsh_register_pulse_row(lv_obj_t *row)
@@ -149,6 +176,19 @@ static void dsh_register_pulse_row(lv_obj_t *row)
         }
     }
     s_dsh_pulse_rows[s_dsh_pulse_n++] = row;
+}
+
+static void dsh_register_spin_ic(lv_obj_t *ic)
+{
+    if (!ic || s_dsh_spin_n >= SKILL_LIST_ROWS) {
+        return;
+    }
+    for (int i = 0; i < s_dsh_spin_n; i++) {
+        if (s_dsh_spin_ics[i] == ic) {
+            return;
+        }
+    }
+    s_dsh_spin_ics[s_dsh_spin_n++] = ic;
 }
 
 void start_dsh_row_pulses(void)
@@ -184,10 +224,46 @@ void start_dsh_row_pulses(void)
     s_dsh_row_pulse_on = true;
 }
 
+void start_dsh_icon_spins(void)
+{
+    if (s_dsh_spin_n <= 0) {
+        return;
+    }
+    if (s_dsh_icon_spin_on) {
+        for (int i = 0; i < s_dsh_spin_n; i++) {
+            lv_obj_t *ic = s_dsh_spin_ics[i];
+            if (ic) {
+                lv_anim_delete(ic, anim_dsh_icon_spin);
+            }
+        }
+        s_dsh_icon_spin_on = false;
+    }
+    for (int i = 0; i < s_dsh_spin_n; i++) {
+        lv_obj_t *ic = s_dsh_spin_ics[i];
+        if (!ic) {
+            continue;
+        }
+        lv_obj_set_style_transform_pivot_x(ic, LV_PCT(50), 0);
+        lv_obj_set_style_transform_pivot_y(ic, LV_PCT(50), 0);
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, ic);
+        lv_anim_set_values(&a, 0, 3600);
+        lv_anim_set_time(&a, 1400);
+        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_set_path_cb(&a, lv_anim_path_linear);
+        lv_anim_set_exec_cb(&a, anim_dsh_icon_spin);
+        lv_anim_set_delay(&a, (uint32_t)(i * 60));
+        lv_anim_start(&a);
+    }
+    s_dsh_icon_spin_on = true;
+}
+
 void start_dsh_status_anims(void)
 {
     if (!s_dsh_status || lv_obj_has_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN)) {
         start_dsh_row_pulses();
+        start_dsh_icon_spins();
         return;
     }
     stop_dsh_eq_anims();
@@ -215,6 +291,7 @@ void start_dsh_status_anims(void)
         dsh_register_pulse_row(s_dsh_focus_row);
     }
     start_dsh_row_pulses();
+    start_dsh_icon_spins();
 }
 
 void dsh_hide_confirm_bar(void)
@@ -248,12 +325,13 @@ void dsh_paint_status_strip(void)
         return;
     }
     if (s_dsh_phase == DSH_UI_IDLE) {
-        /* 仅收顶条 EQ；列表「正在用」行的青色呼吸由 fill_list 保留 */
+        /* 仅收顶条 EQ；列表「正在用」行的青色呼吸/旋转由 fill_list 保留 */
         stop_dsh_eq_anims();
         lv_obj_add_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_height(s_dsh_status, 0);
         dsh_hide_confirm_bar();
         start_dsh_row_pulses();
+        start_dsh_icon_spins();
         return;
     }
     lv_obj_clear_flag(s_dsh_status, LV_OBJ_FLAG_HIDDEN);
@@ -334,15 +412,27 @@ void dsh_style_list_row(lv_obj_t *row, int track_idx, lv_obj_t *idx_pod, lv_obj_
     lv_obj_set_style_bg_color(row, work_amber ? UI_TILE_GPIO : (work_cyan ? UI_TILE_PWM : UI_TILE_SWITCH),
                               0);
     if (idx_pod) {
+        /* 执行中：图标加大、右侧留白更开，进度符旋转 */
+        if (work_cyan) {
+            lv_obj_set_size(idx_pod, 34, 34);
+            lv_obj_set_style_radius(idx_pod, 8, 0);
+            lv_obj_set_style_pad_column(row, 14, 0);
+        }
         lv_obj_set_style_bg_color(idx_pod,
                                   work_amber ? UI_CAPSULE_GPIO
                                              : (work_cyan ? UI_CAPSULE_PWM : UI_CAPSULE_ON),
                                   0);
         lv_obj_t *ic = lv_obj_get_child(idx_pod, 0);
         if (ic) {
-            lv_obj_set_style_text_font(ic, &font_material_symbols_20_4, 0);
+            lv_obj_set_style_text_font(ic, work_cyan ? &font_material_symbols_30_4
+                                                     : &font_material_symbols_20_4,
+                                       0);
             lv_label_set_text(ic, armed ? MATERIAL_SYMBOLS_MIC : MATERIAL_SYMBOLS_PROGRESS_ACTIVITY);
             lv_obj_set_style_text_color(ic, UI_ON_TILE, 0);
+            lv_obj_center(ic);
+            if (work_cyan) {
+                dsh_register_spin_ic(ic);
+            }
         }
     }
     if (artist_lbl && armed) {

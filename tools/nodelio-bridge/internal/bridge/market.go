@@ -15,6 +15,7 @@ const PackageVersion = "2.3.0"
 func MarketFiles() map[string][]byte {
 	files := map[string][]byte{}
 	apps := []any{}
+	/* workbench.* 包仍可拉（旧安装/通知兜底），但不进市场列表——用户装具体平台即可。 */
 	for _, provider := range []string{"workbench", "codex", "dsh", "openai", "workbuddy"} {
 		name := map[string]string{"codex": "Codex 桌面", "workbench": "默认工作台", "dsh": "DeepSeek 工作台", "openai": "OpenAI API 独立会话", "workbuddy": "WorkBuddy"}[provider]
 		for _, op := range []string{"status", "task", "answer"} {
@@ -53,12 +54,12 @@ func MarketFiles() map[string][]byte {
 			files[MarketPrefix+path] = b
 			sum := sha256.Sum256(b)
 			// Each status app owns task and approval actions. Legacy helper packages remain fetchable.
-			if op == "status" {
+			if op == "status" && provider != "workbench" {
 				apps = append(apps, map[string]any{"app_id": app, "name": title, "version": PackageVersion, "package_url": "nodelio-dsh://" + path, "package_sha256": hex.EncodeToString(sum[:]), "summary": "查看任务、开始指令和续聊；连接及凭证在电脑桥配置", "categories": []string{"tool"}, "min_protocol": 1, "requires": doc["requires"], "optional": doc["optional"], "surfaces": doc["surfaces"]})
 			}
 		}
 	}
-	index := map[string]any{"schema_version": 1, "market_id": "com.nodelio.dsh", "name": "NodeLio 工作台桥", "description": "Codex 桌面、DSH、OpenAI API、WorkBuddy 统一连接桥", "updated_at": "2026-11-06T00:00:00Z", "publisher": map[string]any{"name": "NodeLio"}, "apps": apps}
+	index := map[string]any{"schema_version": 1, "market_id": "com.nodelio.dsh", "name": "NodeLio 工作台桥", "description": "Codex 桌面、DSH、OpenAI API、WorkBuddy 统一连接桥", "updated_at": "2026-11-16T00:00:00Z", "publisher": map[string]any{"name": "NodeLio"}, "apps": apps}
 	files[MarketPrefix+"marketplace.json"], _ = json.MarshalIndent(index, "", "  ")
 	return files
 }
